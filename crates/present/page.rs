@@ -402,6 +402,7 @@ pub struct Page {
     members: Box<[MemberGroup]>,
     relations: Box<[RelationGroup]>,
     source: Source,
+    source_policy: backend_library::SourcePolicyQualification,
     notes: Box<[Fault]>,
     pub(crate) section_page: Option<crate::DocumentSectionPage>,
 }
@@ -432,6 +433,7 @@ impl Page {
             members: Box::new([]),
             relations: Box::new([]),
             source,
+            source_policy: backend_library::SourcePolicyQualification::Unknown,
             notes: Box::new([]),
             section_page: None,
         }
@@ -470,6 +472,22 @@ impl Page {
     pub fn with_relations(mut self, relations: impl Into<Box<[RelationGroup]>>) -> Self {
         self.relations = relations.into();
         self
+    }
+
+    /// Retains the owner-reported source-policy claim without elevating it to authority.
+    #[must_use]
+    pub fn with_source_policy(
+        mut self,
+        policy: backend_library::SourcePolicyQualification,
+    ) -> Self {
+        self.source_policy = policy;
+        self
+    }
+
+    /// Returns the owner-reported policy claim.
+    #[must_use]
+    pub const fn source_policy(&self) -> &backend_library::SourcePolicyQualification {
+        &self.source_policy
     }
 
     /// Attaches the faults that explain a section this page could not fill.
@@ -518,10 +536,17 @@ impl Page {
             if !rows.is_empty() { relations.push(RelationGroup::new(group.label(), rows)); }
         }
         Self {
-            identity: self.identity.clone(), kind: self.kind, language: self.language,
-            signature: self.signature.clone(), prose: self.prose.clone(),
-            members: MemberGroup::group(members), relations: relations.into_boxed_slice(),
-            source: self.source.clone(), notes: self.notes.clone(), section_page: None,
+            identity: self.identity.clone(),
+            kind: self.kind,
+            language: self.language,
+            signature: self.signature.clone(),
+            prose: self.prose.clone(),
+            members: MemberGroup::group(members),
+            relations: relations.into_boxed_slice(),
+            source: self.source.clone(),
+            source_policy: self.source_policy.clone(),
+            notes: self.notes.clone(),
+            section_page: None,
         }
     }
 

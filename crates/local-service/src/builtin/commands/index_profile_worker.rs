@@ -8,7 +8,7 @@ use super::super::super::semantic_authority::{DetachedSemanticAuthority, Retired
 use super::super::super::{BuiltinModel, BuiltinModelError};
 use super::super::index::{
     DeferredIndex, DeferredProfileFailure, DeferredProfileTicket, deferred_compile_was_cancelled,
-    finish_deferred_profile_for_snapshot, run_deferred_compile,
+    finish_deferred_profile_for_snapshot, refuse_stale_csharp_capture, run_deferred_compile,
 };
 use backend_engine::application::{LocalCompilerClient, OwnedPackageSourceSet};
 use backend_engine::{ReadHeadWriter, RetiredReadHead, WorkspaceSnapshot};
@@ -85,6 +85,19 @@ impl ProfileWork {
         if let Some(observation) = &self.observation {
             observation.phase("deferred-compile-start");
         }
+        let check = self.job.csharp_capture_is_current(
+            self.profile.as_ref().expect("single-use compiler profile"), &self.snapshot, &self.cancelled,
+        );
+        if self.cancelled.load(Ordering::Acquire) {
+            return ProfileOutcome::Cancelled;
+        }
+        if !matches!(&check, Ok(true)) {
+            let detail = match check { Err(error) => error, _ => BuiltinModelError("C# capture changed before compilation".to_owned()) };
+            return ProfileOutcome::Admitted(refuse_stale_csharp_capture(
+                self.semantic.as_mut().expect("owned semantic writer").authority_mut(),
+                self.profile.take().expect("single-use compiler profile"), detail,
+            ));
+        }
         let compiled = run_deferred_compile(
             &self.compiler,
             self.sources
@@ -97,6 +110,19 @@ impl ProfileWork {
         }
         if self.cancelled.load(Ordering::Acquire) || deferred_compile_was_cancelled(&compiled) {
             return ProfileOutcome::Cancelled;
+        }
+        let check = self.job.csharp_capture_is_current(
+            self.profile.as_ref().expect("single-use compiler profile"), &self.snapshot, &self.cancelled,
+        );
+        if self.cancelled.load(Ordering::Acquire) {
+            return ProfileOutcome::Cancelled;
+        }
+        if !matches!(&check, Ok(true)) {
+            let detail = match check { Err(error) => error, _ => BuiltinModelError("C# capture changed during compilation".to_owned()) };
+            return ProfileOutcome::Admitted(refuse_stale_csharp_capture(
+                self.semantic.as_mut().expect("owned semantic writer").authority_mut(),
+                self.profile.take().expect("single-use compiler profile"), detail,
+            ));
         }
         if let Some(observation) = &self.observation {
             observation.phase("deferred-profile-admission-start");

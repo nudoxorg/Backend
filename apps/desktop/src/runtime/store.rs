@@ -1713,6 +1713,7 @@ mod tests {
             },
             members: Known::Unknown(unknown()),
             rose: Rose {
+                relations_gap: None,
                 up: Known::Unknown(unknown()),
                 down: Known::Unknown(unknown()),
                 left: Known::Unknown(unknown()),
@@ -1720,6 +1721,7 @@ mod tests {
                 implemented_by: Known::Unknown(unknown()),
             },
             references: Known::Unknown(unknown()),
+            references_gap: None,
             workspace: Arc::from([]),
             outline: Known::Unknown(unknown()),
         }

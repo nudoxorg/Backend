@@ -197,7 +197,7 @@ fn short_advisory_refuses_reserved_configured_authority_without_queueing() {
         &config, adapter.product_state.workspace_path().expect("workspace"), &advisory,
     ).expect("restore actual registry owner");
     let package = backend_library::PackageReference::parse("pkg:cargo/fixture@1.0.0").expect("package");
-    assert!(matches!(short_control_reply(adapter, daemon, 2103, S::Advisory { package, override_evidence: None }), CommandReply::Surface(R::Advisory(value)) if value == backend_library::AdvisoryPackageDto::unknown()), "source-checked empty catalog can answer after authority returns");
+    assert!(matches!(short_control_reply(adapter, daemon, 2103, S::Advisory { package, override_evidence: None }), CommandReply::Surface(R::Advisory(value)) if value == backend_library::AdvisoryPackageDto::unknown().without_registry_standing()), "source-checked empty catalog can answer after authority returns without claiming registry standing");
     assert_eq!(owner_cursor(daemon), before);
     assert!(adapter.waiting.is_empty());
     drop(adapter.indexing.take());

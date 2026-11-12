@@ -56,6 +56,55 @@ pub use wire::{AdvisoryDecisionDto, AdvisoryPackageDto, AdvisorySurfaceDto};
 mod tests {
     use super::*;
 
+    #[test]
+    fn advisory_legacy_missing_standing_roundtrips_and_factory_does_not_infer() {
+        const LEGACY: &[u8] = br#"{"schema":1,"advisories":[],"coverage":"unknown","freshness":"unknown","malware":"NotCovered","yanked":false,"unlisted":false,"decision":{"Warn":["IncompleteCoverage","StaleEvidence"]},"reasons":["IncompleteCoverage","StaleEvidence"]}"#;
+        let decoded: AdvisoryPackageDto = serde_json::from_slice(LEGACY).expect("legacy decode");
+        assert_eq!(decoded.registry_standing_observed, None);
+        assert_eq!(serde_json::to_vec(&decoded).expect("legacy bytes"), LEGACY);
+        let unknown = AdvisoryPackageDto::unknown();
+        assert_eq!(unknown.registry_standing_observed, None);
+        assert_eq!(serde_json::to_vec(&unknown).expect("unknown bytes"), LEGACY);
+        let mut observed = decoded;
+        observed.registry_standing_observed = Some(true);
+        let value = serde_json::to_value(&observed).expect("observed standing");
+        assert_eq!(value["registry_standing_observed"], true);
+        let observation = AdvisoryObservation {
+            advisories: Box::new([]), coverage: AdvisoryCoverage::Unknown,
+            freshness: FreshnessState::Unknown, offline: false, yanked: true,
+            unlisted: false, malware: MalwareCoverage::NotCovered,
+        };
+        let projected = AdvisoryPackageDto::from_observation(&observation, AcquisitionDecision::Allow);
+        assert_eq!(projected.registry_standing_observed, None);
+        assert!(projected.yanked, "reported positive is retained");
+    }
+
+    #[test]
+    fn advisory_only_decision_never_asserts_registry_cleared() {
+        let mut original = AdvisoryPackageDto::unknown();
+        original.decision = AcquisitionDecision::Allow;
+        original.reasons = Box::new([]);
+        let scoped = original.without_registry_standing();
+        assert_eq!(scoped.registry_standing_observed, None);
+        assert!(matches!(&scoped.decision, AcquisitionDecision::Warn(reasons)
+            if reasons.contains(&PolicyReason::RegistryStandingUnknown)));
+        let known = scoped.clone().with_registry_standing(false, false);
+        assert_eq!(known.registry_standing_observed, Some(true));
+        assert!(matches!(known.decision, AcquisitionDecision::Allow));
+        let yanked = scoped.clone().with_registry_standing(true, false);
+        assert!(matches!(&yanked.decision, AcquisitionDecision::Warn(reasons)
+            if reasons.contains(&PolicyReason::Advisory(AdvisoryStatus::Yanked))));
+        let mut blocked = scoped;
+        blocked.decision = AcquisitionDecision::Deny(Box::new([PolicyReason::Advisory(AdvisoryStatus::Vulnerable)]));
+        blocked.reasons = Box::new([PolicyReason::Advisory(AdvisoryStatus::Vulnerable)]);
+        let blocked = blocked.without_registry_standing();
+        assert!(matches!(&blocked.decision, AcquisitionDecision::Deny(reasons)
+            if reasons.contains(&PolicyReason::RegistryStandingUnknown)));
+        let overridden = blocked.with_override(OverrideEvidence { actor: "reviewer".to_owned(), reason: "reviewed".to_owned(), policy_version: 1, expires_at: None }, 1);
+        assert!(matches!(&overridden.decision, AcquisitionDecision::Warn(reasons)
+            if reasons.contains(&PolicyReason::RegistryStandingUnknown)));
+    }
+
     fn osv(events: &str) -> String {
         format!(
             r#"{{

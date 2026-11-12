@@ -80,6 +80,8 @@ pub(super) fn label(route: &Route) -> SharedString {
             .into(),
         Route::CargoSource(route) => route.target.path().as_str().to_owned().into(),
         Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(query))) => format!("Find {}", query.text).into(),
+        Route::Orbit(OrbitRoute::Browse(BrowseRoute::Sql(subject) | BrowseRoute::Css(subject))) => subject.written().into(),
+        Route::Orbit(OrbitRoute::Browse(BrowseRoute::Impact(route))) => format!("Impact of {}", route.subject.written()).into(),
         Route::Orbit(_) => "Library".into(),
         Route::World => "Graph".into(),
     }

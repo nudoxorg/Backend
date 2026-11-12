@@ -138,6 +138,13 @@ impl LocalEngineClient {
                     error.to_string(),
                 ));
             }
+            // Any other exchange failure is a malformed or refused frame: it is
+            // a protocol fault, and its exact diagnostic is the message (the
+            // client error wrapper would only prefix it with "protocol: ").
+            return EngineFault::Failed(crate::core::ErrorValue::new(
+                FaultCode::Protocol,
+                error.to_string(),
+            ));
         }
         self.client_fault(error.into_client_error())
     }
@@ -1021,13 +1028,13 @@ mod tests {
     #[test]
     fn owner_update_is_manual_action_without_transport_or_cancellation_reclassification() {
         let update = ClientError::OwnerUpdate {
-            found: 38,
-            supported: 39,
+            found: 39,
+            supported: 40,
             detail: "custody could not be proven".into(),
         };
         let EngineFault::Failed(error) = fault(update) else { panic!("manual update is a visible failure"); };
         assert_eq!(error.code(), FaultCode::OwnerUpdate);
-        assert!(error.message().contains("38 → 39"));
+        assert!(error.message().contains("39 → 40"));
         assert!(error.message().contains("Restart the previous NuDox owner, then retry."));
         assert!(error.message().contains("custody could not be proven"));
         assert!(matches!(fault(ClientError::RequestCancelled(backend_client::RequestCancellationReason::Explicit)), EngineFault::Cancelled));
@@ -1117,8 +1124,8 @@ mod tests {
                     "healthy" => Ok(7),
                     "protocol" => Err(ClientError::Protocol("correlated refusal".into())),
                     "owner_update" => Err(ClientError::OwnerUpdate {
-                        found: 38,
-                        supported: 39,
+                        found: 39,
+                        supported: 40,
                         detail: "manual restart required".into(),
                     }),
                     _ => unreachable!(),
@@ -1136,7 +1143,7 @@ mod tests {
                 "healthy" => assert!(matches!(result, Ok(7))),
                 "owner_update" => assert!(matches!(result, Err(EngineFault::Failed(ref error))
                     if error.code() == FaultCode::OwnerUpdate
-                        && error.message().contains("37 → 38")
+                        && error.message().contains("39 → 40")
                         && error.message().contains("Restart the previous NuDox owner, then retry.")
                         && error.message().contains("manual restart required"))),
                 "protocol" => assert!(matches!(result, Err(EngineFault::Failed(ref error))

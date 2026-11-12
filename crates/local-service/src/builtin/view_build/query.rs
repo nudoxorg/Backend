@@ -147,6 +147,17 @@ fn append_compiler_query_facts(
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic query relation: {error}")))?;
     let available = super::SourceAvailability::of_controlled(sources, cancelled)?;
+    let nse = backend_engine::builtin::native_source_evidence_relation(snapshot)
+        .map_err(|error| BuiltinModelError(format!("open query native evidence: {error}")))?;
+    let frontiers = if nse.is_some() {
+        super::super::profile::native_evidence_basis_for_snapshot(snapshot)?;
+        backend_engine::builtin::product_native_frontier_relation(snapshot)
+            .map_err(|error| BuiltinModelError(format!("open query native frontier: {error}")))?
+    } else { None };
+    let mut structural_cache = BTreeMap::new();
+    let mut structural_work = 0usize;
+    let mut program_work = 0usize;
+    let mut image_budget = MAX_REBUILD_BYTES;
     let mut complete = BTreeSet::new();
     let mut pending = Vec::new();
     let mut package_profile_scopes = BTreeMap::<_, BTreeMap<_, _>>::new();
@@ -180,7 +191,34 @@ fn append_compiler_query_facts(
                 })?;
             let activated =
                 activate_semantic_publication(compiler, key, *claim, generations, image_rows)?;
-            let activated = available.select(key, *coverage, activated, image_rows)?;
+            let proof = if let Some(evidence) = nse.as_ref()
+                && matches!(key.profile(), backend_semantic::vocabulary::LanguageProfile::TypeScript(_))
+                && !project.label.starts_with("pkg:")
+            {
+                let owner = key.package_key().to_bytes();
+                if !structural_cache.contains_key(&owner) {
+                    structural_work = structural_work.checked_add(sources.files.len().checked_mul(128).ok_or_else(|| BuiltinModelError("query native structural work overflow".into()))?)
+                        .ok_or_else(|| BuiltinModelError("query native structural work overflow".into()))?;
+                    let files = super::semantic::selected_typescript_structural_files(sources, key.package_key())?;
+                    structural_work = files.keys().try_fold(structural_work, |work, path| work.checked_add(path.len() + 128))
+                        .ok_or_else(|| BuiltinModelError("query native structural work overflow".into()))?;
+                    if structural_work > MAX_REBUILD_BYTES { return Err(BuiltinModelError("query native structural budget exceeded".into())); }
+                    structural_cache.insert(owner, files);
+                }
+                super::semantic::selected_nse_program_files(
+                    snapshot, sources, key, &activated, generations, evidence, frontiers.as_ref(),
+                    structural_cache.get(&owner).expect("inserted structural index"),
+                    &mut program_work, &mut image_budget,
+                )?.filter(|proof| proof.projection_safe())
+            } else { None };
+            let activated = if let Some(proof) = proof.as_ref() {
+                QueryArtifacts::Observed(available.select_observed_with_nse(
+                    snapshot, key, *claim, *coverage, activated, image_rows, proof,
+                )?)
+            } else {
+                QueryArtifacts::Current(available.select(key, *coverage, activated, image_rows)?)
+            };
+            let observed = activated.is_observed();
             pending.push(PendingQueryPublication {
                 package: project.package,
                 label: project.label.clone(),
@@ -188,7 +226,7 @@ fn append_compiler_query_facts(
                 profile: key.profile(),
                 activated,
             });
-            if matches!(
+            if !observed && matches!(
                 coverage,
                 backend_engine::builtin::SemanticPublicationCoverage::Complete
             ) {
@@ -240,10 +278,15 @@ fn append_compiler_query_facts(
         let profiles = package_profile_scopes.get(package).ok_or_else(|| {
             BuiltinModelError("selected query publication has no profile scope".to_owned())
         })?;
-        let scopes = available.retargeting_scopes(*package, profiles);
+        let mut scopes = available.retargeting_scopes(*package, profiles);
+        let observed_programs = pending.iter().filter(|publication| publication.package == *package)
+            .filter_map(|publication| publication.activated.observed_program()).collect::<Vec<_>>();
+        if !observed_programs.is_empty() {
+            scopes.insert(backend_semantic::vocabulary::Language::TypeScript, super::call_join::RetargetingScope::SelectedArtifacts);
+        }
         package_indexes.insert(
             *package,
-            ProjectCallableIndex::build_from_views_with_programs(
+            ProjectCallableIndex::build_from_views_with_observed_programs(
                 views,
                 &scopes,
                 &pending
@@ -251,6 +294,7 @@ fn append_compiler_query_facts(
                     .filter(|publication| publication.package == *package)
                     .filter_map(|publication| publication.activated.program())
                     .collect::<Vec<_>>(),
+                &observed_programs.iter().collect::<Vec<_>>(),
                 !pending.iter().any(|publication| {
                     publication.package == *package && publication.activated.has_program_manifest()
                 }),
@@ -489,17 +533,17 @@ fn append_compiler_query_facts(
                 }
                 check_search_preparation(cancelled, "semantic-sorted")?;
                 related.dedup();
+                let compiler_evidence = if publication.observed {
+                    backend_extension_trustfall::CompilerSemanticEvidence::new_observed(
+                        package, coordinate.clone(), profile, identity, image_digest, image.image_facts(),
+                    )
+                } else {
+                    backend_extension_trustfall::CompilerSemanticEvidence::new(
+                        package, coordinate.clone(), profile, identity, image_digest, image.image_facts(),
+                    )
+                };
                 facts.push(backend_extension_trustfall::SemanticQueryFact::new(
-                    backend_extension_trustfall::SemanticQueryEvidence::Compiler(
-                        backend_extension_trustfall::CompilerSemanticEvidence::new(
-                            package,
-                            coordinate.clone(),
-                            profile,
-                            identity,
-                            image_digest,
-                            image.image_facts(),
-                        ),
-                    ),
+                    backend_extension_trustfall::SemanticQueryEvidence::Compiler(compiler_evidence),
                     backend_extension_trustfall::SemanticQueryPresentation {
                         id,
                         kind: kind.name().to_owned(),
@@ -526,17 +570,17 @@ fn append_compiler_query_facts(
                     Some(display) => display,
                     None => "external semantic target".to_owned(),
                 };
+                let external_evidence = if publication.observed {
+                    backend_extension_trustfall::CompilerExternalTargetEvidence::new_observed(
+                        package, coordinate.clone(), profile, target, image_digest, image.image_facts(),
+                    )
+                } else {
+                    backend_extension_trustfall::CompilerExternalTargetEvidence::new(
+                        package, coordinate.clone(), profile, target, image_digest, image.image_facts(),
+                    )
+                };
                 facts.push(backend_extension_trustfall::SemanticQueryFact::new(
-                    backend_extension_trustfall::SemanticQueryEvidence::CompilerExternalTarget(
-                        backend_extension_trustfall::CompilerExternalTargetEvidence::new(
-                            package,
-                            coordinate.clone(),
-                            profile,
-                            target,
-                            image_digest,
-                            image.image_facts(),
-                        ),
-                    ),
+                    backend_extension_trustfall::SemanticQueryEvidence::CompilerExternalTarget(external_evidence),
                     backend_extension_trustfall::SemanticQueryPresentation {
                         coordinate: super::identity::external_semantic_coordinate(
                             &label,
@@ -578,6 +622,7 @@ struct OpenedQueryPublication<'a> {
     label: &'a str,
     coordinate: &'a backend_semantic::vocabulary::PackageUrl,
     profile: backend_semantic::vocabulary::LanguageProfile,
+    observed: bool,
     images: Vec<OpenedQueryImage<'a>>,
 }
 
@@ -618,6 +663,7 @@ fn open_query_publications<'a>(
             label: publication.label.as_str(),
             coordinate: &publication.coordinate,
             profile: publication.profile,
+            observed: publication.activated.is_observed(),
             images,
         });
     }
@@ -629,7 +675,27 @@ struct PendingQueryPublication {
     label: String,
     coordinate: backend_semantic::vocabulary::PackageUrl,
     profile: backend_semantic::vocabulary::LanguageProfile,
-    activated: super::SelectedSourceArtifacts,
+    activated: QueryArtifacts,
+}
+
+enum QueryArtifacts {
+    Current(super::SelectedSourceArtifacts),
+    Observed(super::source_availability::ObservedNativeArtifacts),
+}
+impl QueryArtifacts {
+    fn is_observed(&self) -> bool { matches!(self, Self::Observed(_)) }
+    fn images(&self) -> Box<dyn Iterator<Item = &backend_library::interface::SemanticImageSnapshot> + '_> {
+        match self { Self::Current(value) => Box::new(value.images()), Self::Observed(value) => Box::new(value.images()) }
+    }
+    fn program(&self) -> Option<&super::source_availability::CurrentNativeProgram> {
+        match self { Self::Current(value) => value.program(), Self::Observed(_) => None }
+    }
+    fn observed_program(&self) -> Option<super::source_availability::ObservedNativeProgram<'_>> {
+        match self { Self::Observed(value) => value.program(), Self::Current(_) => None }
+    }
+    fn has_program_manifest(&self) -> bool {
+        match self { Self::Current(value) => value.has_program_manifest(), Self::Observed(_) => true }
+    }
 }
 
 pub(super) fn append_structural_query_facts(
@@ -666,9 +732,21 @@ fn append_structural_query_facts_controlled(
         // structural evidence to either, so it contributes no query facts.
         // Skipping one odd file is the whole point: failing here is what made
         // a single unprofiled file refuse the entire rebuild.
-        let Some(profile) =
-            super::super::ingest::source_record_profile(file).map_err(BuiltinModelError)?
-        else {
+        let profile = super::super::ingest::source_record_profile(file).map_err(BuiltinModelError)?;
+        // Vue hosts are deliberately not TypeScript compiler members. Their
+        // independently captured Verter/TSZ script declarations still need
+        // structural query evidence when they appear in the selected view.
+        // Bind this exception to the exact native Vue projection recipe; it
+        // must not change profile source sets or confer compiler authority.
+        let profile = profile.or_else(|| {
+            (file.language == backend_compile::SourceLanguage::TypeScript
+                && std::path::Path::new(file.path).extension().and_then(|s| s.to_str()).is_some_and(|s| s.eq_ignore_ascii_case("vue"))
+                && file.analysis_version == super::super::ingest::vue_analysis_version())
+                .then_some(backend_semantic::vocabulary::LanguageProfile::TypeScript(
+                    backend_semantic::vocabulary::TypeScriptSource::TypeScript,
+                ))
+        });
+        let Some(profile) = profile else {
             continue;
         };
         if structural_plan.file(*file_key).is_none() {

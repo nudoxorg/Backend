@@ -25,10 +25,22 @@ mod cargo_aliases;
 mod cargo_source;
 mod cargo_target;
 pub use cargo_target::{CargoTargetScope, CargoTargetSelector};
+pub use source_range::{SourceRangePage, SourceRangeRequest, SourceRangeScope};
+mod source_policy;
+pub use source_policy::{SelectedResultSourcePolicy, SourcePolicyCaptured, SourcePolicyObservation, SourcePolicyQualification, SourcePolicyStability, SourcePolicyStatement, VerifiedSourcePolicyClaim};
 mod catalog;
 mod command;
 mod command_registry;
 mod cursor;
+/// Native Stylo source and semantic query DTOs.
+pub mod stylo_query;
+pub mod vue_query;
+/// Owner-bound ephemeral comparison operands.
+pub mod impact_comparison;
+/// Bounded, candidate-only CSS impact contract.
+pub mod stylo_impact;
+/// Cross-language impact-of-change request and reply contract.
+pub mod impact;
 mod declaration_selector;
 mod delta;
 mod error;
@@ -49,6 +61,13 @@ mod progress;
 mod published_search;
 mod python_project;
 mod query_window;
+mod related_page;
+pub use related_page::{RelatedDirection, RelatedEdgeKey, RelatedEdgePage, RelatedEdgeTerminal, RelatedPageCursor, RelatedPageError, RelatedPageRequest, RelatedPageScope, RelatedRowKey, VerifiedRelatedPageRequest, MAX_RELATED_PAGE_EDGES};
+mod source_range;
+/// Explicit per-project SQL source and proposed context settings.
+pub mod sql_workspace;
+/// Root-bound native SQL query and exact-source requests.
+pub mod sql_query;
 pub use python_project::{
     PYTHON_PROJECT_EXTRACTION_POLICY, PythonDependencyDeclaration, PythonMetadataEvidence,
     PythonMetadataFact, PythonProjectMetadata,
@@ -211,7 +230,7 @@ pub use package_graph_page::{
 };
 pub use progress::{
     FaultRows, IngestProgress, LanguageRows, MAX_PROGRESS_FAULTS, MAX_PROGRESS_LANGUAGES,
-    ProgressError, SourceExtensionExclusion, SourceSelectionObservation, SourceUnavailableReason,
+    ProgressError, SqlAnalysisProgress, SourceExtensionExclusion, SourceSelectionObservation, SourceSelectionScopeCoverage, SourceSelectionExtensionCoverage, SourceUnavailableReason,
 };
 pub use published_search::{
     FullSearchReadiness, PublishedNameSearchPage, PublishedNameSearchQuery,
@@ -299,6 +318,7 @@ pub use surface::{
     IndexOperationSourceProfile, IndexOperationState, IndexOperationStatus,
     IndexOperationUnresolvedReason, IndexProgressPage, IndexSearchCursor, IndexSearchPage,
     IndexSearchResultCount, IndexSourceCaptureSummary, IndexStartResult,
+    InstalledPackageFacts, InstalledPackageFile,
     LocalDeclarationSearchRecord, LocalDeclarationSource, MAX_INDEX_PROGRESS_EVENTS,
     MAX_INDEX_SEARCH_CURSOR_BYTES, MAX_PRODUCT_ROWS, MAX_PRODUCT_TEXT_BYTES,
     MAX_PROJECT_MEMBER_PAYLOAD_BYTES, MAX_PROJECT_MEMBERS, MAX_SELECTED_PROJECT_FRONTIER_FILES,
@@ -310,7 +330,7 @@ pub use surface::{
     PackageReference, PackageReferenceKind, PackageTypeCellFact,
     PackageTypeScriptProjectionFaultFacts, PackageTypeTagFact, ProductAdmissionError, ProductText,
     ProjectId, ProjectLockfileMembership, ProjectName, ProjectRecord, ProjectSelector,
-    ProjectUnresolvedLockMember, ReferenceRecord, RegistryDiscoveryAdvisory,
+    ProjectUnresolvedLockMember, ReferenceCoverage, ReferenceRecord, RegistryDiscoveryAdvisory,
     RegistryDiscoveryCandidate, RegistryDiscoveryCompleteness, RegistryDiscoveryFreshness,
     RegistryDiscoveryMetadata, RegistryDiscoveryStanding, RegistryDownloadCount, RegistryEcosystem,
     RegistryEvidenceFacet, RegistryFactAvailability, RegistryMetadata, RegistryNegativeFactKind,
@@ -345,7 +365,7 @@ pub use wire::{
     CommandDto, DTO_VERSION, EventDto, JournalViewGrammarV3, MAX_COMMAND_BODY, MAX_COMMAND_TEXT,
     MAX_REPLY_BODY, ReplyAdmissionError, ReplyDto, RequestAdmissionError, SnapshotHydrator,
     SnapshotPageClaim, SnapshotPageDto, SubscriptionDto, ViewDto, WireCertificate, WireClaim,
-    WireSchema, admit_reply, admit_reply_with_capability, admit_request, admit_surface_reply,
+    WireSchema, admit_reply, admit_reply_with_capability, admit_request, admit_surface_read_shape, admit_surface_references_shape, admit_surface_reply,
     command_request_id, decode_command_body, decode_command_body_for_owner,
     decode_compact_view_event, decode_reply_body, decode_reply_body_with_verifier,
     encode_binary_certificate_command, encode_command_body, encode_compact_subscription, encode_compact_view_event,
@@ -361,3 +381,6 @@ pub const fn protocol_version() -> u16 {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests;
+
+#[cfg(any(unix, windows))]
+pub use wire::{admit_reply_with_local_source_policy, decode_reply_body_with_local_source_policy};

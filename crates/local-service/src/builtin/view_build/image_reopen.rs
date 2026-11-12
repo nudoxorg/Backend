@@ -81,6 +81,7 @@ fn project_rows(bytes: &[u8]) -> Vec<backend_engine::Row> {
         path: FIXTURE_PATH,
         site_declarations: &[],
         native_source: None,
+            native_ts_evidence: None,
     };
     append_image_rows(
         &view,

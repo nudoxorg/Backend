@@ -76,7 +76,7 @@ fn short_advisory_preserves_selected_catalog_and_exact_refusals() {
     let command = SurfaceCommand::Advisory { package: package.clone(), override_evidence: None };
     let short = read_advisory(&package, None, &catalog, &index).expect("short catalog read");
     assert_eq!(short, state.execute(command, &selected, &catalog, &index, &graph, None).expect("general catalog read"));
-    assert_eq!(short, SurfaceReply::Advisory(catalog[0].advisory.clone()), "exact selected coverage/freshness/decision retained");
+    assert_eq!(short, SurfaceReply::Advisory(catalog[0].advisory.clone().without_registry_standing()), "coverage/freshness and policy are retained with unverified standing qualified");
     let evidence = backend_library::OverrideEvidence {
         actor: "reviewer".to_owned(),
         reason: "explicit reviewed override".to_owned(),

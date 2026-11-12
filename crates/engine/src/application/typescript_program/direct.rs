@@ -913,6 +913,62 @@ mod native_web_closure_tests {
     }
 
     #[test]
+    fn empty_configured_program_closure_detects_new_matching_source() {
+        let fixture = Fixture::new();
+        fixture.write("tsconfig.json", r#"{"compilerOptions":{"noLib":true,"types":[]},"include":["*.ts"]}"#);
+        let host = TypeScriptProjectHost::direct(None,
+            ToolchainProbeLimits::new(Duration::from_secs(5), NonZeroUsize::new(1024).unwrap()).unwrap());
+        let admitted = host.admit(&fixture.0).unwrap().unwrap();
+        let input = admitted.inputs();
+        let mut resolver = input.resolver();
+        let empty = build_native_inputs(&input, &mut resolver, &[],
+            Instant::now() + Duration::from_secs(30), &AtomicBool::new(false)).unwrap();
+        assert!(empty.sources.is_empty(), "exact configured program has no source members");
+        empty.closure_witness.validate_current(admitted.witness()).unwrap();
+        fixture.write("added.ts", "export const added = 1;\n");
+        assert!(empty.closure_witness.validate_current(admitted.witness()).is_err(),
+            "new matching source must invalidate an empty-program witness");
+    }
+
+    #[test]
+    fn bounded_empty_native_witness_refuses_added_source_and_second_config() {
+        let fixture = Fixture::new();
+        fixture.write("tsconfig.json", r#"{"compilerOptions":{"noLib":true,"types":[]},"include":["*.ts"]}"#);
+        let host = TypeScriptProjectHost::direct(None,
+            ToolchainProbeLimits::new(Duration::from_secs(5), NonZeroUsize::new(1024).unwrap()).unwrap());
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let proof = crate::application::EmptyNativeTypeScriptProgram::capture(&host, &fixture.0, std::sync::Arc::clone(&cancelled)).unwrap();
+        assert_eq!(proof.root(), fixture.0);
+        assert!(proof.matches_cancellation(&cancelled));
+        assert!(!proof.matches_cancellation(&std::sync::Arc::new(AtomicBool::new(false))));
+        proof.validate_current().unwrap();
+        cancelled.store(true, std::sync::atomic::Ordering::Release);
+        assert!(proof.validate_current().is_err());
+        cancelled.store(false, std::sync::atomic::Ordering::Release);
+        fixture.write("added.ts", "export const value = 1;\n");
+        assert!(proof.validate_current().is_err());
+        assert!(crate::application::EmptyNativeTypeScriptProgram::capture(&host, &fixture.0, std::sync::Arc::clone(&cancelled)).is_err());
+        fs::remove_file(fixture.0.join("added.ts")).unwrap();
+        fixture.write("other/tsconfig.json", r#"{"files":[]}"#);
+        assert!(crate::application::EmptyNativeTypeScriptProgram::capture(&host, &fixture.0, std::sync::Arc::clone(&cancelled)).is_err(),
+            "a second project config must not gain one-program retirement authority");
+    }
+
+    #[test]
+    fn bounded_empty_native_witness_rejects_missing_explicit_and_invalid_config() {
+        let fixture = Fixture::new();
+        let host = TypeScriptProjectHost::direct(None,
+            ToolchainProbeLimits::new(Duration::from_secs(5), NonZeroUsize::new(1024).unwrap()).unwrap());
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        fixture.write("tsconfig.json", r#"{"compilerOptions":{"noLib":true},"files":["missing.ts"]}"#);
+        assert!(crate::application::EmptyNativeTypeScriptProgram::capture(&host, &fixture.0, std::sync::Arc::clone(&cancelled)).is_err(),
+            "a missing explicit input is a compiler failure, not an empty scope");
+        fixture.write("tsconfig.json", "{ invalid json ");
+        assert!(crate::application::EmptyNativeTypeScriptProgram::capture(&host, &fixture.0, std::sync::Arc::clone(&cancelled)).is_err(),
+            "a malformed config cannot retire selected sources");
+    }
+
+    #[test]
     fn native_implicit_jsx_runtime_closure_follows_native_conditional_exports() {
         let fixture = Fixture::new();
         const SOURCE: &str = "export const element = <div />;";

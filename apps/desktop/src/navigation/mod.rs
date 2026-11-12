@@ -8,11 +8,13 @@ pub mod history;
 pub mod presentation;
 pub mod intent;
 pub mod journey_specs;
+pub mod native;
 pub mod reducer;
 pub mod route;
 mod workspace_reducer;
 
 pub use browse::{BrowseRoute, CompareError, CompareSet};
+pub use native::{IMPACT_MAX_PAGES, ImpactRoute, NativeDomain, NativeKind, NativeSubject, SubjectError};
 pub use cargo_browse::{CargoBrowseAddress, CargoBrowseContext};
 pub use cargo_source_target::{CargoReadmeLinkAddress, CargoSourceTarget};
 pub use action::{

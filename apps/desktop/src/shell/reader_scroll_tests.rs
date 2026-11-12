@@ -20,6 +20,7 @@ fn scroll(rig: &mut Rig) -> (f32, f32, f32, Option<u64>) {
     })
 }
 
+#[track_caller]
 fn near(actual: f32, expected: f32) {
     assert!(
         (actual - expected).abs() <= 1.0,

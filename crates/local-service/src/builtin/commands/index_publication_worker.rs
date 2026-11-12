@@ -19,6 +19,7 @@ use std::thread::JoinHandle;
 
 #[must_use = "settle every original writer and retire prior read payloads"]
 pub(super) struct PublicationWork {
+    pub(super) receipt_context: Option<Arc<crate::builtin::owner_receipt_context::OwnerReceiptContext>>,
     pub(super) semantic: Option<DetachedSemanticAuthority>,
     pub(super) journal: Option<PublicationJournalWriter>,
     pub(super) projection: Option<ProjectionWriter>,
@@ -74,6 +75,7 @@ pub(super) enum Preparation {
         route: Option<super::super::index::SourceRoute>,
     },
     Cluster(super::super::index::SourceCompilePlan),
+    CSharpResume(super::super::index::SourceCompilePlan, WorkspaceSnapshot),
     Finalize(DeferredIndex),
     Cleanup {
         plan: super::super::index::CaptureFailurePlan,
@@ -81,6 +83,7 @@ pub(super) enum Preparation {
     },
     SourcePlan(super::super::index::SourceCompilePlan),
     SourcePrepared(PreparedProductSelection),
+    SourceResumed(PreparedIndex),
     SourceCaptured {
         continuation: PreparedIndex,
         captures: BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
@@ -253,6 +256,7 @@ impl PublicationWork {
             _ => Vec::new(),
         };
         Self {
+            receipt_context: None,
             semantic,
             journal,
             projection,
@@ -349,6 +353,7 @@ impl PublicationWork {
                 continuation,
                 captures,
             } => (continuation, captures),
+            Preparation::SourceResumed(continuation) => (continuation, BTreeMap::new()),
             _ => unreachable!("checked source completion"),
         }
     }
@@ -369,12 +374,12 @@ impl PublicationWork {
             )?;
         } else if matches!(
             self.preparation,
-            Preparation::Finalize(_) | Preparation::Cluster(_) | Preparation::Source { .. }
+            Preparation::Finalize(_) | Preparation::Cluster(_) | Preparation::CSharpResume(..) | Preparation::Source { .. }
         ) {
             #[cfg(test)]
             self.run_test_hook(match &self.preparation {
                 Preparation::Finalize(_) => TestStage::BeforeFinalization,
-                Preparation::Cluster(_) => TestStage::BeforeClusterCompile,
+                Preparation::Cluster(_) | Preparation::CSharpResume(..) => TestStage::BeforeClusterCompile,
                 Preparation::Source { .. } => TestStage::BeforeSourcePreparation,
                 _ => unreachable!("checked owned preparation"),
             });
@@ -385,12 +390,27 @@ impl PublicationWork {
                         observation.phase("deferred-index-finalize-start");
                     }
                     let result =
-                        super::super::index::finish_deferred_index_for_snapshot(&self.base, job);
+                        super::super::index::finish_deferred_index_for_snapshot(
+                            &self.base, job, Some(self.semantic.as_ref().expect("original semantic writer").authority()),
+                        );
                     if let Some(observation) = &self.source_observation {
                         observation.phase("deferred-index-finalize-returned");
                     }
                     let prepared = result?;
                     self.preparation = Preparation::SourcePrepared(prepared);
+                    return Ok(());
+                }
+                Preparation::CSharpResume(plan, candidate) => {
+                    let receipt = super::SelectedCSharpSourceCommit::from_selected_candidate(
+                        &self.base, &candidate, self.operation_key,
+                    )?;
+                    let (plan, witness) = plan.capture_csharp_admission(&self.base, receipt)?;
+                    let continuation = plan.finish_with_csharp_admission(
+                        witness, &self.base, &self.compiler,
+                        self.semantic.as_mut().expect("original source semantic writer").authority_mut(),
+                        &mut self.source_attempts,
+                    )?;
+                    self.preparation = Preparation::SourceResumed(continuation);
                     return Ok(());
                 }
                 Preparation::Cluster(plan) => {
@@ -465,6 +485,19 @@ impl PublicationWork {
             }
         }
         if self.prepared.intent.is_none() {
+            if let Some(expected) = self.prepared.native_noop_expectation {
+                let actual = crate::builtin::stylo_admission::stylo_basis_for_snapshot(&self.base)
+                    .map_err(BuiltinModelError)?
+                    .analysis_root;
+                if actual != expected {
+                    return Err(BuiltinModelError("native Stylo selection changed before no-op acknowledgement; retry indexing".into()));
+                }
+            }
+            if let Some(proof) = &self.prepared.native_noop_proof {
+                crate::builtin::stylo_admission::validate_stylo_noop(&self.base, proof).map_err(
+                    |error| BuiltinModelError(format!("native Stylo no-op proof: {error}")),
+                )?;
+            }
             if !matches!(self.preparation, Preparation::Publication { refusal: None })
                 || !self.prepared.selected.is_empty()
                 || !self.prepared.profile_refusals.is_empty()
@@ -520,9 +553,16 @@ impl PublicationWork {
         let original = self.prepared.intent.as_ref().ok_or_else(|| {
             BuiltinModelError("publication worker requires an actual source intent".to_owned())
         })?;
-        let intent = match self.operation_key {
-            Some(key) => original.clone().with_operation_key(key)?,
-            None => original.clone(),
+        let intent = if original.has_native_ts_evidence() {
+            if original.operation_key_bytes() != self.operation_key.map(|key| key.to_bytes()) {
+                return Err(BuiltinModelError("native evidence operation key changed".into()));
+            }
+            original.clone()
+        } else {
+            match self.operation_key {
+                Some(key) => original.clone().with_operation_key(key)?,
+                None => original.clone(),
+            }
         };
         if !self.prepared.profile_refusals.is_empty() && !self.prepared.selected.is_empty() {
             let producer = self
@@ -561,7 +601,7 @@ impl PublicationWork {
         }
         #[cfg(test)]
         self.observed.phase("stage-intent");
-        let staged = prepare_builtin_intent_at_snapshot(
+        let staged = prepare_builtin_intent_with_owner_at_snapshot(
             &self.base,
             &intent,
             self.prepared
@@ -569,6 +609,7 @@ impl PublicationWork {
                 .as_ref()
                 .map(|f| f.canonical_root()),
             Arc::clone(&self.cancellation),
+            self.receipt_context.as_deref(),
         )?;
         if let Some(progress) = &self.source_observation {
             progress.phase("prepare-workspace");
@@ -612,7 +653,11 @@ impl PublicationWork {
                 unreachable!("checked source plan")
             };
             let captures = plan.captures.clone();
-            let continuation = plan.finish(
+            let continuation = if plan.requires_selected_csharp_admission() {
+                let mut plan = plan;
+                plan.prepare_csharp_source_only_for_park()?;
+                PreparedIndex::CSharpParked(plan, snapshot.clone())
+            } else { plan.finish(
                 &snapshot,
                 &self.compiler,
                 self.semantic
@@ -620,7 +665,7 @@ impl PublicationWork {
                     .expect("original source semantic writer")
                     .authority_mut(),
                 &mut self.source_attempts,
-            )?;
+            )? };
             self.preparation = Preparation::SourceCaptured {
                 continuation,
                 captures,
@@ -688,7 +733,7 @@ impl PublicationWork {
         if matches!(self.head, Head::Refresh(_) | Head::Refreshed(_)) {
             return self.attempt_refresh(events);
         }
-        if matches!(self.preparation, Preparation::SourcePrepared(_)) {
+        if matches!(self.preparation, Preparation::SourcePrepared(_) | Preparation::SourceResumed(_)) {
             return Ok(());
         }
         if !self.semantic_committed {
@@ -714,6 +759,9 @@ impl PublicationWork {
                 .journal_mut();
             let cancellation = &self.cancellation;
             let fence = &self.prepared.revision_fence;
+            let base = &self.base;
+            let stylo_noop = &self.prepared.native_noop_proof;
+            let target = self.candidate_snapshot.as_ref().expect("prepared target snapshot");
             let operation_key = self.operation_key;
             let plan = self.prepared.partial_plan.clone();
             let mut busy = false;
@@ -739,6 +787,7 @@ impl PublicationWork {
                         #[cfg(test)]
                         if test_hook.as_ref().is_some_and(|hook| hook.stage == TestStage::BeforeGrantValidation) {
                             let hook = test_hook.take().expect("one-shot post-barrier validation seam");
+                            eprintln!("mixed grant diagnostic: source_capture={source_capture} cleanup={cleanup_phase} retained_noop={} stylo_intent={:?}", stylo_noop.is_some(), crate::builtin::profile::test_stylo_intent_shape(&staged.intent));
                             (hook.run)();
                         }
                         // The durable Prepared barrier may block. Revalidate
@@ -753,6 +802,13 @@ impl PublicationWork {
                             ).map_err(BuiltinModelError)? {
                             return Err(BuiltinModelError("compiler source or configuration changed before product selection".to_owned()));
                         }
+                        crate::builtin::profile::revalidate_stylo_intent_on_worker(base, &staged.intent)?;
+                        if let Some(proof) = stylo_noop {
+                            crate::builtin::stylo_admission::validate_stylo_noop_for_target(base, target, proof)
+                                .map_err(BuiltinModelError)?;
+                        }
+                        crate::builtin::profile::revalidate_native_ts_intent(base, &staged.intent)?;
+                        crate::builtin::profile::revalidate_sql_intent(base, &staged.intent)?;
                     }
                     select_head(head, candidate, events, grant_accepted,
                         #[cfg(test)] test_hook, cancellation, source_observation.as_deref(), #[cfg(test)] observed)
@@ -997,6 +1053,11 @@ impl PublicationWork {
                 )
                 .into());
             }
+            if let Some(proof) = &self.prepared.native_noop_proof {
+                crate::builtin::stylo_admission::validate_stylo_noop(&self.base, proof).map_err(
+                    |error| BuiltinModelError(format!("native Stylo no-op proof: {error}")),
+                )?;
+            }
             let (reply, received) = std::sync::mpsc::sync_channel(1);
             events
                 .send(Event::RefreshApproval {
@@ -1117,9 +1178,11 @@ impl PublicationWork {
             Head::Pending(ReadHeadPublicationFailure::Unsettled { error, .. }) => {
                 ("physical-selection-unsettled", None, error.to_string())
             }
-            Head::Pending(ReadHeadPublicationFailure::Rejected { error, .. }) => {
-                ("physical-selection-rejected", Some(false), error.to_string())
-            }
+            Head::Pending(ReadHeadPublicationFailure::Rejected { error, .. }) => (
+                "physical-selection-rejected",
+                Some(false),
+                error.to_string(),
+            ),
             Head::Published(_) => {
                 let phase = if !self.semantic_committed {
                     "semantic-selection"
@@ -1189,7 +1252,7 @@ impl PublicationWork {
                     Disposition::Refreshed
                 } else if matches!(self.preparation, Preparation::SourceCaptured { .. }) {
                     Disposition::SourceCaptured
-                } else if matches!(self.preparation, Preparation::SourcePrepared(_)) {
+                } else if matches!(self.preparation, Preparation::SourcePrepared(_) | Preparation::SourceResumed(_)) {
                     Disposition::SourcePrepared
                 } else {
                     Disposition::Ready

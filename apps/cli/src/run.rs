@@ -60,6 +60,16 @@ impl Engine for SessionEngine<'_> {
         }
     }
 
+    fn declaration_related_window(
+        &mut self,
+        selector: &backend_library::DeclarationSelector,
+        window: backend_library::QueryWindow,
+        continuation: Option<backend_library::RelatedPageCursor>,
+    ) -> Result<ReplyDto, ClientError> {
+        self.session
+            .related_edge_page_declaration(selector, window, continuation)
+    }
+
     fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
         self.session.revision().map(|revision| revision.root)
     }
@@ -156,6 +166,16 @@ impl Engine for SessionEngine<'_> {
         let session = &mut *self.session;
         let recovery = &mut self.recovery;
         let context = session.request_context().cloned();
+        // These reads may carry source-policy claims admitted by the
+        // authenticated Session. The journal's generic transport admission
+        // intentionally cannot accept such claims; no index acknowledgment is
+        // needed for either read.
+        if matches!(command, SurfaceCommand::Read { .. } | SurfaceCommand::References { .. }) {
+            return match recovery.as_deref_mut() {
+                Some(recovery) => recovery.surface(session, command, context.as_ref()),
+                None => session.surface(command),
+            };
+        }
         match self.paths {
             Some(paths) => {
                 backend_client::surface_with_index_journal(paths, command, |command| match recovery
@@ -316,6 +336,28 @@ pub(crate) fn execute_with_output_admission(
         paths,
         recovery,
     };
+    if let Request::RelatedPage { selector, limit, cursor } = request {
+        let original = engine.session.request_context().cloned();
+        let lifetime = original.clone().unwrap_or_default();
+        lifetime.read_deadline(backend_client::CLIENT_REQUEST_TIMEOUT)
+            .map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole))?;
+        engine.session.set_request_context(Some(lifetime.clone()))
+            .map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole))?;
+        let result = (|| {
+            let selector = match selector {
+                backend_library::DeclarationSelector::Coordinate(value) if value.starts_with("@/") => selector.clone(),
+                backend_library::DeclarationSelector::Coordinate(value) => backend_library::DeclarationSelector::Coordinate(
+                    backend_present::resolve_declaration(&mut engine, value, "related")?),
+                selected => selected.clone(),
+            };
+            related_with_output_admission(&mut engine, &selector, *limit, cursor.as_deref(),
+                || lifetime.check().map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole)),
+                |answer, token| admit(answer, token))
+        })();
+        let restored = engine.session.set_request_context(original)
+            .map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole));
+        return result.and_then(|answer| restored.map(|()| answer));
+    }
     let graph = match request {
         Request::GraphPage { selector, limit } => Some((selector, *limit, None)),
         Request::ResumeQuery { query, cursor } => match query.as_ref() {
@@ -687,6 +729,77 @@ fn outline_with_output_admission<E: Engine>(
 }
 
 /// Preserves native graph credit, input frontier and source through full output admission.
+fn related_with_output_admission<E: Engine>(
+    engine: &mut E,
+    selector: &backend_library::DeclarationSelector,
+    issued: u16,
+    token: Option<&str>,
+    mut check: impl FnMut() -> Result<(), Fault>,
+    mut admit: impl FnMut(&Answer, Option<&str>) -> Result<(), Fault>,
+) -> Result<Answer, Fault> {
+    let credit = backend_library::QueryLimit::new(issued)
+        .ok_or_else(|| Fault::usage("limit", "invalid related query credit"))?;
+    let cursor = token.map(crate::related_cursor::decode).transpose()
+        .map_err(|error| Fault::usage("cursor", error))?;
+    let mut delivery = cursor.as_ref().map_or(issued, |cursor| cursor.scope().delivery);
+    let mut pinned = None;
+    let mut pinned_root = None;
+    let heading = match selector {
+        backend_library::DeclarationSelector::Coordinate(value)
+        | backend_library::DeclarationSelector::SelectedAt { coordinate: value, .. } => value.clone(),
+        backend_library::DeclarationSelector::Selected(id) => backend_library::encode_id(id.bytes()),
+    };
+    let probe = Probe::Declaration { selector, read: backend_library::DeclarationRead::Related };
+    loop {
+        check()?;
+        let span = backend_library::QueryLimit::new(delivery)
+            .ok_or_else(|| Fault::usage("limit", "invalid related delivery span"))?;
+        let window = backend_library::QueryWindow::new(credit, span)
+            .ok_or_else(|| Fault::usage("limit", "related delivery exceeds original credit"))?;
+        let reply = match engine.declaration_related_window(selector, window, cursor.clone()) {
+            Err(ClientError::ResponseTooLarge { basis: Some(root) }) if delivery > 1 => {
+                if pinned_root.is_some_and(|previous| previous != root) {
+                    return Err(Fault::usage("related", "related source changed during bounded delivery; restart explicitly"));
+                }
+                pinned_root = Some(root);
+                delivery = delivery.div_ceil(2);
+                continue;
+            }
+            Err(error) => return Err(backend_present::probe_fault(&error, probe)),
+            Ok(reply) => reply,
+        };
+        check()?;
+        let backend_library::CommandReply::RelatedEdgePage(page) = reply.reply else {
+            return Err(Fault::usage("related", "related edge page changed shape"));
+        };
+        let basis = (page.snapshot.root.basis(), page.semantic_revision);
+        if pinned.is_some_and(|previous| previous != basis)
+            || pinned_root.is_some_and(|previous| previous != basis.0.root)
+        {
+            return Err(Fault::usage("related", "related source changed during bounded delivery; restart explicitly"));
+        }
+        pinned = Some(basis);
+        pinned_root = Some(basis.0.root.into());
+        let next = match &page.terminal {
+            backend_library::RelatedEdgeTerminal::Complete => None,
+            backend_library::RelatedEdgeTerminal::More(cursor) => Some(crate::related_cursor::encode(cursor)
+                .map_err(|error| Fault::usage("cursor", error))?),
+        };
+        let records = backend_present::related_edge_records(&heading, &page)?
+            .with_related_continuation(next.clone());
+        let answer = Answer::Records(Box::new(records));
+        let result = admit(&answer, next.as_deref());
+        check()?;
+        match result {
+            Ok(()) => return Ok(answer),
+            Err(fault) if delivery > 1 && fault.cause().slug() == backend_present::CauseSlug::Oversized => {
+                delivery = delivery.div_ceil(2);
+            }
+            Err(fault) => return Err(fault),
+        }
+    }
+}
+
 fn graph_with_output_admission<E: Engine>(
     engine: &mut E,
     selector: &backend_library::DeclarationSelector,

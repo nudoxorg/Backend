@@ -228,6 +228,18 @@ fn release(rig: &Rig) {
     released.notify_all();
 }
 
+/// Empty first-launch Library is the idle state measured by native launch QA.
+/// Keep it covered independently of the indexed-page and motion controls below.
+#[gpui::test]
+fn an_empty_library_requests_no_frames_after_startup(cx: &mut TestAppContext) {
+    let rig = rig(cx);
+    settle(cx, &rig);
+    let renders = rig.shell.read_with(cx, |shell, cx| shell.render_counts(cx));
+    let (drawn, requested) = vsync(cx, &rig, 1_875);
+    assert_eq!((drawn, requested), (0, 0), "thirty virtual seconds of idle Library");
+    assert_eq!(rig.shell.read_with(cx, |shell, cx| shell.render_counts(cx)), renders);
+}
+
 #[gpui::test]
 fn an_idle_shell_with_a_running_index_requests_no_frames(cx: &mut TestAppContext) {
     let rig = rig(cx);

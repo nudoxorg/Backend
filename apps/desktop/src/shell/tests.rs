@@ -134,6 +134,7 @@ pub(crate) fn page(name: &str) -> SymbolPage {
             other: Arc::from([]),
         }),
         rose: Rose {
+            relations_gap: None,
             up: Known::Known(Arc::from([relation("Display", DeclarationKind::Trait)])),
             down: Known::Known(Arc::from([relation("Typed", DeclarationKind::Variant), relation("Related", DeclarationKind::Variant)])),
             left: Known::Unknown(unknown(GapReason::NoSemanticPublication)),
@@ -141,6 +142,7 @@ pub(crate) fn page(name: &str) -> SymbolPage {
             implemented_by: Known::Known(Arc::from([])),
         },
         references: Known::Unknown(unknown(GapReason::NoSemanticPublication)),
+        references_gap: None,
         workspace: Arc::from([]),
         outline: Known::Unknown(unknown(GapReason::NotServed)),
     }
@@ -280,6 +282,7 @@ impl PageReader for Fixture {
                     declaration: Known::Known(LineSpan { first: 138, last: 140 }),
                     identifiers: Known::Known(Arc::from([])),
                     uses: Known::Known(Arc::from([])),
+                    references_gap: None,
                     uses_elsewhere: Arc::from([]),
                 })
             }
@@ -668,6 +671,21 @@ impl Rig {
         }
     }
 
+    /// Whether the keyboard is still on `retained` (a control the owner's
+    /// replacement has retired) or, as the Shell now does, has been parked on
+    /// the Shell's own persistent owner: a focused handle that is no longer
+    /// mounted is re-homed there when the next frame is rendered
+    /// (`rehome_orphaned_reader_focus`, bbeacca6f and e10d36f04; retiring Graph
+    /// origins, `park_retired_reader_focus`, 4d738d9b4 and 84a62f2e4). It is
+    /// never true for any other control, which is what these tests protect:
+    /// a retired producer must not hand the keyboard to a new native owner.
+    pub(crate) fn focus_retained_or_rehomed(&mut self, retained: Option<&gpui::FocusHandle>) -> bool {
+        let shell = self.shell.clone();
+        self.cx.update(|window, cx| {
+            window.focused(cx).as_ref() == retained || shell.read(cx).allows_reader_native_return(window)
+        })
+    }
+
     /// Lets `ms` of virtual time pass and draws the frame the platform
     /// would draw then (motion mid-flight, reads not waited for).
     pub(crate) fn frame(&mut self, ms: u64) {
@@ -975,7 +993,7 @@ fn click_native_tree(rig: &mut Rig, part: &str) {
         .targets
         .iter()
         .find(|target| target.key.ends_with(part))
-        .unwrap_or_else(|| panic!("mounted Tree target {part:?} was absent"));
+        .unwrap_or_else(|| panic!("mounted Tree target {part:?} was absent; targets: {:?}", ledger.targets.iter().map(|t| t.key.to_string()).collect::<Vec<_>>()));
     let at = point(
         px(target.bounds.x + target.bounds.width / 2.0),
         px(target.bounds.y + target.bounds.height / 2.0),
@@ -996,7 +1014,7 @@ fn native_tree_control_keys() -> (String, String) {
     let release = row.releases.iter().find(|release|
         matches!(&release.destination, crate::model::browse::TreeDestination::Open(exact) if exact == &package))
         .expect("production exact release");
-    (format!("{}/details", row.key), release.key.to_string())
+    (format!("{}-details", row.key), release.key.to_string())
 }
 
 fn open_native_tree_release(rig: &mut Rig) {
@@ -1075,6 +1093,9 @@ fn mounted_tree_back_return_is_cancelled_by_a_new_navigation(cx: &mut TestAppCon
     ));
     rig.go(Intent::Navigate(next.clone()));
     assert_eq!(rig.route(), next, "the new Tree replaced the returning visit");
+    // A row's details disclosure is the Tree view's own state (facet
+    // `browse::library`, keyed by role and row): a different Tree starts closed.
+    click_native_tree(&mut rig, &native_tree_control_keys().0);
     assert!(native_tree_release_mounted(&mut rig), "the new Tree mounted its own release");
     assert!(!native_tree_return_focused(&mut rig), "the interrupted Back cannot focus a new Tree's release");
 }
@@ -1440,14 +1461,39 @@ fn unserved_starting_library_keeps_add_folder_mounted_and_actionable(cx: &mut Te
     );
     let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
     assert!(targets.native_keys().iter().any(|id| id == "add-folder"));
-    rig.cx.simulate_keystrokes("tab");
-    rig.draw();
-    assert_eq!(targets.focused().as_deref(), Some("add-folder"));
+    let titlebar_stops = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_targets(cx).native_keys().len());
+    let reader_stops = targets.native_keys().len();
+    let mut visited = std::collections::BTreeSet::new();
+    let mut trace = Vec::new();
+    let mut reached_add = false;
+    for _ in 0..titlebar_stops + reader_stops + 4 {
+        rig.keys("tab");
+        let (zone, focused) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+        let state = format!("{zone:?}:{}", focused.as_deref().unwrap_or("<none>"));
+        trace.push(state.clone());
+        if zone == super::focus::Zone::Reader && focused.as_deref() == Some("add-folder") {
+            reached_add = true;
+            break;
+        }
+        assert!(visited.insert(state.clone()), "Tab focus repeated before reaching Add folder: {trace:?}");
+    }
+    assert!(reached_add, "Tab reaches the mounted Add folder control; visited {trace:?}");
     assert!(rig.cx.update(|window, _| targets.focused_native_is_live(window)));
     assert!(!rig.cx.did_prompt_for_paths());
     rig.native_press("enter");
     rig.draw();
-    assert!(rig.cx.did_prompt_for_paths(), "local Add folder still opens while the owner starts");
+    assert_eq!(
+        rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+        Some(crate::navigation::Overlay::AddProject),
+        "native Add opens the in-app folder flow while the owner starts",
+    );
+    let field = rig.cx.update(|window, cx| super::onboard::field(window, cx))
+        .expect("the local folder field is mounted while the owner starts");
+    assert!(
+        rig.cx.update(|window, cx| field.read(cx).focus_handle(cx).is_focused(window)),
+        "the in-app folder flow owns native input while the owner starts",
+    );
+    assert!(!rig.cx.did_prompt_for_paths(), "opening the in-app flow does not invoke the OS picker");
 }
 
 #[gpui::test]
@@ -1493,9 +1539,23 @@ fn unserved_failed_library_keeps_add_and_native_retry_available(cx: &mut TestApp
     let keys = targets.native_keys();
     assert!(keys.iter().any(|id| id == "add-folder"), "recovery cannot hide local setup");
     assert!(keys.iter().any(|id| id.starts_with("retry-")), "the fault mounts a semantic Retry control");
-    rig.cx.simulate_keystrokes("tab");
-    rig.draw();
-    assert_eq!(targets.focused().as_deref(), Some("add-folder"));
+    let titlebar_stops = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_targets(cx).native_keys().len());
+    let mut visited = std::collections::BTreeSet::new();
+    let mut trace = Vec::new();
+    let mut reached_add = false;
+    for _ in 0..titlebar_stops + keys.len() + 4 {
+        rig.keys("tab");
+        let (zone, focused) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+        let state = format!("{zone:?}:{}", focused.as_deref().unwrap_or("<none>"));
+        trace.push(state.clone());
+        if zone == super::focus::Zone::Reader && focused.as_deref() == Some("add-folder") {
+            reached_add = true;
+            break;
+        }
+        assert!(visited.insert(state.clone()), "Tab focus repeated before reaching Add folder: {trace:?}");
+    }
+    assert!(reached_add, "Tab reaches the failed Library's Add folder control; visited {trace:?}");
+    assert!(rig.cx.update(|window, _| targets.focused_native_is_live(window)), "Add folder has actual native focus");
     assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()), None);
     rig.native_press("enter");
     rig.draw();
@@ -1507,15 +1567,22 @@ fn unserved_failed_library_keeps_add_and_native_retry_available(cx: &mut TestApp
     rig.keys("escape");
     assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()), None);
     let mut reached_retry = false;
-    for _ in 0..8 {
-        rig.cx.simulate_keystrokes("tab");
-        rig.draw();
-        if targets.focused().is_some_and(|id| id.starts_with("retry-")) {
+    let titlebar_stops = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_targets(cx).native_keys().len());
+    let reader_stops = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx).native_keys().len());
+    let mut visited = std::collections::BTreeSet::new();
+    let mut trace = Vec::new();
+    for _ in 0..titlebar_stops + reader_stops + 4 {
+        rig.keys("tab");
+        let (zone, focused) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+        let state = format!("{zone:?}:{}", focused.as_deref().unwrap_or("<none>"));
+        trace.push(state.clone());
+        if zone == super::focus::Zone::Reader && focused.as_deref().is_some_and(|id| id.starts_with("retry-")) {
             reached_retry = true;
             break;
         }
+        assert!(visited.insert(state.clone()), "Tab focus repeated before reaching Retry: {trace:?}");
     }
-    assert!(reached_retry, "Shell Tab reaches Retry through the failed Library");
+    assert!(reached_retry, "Shell Tab reaches Retry through the failed Library; visited {trace:?}");
     assert!(rig.cx.update(|window, _| targets.focused_native_is_live(window)));
     rig.native_press("enter");
     rig.draw();
@@ -1629,12 +1696,30 @@ fn tab_j_and_space_each_change_a_fresh_symbol_page(cx: &mut TestAppContext) {
     rig.keys("x");
     let (zone_before, focus_before) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
     assert_eq!(zone_before, super::focus::Zone::Reader, "a fresh page keeps the keyboard in the reader");
+    // Tab walks the Reader's mounted native stops before it crosses a zone
+    // (f9429b3c3, `cycle_zone` -> `step_native`), so on a page with native
+    // controls the first Tab moves the keyboard to the next stop; it still
+    // moves the keyboard, to a stop or a zone, and Shift-Tab returns.
+    let native_stop = |rig: &mut Rig| {
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        rig.cx.update(|window, _| targets.native_focused(window))
+    };
+    let stop_before = native_stop(&mut rig);
     rig.keys("tab");
     let (zone_after_tab, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
-    assert_ne!(zone_after_tab, zone_before, "Tab moved the keyboard to another zone");
+    let stop_after_tab = native_stop(&mut rig);
+    assert!(zone_after_tab != zone_before || stop_after_tab != stop_before,
+        "Tab moved the keyboard to another zone or native stop: {stop_before:?} -> {stop_after_tab:?}");
+    // Shift-Tab from the first native stop leaves the Reader backwards (it
+    // does not step "back onto" the Shell's own owner), so it moves the
+    // keyboard again; the test then hands the keyboard back to the Reader.
     rig.keys("shift-tab");
     let (zone_back, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
-    assert_eq!(zone_back, zone_before, "shift-Tab returns to the reader");
+    assert!(zone_back != zone_after_tab || native_stop(&mut rig) != stop_after_tab,
+        "shift-Tab moved the keyboard again: {zone_after_tab:?}/{stop_after_tab:?} -> {zone_back:?}");
+    rig.cx.update(|window, cx| rig.shell.update(cx, |shell, cx| shell.take_zone(super::focus::Zone::Reader, window, cx)));
+    let (zone_back, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_eq!(zone_back, zone_before, "the reader holds the keyboard again");
     rig.keys("j");
     let (_, focus_after_j) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
     assert_ne!(focus_after_j, focus_before, "J walked the focus");
@@ -1961,28 +2046,40 @@ fn keyboard_reaches_and_opens_every_settings_page(cx: &mut TestAppContext) {
     ];
 
     rig.keys("secondary-,");
-    for _ in 0..4 {
-        let zone = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).0);
-        if zone == super::focus::Zone::Shelf {
+    let titlebar_stops = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_targets(cx).native_keys().len());
+    let shelf_targets = rig.shell.read_with(rig.cx, |shell, cx| shell.shelf_targets(cx));
+    let shelf_stops = shelf_targets.native_keys().len();
+    let mut visited = std::collections::BTreeSet::new();
+    let mut trace = Vec::new();
+    let mut first_settings_target = None;
+    for _ in 0..titlebar_stops + shelf_stops + 4 {
+        let actual_focus = rig.cx.update(|window, cx| window.focused(cx));
+        let shelf_target = actual_focus.as_ref().and_then(|focus| shelf_targets.target_for_native_handle(focus));
+        if shelf_target.as_deref().is_some_and(|id| id.starts_with("settings-")) {
+            first_settings_target = shelf_target;
             break;
         }
+        let state = format!("{:?}:shelf={shelf_target:?}", actual_focus);
+        assert!(visited.insert(state.clone()), "native Tab repeated before reaching a Settings page row: {trace:?}; repeated {state}");
+        trace.push(state);
         rig.keys("tab");
     }
-    assert_eq!(
-        rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).0),
-        super::focus::Zone::Shelf,
-        "Tab gives the Settings page list the keyboard"
-    );
+    assert_eq!(first_settings_target.as_deref(), Some("settings-about"),
+        "native Tab reaches the first actual Settings row after the titlebar controls; visited {trace:?}");
 
     for (index, (page, title)) in pages.into_iter().enumerate() {
         if index > 0 {
-            rig.keys("j");
+            rig.keys("down");
+            let (zone, focused) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+            assert_eq!(zone, super::focus::Zone::Shelf, "arrow navigation stays in the Settings page list");
+            assert_eq!(focused.as_deref(), Some(format!("settings-{}", page.as_str()).as_str()),
+                "Down reaches the {title} Settings control");
         }
         rig.keys("enter");
         assert_eq!(
             rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
             Some(Overlay::Settings(page)),
-            "the {title} row opens its typed page"
+            "native Enter on the {title} control opens its typed page"
         );
         assert!(
             rig.said().iter().any(|line| line == title),
@@ -2051,7 +2148,7 @@ fn appearance_zoom_choices_stay_in_the_visible_control_when_resized_at_200_perce
         }
         assert_eq!(
             seen,
-            labels.iter().cloned().collect(),
+            labels.iter().cloned().collect::<std::collections::BTreeSet<_>>(),
             "every zoom option is actually visible and reachable at {width:.0}px and 200%"
         );
     }

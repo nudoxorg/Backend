@@ -153,9 +153,9 @@ fn admit_candidate(
 ) -> Result<(), LocalCompilerHostError> {
     let role = LocalHostPathRole::Native(NativeTool::Python);
     match std::fs::metadata(&path) {
-        Ok(metadata) if metadata.is_file() => {}
+        Ok(metadata) if super::paths::ambient_file_is_usable(role, &metadata) => {}
         Ok(_) => return Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if super::paths::ambient_path_absent(&error) => return Ok(()),
         Err(source) => {
             return Err(LocalCompilerHostError::Canonicalize {
                 role,
@@ -164,7 +164,14 @@ fn admit_candidate(
             });
         }
     }
-    let path = super::paths::canonicalize_executable_existing(role, &path)?;
+    let path = match super::paths::canonicalize_executable_existing(role, &path) {
+        Err(LocalCompilerHostError::Canonicalize { ref source, .. })
+            if super::paths::ambient_path_absent(source) =>
+        {
+            return Ok(());
+        }
+        result => result?,
+    };
     if !selected.contains(&path) {
         selected
             .try_push(path)

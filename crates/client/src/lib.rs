@@ -845,11 +845,32 @@ impl UnixCommandTransport {
 
     fn decode(&self, body: &[u8]) -> Result<ReplyDto, ClientError> {
         match self.peer.as_ref() {
-            Some(peer) => backend_library::decode_reply_body_with_verifier(body, peer)
-                .map_err(ClientError::Protocol),
+            Some(peer) => backend_library::decode_reply_body_with_local_source_policy(
+                body, peer,
+            ).map_err(ClientError::Protocol),
             None => backend_library::decode_reply_body(body).map_err(ClientError::Protocol),
         }
     }
+
+    fn admit_local_reply(
+        &self, request: &CommandDto, reply: ReplyDto, capability: Option<CoverageCapability>,
+    ) -> Result<ReplyDto, ClientError> {
+        let Some(peer) = self.peer.as_ref() else {
+            return admit_reply_with_capability(request, reply, capability);
+        };
+        backend_library::admit_reply_with_local_source_policy(
+            request, &reply, capability, peer,
+        ).map_err(map_reply)?;
+        if backend_library::reply_memory_bound(&reply) > MAX_FRAME {
+            return Err(ClientError::ResponseTooLarge { basis: query_continuation::basis(&request.command) });
+        }
+        let encoded = serde_json::to_vec(&reply).map_err(|error| ClientError::Protocol(error.to_string()))?;
+        if encoded.len() > MAX_FRAME {
+            return Err(ClientError::ResponseTooLarge { basis: query_continuation::basis(&request.command) });
+        }
+        Ok(reply)
+    }
+
 }
 
 #[cfg(any(unix, windows))]
@@ -896,7 +917,7 @@ impl CommandTransport for UnixCommandTransport {
         let body = encode_request(&request)?;
         let body = self.exchange_command(&request, &body)?;
         let reply = self.decode(&body)?;
-        admit_reply(&request, reply)
+        self.admit_local_reply(&request, reply, None)
     }
 
     fn request_with_budget(
@@ -921,7 +942,7 @@ impl CommandTransport for UnixCommandTransport {
         }
         let body = self.exchange_command_with_budget(&request, &body, remaining)?;
         let reply = self.decode(&body)?;
-        admit_reply(&request, reply)
+        self.admit_local_reply(&request, reply, None)
     }
 
     fn request_with_search_admission(
@@ -949,7 +970,7 @@ impl CommandTransport for UnixCommandTransport {
             self.exchange_command_with_search_admission(&request, &body, remaining, scope)?;
         scope.check()?;
         let reply = self.decode(&body)?;
-        admit_reply(&request, reply)
+        self.admit_local_reply(&request, reply, None)
     }
 
     fn reconnect(&mut self) -> Result<(), ClientError> {
@@ -987,13 +1008,13 @@ impl CertifiedCommandTransport for UnixCommandTransport {
         )?;
         let body = encode_request(&request)?;
         let body = self.exchange_command(&request, &body)?;
-        let reply = if capability.is_some() {
+        let reply = if self.peer.is_some() || capability.is_none() {
+            self.decode(&body)?
+        } else {
             ReplyDto::decode_with_certificate(&body, capability.clone())
                 .map_err(ClientError::Protocol)?
-        } else {
-            self.decode(&body)?
         };
-        admit_reply_with_capability(&request, reply, capability)
+        self.admit_local_reply(&request, reply, capability)
     }
 }
 
@@ -1788,8 +1809,18 @@ impl Session {
         window: backend_library::QueryWindow,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
+        self.graph_page_declaration_mode(selector, window, continuation, false)
+    }
+
+    /// Pages a related neighborhood including incoming relations.
+    pub fn related_page_declaration(&mut self, selector: &DeclarationSelector, window: backend_library::QueryWindow, continuation: Option<PageContinuation>) -> Result<ReplyDto, ClientError> {
+        self.graph_page_declaration_mode(selector, window, continuation, true)
+    }
+
+    fn graph_page_declaration_mode(&mut self, selector: &DeclarationSelector, window: backend_library::QueryWindow, continuation: Option<PageContinuation>, incoming: bool) -> Result<ReplyDto, ClientError> {
         self.prepare_query_window(window, continuation, None)?;
         if let Some(prepared) = &self.prepared_query {
+            if matches!(&prepared.command, Command::GraphPage { page, .. } if page.include_incoming() != incoming) { return Err(ClientError::Protocol("graph direction changed".to_owned())); }
             if !declaration_coordinate_claims_match(prepared.certificate(), selector) {
                 return Err(ClientError::Protocol(
                     "graph continuation changed declaration coordinate assertion".to_owned(),
@@ -1807,6 +1838,7 @@ impl Session {
         let page = page_request(revision.root, window.issued().get(), continuation)?
             .with_window(window)
             .ok_or_else(|| ClientError::Protocol("graph window changed credit".to_owned()))?;
+        let page = if incoming { page.with_incoming() } else { page };
         self.send_success(
             Command::GraphPage {
                 symbol: selector.address(),
@@ -1814,6 +1846,55 @@ impl Session {
             },
             Some(self.page_certificate(certificate, continuation)),
         )
+    }
+
+    /// Reads one bounded related-edge page from the selected owner.
+    pub fn related_edge_page_declaration(
+        &mut self,
+        selector: &DeclarationSelector,
+        window: backend_library::QueryWindow,
+        continuation: Option<backend_library::RelatedPageCursor>,
+    ) -> Result<ReplyDto, ClientError> {
+        // Resolve coordinate aliases through an admitted document, then use its
+        // selected identity. The opaque continuation never mints that identity.
+        let selected = if let DeclarationSelector::Coordinate(coordinate) = selector {
+            let document = self.document(coordinate)?;
+            let CommandReply::Document(document) = document.reply else {
+                return Err(ClientError::Protocol("related center document changed shape".to_owned()));
+            };
+            let selection = document.selection.as_ref().ok_or_else(|| ClientError::Protocol("related center has no selected document witness".to_owned()))?;
+            if selection.symbol() != document.symbol || selection.coordinate() != coordinate
+                || Some(selection.source()) != document.source_basis() {
+                return Err(ClientError::Protocol("related center selection changed source".to_owned()));
+            }
+            let id = backend_library::SelectedSymbolId::new(document.symbol.to_bytes()).ok_or_else(|| ClientError::Protocol("invalid selected center".to_owned()))?;
+            Some((DeclarationSelector::Selected(id), selection.source()))
+        } else { None };
+        let revision = self.revision()?;
+        if selected.as_ref().is_some_and(|(_, source)| source.root != revision.root) { return Err(ClientError::StaleCursor); }
+        let selector = selected.as_ref().map_or(selector, |(selector, _)| selector);
+        let symbol = selector.address();
+        let scope = backend_library::RelatedPageScope {
+            root: *revision.root.as_bytes(), source: symbol.claimed_bytes(),
+            source_selected: symbol.is_selected(), direction: backend_library::RelatedDirection::Both,
+            issued: window.issued().get(), delivery: window.delivery().get(), windowed: window.is_windowed(),
+        };
+        if continuation.as_ref().is_some_and(|cursor| !cursor.permits_successor(&scope)) {
+            return Err(ClientError::StaleCursor);
+        }
+        let certificate = declaration_certificate(revision.certificate, selector);
+        let reply = self.send_success(Command::RelatedEdgePage {
+            symbol, request: backend_library::RelatedPageRequest { scope, cursor: continuation },
+        }, Some(certificate))?;
+        if let Some((_, source)) = selected.as_ref() {
+            let CommandReply::RelatedEdgePage(page) = &reply.reply else {
+                return Err(ClientError::Protocol("related edge page changed shape".to_owned()));
+            };
+            if page.snapshot.root.basis() != *source {
+                return Err(ClientError::StaleCursor);
+            }
+        }
+        Ok(reply)
     }
 
     /// Reads captured source for one declaration coordinate.
@@ -1830,6 +1911,33 @@ impl Session {
         });
         self.send_success(
             Command::Source(DocumentQuery::new(symbol, revision.root)),
+            Some(certificate),
+        )
+    }
+
+    /// Reads a bounded source range without silently changing the expected revision.
+    ///
+    /// # Errors
+    /// Refuses a moved owner, invalid source range, transport or proof admission failure.
+    pub fn declaration_source_range(
+        &mut self,
+        selector: &DeclarationSelector,
+        expected_root: Option<&str>,
+        range: backend_library::SourceRangeRequest,
+    ) -> Result<ReplyDto, ClientError> {
+        if !range.valid() {
+            return Err(ClientError::Protocol("invalid source range".to_owned()));
+        }
+        let revision = self.revision()?;
+        if expected_root.is_some_and(|root| root != encode_id(revision.root.as_bytes())) {
+            return Err(ClientError::StaleCursor);
+        }
+        let certificate = declaration_certificate(revision.certificate, selector);
+        self.send_success(
+            Command::Source(
+                DocumentQuery::addressed(selector.address(), revision.root)
+                    .with_source_range(range),
+            ),
             Some(certificate),
         )
     }
@@ -2032,8 +2140,18 @@ impl Session {
         window: backend_library::QueryWindow,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
+        self.graph_page_window_mode(coordinate, window, continuation, false)
+    }
+
+    /// Pages both incoming and outgoing relations for a coordinate.
+    pub fn related_page_window(&mut self, coordinate: &str, window: backend_library::QueryWindow, continuation: Option<PageContinuation>) -> Result<ReplyDto, ClientError> {
+        self.graph_page_window_mode(coordinate, window, continuation, true)
+    }
+
+    fn graph_page_window_mode(&mut self, coordinate: &str, window: backend_library::QueryWindow, continuation: Option<PageContinuation>, incoming: bool) -> Result<ReplyDto, ClientError> {
         self.prepare_query_window(window, continuation, None)?;
-        if self.prepared_query.is_some() {
+        if let Some(prepared) = &self.prepared_query {
+            if matches!(&prepared.command, Command::GraphPage { page, .. } if page.include_incoming() != incoming) { return Err(ClientError::Protocol("graph direction changed".to_owned())); }
             return self.resume_prepared_graph_window(
                 SymbolAddress::canonical(symbol_key(coordinate)),
                 window.issued().get(),
@@ -2051,6 +2169,7 @@ impl Session {
         let page = page_request(revision.root, window.issued().get(), continuation)?
             .with_window(window)
             .ok_or_else(|| ClientError::Protocol("graph window changed credit".to_owned()))?;
+        let page = if incoming { page.with_incoming() } else { page };
         self.send_success(
             Command::GraphPage {
                 symbol: SymbolAddress::canonical(symbol),
@@ -2233,6 +2352,7 @@ impl Session {
             _ => None,
         };
         let expected = command.id();
+        let source_command = matches!(&command, SurfaceCommand::Read { .. } | SurfaceCommand::References { .. }).then(|| command.clone());
         let reply = if matches!(&command, SurfaceCommand::IndexSearch { .. }) {
             self.send_index_search_ready(command)?
         } else {
@@ -2252,6 +2372,15 @@ impl Session {
             chunk
                 .admit_range(&source, &range)
                 .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        } else if let Some(command) = source_command.as_ref() {
+            // Transport already admitted the response; this only rechecks
+            // bounded request correlation after extraction.
+            let result = match command {
+                SurfaceCommand::Read { .. } => backend_library::admit_surface_read_shape(command, &reply),
+                SurfaceCommand::References { .. } => backend_library::admit_surface_references_shape(command, &reply),
+                _ => unreachable!("source command was matched above"),
+            };
+            result.map_err(|error| ClientError::Protocol(error.to_string()))?;
         } else {
             reply
                 .admit(expected)
@@ -3063,6 +3192,7 @@ impl SelectedCoordinateAssertion {
                 })
                 .map(backend_library::DocumentSelection::coordinate),
             CommandReply::Graph(snapshot) => self.center_coordinate(&snapshot.root),
+            CommandReply::RelatedEdgePage(page) => self.center_coordinate(&page.snapshot.root),
             CommandReply::ProjectionPage(page) => {
                 self.center_coordinate(&page.snapshot.root).or_else(|| {
                     pinned_center
@@ -3101,7 +3231,7 @@ fn selected_coordinate_assertion(
     let symbol = match command {
         Command::Document(query) | Command::Source(query) => query.symbol(),
         Command::Graph(query) | Command::Related(query) => query.symbol(),
-        Command::GraphPage { symbol, .. } => *symbol,
+        Command::GraphPage { symbol, .. } | Command::RelatedEdgePage { symbol, .. } => *symbol,
         _ => return Ok(None),
     };
     if !symbol.is_selected() {

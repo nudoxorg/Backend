@@ -388,7 +388,7 @@ mod json_value_import_tests {
                 "projected default error still refers to Error: {error_display}"
             );
             Ok::<_, io::Error>(())
-        })?;
+        })??;
         Ok(())
     }
 }

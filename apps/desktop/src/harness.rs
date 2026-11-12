@@ -1397,6 +1397,17 @@ fn browse_route_state(route: &crate::navigation::BrowseRoute) -> gallery::json::
             ("project", Json::str(project.display_lossy())),
         ]),
         BrowseRoute::FindHome => Json::obj([("kind", Json::str("find-home"))]),
+        BrowseRoute::Sql(subject) | BrowseRoute::Css(subject) => Json::obj([
+            ("kind", Json::str(if matches!(route, BrowseRoute::Sql(_)) { "sql" } else { "css" })),
+            ("project", Json::str(subject.project.display_lossy())),
+            ("name", Json::str(subject.written())),
+        ]),
+        BrowseRoute::Impact(route) => Json::obj([
+            ("kind", Json::str("impact")),
+            ("project", Json::str(route.subject.project.display_lossy())),
+            ("name", Json::str(route.subject.written())),
+            ("pages", Json::num(route.pages)),
+        ]),
         BrowseRoute::Find(query) => Json::obj([
             ("kind", Json::str("find")),
             ("query", Json::str(query.text.to_string())),

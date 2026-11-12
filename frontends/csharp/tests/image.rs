@@ -981,3 +981,66 @@ fn plane_offset(image: &[u8], section: Section) -> Result<usize, ImageTestError>
         fact: "directory offset",
     })
 }
+
+#[test]
+fn foreign_source_target_is_v5_only_and_strictly_validated() -> Result<(), ImageTestError> {
+    let mut fix = Fixture::default();
+    let owner = fix.class(b"Caller", 6, 12, 40);
+    let spelling = fix.atom(b"Go");
+    let file = fix.atom(b"A.cs");
+    let coordinate = format!(
+        "csharp-source-v1|422e6373|{}|1|30|15|17|4d3a5461726765742e476f",
+        "ab".repeat(32)
+    );
+    let atom = fix.atom(coordinate.as_bytes());
+    fix.references.push(ReferenceRow {
+        owner,
+        target: Some(0x8000_0000 | atom as u32),
+        spelling,
+        file,
+        start: 20,
+        end: 22,
+        kind: ReferenceTag::Invocation as u8,
+    });
+    let mut image = fix.encode(b"class Caller { void M() { Go(); } }")?;
+    assert!(
+        CSharpImage::open(&image).is_err(),
+        "v4 must refuse v5 foreign target"
+    );
+    image[4..6].copy_from_slice(&5u16.to_le_bytes());
+    let mut digest = Sha256::new();
+    digest.update(b"nudox.csharp.authority.image.sha256.v5\0");
+    digest.update(&image[..IMAGE_DIGEST_OFFSET]);
+    digest.update(&image[HEADER_BYTES..]);
+    image[IMAGE_DIGEST_OFFSET..HEADER_BYTES].copy_from_slice(&digest.finalize());
+    let decoded = CSharpImage::open(&image)?;
+    let reference = decoded
+        .references()
+        .next()
+        .transpose()?
+        .ok_or(ImageTestError::Missing {
+            fact: "foreign reference",
+        })?;
+    let witness = reference.foreign_source.ok_or(ImageTestError::Missing {
+        fact: "foreign source witness",
+    })?;
+    assert_eq!(witness.path().as_deref(), Some("B.cs"));
+    assert_eq!(witness.documentation_id().as_deref(), Some("M:Target.Go"));
+    assert_eq!((witness.name_start, witness.name_end), (15, 17));
+    let mut forged = image.clone();
+    let position = forged
+        .windows(b"csharp-source-v1".len())
+        .position(|window| window == b"csharp-source-v1")
+        .unwrap();
+    forged[position] = b'X';
+    let mut digest = Sha256::new();
+    digest.update(b"nudox.csharp.authority.image.sha256.v5\0");
+    digest.update(&forged[..IMAGE_DIGEST_OFFSET]);
+    digest.update(&forged[HEADER_BYTES..]);
+    forged[IMAGE_DIGEST_OFFSET..HEADER_BYTES].copy_from_slice(&digest.finalize());
+    assert!(
+        CSharpImage::open(&forged).is_err(),
+        "forged coordinate must be rejected"
+    );
+    Ok(())
+}

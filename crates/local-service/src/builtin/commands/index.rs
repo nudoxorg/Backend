@@ -54,7 +54,7 @@ pub(super) use source_preparation::{
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -239,7 +239,7 @@ fn index_project_intent_at_with_cluster_and_intent(
         false,
     )? {
         PreparedIndex::Ready(prepared) => Ok(prepared.into_option()),
-        PreparedIndex::Compile(_) | PreparedIndex::Cluster(_) => Err(BuiltinModelError(
+        PreparedIndex::Compile(_) | PreparedIndex::Cluster(_) | PreparedIndex::CSharpParked(..) => Err(BuiltinModelError(
             "an index compile was deferred on a path that runs it in place".to_owned(),
         )),
     }
@@ -260,7 +260,7 @@ fn prepare_index_project_at(
     pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
     defer: bool,
 ) -> Result<PreparedIndex, BuiltinModelError> {
-    let work = capture_index_scan(
+    let mut work = capture_index_scan(
         daemon,
         package,
         label,
@@ -272,6 +272,9 @@ fn prepare_index_project_at(
         Arc::new(AtomicBool::new(false)),
         compiler.python_interpreter_admission(),
     )?;
+    // The synchronous route commits without the publication worker, which SQL
+    // receipt custody requires; the owned index operation is the SQL route.
+    work.capture_sql = false;
     let mut committed_captures = BTreeMap::new();
     let result = finish_index_scan(
         daemon,
@@ -356,7 +359,33 @@ pub(super) fn capture_index_scan(
         super::super::profile::validate_project_file(project_key, key, &record)?;
         reusable.insert(key, record);
     }
+    let native_root = crate::builtin::stylo_admission::stylo_basis_for_snapshot(
+        &daemon.engine().daemon().owner().snapshot(),
+    )
+    .map_err(BuiltinModelError)?
+    .analysis_root;
+    let stylo_prior = if let Some(relation) =
+        backend_engine::builtin::stylo_analysis_relation(&snapshot)
+            .map_err(|error| BuiltinModelError(format!("open native Stylo selection: {error}")))?
+    {
+        relation
+            .lookup(&backend_engine::builtin::stylo_selection_key(project_key))
+            .map_err(|error| BuiltinModelError(format!("read native Stylo selection: {error}")))?
+            .is_some()
+            || relation
+                .lookup(&backend_engine::builtin::stylo_attempt_key(project_key))
+                .map_err(|error| BuiltinModelError(format!("read native Stylo attempt: {error}")))?
+                .is_some()
+    } else {
+        false
+    };
+    // Capture only the authenticated lazy relation handle. The potentially
+    // large project-membership scan happens on the bounded worker, not owner.
+    super::super::profile::native_evidence_basis_for_snapshot(&snapshot)?;
+    let native_evidence = backend_engine::builtin::native_source_evidence_relation(&snapshot)
+        .map_err(|error| BuiltinModelError(format!("open selected native evidence: {error}")))?;
     Ok(IndexScanWork {
+        native_evidence,
         cargo_target: None,
         package,
         label: label.to_owned(),
@@ -366,31 +395,89 @@ pub(super) fn capture_index_scan(
         execution_intent,
         project_key,
         workspace_root: daemon.engine().daemon().owner().head().root(),
+        native_root,
         before,
         old_files,
         reusable,
         capture_workspace_snapshot,
         cancellation,
         interpreter,
+        stylo_worker: None,
+        stylo_prior,
+        stylo_selection_failure: None,
+        sql_workers: crate::builtin::sql_index::SqlWorkers::default(),
+        sql_prior: crate::builtin::sql_index::sql_prior(&snapshot, project_key)?,
+        capture_sql: true,
         observation: None,
     })
 }
 
+/// Routing evidence only. Even a positive row grants no compiler or source
+/// authority. An exhaustive bounded negative avoids falling back to syntax
+/// after the last native file is deleted.
+fn selected_native_ts_evidence_exists(
+    relation: Option<&backend_engine::WorkspaceRelationHandle<backend_engine::builtin::NativeSourceEvidenceRelation>>,
+    project: [u8; 32],
+    cancelled: &AtomicBool,
+) -> Result<bool, BuiltinModelError> {
+    use backend_engine::builtin::{NativeSourceEvidenceRelation, MAX_NATIVE_EVIDENCE_BYTES, MAX_NATIVE_EVIDENCE_ROWS};
+    let Some(relation) = relation else { return Ok(false) };
+    let mut after = None;
+    let mut count = 0usize;
+    let mut bytes = 0usize;
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(BuiltinModelError("native evidence scan cancelled".into()));
+        }
+        let page = relation.page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+            .map_err(|error| BuiltinModelError(format!("page native evidence: {error}")))?;
+        for (key, row) in page.entries() {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(BuiltinModelError("native evidence scan cancelled".into()));
+            }
+            count = count.checked_add(1).ok_or_else(|| BuiltinModelError("native evidence count overflow".into()))?;
+            let mut encoded = Vec::new();
+            NativeSourceEvidenceRelation::encode_value(row, &mut encoded);
+            bytes = bytes.checked_add(40).and_then(|n| n.checked_add(encoded.len()))
+                .ok_or_else(|| BuiltinModelError("native evidence work overflow".into()))?;
+            if count > MAX_NATIVE_EVIDENCE_ROWS || bytes > MAX_NATIVE_EVIDENCE_BYTES
+                || row.key().ok().as_ref() != Some(key)
+            {
+                return Err(BuiltinModelError("native evidence routing witness is invalid or exceeds its bound".into()));
+            }
+            if row.project == project && matches!(row.profile, LanguageProfile::TypeScript(_)) {
+                return Ok(true);
+            }
+        }
+        let Some(next) = page.next().copied() else { return Ok(false) };
+        after = Some(next);
+    }
+}
+
 /// Performs filesystem discovery and optional full compiler-workspace capture
 /// using only the immutable input copied from the owner.
-pub(super) fn run_index_scan(work: IndexScanWork) -> Result<IndexScanResult, IndexScanFailure> {
+pub(super) fn run_index_scan(mut work: IndexScanWork) -> Result<IndexScanResult, IndexScanFailure> {
     if work.cancellation.load(Ordering::Acquire) {
         return Err(IndexScanFailure::Cancelled);
     }
     if let Some(observed) = &work.observation {
         observed.phase("source-discovery-and-analysis");
     }
+    // Preserve legacy root handling. Native admission below additionally
+    // requires the original path spelling itself to be exact UTF-8.
     let source_coordinate = work.source_root.to_string_lossy();
-    let mut scan = ingest::scan_project_for_unproven_authorities_cancellable_with_observation(
+    let force_native = selected_native_ts_evidence_exists(
+        work.native_evidence.as_ref(), work.project_key, &work.cancellation,
+    ).map_err(|error| {
+        if work.cancellation.load(Ordering::Acquire) { IndexScanFailure::Cancelled }
+        else { IndexScanFailure::Refused(error) }
+    })?;
+    let mut scan = ingest::scan_project_with_native_typescript_auto(
         &source_coordinate,
         work.project_key,
         &work.reusable,
-        &work.cancellation,
+        Arc::clone(&work.cancellation),
+        force_native,
         work.interpreter.as_deref(),
         work.observation.as_deref(),
     )
@@ -401,6 +488,28 @@ pub(super) fn run_index_scan(work: IndexScanWork) -> Result<IndexScanResult, Ind
             IndexScanFailure::Refused(BuiltinModelError(error))
         }
     })?;
+    if scan.native_typescript_discovery_incomplete() && work.source_root.to_str().is_none() {
+        return Err(IndexScanFailure::Refused(BuiltinModelError(
+            "native TypeScript project root is not exact UTF-8".into(),
+        )));
+    }
+    let css_may_exist = scan
+        .stylo_walk
+        .inventory()
+        .is_none_or(|(count, _)| count != 0);
+    if work.stylo_worker.is_none() {
+        let (permit, failure) = select_stylo_for_scope(
+            css_may_exist,
+            work.stylo_prior,
+            &work.cancellation,
+            crate::builtin::stylo_worker_install::selected_installed_stylo_worker_until,
+        )?;
+        work.stylo_worker = permit;
+        work.stylo_selection_failure = failure;
+    }
+    if work.sql_workers.sqlite.is_none() && work.sql_workers.postgres.is_none() {
+        work.sql_workers = crate::builtin::sql_worker_install::selected_installed_sql_workers();
+    }
     if let Some(PythonEnvironmentInput::Captured(environment)) = &scan.python_environment {
         // Preserve source inventory and structural rows for browsing. The
         // explicitly selected installed venv is dependency input, not a project
@@ -478,6 +587,98 @@ pub(super) fn run_index_scan(work: IndexScanWork) -> Result<IndexScanResult, Ind
     })
 }
 
+fn select_stylo_for_scope(
+    css_may_exist: bool,
+    prior: bool,
+    cancellation: &AtomicBool,
+    select: impl FnOnce(
+        &AtomicBool,
+        Instant,
+    ) -> Result<
+        Option<Arc<crate::builtin::stylo_worker::StyloWorkerPermit>>,
+        backend_compile::ProcessError,
+    >,
+) -> Result<
+    (
+        Option<Arc<crate::builtin::stylo_worker::StyloWorkerPermit>>,
+        Option<backend_engine::builtin::StyloUnavailable>,
+    ),
+    IndexScanFailure,
+> {
+    if cancellation.load(Ordering::Acquire) {
+        return Err(IndexScanFailure::Cancelled);
+    }
+    if !css_may_exist && !prior {
+        return Ok((None, None));
+    }
+    let Some(deadline) = Instant::now()
+        .checked_add(crate::builtin::stylo_worker_install::INSTALLED_WORKER_ADMISSION_BUDGET)
+    else {
+        return Ok((None, Some(backend_engine::builtin::StyloUnavailable::WorkerFailure)));
+    };
+    match select(cancellation, deadline) {
+        Ok(permit) => Ok((permit, None)),
+        Err(backend_compile::ProcessError::Cancelled) => Err(IndexScanFailure::Cancelled),
+        Err(_) if cancellation.load(Ordering::Acquire) => Err(IndexScanFailure::Cancelled),
+        Err(backend_compile::ProcessError::Deadline) => Ok((
+            None,
+            Some(backend_engine::builtin::StyloUnavailable::Deadline),
+        )),
+        Err(_) => Ok((
+            None,
+            Some(backend_engine::builtin::StyloUnavailable::WorkerFailure),
+        )),
+    }
+}
+
+#[cfg(test)]
+mod installed_stylo_selection_tests {
+    use super::*;
+
+    #[test]
+    fn css_absence_skips_selection_and_deadline_is_lane_local() {
+        let cancellation = AtomicBool::new(false);
+        let Ok(skipped) = select_stylo_for_scope(false, false, &cancellation, |_, _| {
+            panic!("unrelated project must not observe installed CSS worker")
+        }) else {
+            panic!("unrelated source must proceed");
+        };
+        assert!(skipped.0.is_none() && skipped.1.is_none());
+        let Ok(timed) = select_stylo_for_scope(true, false, &cancellation, |_, _| {
+            Err(backend_compile::ProcessError::Deadline)
+        }) else {
+            panic!("optional CSS deadline must not refuse source");
+        };
+        assert!(timed.0.is_none());
+        assert_eq!(
+            timed.1,
+            Some(backend_engine::builtin::StyloUnavailable::Deadline)
+        );
+        let Ok(retained) = select_stylo_for_scope(false, true, &cancellation, |_, _| {
+            Err(backend_compile::ProcessError::Deadline)
+        }) else {
+            panic!("retained CSS must record attempted refresh");
+        };
+        assert_eq!(
+            retained.1,
+            Some(backend_engine::builtin::StyloUnavailable::Deadline)
+        );
+        assert!(matches!(
+            select_stylo_for_scope(true, false, &cancellation, |_, _| {
+                Err(backend_compile::ProcessError::Cancelled)
+            }),
+            Err(IndexScanFailure::Cancelled)
+        ));
+        cancellation.store(true, Ordering::Release);
+        assert!(matches!(
+            select_stylo_for_scope(true, false, &cancellation, |_, _| {
+                panic!("cancelled before selection")
+            }),
+            Err(IndexScanFailure::Cancelled)
+        ));
+    }
+}
+
 /// Completes source and semantic admission on the owner after a worker scan.
 /// The captured workspace root fences the immutable scan input from a newer
 /// owner selection before any candidate observations are prepared.
@@ -497,6 +698,8 @@ pub(super) fn finish_index_scan(
     let base_snapshot = daemon.engine().daemon().owner().snapshot();
     let PreparedScanSource {
         rust_target,
+        csharp_project,
+        csharp_shape: _,
         package,
         label,
         requested_root: requested_root_owned,
@@ -511,10 +714,13 @@ pub(super) fn finish_index_scan(
         mut source_facts_changes,
         mut native_frontier_changes,
         native_frontier,
+        native_typescript_capture,
         revision_fence: final_revision_fence,
         python_environment,
         cancellation,
         workspace_snapshot,
+        mut stylo_proof,
+        mut sql_proof,
         profiles,
     } = prepare_scan_source(
         &base_snapshot,
@@ -523,6 +729,9 @@ pub(super) fn finish_index_scan(
         semantic_authority,
         operation_key,
     )?;
+    if native_typescript_capture.is_some() {
+        return Err(BuiltinModelError("native TypeScript owner admission is not available".into()));
+    }
     let revision_fence = &final_revision_fence;
     let source_root = revision_fence.canonical_root();
     let requested_root = requested_root_owned.as_path();
@@ -537,7 +746,8 @@ pub(super) fn finish_index_scan(
         python_environment.as_ref(),
         cancellation.as_ref(),
     )?
-    .with_rust_target(rust_target.as_ref());
+    .with_rust_target(rust_target.as_ref())
+    .with_csharp_project(csharp_project.as_ref());
     let (
         semantic_changes,
         selected,
@@ -583,10 +793,30 @@ pub(super) fn finish_index_scan(
                     capture_intent = capture_intent
                         .with_source_facts(std::mem::take(&mut source_facts_changes))?;
                 }
-                let capture_intent = match operation_key {
+                let mut capture_intent = match operation_key {
                     Some(key) => capture_intent.with_operation_key(key)?,
                     None => capture_intent,
                 };
+                if let Some(proof) = stylo_proof.take() {
+                    if capture_intent.has_capture_changes()
+                        && capture_intent.capture_basis().is_none()
+                    {
+                        capture_intent = capture_intent.with_capture_basis(
+                            super::super::capture_basis_for_snapshot(&base_snapshot)?,
+                        )?;
+                    }
+                    capture_intent = capture_intent.with_stylo_capture(&base_snapshot, proof)?;
+                }
+                if let Some(proof) = sql_proof.take() {
+                    if capture_intent.has_capture_changes()
+                        && capture_intent.capture_basis().is_none()
+                    {
+                        capture_intent = capture_intent.with_capture_basis(
+                            super::super::capture_basis_for_snapshot(&base_snapshot)?,
+                        )?;
+                    }
+                    capture_intent = capture_intent.with_sql_capture(&base_snapshot, proof)?;
+                }
                 let capture_request =
                     super::adapter::prepare_owned_builtin_intent(daemon, capture_intent)?;
                 let capture_request_identity = capture_request.request_identity();
@@ -696,10 +926,28 @@ pub(super) fn finish_index_scan(
                 capture_intent = capture_intent
                     .with_native_frontier(std::mem::take(&mut native_frontier_changes))?;
             }
-            let capture_intent = match operation_key {
+            let mut capture_intent = match operation_key {
                 Some(key) => capture_intent.with_operation_key(key)?,
                 None => capture_intent,
             };
+            if let Some(proof) = stylo_proof.take() {
+                if capture_intent.has_capture_changes() && capture_intent.capture_basis().is_none()
+                {
+                    capture_intent = capture_intent.with_capture_basis(
+                        super::super::capture_basis_for_snapshot(&base_snapshot)?,
+                    )?;
+                }
+                capture_intent = capture_intent.with_stylo_capture(&base_snapshot, proof)?;
+            }
+            if let Some(proof) = sql_proof.take() {
+                if capture_intent.has_capture_changes() && capture_intent.capture_basis().is_none()
+                {
+                    capture_intent = capture_intent.with_capture_basis(
+                        super::super::capture_basis_for_snapshot(&base_snapshot)?,
+                    )?;
+                }
+                capture_intent = capture_intent.with_sql_capture(&base_snapshot, proof)?;
+            }
             let capture_request =
                 super::adapter::prepare_owned_builtin_intent(daemon, capture_intent)?;
             let capture_request_identity = capture_request.request_identity();
@@ -768,7 +1016,7 @@ pub(super) fn finish_index_scan(
                 }
             };
             if defer && owner_cluster.is_none() {
-                return prepare_deferred_compile(
+                let mut deferred = prepare_deferred_compile(
                     &daemon.engine().daemon().owner().snapshot(),
                     package,
                     &label,
@@ -794,8 +1042,10 @@ pub(super) fn finish_index_scan(
                     operation_key,
                     semantic_authority,
                     None,
-                )
-                .map(PreparedIndex::Compile);
+                    None,
+                )?;
+                deferred.csharp_capture = csharp_project.map(Arc::new);
+                return Ok(PreparedIndex::Compile(deferred));
             }
             let mut compiled = match compile_semantic_publications(
                 daemon,
@@ -899,13 +1149,57 @@ pub(super) fn finish_index_scan(
             "project root or files changed before product selection; retry indexing".to_owned(),
         ));
     }
+    let final_snapshot = daemon.engine().daemon().owner().snapshot();
+    let native_changed = stylo_proof
+        .as_ref()
+        .map(|proof| super::super::stylo_admission::plan_stylo_proof(&final_snapshot, proof))
+        .transpose()
+        .map_err(BuiltinModelError)?
+        .is_some_and(|changes| !changes.is_empty());
+    let sql_changed = sql_proof
+        .as_ref()
+        .map(|proof| super::super::sql_admission::plan_sql_update(&final_snapshot, proof))
+        .transpose()
+        .map_err(BuiltinModelError)?
+        .is_some_and(|changes| !changes.is_empty());
     let intent = if changes.is_empty()
         && semantic_changes.is_empty()
         && capture_changes.is_empty()
         && source_facts_changes.is_empty()
         && native_frontier_changes.is_empty()
+        && !native_changed
+        && !sql_changed
     {
         None
+    } else if changes.is_empty()
+        && semantic_changes.is_empty()
+        && capture_changes.is_empty()
+        && source_facts_changes.is_empty()
+        && native_frontier_changes.is_empty()
+        && !native_changed
+    {
+        let proof = sql_proof
+            .take()
+            .ok_or_else(|| BuiltinModelError("missing SQL proof".into()))?;
+        Some(BuiltinIntent::sql_only(package, &label, &final_snapshot, proof)?)
+    } else if changes.is_empty()
+        && semantic_changes.is_empty()
+        && capture_changes.is_empty()
+        && source_facts_changes.is_empty()
+        && native_frontier_changes.is_empty()
+    {
+        let intent = BuiltinIntent::stylo_only(
+            package,
+            &label,
+            &final_snapshot,
+            stylo_proof
+                .take()
+                .ok_or_else(|| BuiltinModelError("missing Stylo attempt proof".into()))?,
+        )?;
+        Some(match sql_proof.take() {
+            Some(proof) => intent.with_sql_capture(&final_snapshot, proof)?,
+            None => intent,
+        })
     } else {
         let mut intent = if !source_facts_changes.is_empty() {
             BuiltinIntent::index_with_source_facts(
@@ -935,9 +1229,32 @@ pub(super) fn finish_index_scan(
             }
             intent = intent.with_native_frontier(native_frontier_changes)?;
         }
+        if let Some(proof) = stylo_proof.take() {
+            if intent.has_capture_changes() && intent.capture_basis().is_none() {
+                intent = intent.with_capture_basis(super::super::capture_basis_for_snapshot(
+                    &final_snapshot,
+                )?)?;
+            }
+            intent = intent.with_stylo_capture(&final_snapshot, proof)?;
+        }
+        if let Some(proof) = sql_proof.take() {
+            if intent.has_capture_changes() && intent.capture_basis().is_none() {
+                intent = intent.with_capture_basis(super::super::capture_basis_for_snapshot(
+                    &final_snapshot,
+                )?)?;
+            }
+            intent = intent.with_sql_capture(&final_snapshot, proof)?;
+        }
         Some(intent)
     };
+    let native_noop_root = super::super::stylo_admission::stylo_basis_for_snapshot(&final_snapshot)
+        .map_err(BuiltinModelError)?.analysis_root;
+    let native_noop_expectation = (intent.is_none() && (stylo_proof.is_some() || native_noop_root.is_some()))
+        .then_some(native_noop_root);
+    let native_noop_proof = if intent.is_none() { stylo_proof.map(super::super::stylo_admission::StyloGrantProof::Live) } else { None };
     Ok(PreparedIndex::Ready(PreparedProductSelection {
+        native_noop_expectation,
+        native_noop_proof,
         intent,
         selected,
         revision_fence: Some(final_revision_fence),
@@ -1270,11 +1587,7 @@ fn prepare_source_capture_changes_for_snapshot(
                 ));
             }
         };
-        let coordinate = super::super::compiler_scope::semantic_coordinate(
-            package,
-            *profile,
-            context.coordinate,
-        )?;
+        let coordinate = context.compiler_coordinate(*profile)?;
         let key = ProductSemanticPublicationKey::new(
             context.package_reference.clone(),
             coordinate,
@@ -1940,6 +2253,7 @@ fn staged_cargo_alias_evidence(
 
 /// Owner-captured immutable inputs for one filesystem scan.
 pub(super) struct IndexScanWork {
+    native_evidence: Option<backend_engine::WorkspaceRelationHandle<backend_engine::builtin::NativeSourceEvidenceRelation>>,
     pub(super) cargo_target: Option<backend_library::CargoTargetSelector>,
     package: backend_engine::PackageKey,
     label: String,
@@ -1949,12 +2263,23 @@ pub(super) struct IndexScanWork {
     execution_intent: CompileExecutionIntent,
     project_key: [u8; 32],
     workspace_root: WorkspaceRoot,
+    native_root: Option<[u8; 32]>,
     before: Option<ProductSourceRecord>,
     old_files: Vec<[u8; 32]>,
     reusable: BTreeMap<[u8; 32], ProductSourceRecord>,
     capture_workspace_snapshot: bool,
     cancellation: Arc<AtomicBool>,
     interpreter: Option<Arc<backend_engine::application::PythonInterpreterHostAdmission>>,
+    /// Owner-admitted native worker; production bootstrap may leave this absent.
+    pub(super) stylo_worker: Option<Arc<crate::builtin::stylo_worker::StyloWorkerPermit>>,
+    stylo_prior: bool,
+    stylo_selection_failure: Option<backend_engine::builtin::StyloUnavailable>,
+    /// Owner-admitted native SQL workers; production bootstrap may leave these absent.
+    pub(super) sql_workers: crate::builtin::sql_index::SqlWorkers,
+    pub(super) sql_prior: bool,
+    /// False on the legacy synchronous route, whose commit cannot carry SQL custody
+    /// (receipts need the publication worker): SQL files then stay counted as unsupported.
+    pub(super) capture_sql: bool,
     pub(super) observation:
         Option<Arc<crate::builtin::index_work_observation::IndexWorkObservation>>,
 }
@@ -1995,6 +2320,10 @@ impl IndexScanResult {
 /// source-plus-semantic selection marker; `selected` advances serving only
 /// after that intent commits.
 pub(super) struct PreparedProductSelection {
+    /// None means not a source no-op; Some(root) pins the native root observed by the scan.
+    pub(super) native_noop_expectation: Option<Option<[u8; 32]>>,
+    /// Private same-scan CSS fence and observations retained until no-op acknowledgement.
+    pub(super) native_noop_proof: Option<super::super::stylo_admission::StyloGrantProof>,
     pub(super) intent: Option<BuiltinIntent>,
     pub(super) selected: Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
     /// Source/configuration frontier validated immediately before the one
@@ -2009,7 +2338,10 @@ pub(super) struct PreparedProductSelection {
 
 impl PreparedProductSelection {
     fn into_option(self) -> Option<Self> {
-        (self.intent.is_some() || !self.selected.is_empty()).then_some(self)
+        (self.intent.is_some()
+            || !self.selected.is_empty()
+            || self.native_noop_expectation.is_some())
+        .then_some(self)
     }
 }
 
@@ -2022,6 +2354,8 @@ pub(super) enum PreparedIndex {
     /// A configured cluster route, including its local fallback, runs on an
     /// owned worker after the independent source capture was installed.
     Cluster(SourceCompilePlan),
+    /// The exact source candidate must be selected before materialization.
+    CSharpParked(SourceCompilePlan, WorkspaceSnapshot),
 }
 
 /// The compile an index job hands off the owner loop, and everything its
@@ -2029,6 +2363,9 @@ pub(super) enum PreparedIndex {
 /// authority, while source changes and serving selections remain private until
 /// the combined workspace marker commits.
 pub(super) struct DeferredIndex {
+    native_typescript: Option<Arc<ingest::RevalidatedNativeTsCapture>>,
+    mixed_stylo_proof: Option<super::super::stylo_admission::StyloGrantProof>,
+    operation_key: Option<backend_library::IndexOperationKey>,
     compiler: LocalCompilerClient,
     package: backend_engine::PackageKey,
     label: String,
@@ -2040,6 +2377,10 @@ pub(super) struct DeferredIndex {
     source_root: PathBuf,
     source_changes: Vec<BuiltinSourceChange>,
     revision_fence: ingest::CompilerRevisionFence,
+    // Narrow original capture and its non-clone memory credit; no inventory copy.
+    csharp_capture: Option<Arc<ResolvedCSharpProject>>,
+    // Selected-source custody alone does not authorize unit publication.
+    csharp_selected_source: Option<Arc<CapturedCSharpUnitAdmission>>,
     profiles: VecDeque<DeferredProfile>,
     expected_profiles: usize,
     completed_profiles: usize,
@@ -2247,12 +2588,14 @@ struct DeferredProfile {
     expected_artifacts: u32,
     attempt: backend_extension_turso::CandidateAttempt,
     sources: OwnedPackageSourceSet,
+    csharp_unit_claim_only: bool,
 }
 
 pub(super) struct DeferredProfileTicket {
     key: ProductSemanticPublicationKey,
     expected_artifacts: u32,
     attempt: backend_extension_turso::CandidateAttempt,
+    csharp_unit_claim_only: bool,
     ordinal: u16,
     total: u16,
 }
@@ -2317,12 +2660,24 @@ impl DeferredIndex {
                     key: profile.key,
                     expected_artifacts: profile.expected_artifacts,
                     attempt: profile.attempt,
+                    csharp_unit_claim_only: profile.csharp_unit_claim_only,
                     ordinal,
                     total,
                 },
                 profile.sources,
             )
         })
+    }
+
+    /// Worker-only recheck. No probe I/O occurs in the owner wrapper.
+    pub(super) fn csharp_capture_is_current(
+        &self, ticket: &DeferredProfileTicket, snapshot: &WorkspaceSnapshot, cancellation: &Arc<AtomicBool>,
+    ) -> Result<bool, BuiltinModelError> {
+        if !ticket.csharp_unit_claim_only { return Ok(true); }
+        let Some(witness) = &self.csharp_selected_source else { return Ok(false); };
+        if witness.key() != &ticket.key || !witness.revalidate(snapshot, cancellation)? { return Ok(false); }
+        let selected = self.csharp_capture.as_ref().ok_or_else(|| BuiltinModelError("C# capture custody is missing".to_owned()))?;
+        selected.revalidate(&self.revision_fence, cancellation.as_ref()).map_err(BuiltinModelError)
     }
 
     pub(super) fn has_pending_profiles(&self) -> bool {
@@ -2348,7 +2703,14 @@ fn admitted_native_candidate_source_set(
     candidate_profiles: &ingest::NativeCandidateProfiles,
     permits: &source_preparation::NativeCandidatePermits,
     rust_target: Option<&ResolvedCargoTarget>,
+    csharp_project: Option<&ResolvedCSharpProject>,
+    csharp_sources: Option<Box<[backend_engine::application::OwnedCSharpSourceClaim]>>,
 ) -> Result<OwnedPackageSourceSet, BuiltinModelError> {
+    if csharp_project.is_some() && candidate_profiles.csharp.contains(&profile) {
+        return Err(BuiltinModelError(
+            "selected C# project with native candidates awaits unit-scoped permits".to_owned(),
+        ));
+    }
     if candidate_profiles.clang.contains(&profile) {
         OwnedPackageSourceSet::new_native_clang_candidate(
             request,
@@ -2388,6 +2750,47 @@ fn admitted_native_candidate_source_set(
                 })?,
         )
     } else if let Some(selected) =
+        csharp_project.filter(|_| matches!(profile, LanguageProfile::CSharp(_)))
+    {
+        if !super::super::compiler_scope::csharp_coordinate_claims_project(request.as_ref(), &selected.project_path) {
+            return Err(BuiltinModelError("C# compiler coordinate does not match selected project".to_owned()));
+        }
+        let target = CompilerPackageTargetV2::new(
+            request.as_ref().clone(),
+            backend_engine::application::CompilationUnitKeyV2::CSharpProject {
+                project_path: selected.project_path.clone().into(),
+            },
+        )
+        .map_err(|error| BuiltinModelError(format!("C# project target: {error:?}")))?;
+        let probes = selected
+            .config
+            .probes()
+            .map(|(path, bytes)| {
+                let text = bytes
+                    .map(|bytes| std::str::from_utf8(bytes).map(str::to_owned))
+                    .transpose()
+                    .map_err(|_| BuiltinModelError("C# configuration is not UTF-8".to_owned()))?;
+                backend_engine::application::OwnedCSharpConfigProbe::new(path, text)
+                    .map_err(|error| BuiltinModelError(error.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let sdk_probes = selected.sdk_config.probes().map(|(path, bytes)| {
+            let text = bytes.map(|bytes| std::str::from_utf8(bytes).map(str::to_owned)).transpose()
+                .map_err(|_| BuiltinModelError("C# SDK configuration is not UTF-8".to_owned()))?;
+            backend_engine::application::OwnedCSharpSdkProbe::new(path, text)
+                .map_err(|error| BuiltinModelError(error.to_string()))
+        }).collect::<Result<Vec<_>, _>>()?;
+        let claim = backend_engine::application::OwnedCSharpUnitClaim::new(
+            &selected.project_path,
+            csharp_sources
+                .ok_or_else(|| BuiltinModelError("C# source claims are missing".to_owned()))?,
+        )
+        .map_err(|error| BuiltinModelError(error.to_string()))?;
+        OwnedPackageSourceSet::new_for_unit(request, target, package_root, sources)
+            .and_then(|sources| sources.with_csharp_config(probes.into_boxed_slice()))
+            .and_then(|sources| sources.with_csharp_sdk_probes(sdk_probes.into_boxed_slice()))
+            .and_then(|sources| sources.with_csharp_unit_claim(claim))
+    } else if let Some(selected) =
         rust_target.filter(|_| matches!(profile, LanguageProfile::Rust(_)))
     {
         OwnedPackageSourceSet::new_for_unit(
@@ -2403,6 +2806,44 @@ fn admitted_native_candidate_source_set(
         OwnedPackageSourceSet::new(request, package_root, sources)
     }
     .map_err(|error| BuiltinModelError(error.to_string()))
+}
+
+// Claims are created from the exact already-admitted compiler buffer. The
+// runtime checks them again against its owned queue buffer; neither check
+// establishes MSBuild project membership or publication authority.
+fn observed_csharp_source_claim(
+    selected: &ResolvedCSharpProject,
+    source: &ingest::CompilerSource,
+) -> Result<Option<(String, backend_engine::application::OwnedCSharpSourceClaim)>, BuiltinModelError>
+{
+    if let Some((directory, _)) = selected.project_path.rsplit_once('/') {
+        if !source
+            .relative_path
+            .strip_prefix(directory)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+        {
+            return Ok(None);
+        }
+    }
+    let verified = backend_compile::VerifiedSourceText::capture(&source.source)
+        .map_err(|error| BuiltinModelError(format!("C# source capture: {error:?}")))?;
+    let identity = backend_semantic::ir::SourceIdentity::from_bytes(&source.source)
+        .ok_or_else(|| BuiltinModelError("C# source is too large".to_owned()))?;
+    if verified.content().to_bytes() != source.content
+        || identity.identity != source.source_fact_identity
+    {
+        return Err(BuiltinModelError(
+            "C# source identities changed after admission".to_owned(),
+        ));
+    }
+    let claim = backend_engine::application::OwnedCSharpSourceClaim::new(
+        &source.relative_path,
+        identity.byte_len,
+        verified.content().to_bytes(),
+        *identity.identity.as_ref(),
+    )
+    .map_err(|error| BuiltinModelError(error.to_string()))?;
+    Ok(Some((source.relative_path.clone(), claim)))
 }
 
 fn prepare_deferred_compile(
@@ -2425,11 +2866,27 @@ fn prepare_deferred_compile(
     reused_profiles: BTreeSet<LanguageProfile>,
     operation_key: Option<backend_library::IndexOperationKey>,
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
+    csharp_witness: Option<&CapturedCSharpUnitAdmission>,
     mut retained_attempts: Option<&mut Vec<backend_extension_turso::CandidateAttempt>>,
 ) -> Result<DeferredIndex, BuiltinModelError> {
     let mut by_profile = BTreeMap::<LanguageProfile, Vec<OwnedPackageSource>>::new();
+    let mut csharp_claims = BTreeMap::<LanguageProfile, Vec<(String, backend_engine::application::OwnedCSharpSourceClaim)>>::new();
+    let mut csharp_claim_work = BTreeMap::<LanguageProfile, usize>::new();
     for source in sources {
         let profile = compile_profile(context.source_root, &source);
+        if let Some(selected) = context.csharp_project.filter(|_| matches!(profile, LanguageProfile::CSharp(_))) {
+            let work = csharp_claim_work.entry(profile).or_default();
+            let additional = source.relative_path.len().checked_mul(2).and_then(|n| n.checked_add(256))
+                .ok_or_else(|| BuiltinModelError("C# source claim work overflow".to_owned()))?;
+            *work = work.checked_add(additional).filter(|total| *total <= 2 * 1024 * 1024)
+                .ok_or_else(|| BuiltinModelError("C# source claim work exceeds its bound".to_owned()))?;
+            if source.relative_path.len() > 4096 || csharp_claims.get(&profile).map_or(0, Vec::len) >= backend_engine::application::MAX_MANIFEST_ENTRIES {
+                return Err(BuiltinModelError("C# source claims exceed their bound".to_owned()));
+            }
+            if let Some(claim) = observed_csharp_source_claim(selected, &source)? {
+                csharp_claims.entry(profile).or_default().push(claim);
+            }
+        }
         by_profile.entry(profile).or_default().push(
             OwnedPackageSource::from_bytes(&source.relative_path, source.source)
                 .map_err(|error| BuiltinModelError(error.to_string()))?,
@@ -2448,17 +2905,15 @@ fn prepare_deferred_compile(
         let mut attempt_for_error = None;
         let prepared = (|| {
             let expected_artifacts = u32::try_from(
-                context
-                    .rust_target
-                    .filter(|_| matches!(profile, LanguageProfile::Rust(_)))
-                    .map_or(sources.len() as u64, |target| target.scope.source_count),
+                if context.csharp_project.is_some() && matches!(profile, LanguageProfile::CSharp(_)) {
+                    csharp_claims.get(&profile).map_or(0, Vec::len) as u64
+                } else {
+                    context.rust_target.filter(|_| matches!(profile, LanguageProfile::Rust(_)))
+                        .map_or(sources.len() as u64, |target| target.scope.source_count)
+                },
             )
             .map_err(|_| BuiltinModelError("semantic source count exceeds u32".to_owned()))?;
-            let coordinate = super::super::compiler_scope::semantic_coordinate(
-                context.package,
-                profile,
-                context.coordinate,
-            )?;
+            let coordinate = context.compiler_coordinate(profile)?;
             let request = PackageCompileRequest::new(
                 GenerateTarget {
                     correlation: context.correlation,
@@ -2482,6 +2937,13 @@ fn prepare_deferred_compile(
             let scan_input_digest = scan_observation.observation().revision().ok_or_else(|| {
                 BuiltinModelError("semantic compilation observation has no input digest".to_owned())
             })?;
+            if context.csharp_project.is_some() && matches!(profile, LanguageProfile::CSharp(_)) {
+                let witness = csharp_witness.ok_or_else(|| BuiltinModelError("selected C# source custody is missing".to_owned()))?;
+                if witness.key() != &key || !std::ptr::eq(context.cancellation, witness.cancellation.as_ref())
+                    || !witness.revalidate(snapshot, &witness.cancellation)? {
+                    return Err(BuiltinModelError("selected C# source custody differs from candidate".to_owned()));
+                }
+            }
             let local_observation = semantic_authority.observe(
                 &key,
                 scan_input_digest,
@@ -2497,6 +2959,10 @@ fn prepare_deferred_compile(
                 ScopeRoot::from_bytes(scan_input_digest),
                 Coverage::Partial,
             );
+            let csharp_sources = csharp_claims.remove(&profile).map(|mut claims| {
+                claims.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+                claims.into_iter().map(|(_, claim)| claim).collect::<Vec<_>>().into_boxed_slice()
+            });
             let source_set = admitted_native_candidate_source_set(
                 request,
                 context.source_root.to_path_buf(),
@@ -2505,6 +2971,8 @@ fn prepare_deferred_compile(
                 &native_candidate_profiles,
                 &native_candidate_permits,
                 context.rust_target,
+                context.csharp_project,
+                csharp_sources,
             )?;
             let sources = source_set.with_input_claim(input_claim);
             let sources = match context
@@ -2521,6 +2989,7 @@ fn prepare_deferred_compile(
                 expected_artifacts,
                 attempt,
                 sources,
+                csharp_unit_claim_only: context.csharp_project.is_some() && matches!(profile, LanguageProfile::CSharp(_)),
             })
         })();
         match prepared {
@@ -2551,6 +3020,9 @@ fn prepare_deferred_compile(
     }
     let expected_profiles = profiles.len();
     Ok(DeferredIndex {
+        native_typescript: None,
+        mixed_stylo_proof: None,
+        operation_key,
         compiler: context.compiler.clone(),
         package,
         label: label.to_owned(),
@@ -2562,6 +3034,8 @@ fn prepare_deferred_compile(
         source_root: context.source_root.to_path_buf(),
         source_changes,
         revision_fence,
+        csharp_capture: None,
+        csharp_selected_source: None,
         profiles: profiles.into(),
         expected_profiles,
         completed_profiles: 0,
@@ -2629,6 +3103,15 @@ fn typed_package_compiler_failure(
     })
 }
 
+pub(super) fn refuse_stale_csharp_capture(
+    semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
+    profile: DeferredProfileTicket,
+    detail: BuiltinModelError,
+) -> Result<(), DeferredProfileFailure> {
+    semantic_authority.retire_candidate_attempt(&profile.attempt, backend_extension_turso::CandidateAttemptRetirementReason::Refused)?;
+    Err(detail.into())
+}
+
 /// Admits exactly one profile candidate on the owner loop and then drops its
 /// staged output, releasing the package compiler's bounded output credits.
 /// The serving selector remains untouched until every profile has a terminal outcome.
@@ -2661,6 +3144,10 @@ pub(super) fn finish_deferred_profile_for_snapshot(
                 .to_owned(),
         )
         .into());
+    }
+    if profile.csharp_unit_claim_only {
+        semantic_authority.retire_candidate_attempt(&profile.attempt, backend_extension_turso::CandidateAttemptRetirementReason::Refused)?;
+        return Err(BuiltinModelError("selected C# project output awaits unit-scoped admission".to_owned()).into());
     }
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
@@ -2732,6 +3219,7 @@ pub(super) fn finish_deferred_profile_for_snapshot(
         profile.key.clone(),
         publication_coverage,
         claim,
+        CapturePublicationOrigin::FreshLocalCompletion,
         &mut job.semantic_changes,
     )?;
     let selected_profile = profile.profile();
@@ -2885,6 +3373,7 @@ fn prepare_terminal_profile_partition_for_snapshot(
 pub(super) fn finish_deferred_index_for_snapshot(
     snapshot: &WorkspaceSnapshot,
     mut job: DeferredIndex,
+    semantic_authority: Option<&super::super::semantic_authority::SemanticAuthority>,
 ) -> Result<PreparedProductSelection, BuiltinModelError> {
     if !job.profiles.is_empty() || job.completed_profiles != job.expected_profiles {
         return Err(BuiltinModelError(
@@ -2967,6 +3456,30 @@ pub(super) fn finish_deferred_index_for_snapshot(
             .into_values()
             .collect(),
     )?;
+    let native_proof = if let Some(capture) = job.native_typescript.take() {
+        let semantic = semantic_authority.ok_or_else(|| BuiltinModelError("native compiler authority unavailable".into()))?;
+        if !job.refused_profiles.is_empty() || job.capture_publications.is_empty() {
+            return Err(BuiltinModelError("native TypeScript has no complete fresh compiler outcomes".into()));
+        }
+        let mut candidates = Vec::new();
+        for publication in &job.capture_publications {
+            let expected = job.captures.get(publication.key()).ok_or_else(|| BuiltinModelError("native completion missing capture".into()))?;
+            let candidate = super::super::native_ts_admission::admit_native_ts_owner_candidate(
+                snapshot, Arc::clone(&capture), publication.clone(), *expected, &job.compiler, semantic,
+            )?;
+            candidates.push(Arc::new(candidate));
+        }
+        let plan = Arc::new(super::super::native_ts_admission::plan_native_ts_evidence(snapshot, candidates)?);
+        let mut bytes_read = 0usize;
+        Some(Arc::new(super::super::native_ts_admission::refresh_native_ts_evidence_plan(
+            snapshot, plan, &job.compiler, semantic, &mut bytes_read,
+        )?))
+    } else { None };
+    if native_proof.is_some() && job.source_changes.is_empty()
+        && job.semantic_changes.is_empty() && capture_changes.is_empty()
+    {
+        return Err(BuiltinModelError("native TypeScript no-op requires separate acknowledgement".into()));
+    }
     let intent = if job.source_changes.is_empty()
         && job.semantic_changes.is_empty()
         && capture_changes.is_empty()
@@ -2989,9 +3502,21 @@ pub(super) fn finish_deferred_index_for_snapshot(
                 capture_changes,
             )?
         };
+        let intent = if let Some(proof) = native_proof {
+            let mut intent = match job.operation_key {
+                Some(key) => intent.with_operation_key(key)?,
+                None => intent,
+            };
+            if intent.has_capture_changes() && intent.capture_basis().is_none() {
+                intent = intent.with_capture_basis(super::super::capture_basis_for_snapshot(snapshot)?)?;
+            }
+            intent.with_native_ts_evidence(snapshot, proof)?
+        } else { intent };
         Some(intent)
     };
     Ok(PreparedProductSelection {
+        native_noop_expectation: None,
+        native_noop_proof: job.mixed_stylo_proof,
         intent,
         selected: job
             .capture_publications
@@ -3010,7 +3535,337 @@ pub(super) struct ResolvedCargoTarget {
     scope: backend_library::CargoTargetScope,
 }
 
+// A process-wide credit follows each selected capture through cancellation and
+// drop. Reserve before reading so concurrent parked jobs cannot accumulate
+// unaccounted config, solution and revalidation buffers.
+const CSHARP_CAPTURE_CREDIT: usize = 32 * 1024 * 1024;
+const CSHARP_CAPTURE_BUDGET: usize = 128 * 1024 * 1024;
+static CSHARP_CAPTURE_USED: AtomicUsize = AtomicUsize::new(0);
+
+struct CSharpCaptureLease {
+    used: &'static AtomicUsize,
+}
+impl CSharpCaptureLease {
+    fn acquire() -> Result<Self, BuiltinModelError> {
+        Self::acquire_from(&CSHARP_CAPTURE_USED)
+    }
+    fn acquire_from(used: &'static AtomicUsize) -> Result<Self, BuiltinModelError> {
+        used.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            current.checked_add(CSHARP_CAPTURE_CREDIT).filter(|next| *next <= CSHARP_CAPTURE_BUDGET)
+        }).map_err(|_| BuiltinModelError("C# capture memory budget is exhausted".to_owned()))?;
+        Ok(Self { used })
+    }
+}
+impl Drop for CSharpCaptureLease {
+    fn drop(&mut self) { self.used.fetch_sub(CSHARP_CAPTURE_CREDIT, Ordering::AcqRel); }
+}
+
+/// Immutable captured project topology. Nodes retain confined presence/absence
+/// probes; compilation and selected publication remain separate owner joins.
+struct ResolvedCSharpProjectGraph {
+    nodes: Box<[ResolvedCSharpProjectNode]>,
+}
+
+struct ResolvedCSharpProjectNode {
+    project_path: String,
+    config: ingest::ConfinedConfigurationCapture,
+    sdk_config: ingest::ConfinedConfigurationCapture,
+    project_references: Box<[String]>,
+}
+
+impl ResolvedCSharpProjectGraph {
+    fn node(&self, path: &str) -> Option<&ResolvedCSharpProjectNode> {
+        self.nodes.binary_search_by(|node| node.project_path.as_str().cmp(path)).ok().map(|index| &self.nodes[index])
+    }
+
+    fn closure(&self, root: &str) -> Result<Vec<&ResolvedCSharpProjectNode>, BuiltinModelError> {
+        fn visit<'a>(graph: &'a ResolvedCSharpProjectGraph, path: &str, depth: usize,
+            visiting: &mut BTreeSet<String>, visited: &mut BTreeSet<String>, output: &mut Vec<&'a ResolvedCSharpProjectNode>) -> Result<(), BuiltinModelError> {
+            if depth > 16 || visiting.contains(path) { return Err(BuiltinModelError("C# graph cycle or depth limit".to_owned())); }
+            if !visited.insert(path.to_owned()) { return Ok(()); }
+            let node = graph.node(path).ok_or_else(|| BuiltinModelError("C# graph reference is missing".to_owned()))?;
+            visiting.insert(path.to_owned());
+            for dependency in &node.project_references { visit(graph, dependency, depth + 1, visiting, visited, output)?; }
+            visiting.remove(path);
+            output.push(node);
+            Ok(())
+        }
+        let mut output = Vec::new();
+        visit(self, root, 0, &mut BTreeSet::new(), &mut BTreeSet::new(), &mut output)?;
+        Ok(output)
+    }
+
+    // Deepest captured project directory wins; a source is never attached to
+    // every ancestor project merely because its path shares a prefix.
+    fn source_project_path(&self, path: &str) -> Option<&str> {
+        let mut selected = None;
+        let mut depth = None;
+        for node in &self.nodes {
+            let directory = node.project_path.rsplit_once('/').map_or("", |(directory, _)| directory);
+            if !directory.is_empty() && !path.strip_prefix(directory).is_some_and(|suffix| suffix.starts_with('/')) { continue; }
+            let candidate_depth = directory.len();
+            if depth == Some(candidate_depth) { return None; }
+            if depth.is_none_or(|current| candidate_depth > current) {
+                selected = Some(node.project_path.as_str()); depth = Some(candidate_depth);
+            }
+        }
+        selected
+    }
+
+    fn retained_bytes(&self) -> Option<usize> {
+        let mut total = std::mem::size_of::<Self>().checked_add(self.nodes.len().checked_mul(std::mem::size_of::<ResolvedCSharpProjectNode>())?)?;
+        for node in &self.nodes {
+            total = total.checked_add(node.project_path.capacity())?.checked_add(node.config.retained_bytes()?)?
+                .checked_add(node.sdk_config.retained_bytes()?)?.checked_add(node.project_references.len().checked_mul(std::mem::size_of::<String>())?)?;
+            for path in &node.project_references { total = total.checked_add(path.capacity())?; }
+        }
+        Some(total)
+    }
+}
+
+struct ResolvedCSharpProject {
+    project_path: String,
+    _capture_lease: Arc<CSharpCaptureLease>,
+    graph: Arc<ResolvedCSharpProjectGraph>,
+    // Exact solution input when selected through an explicit .slnx project.
+    solution: Option<ingest::ConfinedFileCapture>,
+    config: ingest::ConfinedConfigurationCapture,
+    sdk_config: ingest::ConfinedConfigurationCapture,
+}
+
+impl ResolvedCSharpProject {
+    fn retained_bytes(&self) -> Option<usize> {
+        let mut total = std::mem::size_of::<Self>()
+            .checked_add(self.project_path.capacity())?
+            .checked_add(self.config.retained_bytes()?)?
+            .checked_add(self.sdk_config.retained_bytes()?)?
+            .checked_add(self.graph.retained_bytes()?)?;
+        if let Some(solution) = &self.solution {
+            total = total.checked_add(solution.retained_bytes()?)?;
+        }
+        Some(total)
+    }
+
+    fn revalidate(
+        &self,
+        fence: &ingest::CompilerRevisionFence,
+        cancellation: &AtomicBool,
+    ) -> Result<bool, String> {
+        if !ingest::compiler_revision_is_current_with_cancellation(fence, Some(cancellation))?
+            || !self
+                .config
+                .revalidate_revision_fence(fence, Some(cancellation))?
+            || !self.sdk_config.revalidate_revision_fence(fence, Some(cancellation))?
+        {
+            return Ok(false);
+        }
+        for node in &self.graph.nodes {
+            if !node.config.revalidate_revision_fence(fence, Some(cancellation))?
+                || !node.sdk_config.revalidate_revision_fence(fence, Some(cancellation))? { return Ok(false); }
+        }
+        if let Some(solution) = &self.solution {
+            if !solution.revalidate_revision_fence(fence, Some(cancellation))? {
+                return Ok(false);
+            }
+        }
+        ingest::compiler_revision_is_current_with_cancellation(fence, Some(cancellation))
+    }
+}
+
+/// Private pre-compiler custody minted only from an owned same-scan plan and
+/// the selected durable source snapshot. It is not itself a unit fence.
+pub(in crate::builtin) struct CapturedCSharpUnitAdmission {
+    project: Arc<ResolvedCSharpProject>,
+    revision_fence: ingest::CompilerRevisionFence,
+    sources: Vec<ingest::CompilerSource>,
+    cancellation: Arc<AtomicBool>,
+    receipt: super::adapter::SelectedCSharpSourceCommit,
+    pending_capture: Option<SemanticSourceCapture>,
+    snapshot_root: [u8; 32],
+    snapshot_sequence: u64,
+    snapshot_closure: [u8; 32],
+    owner_epoch: u64,
+    project_key: [u8; 32],
+    project_commitment: [u8; 32],
+    project_frontier: CapturedProjectFileFrontier,
+    source_commitment: [u8; 32],
+    key: ProductSemanticPublicationKey,
+    target: CompilerPackageTargetV2,
+}
+
+impl CapturedCSharpUnitAdmission {
+    pub(in crate::builtin) fn key(&self) -> &ProductSemanticPublicationKey { &self.key }
+    pub(in crate::builtin) fn target(&self) -> &CompilerPackageTargetV2 { &self.target }
+    pub(in crate::builtin) fn project_key(&self) -> [u8; 32] { self.project_key }
+    pub(in crate::builtin) fn project_commitment(&self) -> [u8; 32] { self.project_commitment }
+    pub(in crate::builtin) fn source_commitment(&self) -> [u8; 32] { self.source_commitment }
+    pub(in crate::builtin) fn workspace_root(&self) -> [u8; 32] { self.snapshot_root }
+    pub(in crate::builtin) fn source_sequence(&self) -> u64 { self.snapshot_sequence }
+    pub(in crate::builtin) fn source_closure(&self) -> [u8; 32] { self.snapshot_closure }
+    pub(in crate::builtin) fn owner_epoch(&self) -> u64 { self.owner_epoch }
+    pub(in crate::builtin) fn cancellation(&self) -> &AtomicBool { self.cancellation.as_ref() }
+    pub(in crate::builtin) fn project_path(&self) -> &str { self.project.project_path.as_str() }
+    pub(in crate::builtin) fn config_probes(&self) -> impl Iterator<Item = (&str, Option<&[u8]>)> { self.project.config.probes() }
+    pub(in crate::builtin) fn sdk_probes(&self) -> impl Iterator<Item = (&str, Option<&[u8]>)> { self.project.sdk_config.probes() }
+    pub(in crate::builtin) fn solution(&self) -> Option<(&str, &[u8])> { self.project.solution.as_ref().map(|file| (file.path(), file.bytes())) }
+    pub(in crate::builtin) fn sources(&self) -> impl Iterator<Item = (&str, &[u8], [u8; 32], ingest::SourceFactIdentity)> {
+        self.sources.iter().map(|source| (source.relative_path.as_str(), source.source.as_slice(), source.content, source.source_fact_identity))
+    }
+    pub(in crate::builtin) fn retained_bytes(&self) -> Option<usize> {
+        // Product key and target each own exact boxed coordinate text; include
+        // package, unit spelling and a conservative allocation/header allowance.
+        let mut retained = self.project.retained_bytes()?
+            .checked_add(self.revision_fence.csharp_retained_bytes()?)?
+            .checked_add(self.sources.capacity().checked_mul(std::mem::size_of::<ingest::CompilerSource>())?)?;
+        for source in &self.sources {
+            retained = retained.checked_add(source.relative_path.capacity())?.checked_add(source.source.capacity())?.checked_add(128)?;
+        }
+        retained.checked_add(std::mem::size_of::<Self>())?
+            // PackageReference may retain spare String capacity; charge the
+            // bounded Project label conservatively rather than its text length.
+            .checked_add(ProductSourceRecord::MAX_LABEL_BYTES.checked_mul(4)?)?
+            .checked_add(self.key.coordinate().as_str().len())?
+            .checked_add(self.target.package().as_str().len())?
+            .checked_add(self.project.project_path.as_str().len())?
+            .checked_add(1024)
+    }
+
+    /// Worker-only: checks the exact still-selected snapshot and original
+    /// confined buffers. Owner grant must independently check its held lease.
+    pub(in crate::builtin) fn revalidate(&self, snapshot: &WorkspaceSnapshot, cancellation: &Arc<AtomicBool>) -> Result<bool, BuiltinModelError> {
+        if !Arc::ptr_eq(&self.cancellation, cancellation) || cancellation.load(Ordering::Acquire)
+            || *snapshot.root().as_bytes() != self.snapshot_root || snapshot.sequence() != self.snapshot_sequence
+            || *snapshot.closure().binding().closure().as_bytes() != self.snapshot_closure
+            || snapshot.owner_epoch() != self.owner_epoch { return Ok(false); }
+        if snapshot.with_persisted_transition(|transition, _| transition.request()).ok()
+            != Some(self.receipt.request_identity()) { return Ok(false); }
+        if let Some(expected) = &self.pending_capture {
+            let relation = semantic_capture_relation(snapshot)
+                .map_err(|error| BuiltinModelError(format!("open selected C# capture: {error}")))?
+                .ok_or_else(|| BuiltinModelError("selected C# capture relation is missing".to_owned()))?;
+            let current = relation.lookup(&self.key)
+                .map_err(|error| BuiltinModelError(format!("read selected C# capture: {error}")))?;
+            if current.as_ref().is_none_or(|row| row.capture() != *expected
+                || !matches!(row.outcome(), ProductSemanticCaptureOutcome::Pending { .. })) {
+                return Ok(false);
+            }
+        } else { return Ok(false); }
+        let (project, files, frontier) = bounded_csharp_project_frontier(snapshot, self.project_key, cancellation.as_ref())?;
+        if selected_project_commitment(self.project_key, &project)? != self.project_commitment { return Ok(false); }
+        let source = checked_csharp_selected_sources(snapshot, self.project_key, &files, &self.sources,
+            self.key.profile(), self.project.project_path.as_str(), cancellation.as_ref())?;
+        if source != self.source_commitment || frontier != self.project_frontier {
+            return Ok(false);
+        }
+        if !self.project.revalidate(&self.revision_fence, cancellation.as_ref()).map_err(BuiltinModelError)?
+            || !ingest::revalidate_csharp_source_buffers(&self.revision_fence, &self.sources, self.project.project_path.as_str(),
+                self.key.profile(), cancellation.as_ref()).map_err(BuiltinModelError)?
+            || !self.project.revalidate(&self.revision_fence, cancellation.as_ref()).map_err(BuiltinModelError)? {
+            return Ok(false);
+        }
+        Ok(snapshot.with_persisted_transition(|transition, _| transition.request()).ok() == Some(self.receipt.request_identity())
+            && !cancellation.load(Ordering::Acquire))
+    }
+}
+
+fn selected_project_commitment(project_key: [u8; 32], project: &ProductSourceRecord) -> Result<[u8; 32], BuiltinModelError> {
+    if project.project_fields().is_none() { return Err(BuiltinModelError("C# selected row is not a project".to_owned())); }
+    let mut encoded = Vec::new();
+    <BuiltinWorkspaceRelation as backend_engine::Relation>::encode_value(project, &mut encoded);
+    if encoded.len() > ProductSourceRecord::ROW_VALUE_CAPACITY { return Err(BuiltinModelError("C# project record exceeds bound".to_owned())); }
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"backend.local-service.csharp-selected-project.v1\0");
+    hash.update(&project_key);
+    hash.update(&(encoded.len() as u64).to_le_bytes());
+    hash.update(&encoded);
+    Ok(*hash.finalize().as_bytes())
+}
+
+/// Bounded streaming admission of the complete selected Project frontier.
+/// Large frontiers refuse rather than allocate all source rows at once.
+fn bounded_csharp_project_frontier(
+    snapshot: &WorkspaceSnapshot, project_key: [u8; 32], cancellation: &AtomicBool,
+) -> Result<(ProductSourceRecord, Vec<[u8; 32]>, CapturedProjectFileFrontier), BuiltinModelError> {
+    let relation = snapshot.relation::<BuiltinWorkspaceRelation>()
+        .map_err(|error| BuiltinModelError(format!("open C# project frontier: {error}")))?;
+    let project = relation.lookup(&project_key)
+        .map_err(|error| BuiltinModelError(format!("read C# project: {error}")))?
+        .ok_or_else(|| BuiltinModelError("selected C# Project is absent".to_owned()))?;
+    let count = project.project_fields().ok_or_else(|| BuiltinModelError("selected C# row is not a Project".to_owned()))?.files.file_count();
+    if count > 4096 { return Err(BuiltinModelError("C# Project frontier exceeds witness bound".to_owned())); }
+    let keys = super::super::profile::resolve_project_file_keys(project_key, &project, |page_key| {
+        if cancellation.load(Ordering::Acquire) { return Err(BuiltinModelError(ingest::INDEX_SCAN_CANCELLED.to_owned())); }
+        relation.lookup(page_key).map_err(|error| BuiltinModelError(format!("read C# membership page: {error}")))
+    })?;
+    if keys.len() != count { return Err(BuiltinModelError("C# Project member count changed".to_owned())); }
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"backend.local.deferred-project-file-frontier.v1\0");
+    hash.update(&project_key);
+    hash.update(&(count as u64).to_be_bytes());
+    let mut encoded = Vec::new();
+    let mut work = 0usize;
+    for key in &keys {
+        if cancellation.load(Ordering::Acquire) { return Err(BuiltinModelError(ingest::INDEX_SCAN_CANCELLED.to_owned())); }
+        let record = relation.lookup(key).map_err(|error| BuiltinModelError(format!("read C# project file: {error}")))?
+            .ok_or_else(|| BuiltinModelError("C# Project member is missing".to_owned()))?;
+        super::super::profile::validate_project_file(project_key, *key, &record)?;
+        encoded.clear();
+        <BuiltinWorkspaceRelation as backend_engine::Relation>::encode_value(&record, &mut encoded);
+        if encoded.len() > ProductSourceRecord::ROW_VALUE_CAPACITY { return Err(BuiltinModelError("C# Project row exceeds decoder bound".to_owned())); }
+        work = work.checked_add(encoded.len()).filter(|total| *total <= 8 * 1024 * 1024)
+            .ok_or_else(|| BuiltinModelError("C# Project frontier work exceeds bound".to_owned()))?;
+        hash.update(key); hash.update(&(encoded.len() as u64).to_be_bytes()); hash.update(&encoded);
+    }
+    Ok((project, keys, CapturedProjectFileFrontier(*hash.finalize().as_bytes())))
+}
+
+fn checked_csharp_selected_sources(
+    snapshot: &WorkspaceSnapshot, project: [u8; 32], file_keys: &[[u8; 32]],
+    sources: &[ingest::CompilerSource], profile: LanguageProfile, project_path: &str, cancellation: &AtomicBool,
+) -> Result<[u8; 32], BuiltinModelError> {
+    if !matches!(profile, LanguageProfile::CSharp(_)) { return Err(BuiltinModelError("unit profile is not C#".to_owned())); }
+    let relation = snapshot.relation::<BuiltinWorkspaceRelation>()
+        .map_err(|error| BuiltinModelError(format!("open selected C# source relation: {error}")))?;
+    let directory = project_path.rsplit_once('/').map_or("", |(parent, _)| parent);
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"backend.local-service.csharp-selected-sources.v1\0");
+    let mut count = 0u64;
+    let mut previous: Option<&str> = None;
+    for source in sources.iter().filter(|source| source.profile == profile) {
+        if cancellation.load(Ordering::Acquire) { return Err(BuiltinModelError(ingest::INDEX_SCAN_CANCELLED.to_owned())); }
+        if !directory.is_empty() && !source.relative_path.strip_prefix(directory).is_some_and(|suffix| suffix.starts_with('/')) { continue; }
+        if previous.is_some_and(|path| path >= source.relative_path.as_str()) {
+            return Err(BuiltinModelError("C# source order is invalid".to_owned()));
+        }
+        previous = Some(&source.relative_path);
+        let key = backend_engine::product_source_file_key(project, &source.relative_path);
+        if file_keys.binary_search(&key).is_err() { return Err(BuiltinModelError("C# source is outside selected project frontier".to_owned())); }
+        let row = relation.lookup(&key).map_err(|error| BuiltinModelError(format!("read selected C# source: {error}")))?
+            .ok_or_else(|| BuiltinModelError("selected C# source is missing".to_owned()))?;
+        let file = row.file_fields().ok_or_else(|| BuiltinModelError("selected C# source row is invalid".to_owned()))?;
+        let verified = backend_compile::VerifiedSourceText::capture(&source.source)
+            .map_err(|error| BuiltinModelError(format!("verify captured C# source: {error:?}")))?;
+        let fact = ingest::SourceFactIdentity::from_canonical_bytes(&source.source);
+        if file.project != project || file.path != source.relative_path || file.language != backend_engine::SourceLanguage::CSharp
+            || file.content_version != source.content || file.source_identity != Some(source.source_fact_identity)
+            || verified.content().to_bytes() != source.content || fact != source.source_fact_identity {
+            return Err(BuiltinModelError("selected C# source identity does not match captured bytes".to_owned()));
+        }
+        let length = u64::try_from(source.source.len()).map_err(|_| BuiltinModelError("C# source length overflow".to_owned()))?;
+        hash.update(&(source.relative_path.len() as u64).to_le_bytes());
+        hash.update(source.relative_path.as_bytes());
+        hash.update(&length.to_le_bytes());
+        hash.update(&source.content);
+        hash.update(source.source_fact_identity.as_ref());
+        count = count.checked_add(1).ok_or_else(|| BuiltinModelError("C# source count overflow".to_owned()))?;
+    }
+    if count == 0 { return Err(BuiltinModelError("selected C# unit has no captured sources".to_owned())); }
+    hash.update(&count.to_le_bytes());
+    Ok(*hash.finalize().as_bytes())
+}
+
 struct SemanticCompilationContext<'request> {
+    csharp_project: Option<&'request ResolvedCSharpProject>,
     rust_target: Option<&'request ResolvedCargoTarget>,
     package: backend_engine::PackageKey,
     package_reference: backend_engine::PackageReference,
@@ -3176,12 +4031,13 @@ fn take_structural_only_profiles(
     let capabilities = context.compiler.capabilities();
     let mut prior = BTreeSet::new();
     for profile in &candidates {
-        if selected_semantic_binding_for_snapshot(
+        if selected_semantic_binding_for_project(
             snapshot,
             context.package,
             context.package_reference.as_str(),
             context.coordinate,
             *profile,
+            context.csharp_project.map(|selected| selected.project_path.as_str()),
         )?
         .is_some()
         {
@@ -3208,11 +4064,7 @@ fn take_structural_only_profiles(
     );
     let mut changes = Vec::with_capacity(skipped.len());
     for profile in skipped {
-        let coordinate = super::super::compiler_scope::semantic_coordinate(
-            context.package,
-            profile,
-            context.coordinate,
-        )?;
+        let coordinate = context.compiler_coordinate(profile)?;
         let key = ProductSemanticPublicationKey::new(
             context.package_reference.clone(),
             coordinate,
@@ -3356,6 +4208,29 @@ fn observe_compiler_configuration(
         .collect()
 }
 
+fn selected_semantic_binding_for_project(
+    snapshot: &WorkspaceSnapshot,
+    package: backend_engine::PackageKey,
+    label: &str,
+    coordinate: Option<&PackageUrl>,
+    profile: LanguageProfile,
+    csharp_project: Option<&str>,
+) -> Result<Option<[u8; 32]>, BuiltinModelError> {
+    let exact = selected_project_coordinate(package, profile, coordinate, csharp_project)?;
+    selected_semantic_binding_for_snapshot(snapshot, package, label, Some(&exact), profile)
+}
+
+fn selected_project_coordinate(
+    package: backend_engine::PackageKey, profile: LanguageProfile, coordinate: Option<&PackageUrl>,
+    csharp_project: Option<&str>,
+) -> Result<PackageUrl, BuiltinModelError> {
+    let base = super::super::compiler_scope::semantic_coordinate(package, profile, coordinate)?;
+    match csharp_project.filter(|_| matches!(profile, LanguageProfile::CSharp(_))) {
+        Some(project_path) => super::super::compiler_scope::csharp_unit_coordinate(&base, project_path),
+        None => Ok(base),
+    }
+}
+
 fn selected_semantic_binding_for_snapshot(
     snapshot: &WorkspaceSnapshot,
     package: backend_engine::PackageKey,
@@ -3387,6 +4262,16 @@ fn selected_semantic_binding_for_snapshot(
 }
 
 impl<'request> SemanticCompilationContext<'request> {
+    fn compiler_coordinate(&self, profile: LanguageProfile) -> Result<PackageUrl, BuiltinModelError> {
+        selected_project_coordinate(self.package, profile, self.coordinate,
+            self.csharp_project.map(|selected| selected.project_path.as_str()))
+    }
+
+    fn with_csharp_project(mut self, project: Option<&'request ResolvedCSharpProject>) -> Self {
+        self.csharp_project = project;
+        self
+    }
+
     fn with_rust_target(mut self, target: Option<&'request ResolvedCargoTarget>) -> Self {
         self.rust_target = target;
         self
@@ -3413,6 +4298,7 @@ impl<'request> SemanticCompilationContext<'request> {
         }
         Ok(Self {
             rust_target: None,
+            csharp_project: None,
             package,
             package_reference,
             source_root,
@@ -3486,9 +4372,24 @@ fn compile_semantic_publications_for_snapshot(
     #[cfg(test)] before_local_compile: &mut dyn FnMut(),
 ) -> Result<CompiledSemanticPublications, BuiltinModelError> {
     let mut by_profile = BTreeMap::<LanguageProfile, Vec<OwnedPackageSource>>::new();
+    let mut csharp_claims = BTreeMap::<LanguageProfile, Vec<(String, backend_engine::application::OwnedCSharpSourceClaim)>>::new();
+    let mut csharp_claim_work = BTreeMap::<LanguageProfile, usize>::new();
     let mut source_paths_by_profile = BTreeMap::<LanguageProfile, BTreeSet<String>>::new();
     for source in sources {
         let profile = compile_profile(context.source_root, &source);
+        if let Some(selected) = context.csharp_project.filter(|_| matches!(profile, LanguageProfile::CSharp(_))) {
+            let work = csharp_claim_work.entry(profile).or_default();
+            let additional = source.relative_path.len().checked_mul(2).and_then(|n| n.checked_add(256))
+                .ok_or_else(|| BuiltinModelError("C# source claim work overflow".to_owned()))?;
+            *work = work.checked_add(additional).filter(|total| *total <= 2 * 1024 * 1024)
+                .ok_or_else(|| BuiltinModelError("C# source claim work exceeds its bound".to_owned()))?;
+            if source.relative_path.len() > 4096 || csharp_claims.get(&profile).map_or(0, Vec::len) >= backend_engine::application::MAX_MANIFEST_ENTRIES {
+                return Err(BuiltinModelError("C# source claims exceed their bound".to_owned()));
+            }
+            if let Some(claim) = observed_csharp_source_claim(selected, &source)? {
+                csharp_claims.entry(profile).or_default().push(claim);
+            }
+        }
         source_paths_by_profile
             .entry(profile)
             .or_default()
@@ -3514,17 +4415,15 @@ fn compile_semantic_publications_for_snapshot(
             return Err(BuiltinModelError(ingest::INDEX_SCAN_CANCELLED.to_owned()));
         }
         let expected_artifacts = u32::try_from(
-            context
-                .rust_target
-                .filter(|_| matches!(profile, LanguageProfile::Rust(_)))
-                .map_or(sources.len() as u64, |target| target.scope.source_count),
+            if context.csharp_project.is_some() && matches!(profile, LanguageProfile::CSharp(_)) {
+                csharp_claims.get(&profile).map_or(0, Vec::len) as u64
+            } else {
+                context.rust_target.filter(|_| matches!(profile, LanguageProfile::Rust(_)))
+                    .map_or(sources.len() as u64, |target| target.scope.source_count)
+            },
         )
         .map_err(|_| BuiltinModelError("semantic source count exceeds u32".to_owned()))?;
-        let coordinate = super::super::compiler_scope::semantic_coordinate(
-            context.package,
-            profile,
-            context.coordinate,
-        )?;
+        let coordinate = context.compiler_coordinate(profile)?;
         let request = PackageCompileRequest::new(
             GenerateTarget {
                 correlation: context.correlation,
@@ -3549,8 +4448,12 @@ fn compile_semantic_publications_for_snapshot(
             BuiltinModelError("semantic compilation observation has no input digest".to_owned())
         })?;
         let source_paths = source_paths_by_profile.remove(&profile).unwrap_or_default();
+        if context.csharp_project.is_some() && matches!(profile, LanguageProfile::CSharp(_)) {
+            return Err(BuiltinModelError("selected C# project awaits unit-scoped authority".to_owned()));
+        }
         let mut captured_work = None;
         let observation = if !native_candidate_profiles.contains(&profile)
+            && !(context.csharp_project.is_some() && matches!(profile, LanguageProfile::CSharp(_)))
             && !(context.rust_target.is_some() && matches!(profile, LanguageProfile::Rust(_)))
             && let (Some(owner), Some(snapshot)) = (owner_cluster, workspace_snapshot)
         {
@@ -4126,6 +5029,10 @@ fn compile_semantic_publications_for_snapshot(
                     ScopeRoot::from_bytes(scan_input_digest),
                     Coverage::Partial,
                 );
+                let csharp_sources = csharp_claims.remove(&profile).map(|mut claims| {
+                    claims.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+                    claims.into_iter().map(|(_, claim)| claim).collect::<Vec<_>>().into_boxed_slice()
+                });
                 let source_set = admitted_native_candidate_source_set(
                     request,
                     context.source_root.to_path_buf(),
@@ -4134,6 +5041,8 @@ fn compile_semantic_publications_for_snapshot(
                     native_candidate_profiles,
                     native_candidate_permits,
                     context.rust_target,
+                    context.csharp_project,
+                    csharp_sources,
                 )?
                 .with_input_claim(local_input_claim);
                 let source_set = match context
@@ -4155,6 +5064,10 @@ fn compile_semantic_publications_for_snapshot(
                     ),
                     None => context.compiler.compile_package_sources_staged(source_set),
                 };
+                if context.csharp_project.is_some() && matches!(profile, LanguageProfile::CSharp(_)) {
+                    semantic_authority.retire_candidate_attempt(&local_attempt, backend_extension_turso::CandidateAttemptRetirementReason::Refused)?;
+                    return Err(BuiltinModelError("selected C# project output awaits unit-scoped admission".to_owned()));
+                }
                 let compiler_failure = typed_package_compiler_failure(&compiled)?;
                 let (staged, publication_coverage) =
                     match admit_local_compile(compiled, expected_artifacts) {
@@ -4249,6 +5162,11 @@ fn compile_semantic_publications_for_snapshot(
             key.clone(),
             publication_coverage,
             claim,
+            if execution_route == SemanticExecutionRoute::RemoteSelected {
+                CapturePublicationOrigin::Other
+            } else {
+                CapturePublicationOrigin::FreshLocalCompletion
+            },
             &mut changes,
         )?;
         completions.push(completion);
@@ -4588,13 +5506,26 @@ fn publish_local_compile(
 /// changes. Its constructor is the publication recorder called only after
 /// the local or remote compiler result has been selected and admitted.
 #[derive(Clone, Debug)]
-pub(super) struct AdmittedCapturePublication {
+pub(in crate::builtin) struct AdmittedCapturePublication {
     key: ProductSemanticPublicationKey,
     coverage: SemanticPublicationCoverage,
     claim: SemanticPublicationClaim,
+    origin: CapturePublicationOrigin,
 }
 
+// The native TS path only admits a freshly staged local compile. Other
+// origins include both retained generations and independently selected remote
+// results, without asserting whether the latter were freshly computed.
+#[derive(Clone, Copy, Debug)]
+enum CapturePublicationOrigin { FreshLocalCompletion, Other }
+
 impl AdmittedCapturePublication {
+    pub(in crate::builtin) fn key(&self) -> &ProductSemanticPublicationKey { &self.key }
+    pub(in crate::builtin) fn claim(&self) -> SemanticPublicationClaim { self.claim }
+    pub(in crate::builtin) fn coverage(&self) -> SemanticPublicationCoverage { self.coverage }
+    pub(in crate::builtin) fn is_fresh_completion(&self) -> bool {
+        matches!(self.origin, CapturePublicationOrigin::FreshLocalCompletion)
+    }
     pub(super) fn selected_claim(
         &self,
     ) -> (ProductSemanticPublicationKey, SemanticPublicationClaim) {
@@ -4669,6 +5600,7 @@ pub(super) fn reused_capture_publications_for_snapshot(
             key: key.clone(),
             coverage,
             claim,
+            origin: CapturePublicationOrigin::Other,
         });
     }
     if reused.len() != reused_profiles.len() {
@@ -4686,12 +5618,14 @@ fn record_semantic_publication(
     key: ProductSemanticPublicationKey,
     publication_coverage: SemanticPublicationCoverage,
     claim: SemanticPublicationClaim,
+    origin: CapturePublicationOrigin,
     changes: &mut Vec<BuiltinSemanticChange>,
 ) -> Result<AdmittedCapturePublication, BuiltinModelError> {
     let completion = AdmittedCapturePublication {
         key: key.clone(),
         coverage: publication_coverage,
         claim,
+        origin,
     };
     {
         let value = ProductSemanticPublicationRecord::Published {
@@ -4791,6 +5725,43 @@ mod admitted_capture_publication_tests {
     }
 
     #[test]
+    fn selected_csharp_unit_prior_uses_qualified_coordinate() {
+        let temp = tempfile::tempdir().expect("private workspace");
+        let mut daemon = open_daemon(temp.path());
+        let label = "pkg:nuget/csharp-prior@1.0.0";
+        let package = backend_engine::PackageKey::from_value(label);
+        let base = PackageUrl::parse(label).unwrap();
+        let unit = super::super::super::compiler_scope::csharp_unit_coordinate(&base, "App.csproj").unwrap();
+        let csharp = LanguageProfile::CSharp(backend_semantic::vocabulary::CSharpVersion::CSharp14);
+        let other = LanguageProfile::TypeScript(backend_semantic::vocabulary::TypeScriptSource::TypeScript);
+        let key = ProductSemanticPublicationKey::new(
+            backend_engine::PackageReference::parse(label.to_owned()).unwrap(), unit.clone(), csharp,
+        ).unwrap();
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        let relation = snapshot.relation::<BuiltinSemanticRelation>().unwrap();
+        let mut changes = Vec::new();
+        record_semantic_publication(&relation, key, SemanticPublicationCoverage::Complete,
+            claim(b"csharp prior"), CapturePublicationOrigin::FreshLocalCompletion, &mut changes).unwrap();
+        let project = ProductSourceRecord::project(label, [0x31; 32], Vec::new()).unwrap();
+        let intent = BuiltinIntent::index_with_semantics(package, label,
+            vec![BuiltinSourceChange { key: package.to_bytes(), after: Some(project) }], changes).unwrap();
+        super::super::adapter::commit_builtin_intent(&mut daemon, 1, &intent).unwrap();
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        assert!(selected_semantic_binding_for_snapshot(&snapshot, package, label, Some(&unit), csharp).unwrap().is_some());
+        assert!(selected_semantic_binding_for_snapshot(&snapshot, package, label, Some(&base), csharp).unwrap().is_none());
+        let candidates = BTreeSet::from([csharp, other]);
+        let counts = BTreeMap::from([(csharp, 1), (other, 10)]);
+        let mut prior = BTreeSet::new();
+        for profile in &candidates {
+            if selected_semantic_binding_for_project(&snapshot, package, label, Some(&base), *profile, Some("App.csproj")).unwrap().is_some() {
+                prior.insert(*profile);
+            }
+        }
+        assert_eq!(prior, BTreeSet::from([csharp]));
+        assert!(structural_only_profiles(&candidates, &counts, &prior, |profile| profile == csharp, |profile| profile == other).is_empty());
+    }
+
+    #[test]
     fn admitted_capture_publication_survives_an_empty_delta_and_refuses_unproved_reuse() {
         let temp = tempfile::tempdir().expect("private workspace");
         let mut daemon = open_daemon(temp.path());
@@ -4813,6 +5784,7 @@ mod admitted_capture_publication_tests {
             key.clone(),
             SemanticPublicationCoverage::Complete,
             original_claim,
+            CapturePublicationOrigin::FreshLocalCompletion,
             &mut initial_changes,
         )
         .expect("first admission record");
@@ -4881,6 +5853,7 @@ mod admitted_capture_publication_tests {
         )
         .expect("exact source capture retains its previously selected generation");
         assert_eq!(reused.len(), 1);
+        assert!(!reused[0].is_fresh_completion());
         assert_eq!(
             reused[0].record(),
             ProductSemanticPublicationRecord::Published {
@@ -4938,9 +5911,11 @@ mod admitted_capture_publication_tests {
             key.clone(),
             SemanticPublicationCoverage::Complete,
             original_claim,
+            CapturePublicationOrigin::FreshLocalCompletion,
             &mut no_delta,
         )
         .expect("equal publication is still an admitted completion");
+        assert!(completion.is_fresh_completion());
         assert!(
             no_delta.is_empty(),
             "the actual recorder suppresses identical history and selection deltas"
@@ -6995,7 +7970,11 @@ pub(super) fn remove_project_intent(
         };
         after = Some(next);
     }
-    BuiltinIntent::remove_project(package, label, &files, &membership_pages, semantic_changes)
+    let intent =
+        BuiltinIntent::remove_project(package, label, &files, &membership_pages, semantic_changes)?;
+    let cancellation = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    intent
+        .with_stylo_retirement(&snapshot, cancellation)
         .map(Some)
 }
 

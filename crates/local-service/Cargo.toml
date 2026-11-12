@@ -30,12 +30,15 @@ backend-frontend-go = { path = "../../frontends/go" }
 backend-frontend-java = { path = "../../frontends/java" }
 backend-frontend-python = { path = "../../frontends/python" }
 backend-frontend-rust = { path = "../../frontends/rust" }
+backend-frontend-stylo = { path = "../../frontends/stylo" }
 backend-frontend-typescript = { path = "../../frontends/typescript" }
+backend-frontend-vue = { path = "../../frontends/vue" }
 backend-library = { path = "../library" }
 backend-platform = { path = "../platform" }
 backend-replication = { path = "../replication" }
 backend-runtime = { path = "../runtime" }
 backend-semantic = { path = "../semantic" }
+backend-sql-contract = { path = "../../frontends/sql-contract" }
 backend-store = { path = "../store" }
 backend-store-s3 = { path = "../store-s3" }
 backend-version = { path = "../version" }
@@ -48,6 +51,7 @@ hashlink = "=0.12.2"
 tantivy.workspace = true
 tempfile.workspace = true
 postcard.workspace = true
+quick-xml.workspace = true
 futures-executor.workspace = true
 futures-util.workspace = true
 flate2.workspace = true
@@ -60,8 +64,10 @@ zip.workspace = true
 tokio = { workspace = true, features = ["io-util", "net", "rt-multi-thread", "signal"] }
 turso.workspace = true
 unicode-normalization = "0.1.25"
+url = "=2.5.8"
 
 [dev-dependencies]
+axum.workspace = true
 backend-client = { path = "../client", features = ["test-support"] }
 backend-store-s3 = { path = "../store-s3", features = ["test-support"] }
 

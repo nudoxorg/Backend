@@ -144,6 +144,7 @@ mod workspace;
 pub use manifest::ClosureManifest;
 pub use manifest::{ManifestChange, ManifestWork, PreparedManifestDelta};
 pub use membership::DurableClosureManifest;
+pub(crate) use membership::trace_admission_error;
 pub use object::TypedObject;
 pub use workspace::{CheckedRelationNode, WorkspaceBinding, WorkspaceClosure};
 

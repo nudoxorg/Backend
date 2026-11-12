@@ -57,6 +57,7 @@ impl FileStore {
         let gc_identity = collection_pin_root_identity(&root);
         let store = Self {
             root,
+            root_directory,
             gc_identity,
             max_pack_bytes,
             lock: Arc::new(Mutex::new(())),
@@ -81,6 +82,19 @@ impl FileStore {
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Check that an existing owner-held directory capability is the exact
+    /// directory opened by this store, and that its stored path still resolves
+    /// to the same object. FileStore clones retain the same pinned handle.
+    ///
+    /// # Errors
+    /// Returns an error if the path drifted or the capabilities differ.
+    pub fn verify_owner_root(&self, owner: &backend_platform::directory::DirectoryCapability) -> Result<(), StoreError> {
+        if !self.root_directory.is_same_directory(owner).map_err(|error| io_error(&error))? {
+            return Err(io_error(&std::io::Error::new(std::io::ErrorKind::PermissionDenied, "owner and store directories differ")));
+        }
+        Ok(())
     }
 
     /// Returns the maximum admitted logical pack payload size.
@@ -529,13 +543,21 @@ impl FileStore {
     /// Returns [`StoreError::Corrupt`] for a missing, flat, or malformed
     /// closure descriptor and [`StoreError::Io`] for filesystem failures.
     pub fn open_closure(&self, id: ClosureId) -> Result<DurableManifest, StoreError> {
-        let limit = envelope_limit(self.max_pack_bytes)?;
-        let bytes = self.read_closure_envelope(id, limit)?;
+        let trace = |stage, error| {
+            crate::closure::trace_admission_error(stage, &error);
+            error
+        };
+        let limit = envelope_limit(self.max_pack_bytes)
+            .map_err(|error| trace("closure envelope limit", error))?;
+        let bytes = self.read_closure_envelope(id, limit)
+            .map_err(|error| trace("read closure envelope", error))?;
         if !nodes::is_manifest_descriptor(&bytes) {
             return Err(StoreError::Corrupt);
         }
-        let descriptor = nodes::decode_manifest_descriptor(&bytes, id)?;
+        let descriptor = nodes::decode_manifest_descriptor(&bytes, id)
+            .map_err(|error| trace("decode closure descriptor", error))?;
         self.open_manifest_index(id, descriptor)
+            .map_err(|error| trace("open manifest index", error))
     }
 
     pub(in crate::durable) fn read_closure_root(

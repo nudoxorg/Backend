@@ -102,6 +102,10 @@ impl fmt::Display for PublishedRows {
 pub struct FamilyRollup {
     ready: SlotCount,
     total: SlotCount,
+    /// Slots that are neither ready nor unavailable: installed, resident, active,
+    /// probing or revoked. Without this count a family such as "0/18 ready" with
+    /// "16 no-manifest" leaves two slots unexplained.
+    waiting: SlotCount,
 }
 
 impl FamilyRollup {
@@ -123,10 +127,18 @@ impl FamilyRollup {
         self.total.get() == 0
     }
 
+    /// Returns how many slots are neither ready nor unavailable.
+    #[must_use]
+    pub const fn waiting(self) -> SlotCount {
+        self.waiting
+    }
+
     fn observe(&mut self, lifecycle: CapabilityLifecycle) {
         self.total.increment();
-        if matches!(lifecycle, CapabilityLifecycle::Ready) {
-            self.ready.increment();
+        match lifecycle {
+            CapabilityLifecycle::Ready => self.ready.increment(),
+            CapabilityLifecycle::Unavailable(_) => {}
+            _ => self.waiting.increment(),
         }
     }
 }
@@ -281,7 +293,15 @@ impl CapabilitySummary {
             parts.push(format!("frontends {}", self.frontends));
         }
         if !self.oracles.is_empty() {
-            parts.push(format!("oracles {}", self.oracles));
+            // Oracles are optional compiler-backed checkers. Say so, and account for
+            // every slot that is not ready, so the line explains itself.
+            let mut oracles = format!("oracles {} (optional compiler-backed checkers", self.oracles);
+            if self.oracles.waiting().get() > 0 {
+                oracles.push_str(&format!("; {} installed but not yet ready", self.oracles.waiting()));
+            }
+            oracles.push(')');
+            oracles.push_str("; counts are global, not project coverage; inspect package-profile for the indexed project");
+            parts.push(oracles);
         }
         for rollup in &self.reasons {
             parts.push(format!("{} {}", rollup.count, rollup.name()));
@@ -338,6 +358,8 @@ pub struct Status {
     capabilities: CapabilitySummary,
     compiler_refusal: Option<crate::Fault>,
     source_selection: Option<backend_library::SourceSelectionObservation>,
+    source_selection_scope: Option<backend_library::SourceSelectionScopeCoverage>,
+    sql_analysis: Option<backend_library::SqlAnalysisProgress>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -383,6 +405,8 @@ impl Status {
             capabilities: CapabilitySummary::from_inventory(report.capabilities()),
             compiler_refusal: None,
             source_selection: report.progress().source_selection().cloned(),
+            source_selection_scope: report.progress().source_selection_scope().cloned(),
+            sql_analysis: report.progress().sql_analysis().cloned(),
         }
     }
 
@@ -411,7 +435,16 @@ impl Status {
         self
     }
 
-    /// Separate supported-extension discovery scope for the committed workspace.
+    /// Selected SQL analysis outcomes, if captured by the owner.
+    #[must_use]
+    pub fn sql_analysis(&self) -> Option<&backend_library::SqlAnalysisProgress> { self.sql_analysis.as_ref() }
+
+    /// Per-extension selection scope, including unknown historical rows.
+    pub fn source_selection_scope(&self) -> Option<&backend_library::SourceSelectionScopeCoverage> {
+        self.source_selection_scope.as_ref()
+    }
+
+    /// Legacy supported-extension discovery scope for the committed workspace.
     pub fn source_selection(&self) -> Option<&backend_library::SourceSelectionObservation> {
         self.source_selection.as_ref()
     }
@@ -503,6 +536,50 @@ mod source_selection_tests {
     use super::*;
 
     #[test]
+    fn status_exposes_selected_sql_analysis_at_every_detail() {
+        let library = backend_library::Library::new();
+        let summary = backend_library::SqlAnalysisProgress { analysed_files: 2, no_worker_files: 1, unsupported_dialect_files: 0, rejected_files: 1, other_unavailable_files: 0 };
+        let progress = backend_library::IngestProgress::default().with_sql_analysis(summary).unwrap();
+        let report = HealthReport::from_root(library.view(), library.cursor()).with_progress(progress);
+        let status = Status::from_report(&report, None);
+        for rendered in [crate::render::text::status(&status, crate::Theme::plain()), crate::render::markdown::status(&status)] {
+            assert!(rendered.contains("2 analysed, 1 without an admitted worker"));
+            assert!(rendered.contains("sql-query --role gap"));
+        }
+        let answer = crate::Answer::Status(Box::new(status));
+        for detail in [crate::Detail::Summary, crate::Detail::Standard, crate::Detail::Full] {
+            let encoded = crate::budget::encode_answer(&answer, detail, None, 48 * 1024).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&encoded.bytes).unwrap();
+            assert_eq!(value["sql_analysis"]["no_worker_files"], 1);
+        }
+    }
+
+    #[test]
+    fn status_discloses_mixed_scope_without_duplicate_legacy_totals() {
+        let library = backend_library::Library::new();
+        let scope = backend_library::SourceSelectionScopeCoverage { project_count: 3,
+            extensions: [("css", 1, 2, 0), ("sql", 1, 2, 2), ("vue", 2, 1, 0)]
+                .into_iter().map(|(extension, projects_observed, projects_unknown, excluded_files)|
+                    backend_library::SourceSelectionExtensionCoverage { extension: extension.into(), projects_observed, projects_unknown, excluded_files }).collect() };
+        let progress = backend_library::IngestProgress::default()
+            .with_source_selection(backend_library::SourceSelectionObservation { observed_projects: 2, unknown_projects: 1, unsupported_extensions: vec![backend_library::SourceExtensionExclusion { extension: "vue".into(), files: 0 }].into_boxed_slice() }).unwrap()
+            .with_source_selection_scope(scope).unwrap();
+        let report = HealthReport::from_root(library.view(), library.cursor()).with_progress(progress);
+        let status = Status::from_report(&report, None);
+        for rendered in [crate::render::text::status(&status, crate::Theme::plain()), crate::render::markdown::status(&status)] {
+            assert!(rendered.contains(".sql: 2 known exclusions; observed in 1/3 projects, 2 unknown"));
+            assert!(!rendered.contains("excluded (unsupported extension)"));
+        }
+        let answer = crate::Answer::Status(Box::new(status));
+        for detail in [crate::Detail::Summary, crate::Detail::Standard, crate::Detail::Full] {
+            let encoded = crate::budget::encode_answer(&answer, detail, None, 48 * 1024).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&encoded.bytes).unwrap();
+            assert_eq!(value["source_selection_scope"]["extensions"][1]["excluded_files"], 2);
+            assert!(value.get("source_selection").is_none());
+        }
+    }
+
+    #[test]
     fn status_keeps_unsupported_vue_counts_in_text_markdown_and_every_cli_mcp_detail() {
         let library = backend_library::Library::new();
         let progress = backend_library::IngestProgress::new(5, 5, 0, 7, vec![], vec![])
@@ -515,7 +592,7 @@ mod source_selection_tests {
         let text = crate::render::text::status(&status, crate::Theme::plain());
         let markdown = crate::render::markdown::status(&status);
         for rendered in [&text, &markdown] {
-            assert!(rendered.contains(".vue: 12 excluded (unsupported extension)"));
+            assert!(rendered.contains(".vue: 12 unavailable inline scripts"));
             assert!(rendered.contains("totals cover supported extensions"));
         }
         let answer = crate::Answer::Status(Box::new(status));
@@ -544,5 +621,39 @@ mod source_selection_tests {
             value.get("source_selection").is_none(),
             "absent old observation is never rewritten as zero"
         );
+    }
+}
+
+#[cfg(test)]
+mod oracle_rollup_tests {
+    use super::*;
+
+    #[test]
+    fn every_oracle_slot_that_is_not_ready_is_accounted_for() {
+        let mut oracles = FamilyRollup::default();
+        for _ in 0..16 {
+            oracles.observe(CapabilityLifecycle::Unavailable(CapabilityUnavailable::NoManifest));
+        }
+        oracles.observe(CapabilityLifecycle::Installed);
+        oracles.observe(CapabilityLifecycle::Probing);
+        assert_eq!(oracles.total().get(), 18);
+        assert_eq!(oracles.ready().get(), 0);
+        assert_eq!(oracles.waiting().get(), 2);
+        let summary = CapabilitySummary {
+            frontends: FamilyRollup::default(),
+            oracles,
+            embedding: EmbeddingState::Unconfigured,
+            reasons: vec![ReasonRollup {
+                reason: CapabilityUnavailable::NoManifest,
+                count: SlotCount::new(16),
+            }]
+            .into_boxed_slice(),
+        };
+        let line = summary.render();
+        assert!(
+            line.contains("oracles 0/18 ready (optional compiler-backed checkers; 2 installed but not yet ready)"),
+            "{line}"
+        );
+        assert!(line.contains("16 no-manifest"), "{line}");
     }
 }

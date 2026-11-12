@@ -46,6 +46,17 @@ def run(command, **kwargs):
     return subprocess.run(command, check=True, **kwargs)
 
 
+def sign_nested_image(path, stylo_worker, signing_identity, entitlements):
+    """Keep the already-admitted worker bytes fixed across app signing."""
+    if stylo_worker is not None and path == stylo_worker:
+        return
+    header = subprocess.check_output(["otool", "-hv", str(path)], text=True)
+    command = ["/usr/bin/codesign", "--force", "--timestamp", "--options", "runtime", "--sign", signing_identity]
+    if "EXECUTE" in header:
+        command += ["--entitlements", str(entitlements)]
+    run(command + [str(path)])
+
+
 def selected_managed_build(config, output):
     """Keep the operator's plan pin independent of self-contained package evidence."""
     manifest=json.loads(read_regular_bytes(output/'package/Nudox.app/Contents/Resources/build-manifest.json',16*1024**2,'selected application manifest'))
@@ -79,6 +90,29 @@ def selected_managed_build(config, output):
 
 
 def preflight(config, stage="build"):
+    # Validate new companion inputs before any keychain or notary probe.
+    stylo_keys = ('stylo_bound_receipt', 'expected_stylo_receipt_sha256', 'expected_stylo_actor_sha256', 'expected_stylo_team_id')
+    values = [config.get(key) for key in stylo_keys]
+    if any(key in config for key in stylo_keys):
+        error = None
+        if not all(isinstance(value, str) and value for value in values):
+            error = 'all signed Stylo receipt, actor, and team pins are required together'
+        elif not re.fullmatch(r'[0-9a-f]{64}', values[1]) or not re.fullmatch(r'[0-9a-f]{64}', values[2]) or not re.fullmatch(r'[A-Z0-9]{10}', values[3]):
+            error = 'signed Stylo receipt, actor, or team pin is malformed'
+        elif config.get('managed_native_host_plan') or config.get('expected_managed_plan_sha256') or config.get('relocation_plan') or config.get('relocation_package_roots'):
+            error = 'signed Stylo companion requires the direct non-relocating app path'
+        else:
+            try:
+                receipt_path = Path(values[0])
+                if not receipt_path.is_absolute() or receipt_path.is_symlink():
+                    raise ValueError('invalid receipt path')
+                raw = read_regular_bytes(receipt_path, 65536, 'signed Stylo receipt')
+                if hashlib.sha256(raw).hexdigest() != values[1]:
+                    raise ValueError('receipt content pin differs')
+            except (OSError, ValueError):
+                error = 'signed Stylo receipt is missing, unbounded, or differs from its pin'
+        if error is not None:
+            return {"ready": False, "free_gib": None, "blockers": [error]}
     sdk_cli_archive(config)
     problems = []
     if platform.system() != "Darwin" or platform.machine().lower() not in {"arm64", "aarch64"}:
@@ -173,6 +207,13 @@ def prepare(config):
     arguments = [sys.executable, str(HERE / "macos-investor-bundle.py"), *common, "--artifact-dir", str(build / "artifacts"), "--build-receipt", str(build / "application-build-receipt.json"), "--output-dir", str(package), "--minimum-os", config["minimum_os"], "--expected-icon-sha256", config["expected_icon_sha256"]]
     if config.get('managed_native_host_plan'):
         arguments.extend(['--expected-managed-plan-sha256',config['expected_managed_plan_sha256']])
+    stylo_keys = ('stylo_bound_receipt', 'expected_stylo_receipt_sha256', 'expected_stylo_actor_sha256', 'expected_stylo_team_id')
+    stylo_values = [config.get(key) for key in stylo_keys]
+    if any(stylo_values):
+        if not all(stylo_values):
+            raise ValueError('all signed Stylo receipt, actor, and team pins are required together')
+        for key in stylo_keys:
+            arguments.extend(['--' + key.replace('_', '-'), config[key]])
     for key in sorted(release_inputs(config) - {"cargo_runner"}):
         arguments.extend(["--" + key.replace("_", "-"), config[key]])
     if sdk_only(config):
@@ -207,6 +248,34 @@ def finalize(config):
         evidence = json.loads((app / "Contents/Resources/build-manifest.json").read_text())
     if evidence["source"]["git_revision"] != config["expected_revision"] or evidence["source"]["git_tree"] != config["expected_tree"]:
         raise ValueError("packaged source differs from selected release")
+    stylo_keys = ('stylo_bound_receipt', 'expected_stylo_receipt_sha256', 'expected_stylo_actor_sha256', 'expected_stylo_team_id')
+    stylo_values = [config.get(key) for key in stylo_keys]
+    stylo_record = evidence.get('stylo_companion')
+    stylo_worker = None
+    if any(stylo_values) or stylo_record is not None:
+        if not all(stylo_values) or not isinstance(stylo_record, dict) or config.get('managed_native_host_plan'):
+            raise ValueError('signed Stylo release requires the complete direct-build receipt pins')
+        import macos_stylo_companion as stylo
+        admitted, admitted_sha = stylo.admit_bound_owner(
+            Path(config['stylo_bound_receipt']), source, evidence['source'],
+            evidence['target']['triple'], config['expected_stylo_receipt_sha256'],
+            config['expected_stylo_actor_sha256'], config['expected_stylo_team_id'],
+        )
+        notice_sources = {'Stylo-MPL-2.0.txt':'vendor/stylo-native/LICENSE',
+                          'Selectors-MPL-2.0.txt':'vendor/selectors-native/LICENSE'}
+        notices = {name:sha256(source/relative) for name,relative in notice_sources.items()}
+        if any(sha256(app/'Contents/Resources/Stylo Licenses'/name) != digest for name,digest in notices.items()):
+            raise ValueError('packaged Stylo license notice changed')
+        expected = {'schema':'nudox.macos-stylo-companion.v1', 'receipt_sha256':admitted_sha,
+                    'actor_sha256':config['expected_stylo_actor_sha256'],
+                    'worker_sha256':admitted['worker']['sha256'],
+                    'owner_source_sha256':admitted['owner']['sha256'],
+                    'worker_anchor':admitted['worker_anchor'], 'team_id':config['expected_stylo_team_id'], 'signature_requirement':admitted['worker']['signature_requirement'], 'notices':notices}
+        if stylo_record != expected:
+            raise ValueError('packaged Stylo evidence differs from the selected bound receipt')
+        stylo_worker = app / 'Contents/MacOS/backend-stylo-worker'
+        if stylo.inspect_signed_worker(stylo_worker, evidence['target']['triple'], config['expected_stylo_team_id'])['sha256'] != expected['worker_sha256'] or sha256(app / 'Contents/MacOS/backend-locald') != expected['owner_source_sha256']:
+            raise ValueError('packaged Stylo worker or anchored owner changed before signing')
     if sdk is not None:
         expected_source = {"git_revision": config["expected_revision"], "git_tree": config["expected_tree"],
                            "cargo_lock_sha256": sha256(source / "Cargo.lock"), "working_tree": "clean"}
@@ -249,11 +318,7 @@ def finalize(config):
             magic = stream.read(4)
         if magic not in MACHO:
             continue
-        header = subprocess.check_output(["otool", "-hv", str(path)], text=True)
-        command = ["/usr/bin/codesign", "--force", "--timestamp", "--options", "runtime", "--sign", config["signing_identity"]]
-        if "EXECUTE" in header:
-            command += ["--entitlements", str(entitlements)]
-        run(command + [str(path)])
+        sign_nested_image(path, stylo_worker, config["signing_identity"], entitlements)
     for nested in sorted(app.rglob("*"), key=lambda p: len(p.parts), reverse=True):
         if nested.is_dir() and not nested.is_symlink() and nested.suffix in {".framework", ".bundle", ".xpc", ".app"}:
             run(["/usr/bin/codesign", "--force", "--timestamp", "--options", "runtime", "--sign", config["signing_identity"], str(nested)])
@@ -264,6 +329,12 @@ def finalize(config):
             raise ValueError(str(error)) from error
     run(["/usr/bin/codesign", "--force", "--timestamp", "--options", "runtime", "--sign", config["signing_identity"], str(app)])
     run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)])
+    if stylo_worker is not None:
+        if stylo.inspect_signed_worker(stylo_worker, evidence['target']['triple'], config['expected_stylo_team_id'])['sha256'] != stylo_record['worker_sha256']:
+            raise ValueError('app signing changed the anchored Stylo worker')
+        app_signature = stylo.run_tool(['/usr/bin/codesign','--display','--verbose=4',str(app)]).decode('utf-8','strict')
+        if re.findall(r'^TeamIdentifier=(.+)$', app_signature, re.MULTILINE) != [config['expected_stylo_team_id']]:
+            raise ValueError('app and Stylo worker signing teams differ')
     submission = output / "notarization.zip"
     run(["ditto", "-c", "-k", "--keepParent", str(app), str(submission)])
     result = run(["xcrun", "notarytool", "submit", str(submission), "--keychain-profile", config["notary_profile"], "--wait", "--output-format", "json"], stdout=subprocess.PIPE, text=True)
@@ -275,6 +346,8 @@ def finalize(config):
     run(["xcrun", "stapler", "validate", str(app)])
     run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)])
     run(["spctl", "--assess", "--type", "execute", str(app)])
+    if stylo_worker is not None and stylo.inspect_signed_worker(stylo_worker, evidence['target']['triple'], config['expected_stylo_team_id'])['sha256'] != stylo_record['worker_sha256']:
+        raise ValueError('notarization changed the anchored Stylo worker')
     candidate.mkdir()
     archive = candidate / ASSET
     run(["ditto", "-c", "-k", "--keepParent", str(app), str(archive)])

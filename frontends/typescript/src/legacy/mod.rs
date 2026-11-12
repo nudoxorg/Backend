@@ -34,3 +34,7 @@ pub use oxc_ast::AstKind;
 pub use oxc_semantic::{ReferenceFlags, Scoping, Semantic, SymbolFlags, SymbolId};
 pub use oxc_span::{GetSpan, Span};
 pub use oxc_syntax::node::NodeId;
+// Module-record vocabulary so import and export entries can be matched by consumers.
+pub use oxc_syntax::module_record::{ExportExportName, ExportImportName, ExportLocalName, ImportImportName};
+// Expression vocabulary for read-only syntax consumers.
+pub use oxc_ast::ast::{Expression, JSXAttributeName, JSXAttributeValue, JSXElementName, ObjectPropertyKind};

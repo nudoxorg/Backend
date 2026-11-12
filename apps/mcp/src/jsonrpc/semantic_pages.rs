@@ -310,6 +310,7 @@ impl<P: Product> Server<P> {
             SurfaceBody {
                 continuation_call: next.as_ref(),
                 fault: view.fault().map(backend_present::FaultDto::new),
+                partial_publication_warning: None,
                 index_poll: None,
                 surface: SurfaceProjection {
                     reply: &reply,

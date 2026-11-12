@@ -322,22 +322,26 @@ fn default_lib_dir_uncached() -> Result<PathBuf> {
         return Ok(dir);
     }
 
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    if let Some(dir) = lib_dir_from_root(manifest_dir) {
-        return Ok(dir);
-    }
-
-    // If manifest dir is a crate under a workspace, also check ancestor dirs
-    // (e.g., crates/tsz-core/ -> repo root where TypeScript/ lives)
-    let mut ancestor = manifest_dir.parent();
-    while let Some(dir) = ancestor {
-        if let Some(found) = lib_dir_from_root(dir) {
-            return Ok(found);
+    // The source tree is useful to developers, but its build-machine path is
+    // not an installed input. Omit the path literal entirely from release
+    // binaries; callers already fall back to the embedded library catalog.
+    #[cfg(debug_assertions)]
+    {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        if let Some(dir) = lib_dir_from_root(manifest_dir) {
+            return Ok(dir);
         }
-        ancestor = dir.parent();
+
+        let mut ancestor = manifest_dir.parent();
+        while let Some(dir) = ancestor {
+            if let Some(found) = lib_dir_from_root(dir) {
+                return Ok(found);
+            }
+            ancestor = dir.parent();
+        }
     }
 
-    bail!("lib directory not found under {}", manifest_dir.display());
+    bail!("TypeScript lib directory not found")
 }
 
 fn lib_dir_from_exe() -> Option<PathBuf> {

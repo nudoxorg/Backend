@@ -157,14 +157,17 @@ struct FileFacts<'a> {
 #[derive(Default)]
 struct FileDeclarations<'a> {
     require_exact_imports: bool,
+    typescript: bool,
     scope_parents: BTreeMap<backend_compile::SourceBinding, Option<backend_compile::SourceBinding>>,
     parameter_names: BTreeMap<backend_compile::SourceBinding, BTreeSet<String>>,
     unknown_parameters: BTreeSet<backend_compile::SourceBinding>,
     scoped_names:
         BTreeMap<&'a str, BTreeMap<Option<backend_compile::SourceBinding>, ScopedCallName>>,
     callable: BTreeMap<&'a str, BTreeSet<DeclarationId>>,
+    exported_callable: BTreeMap<&'a str, BTreeSet<DeclarationId>>,
     methods: BTreeMap<&'a str, BTreeMap<&'a str, BTreeSet<DeclarationId>>>,
     nominal: BTreeSet<&'a str>,
+    reexports: BTreeMap<&'a str, Vec<(&'a str, &'a str)>>,
 }
 
 #[derive(Default)]
@@ -249,11 +252,29 @@ struct ImportedCalls {
 }
 
 impl ImportedCalls {
+    fn exported_targets(id: FileId, name: &str, modules: &ModuleIndex<'_>, files: &[FileDeclarations<'_>], visiting: &mut BTreeSet<(FileId, String)>) -> Option<BTreeSet<DeclarationId>> {
+        if visiting.len() >= 256 || !visiting.insert((id, name.to_owned())) { return None; }
+        let file = &files[id.0];
+        let mut targets = if file.typescript { &file.exported_callable } else { &file.callable }.get(name).cloned().unwrap_or_default();
+        if let Some(exports) = file.reexports.get(name) {
+            if exports.len() != 1 || !targets.is_empty() { return None; }
+            for &(specifier, original) in exports {
+                let paths = modules.resolve(specifier, modules.paths[id.0]);
+                if paths.len() != 1 { return None; }
+                let next = *paths.iter().next()?;
+                targets.extend(Self::exported_targets(next, original, modules, files, visiting)?);
+            }
+        }
+        visiting.remove(&(id, name.to_owned()));
+        (!targets.is_empty()).then_some(targets)
+    }
+
     fn join(
         imports: impl Iterator<Item = (ImportBinding, Option<backend_compile::SourceBinding>)>,
         path: &str,
         modules: &ModuleIndex<'_>,
         files: &[FileDeclarations<'_>],
+        require_single_module: bool,
     ) -> Self {
         let mut joined = Self::default();
         let mut resolved = BTreeMap::<String, BTreeSet<FileId>>::new();
@@ -265,6 +286,7 @@ impl ImportedCalls {
             let paths = resolved
                 .entry(specifier.clone())
                 .or_insert_with(|| modules.resolve(specifier, path));
+            if require_single_module && paths.len() != 1 { continue; }
             for id in paths.iter().copied() {
                 let file = &files[id.0];
                 match &import.kind {
@@ -298,19 +320,20 @@ impl ImportedCalls {
                                     }
                                 }
                             }
-                        } else if let Some(targets) = file.callable.get(exported.as_str()) {
+                        } else {
+                            let Some(targets) = Self::exported_targets(id, exported, modules, files, &mut BTreeSet::new()) else { continue };
                             if let Some(binding) = binding {
                                 joined
                                     .exact_unqualified
                                     .entry(binding)
                                     .or_default()
-                                    .extend(targets);
+                                    .extend(&targets);
                             } else {
                                 joined
                                     .unqualified
                                     .entry(import.local.clone())
                                     .or_default()
-                                    .extend(targets);
+                                    .extend(&targets);
                             }
                         }
                     }
@@ -441,6 +464,7 @@ pub(super) struct ProjectCalls {
     by_coordinate: BTreeMap<String, DeclarationId>,
     outgoing: BTreeMap<DeclarationId, BTreeSet<DeclarationId>>,
     incoming: BTreeMap<DeclarationId, BTreeSet<DeclarationId>>,
+    jsx_occurrences: BTreeMap<(DeclarationId, DeclarationId), Vec<(usize, usize)>>,
 }
 
 impl ProjectCalls {
@@ -496,6 +520,7 @@ impl ProjectCalls {
             by_coordinate: BTreeMap::new(),
             outgoing: BTreeMap::new(),
             incoming: BTreeMap::new(),
+            jsx_occurrences: BTreeMap::new(),
         };
         let mut declarations = Vec::with_capacity(files.len());
         let mut callers = Vec::with_capacity(files.len());
@@ -505,6 +530,7 @@ impl ProjectCalls {
         for file in &files {
             let mut lookup = FileDeclarations {
                 require_exact_imports: file.language == backend_engine::SourceLanguage::TypeScript,
+                typescript: file.language == backend_engine::SourceLanguage::TypeScript,
                 ..FileDeclarations::default()
             };
             let mut file_callers = Vec::new();
@@ -519,6 +545,12 @@ impl ProjectCalls {
                 })
                 .collect::<BTreeMap<_, _>>();
             for (index, declaration) in file.declarations.iter().enumerate() {
+                if let Some(rest) = declaration.signature().strip_prefix("reexport\n") {
+                    if let Some((specifier, original)) = rest.split_once('\n') {
+                        lookup.reexports.entry(declaration.name()).or_default().push((specifier, original));
+                    }
+                    continue;
+                }
                 if declares_a_nominal_type(declaration.kind()) {
                     lookup.nominal.insert(declaration.name());
                 }
@@ -627,6 +659,10 @@ impl ProjectCalls {
                     .entry(declaration.name())
                     .or_default()
                     .insert(id);
+                if file.language == backend_engine::SourceLanguage::TypeScript
+                    && declaration.source_excerpt().text().is_some_and(|excerpt| excerpt.trim_start().starts_with("export ")) {
+                    lookup.exported_callable.entry(declaration.name()).or_default().insert(id);
+                }
                 match declaration.container() {
                     Container::Enclosing { name, .. } | Container::Attached { type_name: name } => {
                         lookup
@@ -672,6 +708,7 @@ impl ProjectCalls {
                 file.path,
                 &modules,
                 &declarations,
+                file.language == backend_engine::SourceLanguage::TypeScript,
             );
             #[cfg(test)]
             {
@@ -689,10 +726,27 @@ impl ProjectCalls {
                     graph.outgoing.entry(caller).or_default().insert(callee);
                     graph.incoming.entry(callee).or_default().insert(caller);
                 }
+                if let Some(frontend) = ts_parameters.as_ref() {
+                    let uses = frontend.jsx_component_uses(Path::new(file.path), excerpt)
+                        .map_err(|error| BuiltinModelError(format!("structural JSX grammar: {error}")))?;
+                    for (name, start, end) in uses.unwrap_or_default() {
+                        let call = CallSite { name, receiver: CallReceiver::Bare };
+                        let Some(callee) = imported.target(&declarations[at], &call, exact_caller) else { continue };
+                        if caller == callee { continue; }
+                        graph.outgoing.entry(caller).or_default().insert(callee);
+                        graph.incoming.entry(callee).or_default().insert(caller);
+                        graph.jsx_occurrences.entry((caller, callee)).or_default().push((start, end));
+                    }
+                }
             }
         }
         Ok(graph)
     }
+
+    pub(super) fn jsx_spans_for_rows(&self, rows: &StructuralCallRows<'_>, caller: RowId, target: RowId) -> Vec<(usize, usize)> {
+        self.jsx_occurrences.iter().filter(|((from, to), _)| rows.mapped(&self.endpoints[from.0]) == Some(caller) && rows.mapped(&self.endpoints[to.0]) == Some(target)).flat_map(|(_, spans)| spans.iter().copied()).collect()
+    }
+
 
     pub(super) fn endpoint_pairs(
         &self,

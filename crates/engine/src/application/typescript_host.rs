@@ -3991,7 +3991,9 @@ pub(super) fn supplemental_conventional_config<'a>(
 ///    root, only those in the nearest such directory compete. `tsconfig.json`
 ///    wins there (the `tsc -p <dir>` default; a solution-style one expands to
 ///    its `references` as a program forest), then [`config_rank`], then path.
-/// 3. No candidate selects no config (an inferred-project fallback).
+/// 3. When no project config contains the package root, the single directory below it that
+///    holds project configs is the project (see [`select_sole_nested_config`]).
+/// 4. Otherwise no config is selected (an inferred-project fallback).
 pub(crate) fn select_project_config_with_basis<'a>(
     package_root: &Path,
     configs: impl IntoIterator<Item = &'a TypeScriptConfigInput>,
@@ -4037,7 +4039,7 @@ pub(crate) fn select_project_config_with_basis<'a>(
             });
         }
     }
-    let nearest = configs
+    let Some(nearest) = configs
         .iter()
         .copied()
         .filter(|candidate| candidate.project_candidate)
@@ -4045,7 +4047,10 @@ pub(crate) fn select_project_config_with_basis<'a>(
             package_root.starts_with(candidate.path.parent().unwrap_or(Path::new("/")))
         })
         .map(directory_depth)
-        .max()?;
+        .max()
+    else {
+        return select_sole_nested_config(package_root, &configs);
+    };
     let mut candidates = configs
         .into_iter()
         .filter(|candidate| candidate.project_candidate)
@@ -4068,6 +4073,46 @@ pub(crate) fn select_project_config_with_basis<'a>(
         basis,
         passed_over: candidates.len() - 1,
     })
+}
+
+/// A repository whose only TypeScript project lives in a subdirectory (`frontend/tsconfig.json`
+/// next to a `backend/` directory) has no config that contains the indexed root. Without one
+/// its `paths` and `baseUrl` are ignored, so every `@/` import is unresolved and cross-file
+/// references silently vanish. When exactly one directory below the root holds project
+/// configs, that directory is the project; with several (a monorepo with many apps) nothing is
+/// guessed and the inferred-project fallback stays.
+fn select_sole_nested_config<'a>(
+    package_root: &Path,
+    configs: &[&'a TypeScriptConfigInput],
+) -> Option<TypeScriptConfigSelection<'a>> {
+    let mut below = configs
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.project_candidate)
+        .filter(|candidate| {
+            candidate
+                .path
+                .parent()
+                .is_some_and(|directory| directory != package_root && directory.starts_with(package_root))
+        })
+        .collect::<Vec<_>>();
+    let directories = below
+        .iter()
+        .filter_map(|candidate| candidate.path.parent())
+        .collect::<std::collections::BTreeSet<_>>();
+    if directories.len() != 1 {
+        return None;
+    }
+    below.sort_by_cached_key(|config| (config_rank(*config), config.path.clone()));
+    let first = *below.first()?;
+    let basis = if below.len() == 1 {
+        TypeScriptConfigSelectionBasis::OnlyCandidate
+    } else if config_rank(first) == 0 {
+        TypeScriptConfigSelectionBasis::Conventional
+    } else {
+        TypeScriptConfigSelectionBasis::RankedAmong
+    };
+    Some(TypeScriptConfigSelection { config: first, basis, passed_over: below.len() - 1 })
 }
 
 /// The config chosen by [`select_project_config_with_basis`].
@@ -8406,6 +8451,62 @@ printf 'Version 5.9.3\n'
                 .unwrap()
                 .path
                 .as_ref(),
+            module_path(&fixture.0, "tsconfig.json")
+        );
+    }
+
+    #[test]
+    fn a_lone_project_config_below_the_indexed_root_is_the_project() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        let module_root = fs::canonicalize(modules).expect("canonical module root");
+        let app = fixture.0.join("frontend");
+        fs::create_dir_all(&app).expect("create app");
+        fs::create_dir_all(fixture.0.join("backend")).expect("create backend");
+        fs::write(
+            app.join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["./*"]}}}"#,
+        )
+        .expect("write app config");
+        let configs = collect_project_configs(&fixture.0, &fixture.0, &module_root, &[])
+            .expect("repository with one nested app");
+        let selection = select_project_config_with_basis(&fixture.0, &configs)
+            .expect("the nested app is the project");
+        assert_eq!(selection.config.path.as_ref(), module_path(&app, "tsconfig.json"));
+        assert_eq!(selection.basis, TypeScriptConfigSelectionBasis::OnlyCandidate);
+    }
+
+    #[test]
+    fn several_nested_project_directories_are_not_guessed() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        let module_root = fs::canonicalize(modules).expect("canonical module root");
+        for app in ["apps/web", "apps/admin"] {
+            let directory = fixture.0.join(app);
+            fs::create_dir_all(&directory).expect("create app");
+            fs::write(directory.join("tsconfig.json"), "{}").expect("write app config");
+        }
+        let configs = collect_project_configs(&fixture.0, &fixture.0, &module_root, &[])
+            .expect("repository with two apps");
+        assert!(
+            select_project_config(&fixture.0, &configs).is_none(),
+            "two candidate directories must keep the inferred-project fallback"
+        );
+    }
+
+    #[test]
+    fn a_config_containing_the_root_still_beats_a_nested_one() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        let module_root = fs::canonicalize(modules).expect("canonical module root");
+        fs::write(fixture.0.join("tsconfig.json"), "{}").expect("write root config");
+        let nested = fixture.0.join("tools");
+        fs::create_dir_all(&nested).expect("create nested");
+        fs::write(nested.join("tsconfig.json"), "{}").expect("write nested config");
+        let configs = collect_project_configs(&fixture.0, &fixture.0, &module_root, &[])
+            .expect("root and nested configs");
+        assert_eq!(
+            select_project_config(&fixture.0, &configs).unwrap().path.as_ref(),
             module_path(&fixture.0, "tsconfig.json")
         );
     }

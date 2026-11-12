@@ -10,23 +10,24 @@
 //! caller's source bytes.  That check closes the otherwise subtle race where
 //! the helper could digest a different on-disk version than the bytes later
 //! lowered by the compiler.  The image's own SHA-256 source binding is checked
-//! again after decode.  The child and all descendants are reaped on a stream
-//! bound, deadline, or cancellation terminal.
+//! again after decode. The platform process supervisor bounds stream capture
+//! and retires its owned process group or Windows Job Object.
 
 use std::{
     fs,
-    io::Read,
+    io::Write,
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
-    thread,
-    time::{Duration, Instant},
+    process::Command,
+    sync::atomic::{AtomicBool, Ordering},
+    time::Instant,
 };
 
-use backend_semantic::vocabulary::{CSharpVersion, NativeTool, NativeWorker, NativeWorkerPanic};
+#[cfg(test)]
+use std::{thread, time::Duration};
+
+#[cfg(test)]
+use backend_semantic::vocabulary::NativeWorker;
+use backend_semantic::vocabulary::{CSharpVersion, NativeTool, NativeWorkerPanic};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -41,10 +42,12 @@ pub const DEFAULT_SOURCE_LIMIT: usize = 16 * 1024 * 1024;
 /// Versioned identity of the isolated Roslyn host-process environment.
 pub const CSHARP_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1: &str =
     "csharp-package-child-environment.v1";
+/// Captured compilation-unit input and image-fidelity policy, used to invalidate
+/// producer caches made by the earlier live source-directory walk.
+pub const CSHARP_CAPTURED_UNIT_POLICY_ID_V1: &str = "csharp-captured-unit.v1";
 /// Maximum stderr transcript retained in an exit diagnostic.
 const STDERR_TAIL_LIMIT: usize = 4096;
 /// Poll interval for the bounded child wait loop.
-const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
 /// Configuration for the helper's package compilation.
 ///
@@ -57,8 +60,20 @@ pub struct CSharpAuthorityConfiguration<'config> {
     pub assembly_name: Option<&'config str>,
     /// Optional reference-assembly directory forwarded to Roslyn.
     pub reference_directory: Option<&'config Path>,
+    /// Additional explicitly selected reference-assembly directories.
+    pub additional_reference_directories: &'config [&'config Path],
     /// Additional preprocessor symbols, in caller order.
     pub define_symbols: &'config [&'config str],
+    /// Use only explicitly supplied symbols from a captured SDK observation.
+    pub exact_define_symbols: bool,
+    /// Captured SDK target framework, when observed for this attempt.
+    pub target_framework: Option<&'config str>,
+    /// Captured SDK nullable option, with the paired unsafe flag.
+    pub exact_nullable: Option<&'config str>,
+    /// Captured SDK unsafe option, paired with exact nullable.
+    pub exact_unsafe: Option<bool>,
+    /// Captured SDK output type when observed.
+    pub exact_output_type: Option<&'config str>,
     /// Additional global usings, in caller order.
     pub extra_usings: &'config [&'config str],
     /// Whether SDK-style implicit global usings are reconstructed.
@@ -74,7 +89,13 @@ impl CSharpAuthorityConfiguration<'static> {
     pub const DEFAULT: Self = Self {
         assembly_name: None,
         reference_directory: None,
+        additional_reference_directories: &[],
         define_symbols: &[],
+        exact_define_symbols: false,
+        target_framework: None,
+        exact_nullable: None,
+        exact_unsafe: None,
+        exact_output_type: None,
         extra_usings: &[],
         implicit_usings: true,
         include_non_public: true,
@@ -106,6 +127,12 @@ pub struct CSharpAuthorityRequest<'request, 'config, 'cancel> {
     pub project_file: Option<&'request Path>,
     /// Exact source bytes that the caller will lower after authority entry.
     pub source: &'request [u8],
+    /// Exact captured source members for this compilation unit, when supplied.
+    pub captured_sources: Option<&'request [CSharpCapturedSource<'request>]>,
+    /// Owner-captured ordered project/config probes, when available.
+    pub captured_config: Option<&'request [CSharpCapturedConfig<'request>]>,
+    /// Exact bounded project graph. Nodes compile into separate assemblies.
+    pub captured_project_graph: Option<&'request CSharpCapturedProjectGraph<'request>>,
     /// Closed C# language version selected for Roslyn parsing.
     pub profile: CSharpVersion,
     /// Native tool family already selected by the enclosing compiler request.
@@ -116,6 +143,90 @@ pub struct CSharpAuthorityRequest<'request, 'config, 'cancel> {
     pub control: CSharpAuthorityControl<'cancel>,
     /// Explicit Roslyn source-mode configuration.
     pub configuration: CSharpAuthorityConfiguration<'config>,
+}
+
+/// One package-relative source and its exact captured UTF-8 content.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct CSharpCapturedSource<'source> {
+    /// Forward-slash-separated package-relative path.
+    #[serde(rename = "Path")]
+    pub path: &'source str,
+    /// Captured source text.
+    #[serde(rename = "Text")]
+    pub text: &'source str,
+}
+
+/// One captured project/config probe. None records absence at capture time.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct CSharpCapturedConfig<'source> {
+    /// Package-relative portable path in the helper's required probe order.
+    #[serde(rename = "Path")]
+    pub path: &'source str,
+    /// Captured UTF-8 bytes, or an observed absence.
+    #[serde(rename = "Text")]
+    pub text: Option<&'source str>,
+}
+
+/// A closed captured project-reference graph; no MSBuild execution is permitted.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct CSharpCapturedProjectGraph<'a> {
+    /// Protocol version, currently one.
+    pub format: u8,
+    /// Exact package-relative project selected for this invocation.
+    pub root_project: &'a str,
+    /// All and only projects reachable from the root (at most 64).
+    pub projects: &'a [CSharpCapturedProjectNode<'a>],
+}
+
+/// Exact input custody and compiler options for one distinct assembly.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct CSharpCapturedProjectNode<'a> {
+    /// Exact package-relative .csproj path.
+    pub project_path: &'a str,
+    /// Assembly identity admitted from the captured configuration.
+    pub assembly_name: &'a str,
+    /// Exact simple target framework moniker.
+    pub target_framework: &'a str,
+    /// Closed language version, for example "12.0".
+    pub language_version: &'a str,
+    /// Exact preprocessor symbols.
+    pub define_symbols: &'a [&'a str],
+    /// Nullable mode (disable, enable, warnings, annotations).
+    pub nullable: &'a str,
+    /// Exact unsafe compiler setting.
+    pub allow_unsafe: bool,
+    /// Exe, Library or WinExe.
+    pub output_type: &'a str,
+    /// Complete admitted global namespace imports.
+    pub usings: &'a [&'a str],
+    /// Exact source buffers, scoped to this project.
+    pub sources: &'a [CSharpCapturedSource<'a>],
+    /// Ordered project and ancestor presence/absence probes.
+    pub config: &'a [CSharpCapturedConfig<'a>],
+    /// Owner-staged immutable directories of exact managed reference snapshots.
+    pub reference_directories: &'a [&'a Path],
+    /// Direct dependencies by exact package-relative project path.
+    pub project_references: &'a [&'a str],
+}
+
+struct ManifestWriter(Vec<u8>);
+
+impl Write for ManifestWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > (64 * 1024 * 1024usize).saturating_sub(self.0.len()) {
+            return Err(std::io::Error::other(
+                "captured source manifest exceeds limit",
+            ));
+        }
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Configured producer for the vendored Roslyn authority helper.
@@ -137,13 +248,15 @@ pub struct CSharpOracle {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CSharpAuthorityImage {
     bytes: Box<[u8]>,
+    evidence: Option<Box<[u8]>>,
 }
 
 impl CSharpAuthorityImage {
-    fn from_bytes(bytes: Vec<u8>) -> Self {
-        Self {
-            bytes: bytes.into_boxed_slice(),
-        }
+    /// Helper-emitted, same-invocation evidence after local consistency checks.
+    /// This is an untrusted claim, not a selected publication capability.
+    #[must_use]
+    pub fn captured_evidence(&self) -> Option<&[u8]> {
+        self.evidence.as_deref()
     }
 
     /// Borrows the exact validated image bytes for the next compiler boundary.
@@ -156,6 +269,12 @@ impl CSharpAuthorityImage {
     #[must_use]
     pub fn into_bytes(self) -> Box<[u8]> {
         self.bytes
+    }
+
+    /// Separates the validated image and untrusted same-invocation evidence.
+    #[must_use]
+    pub fn into_parts(self) -> (Box<[u8]>, Option<Box<[u8]>>) {
+        (self.bytes, self.evidence)
     }
 
     /// Reopens the retained bytes through the typed image reader.
@@ -227,7 +346,20 @@ impl CSharpOracle {
         &self,
         request: CSharpAuthorityRequest<'request, 'config, 'cancel>,
     ) -> Result<Vec<u8>, CSharpAuthorityError> {
+        self.authority_image_with_evidence(request)
+            .map(|(image, _)| image)
+    }
+
+    fn authority_image_with_evidence<'request, 'config, 'cancel>(
+        &self,
+        request: CSharpAuthorityRequest<'request, 'config, 'cancel>,
+    ) -> Result<(Vec<u8>, Option<Box<[u8]>>), CSharpAuthorityError> {
         checkpoint(request.control, CSharpAuthorityPhase::Admission)?;
+        if request.configuration.exact_nullable.is_some()
+            != request.configuration.exact_unsafe.is_some()
+        {
+            return Err(CSharpAuthorityError::Configuration);
+        }
         if request.native_tool != NativeTool::CSharpCompiler {
             return Err(CSharpAuthorityError::WrongToolchain {
                 observed: request.native_tool,
@@ -315,6 +447,93 @@ impl CSharpOracle {
         }
 
         checkpoint(request.control, CSharpAuthorityPhase::Spawn)?;
+        let manifest = request
+            .captured_sources
+            .map(|sources| {
+                let bound = request
+                    .source_path
+                    .strip_prefix(request.package_root)
+                    .ok()
+                    .and_then(Path::to_str)
+                    .map(|path| path.replace('\\', "/"));
+                if !sources.iter().any(|source| {
+                    Some(source.path) == bound.as_deref()
+                        && source.text.as_bytes() == request.source
+                }) {
+                    return Err(CSharpAuthorityError::Manifest);
+                }
+                let mut writer = ManifestWriter(Vec::new());
+                serde_json::to_writer(&mut writer, sources)
+                    .map_err(|_| CSharpAuthorityError::Manifest)?;
+                Ok(writer.0)
+            })
+            .transpose()?;
+        let graph_manifest = request
+            .captured_project_graph
+            .map(|graph| {
+                if request.captured_config.is_some()
+                    || project_file.is_none()
+                    || request.captured_sources.is_none()
+                    || graph.format != 1
+                    || graph.projects.is_empty()
+                    || graph.projects.len() > 64
+                    || project_file
+                        .as_ref()
+                        .and_then(|path| path.strip_prefix(&package_root).ok())
+                        .and_then(Path::to_str)
+                        .map(|path| path.replace('\\', "/"))
+                        .as_deref()
+                        != Some(graph.root_project)
+                {
+                    return Err(CSharpAuthorityError::Manifest);
+                }
+                let expected = request
+                    .captured_sources
+                    .ok_or(CSharpAuthorityError::Manifest)?;
+                if graph
+                    .projects
+                    .iter()
+                    .map(|node| node.sources.len())
+                    .sum::<usize>()
+                    != expected.len()
+                    || graph
+                        .projects
+                        .iter()
+                        .flat_map(|node| node.sources)
+                        .any(|source| {
+                            expected
+                                .iter()
+                                .filter(|entry| {
+                                    entry.path == source.path && entry.text == source.text
+                                })
+                                .count()
+                                != 1
+                        })
+                {
+                    return Err(CSharpAuthorityError::Manifest);
+                }
+                let mut writer = ManifestWriter(Vec::new());
+                serde_json::to_writer(&mut writer, graph)
+                    .map_err(|_| CSharpAuthorityError::Manifest)?;
+                Ok(writer.0)
+            })
+            .transpose()?;
+        let config_manifest = request
+            .captured_config
+            .map(|config| {
+                if request.captured_sources.is_none() || project_file.is_none() {
+                    return Err(CSharpAuthorityError::Manifest);
+                }
+                let mut writer = ManifestWriter(Vec::new());
+                serde_json::to_writer(&mut writer, config)
+                    .map_err(|_| CSharpAuthorityError::Manifest)?;
+                if writer.0.len() > 16 * 1024 * 1024 {
+                    return Err(CSharpAuthorityError::Manifest);
+                }
+                Ok(writer.0)
+            })
+            .transpose()?;
+        checkpoint(request.control, CSharpAuthorityPhase::Spawn)?;
         let mut command = Command::new(request.toolchain);
         isolate_authority_environment(&mut command);
         command
@@ -325,121 +544,177 @@ impl CSharpOracle {
             .args(["--authority-image", "--source-binding"])
             .arg(&source_path)
             .args(["--lang-version", profile_tag(request.profile)])
-            .current_dir(&package_root)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .current_dir(&package_root);
+        let mut evidence_request = None;
+        let manifest_directory = if let Some(manifest) = manifest {
+            let directory = tempfile::tempdir().map_err(|source| CSharpAuthorityError::Pipe {
+                stream: "manifest",
+                source,
+            })?;
+            let path = directory.path().join("captured-sources.json");
+            fs::write(&path, manifest).map_err(|source| CSharpAuthorityError::Pipe {
+                stream: "manifest",
+                source,
+            })?;
+            if graph_manifest.is_none() {
+                command.arg("--captured-sources-file").arg(path);
+            }
+            let capture_config = graph_manifest.as_ref().or(config_manifest.as_ref());
+            if let Some(config) = capture_config {
+                let config_hash = format!("{:x}", Sha256::digest(config));
+                let path = directory.path().join("captured-config.json");
+                fs::write(&path, config).map_err(|source| CSharpAuthorityError::Pipe {
+                    stream: "config manifest",
+                    source,
+                })?;
+                command
+                    .arg(if graph_manifest.is_some() {
+                        "--captured-project-graph-file"
+                    } else {
+                        "--captured-config-file"
+                    })
+                    .arg(path);
+                let nonce_hash = format!(
+                    "{:x}",
+                    Sha256::digest(directory.path().as_os_str().as_encoded_bytes())
+                );
+                let nonce = nonce_hash[..32].to_owned();
+                let evidence_path = directory.path().join("captured-evidence.json");
+                command
+                    .arg("--capture-evidence-file")
+                    .arg(&evidence_path)
+                    .arg("--capture-evidence-nonce")
+                    .arg(&nonce);
+                evidence_request = Some((evidence_path, nonce, config_hash));
+            }
+            Some(directory)
+        } else {
+            None
+        };
+        checkpoint(request.control, CSharpAuthorityPhase::Spawn)?;
 
         if let Some(project_file) = &project_file {
             command.arg("--project-file").arg(project_file);
         }
 
         let configuration = request.configuration;
-        if let Some(name) = configuration.assembly_name {
-            command.args(["--assembly-name", name]);
-        }
-        if let Some(directory) = configuration.reference_directory {
-            command.arg("--ref-dir").arg(directory);
-        }
-        for symbol in configuration.define_symbols {
-            command.args(["--define", symbol]);
-        }
-        for namespace in configuration.extra_usings {
-            command.args(["--using", namespace]);
-        }
-        if !configuration.implicit_usings {
-            command.arg("--no-implicit-usings");
+        if request.captured_project_graph.is_none() {
+            if let Some(name) = configuration.assembly_name {
+                command.args(["--assembly-name", name]);
+            }
+            if let Some(directory) = configuration.reference_directory {
+                command.arg("--ref-dir").arg(directory);
+            }
+            for directory in configuration.additional_reference_directories {
+                command.arg("--ref-dir").arg(directory);
+            }
+            for symbol in configuration.define_symbols {
+                command.args(["--define", symbol]);
+            }
+            if configuration.exact_define_symbols {
+                command.arg("--exact-defines");
+            }
+            if let Some(framework) = configuration.target_framework {
+                command.args(["--target-framework", framework]);
+            }
+            if let Some(output_type) = configuration.exact_output_type {
+                command.args(["--exact-output-type", output_type]);
+            }
+            if let (Some(nullable), Some(allow_unsafe)) =
+                (configuration.exact_nullable, configuration.exact_unsafe)
+            {
+                command.args([
+                    "--exact-nullable",
+                    nullable,
+                    "--exact-unsafe",
+                    if allow_unsafe { "true" } else { "false" },
+                ]);
+            }
+            for namespace in configuration.extra_usings {
+                command.args(["--using", namespace]);
+            }
+            if !configuration.implicit_usings {
+                command.arg("--no-implicit-usings");
+            }
         }
         if !configuration.include_non_public {
             command.arg("--public-only");
         }
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            command.process_group(0);
-        }
-
-        let mut child = command
-            .spawn()
-            .map_err(|source| CSharpAuthorityError::Spawn {
-                toolchain: request.toolchain.to_path_buf().into_boxed_path(),
-                oracle: self.oracle.clone().into_boxed_path(),
-                source,
-            })?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            terminate_child(&mut child);
-            CSharpAuthorityError::Pipe {
-                stream: "stdout",
-                source: std::io::Error::other("child stdout was not piped"),
-            }
-        })?;
-        let stderr = child.stderr.take().ok_or_else(|| {
-            terminate_child(&mut child);
-            CSharpAuthorityError::Pipe {
-                stream: "stderr",
-                source: std::io::Error::other("child stderr was not piped"),
-            }
-        })?;
-        let (limit_sender, limit_receiver) = mpsc::channel();
-        let stdout_sender = limit_sender.clone();
-        let output_limit = self.output_limit;
-        let stdout_thread =
-            thread::spawn(move || read_bounded(stdout, output_limit, "stdout", stdout_sender));
-        let stderr_thread =
-            thread::spawn(move || read_bounded(stderr, output_limit, "stderr", limit_sender));
-
-        let terminal = wait_for_child(
-            &mut child,
-            request.control,
-            &limit_receiver,
-            self.output_limit,
-        );
-        let stdout = join_stream(stdout_thread, NativeWorker::StandardOutputReader)?;
-        let stderr = join_stream(stderr_thread, NativeWorker::StandardErrorReader)?;
-
-        let terminal = terminal?;
-        if let Some((stream, observed)) = stdout.exceeded.or(stderr.exceeded) {
-            return Err(CSharpAuthorityError::OutputLimit {
-                stream,
-                observed,
-                limit: self.output_limit,
-            });
-        }
-        if let Some(source) = stdout.error {
-            return Err(CSharpAuthorityError::Pipe {
-                stream: "stdout",
-                source,
-            });
-        }
-        if let Some(source) = stderr.error {
-            return Err(CSharpAuthorityError::Pipe {
-                stream: "stderr",
-                source,
-            });
-        }
-        if !terminal.success() {
+        let spec = backend_platform::child_output::CaptureCommand {
+            program: command.get_program().to_os_string(),
+            args: command.get_args().map(|arg| arg.to_os_string()).collect(),
+            cwd: command.get_current_dir().map(Path::to_path_buf),
+            environment: backend_platform::child_output::CaptureEnvironment::Clear,
+            overrides: command
+                .get_envs()
+                .map(|(key, value)| (key.to_os_string(), value.map(|value| value.to_os_string())))
+                .collect(),
+        };
+        let result = backend_platform::child_output::capture(
+            &spec,
+            backend_platform::child_output::CaptureLimits {
+                deadline: request.control.deadline,
+                stdout_bytes: self.output_limit,
+                stderr_bytes: self.output_limit,
+            },
+            request.control.cancelled,
+        )
+        .map_err(|cause| capture_error(cause, request.toolchain, &self.oracle))?;
+        if !result.status.success() {
             return Err(CSharpAuthorityError::Exit {
-                status: terminal.to_string(),
-                stderr: stderr_tail(&stderr.bytes),
+                status: result.status.to_string(),
+                stderr: stderr_tail(&result.stderr),
             });
         }
-
+        let diagnostic = stderr_tail(&result.stderr);
+        let stdout = result.stdout;
         checkpoint(request.control, CSharpAuthorityPhase::Decode)?;
-        if stdout.bytes.len() > self.image_limit {
+        if stdout.len() > self.image_limit {
             return Err(CSharpAuthorityError::ImageLimit {
-                observed: stdout.bytes.len(),
+                observed: stdout.len(),
                 limit: self.image_limit,
             });
         }
-        let image = CSharpImage::open(&stdout.bytes).map_err(CSharpAuthorityError::Image)?;
+        let image = CSharpImage::open(&stdout).map_err(CSharpAuthorityError::Image)?;
         let expected: [u8; 32] = Sha256::digest(request.source).into();
         let observed = image.source_digest();
         if observed != expected {
             return Err(CSharpAuthorityError::ImageBinding { expected, observed });
         }
+        if image.compilation_errors() != 0 {
+            return Err(CSharpAuthorityError::CompilationIncomplete {
+                count: image.compilation_errors(),
+                diagnostic,
+            });
+        }
+        let evidence = if let Some((path, nonce, config_hash)) = evidence_request {
+            let bytes =
+                backend_platform::durable::read_regular_bounded_stable(&path, 2 * 1024 * 1024)
+                    .map_err(|_| CSharpAuthorityError::Evidence)?;
+            let binding = source_path
+                .strip_prefix(&package_root)
+                .ok()
+                .and_then(Path::to_str)
+                .map(|path| path.replace('\\', "/"))
+                .ok_or(CSharpAuthorityError::Evidence)?;
+            validate_captured_evidence(
+                &bytes,
+                &nonce,
+                &config_hash,
+                &binding,
+                &stdout,
+                request
+                    .captured_sources
+                    .ok_or(CSharpAuthorityError::Evidence)?,
+            )?;
+            Some(bytes.into_boxed_slice())
+        } else {
+            None
+        };
+        drop(manifest_directory);
         checkpoint(request.control, CSharpAuthorityPhase::Return)?;
-        Ok(stdout.bytes)
+        Ok((stdout, evidence))
     }
 
     /// Runs [`Self::authority_image`] and retains its bytes in an owned image.
@@ -450,9 +725,226 @@ impl CSharpOracle {
         &self,
         request: CSharpAuthorityRequest<'request, 'config, 'cancel>,
     ) -> Result<CSharpAuthorityImage, CSharpAuthorityError> {
-        self.authority_image(request)
-            .map(CSharpAuthorityImage::from_bytes)
+        self.authority_image_with_evidence(request)
+            .map(|(bytes, evidence)| CSharpAuthorityImage {
+                bytes: bytes.into_boxed_slice(),
+                evidence,
+            })
     }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CapturedEvidence {
+    format: u8,
+    nonce: String,
+    source_binding: String,
+    image_sha256: String,
+    image_length: u64,
+    config_sha256: String,
+    #[serde(deserialize_with = "bounded_evidence_vec")]
+    sources: Vec<CapturedEvidenceSource>,
+    #[serde(deserialize_with = "bounded_evidence_vec")]
+    references: Vec<CapturedEvidenceReference>,
+    #[serde(default, deserialize_with = "bounded_optional_evidence_vec")]
+    occurrences: Option<Vec<CapturedForeignOccurrence>>,
+    assembly: String,
+    framework: String,
+    language: String,
+    output_kind: String,
+    #[serde(deserialize_with = "bounded_evidence_vec")]
+    defines: Vec<String>,
+    #[serde(deserialize_with = "bounded_evidence_vec")]
+    usings: Vec<String>,
+    generators: String,
+    input_closure: String,
+    errors: u32,
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CapturedForeignOccurrence {
+    owner: u32,
+    start: u32,
+    end: u32,
+    target: String,
+}
+
+fn bounded_optional_evidence_vec<'de, D, T>(deserializer: D) -> Result<Option<Vec<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    bounded_evidence_vec(deserializer).map(Some)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CapturedEvidenceSource {
+    path: String,
+    length: u64,
+    sha256: String,
+}
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "PascalCase", deny_unknown_fields)]
+struct CapturedEvidenceReference {
+    name: String,
+    length: u64,
+    sha256: String,
+}
+
+fn bounded_evidence_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    struct Visitor<T>(std::marker::PhantomData<T>);
+    impl<'de, T: serde::Deserialize<'de>> serde::de::Visitor<'de> for Visitor<T> {
+        type Value = Vec<T>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("at most 8192 evidence entries")
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> Result<Self::Value, A::Error> {
+            if seq.size_hint().is_some_and(|count| count > 8192) {
+                return Err(serde::de::Error::custom("evidence entry limit"));
+            }
+            let mut values = Vec::new();
+            while let Some(value) = seq.next_element()? {
+                if values.len() == 8192 {
+                    return Err(serde::de::Error::custom("evidence entry limit"));
+                }
+                values.push(value);
+            }
+            Ok(values)
+        }
+    }
+    deserializer.deserialize_seq(Visitor(std::marker::PhantomData))
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+fn validate_captured_evidence(
+    bytes: &[u8],
+    nonce: &str,
+    config_hash: &str,
+    binding: &str,
+    image: &[u8],
+    sources: &[CSharpCapturedSource<'_>],
+) -> Result<(), CSharpAuthorityError> {
+    let evidence: CapturedEvidence =
+        serde_json::from_slice(bytes).map_err(|_| CSharpAuthorityError::Evidence)?;
+    if !matches!(
+        (evidence.format, evidence.occurrences.is_some()),
+        (1, false) | (2, true)
+    ) || evidence.nonce != nonce
+        || evidence.config_sha256 != config_hash
+        || evidence.source_binding != binding
+        || evidence.image_length != image.len() as u64
+        || evidence.image_sha256 != format!("{:x}", Sha256::digest(image))
+        || evidence.generators != "unknown"
+        || evidence.input_closure != "unknown"
+        || evidence.errors != 0
+        || evidence.sources.len() != sources.len()
+        || sources.len() > 8192
+        || evidence.references.is_empty()
+        || evidence.references.len() > 8192
+        || [
+            &evidence.assembly,
+            &evidence.framework,
+            &evidence.language,
+            &evidence.output_kind,
+        ]
+        .iter()
+        .any(|s| s.is_empty() || s.len() > 4096)
+        || evidence.defines.len() > 8192
+        || evidence.usings.len() > 8192
+        || evidence
+            .defines
+            .iter()
+            .chain(&evidence.usings)
+            .any(|s| s.len() > 4096)
+    {
+        return Err(CSharpAuthorityError::Evidence);
+    }
+    if let Some(occurrences) = &evidence.occurrences {
+        let image = CSharpImage::open(image).map_err(CSharpAuthorityError::Image)?;
+        let mut actual = image.references().filter_map(|reference| match reference {
+            Ok(reference) if reference.foreign_source.is_some() => Some(Ok(reference)),
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        });
+        let mut target_bytes = 0usize;
+        for occurrence in occurrences {
+            target_bytes = target_bytes
+                .checked_add(occurrence.target.len())
+                .ok_or(CSharpAuthorityError::Evidence)?;
+            if target_bytes > 1024 * 1024 {
+                return Err(CSharpAuthorityError::Evidence);
+            }
+            let claim = super::image::parse_foreign_source_claim(&occurrence.target)
+                .ok_or(CSharpAuthorityError::Evidence)?;
+            let reference = actual
+                .next()
+                .ok_or(CSharpAuthorityError::Evidence)?
+                .map_err(CSharpAuthorityError::Image)?;
+            if reference.owner != occurrence.owner
+                || reference.start != occurrence.start
+                || reference.end != occurrence.end
+                || reference.foreign_source != Some(claim)
+            {
+                return Err(CSharpAuthorityError::Evidence);
+            }
+        }
+        if actual.next().is_some() {
+            return Err(CSharpAuthorityError::Evidence);
+        }
+    }
+    let mut expected = std::collections::BTreeMap::new();
+    for source in sources {
+        if expected
+            .insert(source.path, source.text.as_bytes())
+            .is_some()
+        {
+            return Err(CSharpAuthorityError::Evidence);
+        }
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for source in &evidence.sources {
+        let source_bytes = expected
+            .get(source.path.as_str())
+            .ok_or(CSharpAuthorityError::Evidence)?;
+        if !seen.insert(source.path.as_str())
+            || source.length != source_bytes.len() as u64
+            || source.sha256 != format!("{:x}", Sha256::digest(source_bytes))
+        {
+            return Err(CSharpAuthorityError::Evidence);
+        }
+    }
+    let mut reference_names = std::collections::BTreeSet::new();
+    let mut reference_bytes = 0u64;
+    for reference in &evidence.references {
+        reference_bytes = reference_bytes
+            .checked_add(reference.length)
+            .ok_or(CSharpAuthorityError::Evidence)?;
+        if reference.name.is_empty()
+            || reference.name.len() > 4096
+            || !reference_names.insert(reference.name.to_ascii_lowercase())
+            || reference.length == 0
+            || reference.length > 32 * 1024 * 1024
+            || reference_bytes > 256 * 1024 * 1024
+            || !valid_sha256(&reference.sha256)
+        {
+            return Err(CSharpAuthorityError::Evidence);
+        }
+    }
+    Ok(())
 }
 
 /// Alias emphasizing that this adapter is the C# authority-image producer.
@@ -478,6 +970,31 @@ pub enum CSharpAuthorityPhase {
 /// Exact terminal returned by the Roslyn authority-image producer.
 #[derive(Debug, Error)]
 pub enum CSharpAuthorityError {
+    /// Exact compiler options are incomplete or inconsistent.
+    #[error("C# captured compiler configuration is incomplete")]
+    Configuration,
+    /// Captured input set is too large, malformed, or omits the binding.
+    #[error("C# captured input manifest is invalid or exceeds its bound")]
+    Manifest,
+    /// Captured invocation evidence was absent, malformed or mismatched.
+    #[error("C# captured invocation evidence is invalid")]
+    Evidence,
+    /// Roslyn could not bind this source-mode compilation fully.
+    #[error(
+        "C# source-mode compilation reported at least {count} errors; check project references and SDK inputs: {diagnostic}"
+    )]
+    CompilationIncomplete {
+        /// Number of errors, saturated at u16::MAX.
+        count: u16,
+        /// Bounded compiler diagnostic tail, without manifest contents.
+        diagnostic: String,
+    },
+    /// Bounded platform process capture failed, including cleanup failures.
+    #[error("C# authority process capture failed: {detail}")]
+    Capture {
+        /// Exact platform capture failure.
+        detail: String,
+    },
     /// A required path was not absolute or could not be canonicalized/read.
     #[error("C# authority {phase:?} path {path:?} failed: {source}")]
     Path {
@@ -617,6 +1134,42 @@ pub enum CSharpAuthorityError {
     },
 }
 
+fn capture_error(
+    error: backend_platform::child_output::CaptureError,
+    toolchain: &Path,
+    oracle: &Path,
+) -> CSharpAuthorityError {
+    use backend_platform::child_output::{CaptureError, OutputStream};
+    match error {
+        CaptureError::Cancelled => CSharpAuthorityError::Cancelled {
+            phase: CSharpAuthorityPhase::Process,
+        },
+        CaptureError::Deadline => CSharpAuthorityError::Deadline {
+            phase: CSharpAuthorityPhase::Process,
+        },
+        CaptureError::Spawn(source) => CSharpAuthorityError::Spawn {
+            toolchain: toolchain.to_path_buf().into_boxed_path(),
+            oracle: oracle.to_path_buf().into_boxed_path(),
+            source,
+        },
+        CaptureError::OutputLimit {
+            stream,
+            observed,
+            maximum,
+        } => CSharpAuthorityError::OutputLimit {
+            stream: match stream {
+                OutputStream::Stdout => "stdout",
+                OutputStream::Stderr => "stderr",
+            },
+            observed,
+            limit: maximum,
+        },
+        other => CSharpAuthorityError::Capture {
+            detail: format!("{other:?}"),
+        },
+    }
+}
+
 fn profile_tag(profile: CSharpVersion) -> &'static str {
     match profile {
         CSharpVersion::CSharp10 => "csharp-10",
@@ -644,6 +1197,20 @@ fn validate_absolute_paths(
             });
         }
     }
+    for path in request.configuration.reference_directory.into_iter().chain(
+        request
+            .configuration
+            .additional_reference_directories
+            .iter()
+            .copied(),
+    ) {
+        if !path.is_absolute() {
+            return Err(CSharpAuthorityError::RelativePath {
+                kind: "reference directory",
+                path: path.to_path_buf(),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -660,118 +1227,16 @@ fn checkpoint(
     Ok(())
 }
 
-struct BoundedStream {
-    bytes: Vec<u8>,
-    exceeded: Option<(&'static str, usize)>,
-    error: Option<std::io::Error>,
-}
-
-fn read_bounded(
-    mut reader: impl Read,
-    limit: usize,
-    stream: &'static str,
-    sender: mpsc::Sender<(&'static str, usize)>,
-) -> BoundedStream {
-    let mut bytes = Vec::new();
-    let mut chunk = [0_u8; 8192];
-    loop {
-        match reader.read(&mut chunk) {
-            Ok(0) => {
-                return BoundedStream {
-                    bytes,
-                    exceeded: None,
-                    error: None,
-                };
-            }
-            Ok(count) if bytes.len().saturating_add(count) > limit => {
-                let observed = bytes.len().saturating_add(count);
-                let _ = sender.send((stream, observed));
-                return BoundedStream {
-                    bytes,
-                    exceeded: Some((stream, observed)),
-                    error: None,
-                };
-            }
-            Ok(count) => bytes.extend_from_slice(&chunk[..count]),
-            Err(source) if source.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(source) => {
-                return BoundedStream {
-                    bytes,
-                    exceeded: None,
-                    error: Some(source),
-                };
-            }
-        }
-    }
-}
-
-fn join_stream(
-    thread: thread::JoinHandle<BoundedStream>,
+#[cfg(test)]
+fn join_stream<T>(
+    thread: thread::JoinHandle<T>,
     worker: NativeWorker,
-) -> Result<BoundedStream, CSharpAuthorityError> {
+) -> Result<T, CSharpAuthorityError> {
     thread
         .join()
         .map_err(|payload| CSharpAuthorityError::WorkerPanic {
             cause: NativeWorkerPanic::capture(worker, payload.as_ref()),
         })
-}
-
-fn wait_for_child(
-    child: &mut Child,
-    control: CSharpAuthorityControl<'_>,
-    limit_receiver: &mpsc::Receiver<(&'static str, usize)>,
-    output_limit: usize,
-) -> Result<std::process::ExitStatus, CSharpAuthorityError> {
-    loop {
-        if control.cancelled.load(Ordering::Acquire) {
-            terminate_child(child);
-            return Err(CSharpAuthorityError::Cancelled {
-                phase: CSharpAuthorityPhase::Process,
-            });
-        }
-        if Instant::now() >= control.deadline {
-            terminate_child(child);
-            return Err(CSharpAuthorityError::Deadline {
-                phase: CSharpAuthorityPhase::Process,
-            });
-        }
-        if let Ok((stream, observed)) = limit_receiver.try_recv() {
-            terminate_child(child);
-            return Err(CSharpAuthorityError::OutputLimit {
-                stream,
-                observed,
-                limit: output_limit,
-            });
-        }
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|source| CSharpAuthorityError::Pipe {
-                stream: "process",
-                source,
-            })?
-        {
-            return Ok(status);
-        }
-        thread::sleep(CHILD_POLL_INTERVAL);
-    }
-}
-
-fn terminate_child(child: &mut Child) {
-    #[cfg(unix)]
-    {
-        let pid = child.id().to_string();
-        let result = Command::new("kill")
-            .args(["-KILL", &format!("-{pid}")])
-            .status();
-        if !result.map(|status| status.success()).unwrap_or(false) {
-            let _ = child.kill();
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = child.kill();
-    }
-    let _ = child.wait();
 }
 
 /// Runs the explicitly selected dotnet host without inheriting owner
@@ -797,6 +1262,86 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     #[test]
+    fn captured_graph_protocol_keeps_project_edges_and_buffers_separate() {
+        let sources = [CSharpCapturedSource {
+            path: "Api/Api.cs",
+            text: "public class Api {}",
+        }];
+        let config = [CSharpCapturedConfig {
+            path: "Api/Api.csproj",
+            text: Some("<Project/>"),
+        }];
+        let nodes = [CSharpCapturedProjectNode {
+            project_path: "Api/Api.csproj",
+            assembly_name: "Api",
+            target_framework: "net8.0",
+            language_version: "12.0",
+            define_symbols: &["NET8_0"],
+            nullable: "enable",
+            allow_unsafe: false,
+            output_type: "Library",
+            usings: &["System"],
+            sources: &sources,
+            config: &config,
+            reference_directories: &[Path::new("/snapshots/api")],
+            project_references: &["Core/Core.csproj"],
+        }];
+        let graph = CSharpCapturedProjectGraph {
+            format: 1,
+            root_project: "Api/Api.csproj",
+            projects: &nodes,
+        };
+        let json = serde_json::to_value(graph).expect("serialize captured graph");
+        assert_eq!(json["RootProject"], "Api/Api.csproj");
+        let node = &json["Projects"][0];
+        assert_eq!(node["ProjectPath"], "Api/Api.csproj");
+        assert_eq!(node["ProjectReferences"][0], "Core/Core.csproj");
+        assert_eq!(node["Sources"][0]["Text"], "public class Api {}");
+        assert_eq!(node["Config"][0]["Text"], "<Project/>");
+        assert_eq!(node["ReferenceDirectories"][0], "/snapshots/api");
+        assert_eq!(node["AllowUnsafe"], false);
+        assert_eq!(node["DefineSymbols"][0], "NET8_0");
+    }
+
+    #[test]
+    fn captured_evidence_rejects_changed_attempt_image_or_inputs() {
+        let source = CSharpCapturedSource {
+            path: "App.cs",
+            text: "class C {}",
+        };
+        let image = b"image";
+        let nonce = "0123456789abcdef0123456789abcdef";
+        let config = "a".repeat(64);
+        let mut value = serde_json::json!({
+            "format": 1, "nonce": nonce, "sourceBinding": "App.cs",
+            "imageSha256": format!("{:x}", Sha256::digest(image)), "imageLength": image.len(),
+            "configSha256": config, "sources": [{"path":source.path,"length":source.text.len(),"sha256":format!("{:x}",Sha256::digest(source.text.as_bytes()))}],
+            "references": [{"Name":"System.Runtime","Length":1,"Sha256":"b".repeat(64)}],
+            "assembly":"App", "framework":"net10.0", "language":"CSharp14", "outputKind":"DynamicallyLinkedLibrary",
+            "defines":[], "usings":[], "generators":"unknown", "inputClosure":"unknown", "errors":0,
+        });
+        let check = |value: &serde_json::Value| {
+            validate_captured_evidence(
+                &serde_json::to_vec(value).unwrap(),
+                nonce,
+                &"a".repeat(64),
+                "App.cs",
+                image,
+                &[source],
+            )
+        };
+        assert!(check(&value).is_ok());
+        value["nonce"] = "different".into();
+        assert!(check(&value).is_err());
+        value["nonce"] = nonce.into();
+        value["imageLength"] = 6.into();
+        assert!(check(&value).is_err());
+        value["imageLength"] = image.len().into();
+        value["sources"][0]["sha256"] = "f".repeat(64).into();
+        assert!(check(&value).is_err());
+    }
+
+    #[test]
     fn profile_tags_are_closed_and_explicit() {
         assert_eq!(profile_tag(CSharpVersion::CSharp10), "csharp-10");
         assert_eq!(profile_tag(CSharpVersion::CSharp14), "csharp-14");
@@ -811,6 +1356,9 @@ mod tests {
             source_path: Path::new("/missing/source.cs"),
             project_file: None,
             source: b"class C {}",
+            captured_sources: None,
+            captured_config: None,
+            captured_project_graph: None,
             profile: CSharpVersion::CSharp14,
             native_tool: NativeTool::CSharpCompiler,
             toolchain: Path::new("/dotnet"),
@@ -840,6 +1388,9 @@ mod tests {
             source_path: &source_path,
             project_file: None,
             source: b"class Different {}",
+            captured_sources: None,
+            captured_config: None,
+            captured_project_graph: None,
             profile: CSharpVersion::CSharp14,
             native_tool: NativeTool::CSharpCompiler,
             toolchain: Path::new("/dotnet"),
@@ -855,9 +1406,47 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn producer_deadline_includes_descendant_holding_output_pipes() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().expect("private fixture");
+        let source_path = directory.path().join("A.cs");
+        let tool = directory.path().join("fake-dotnet");
+        fs::write(&source_path, b"class A {}").expect("source fixture");
+        fs::write(&tool, b"#!/bin/sh\nsleep 10 & exit 0\n").expect("tool fixture");
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o700)).expect("tool permissions");
+        let helper = directory.path().join("oracle.dll");
+        let oracle = CSharpOracle::new(helper);
+        let cancelled = AtomicBool::new(false);
+        let start = Instant::now();
+        let result = oracle.authority_image(CSharpAuthorityRequest {
+            package_root: directory.path(),
+            source_path: &source_path,
+            project_file: None,
+            source: b"class A {}",
+            captured_sources: None,
+            captured_config: None,
+            captured_project_graph: None,
+            profile: CSharpVersion::CSharp14,
+            native_tool: NativeTool::CSharpCompiler,
+            toolchain: &tool,
+            control: CSharpAuthorityControl {
+                deadline: start + Duration::from_millis(300),
+                cancelled: &cancelled,
+            },
+            configuration: CSharpAuthorityConfiguration::DEFAULT,
+        });
+        assert!(
+            matches!(result, Err(CSharpAuthorityError::Deadline { .. })),
+            "{result:?}"
+        );
+        assert!(start.elapsed() < Duration::from_secs(3));
+    }
+
     #[test]
     fn stream_join_retains_exact_worker_and_owned_panic_payload() {
-        let thread = thread::spawn(|| -> BoundedStream {
+        let thread = thread::spawn(|| {
             std::panic::panic_any(String::from("csharp stderr reader failed"));
         });
         let result = join_stream(thread, NativeWorker::StandardErrorReader);

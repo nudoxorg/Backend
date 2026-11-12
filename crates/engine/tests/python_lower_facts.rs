@@ -827,7 +827,7 @@ fn nested_typevar_argument_keeps_its_leaf_spelling() -> Result<(), TestError> {
         ));
     }
     let argument = row_at(&lane, children[1])?;
-    if argument.record.tag != SemanticTypeTag::TypeVar || argument.record.text != Some(b"T") {
+    if argument.record.tag != SemanticTypeTag::TypeVar || argument.record.text != Some(&b"T"[..]) {
         return Err(TestError::Falsified(
             "nested TypeVar did not retain its exact leaf spelling",
         ));

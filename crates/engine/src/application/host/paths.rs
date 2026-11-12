@@ -577,10 +577,20 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             push_candidate(&mut candidates, PathBuf::from("/usr/bin/python3"));
         }
         if tool == NativeTool::CSharpCompiler {
-            push_candidate(
-                &mut candidates,
-                PathBuf::from("/usr/local/share/dotnet/dotnet"),
-            );
+            // The official install scripts and distribution packages do not put
+            // `dotnet` on the default tool paths: the script installs under the
+            // user's home, packages under /usr/share or /usr/lib.
+            if let Some(home) = home {
+                push_candidate(&mut candidates, home.join(".dotnet/dotnet"));
+            }
+            for fixed in [
+                "/usr/local/share/dotnet/dotnet",
+                "/usr/share/dotnet/dotnet",
+                "/usr/lib/dotnet/dotnet",
+                "/opt/dotnet/dotnet",
+            ] {
+                push_candidate(&mut candidates, PathBuf::from(fixed));
+            }
         }
         candidates
     }
@@ -798,11 +808,18 @@ fn first_existing(
 ) -> Result<Option<PathBuf>, LocalCompilerHostError> {
     for path in candidates {
         match fs::metadata(&path) {
-            Ok(metadata) if metadata.is_file() => {
-                return canonicalize_executable_existing(role, &path).map(Some);
+            Ok(metadata) if ambient_file_is_usable(role, &metadata) => {
+                match canonicalize_executable_existing(role, &path) {
+                    Err(LocalCompilerHostError::Canonicalize { ref source, .. })
+                        if ambient_path_absent(source) =>
+                    {
+                        continue;
+                    }
+                    result => return result.map(Some),
+                }
             }
             Ok(_) => continue,
-            Err(source) if source.kind() == io::ErrorKind::NotFound => continue,
+            Err(source) if ambient_path_absent(&source) => continue,
             Err(source) => {
                 return Err(LocalCompilerHostError::Canonicalize {
                     role,
@@ -835,11 +852,18 @@ fn first_executable_on_search_path(
         }
         let path = directory.join(executable);
         match fs::metadata(&path) {
-            Ok(metadata) if metadata.is_file() => {
-                return canonicalize_executable_existing(role, &path).map(Some);
+            Ok(metadata) if ambient_file_is_usable(role, &metadata) => {
+                match canonicalize_executable_existing(role, &path) {
+                    Err(LocalCompilerHostError::Canonicalize { ref source, .. })
+                        if ambient_path_absent(source) =>
+                    {
+                        continue;
+                    }
+                    result => return result.map(Some),
+                }
             }
             Ok(_) => continue,
-            Err(source) if source.kind() == io::ErrorKind::NotFound => continue,
+            Err(source) if ambient_path_absent(&source) => continue,
             Err(source) => {
                 return Err(LocalCompilerHostError::Canonicalize {
                     role,
@@ -897,11 +921,16 @@ fn first_existing_directory(
 ) -> Result<Option<PathBuf>, LocalCompilerHostError> {
     for path in candidates {
         match fs::metadata(&path) {
-            Ok(metadata) if metadata.is_dir() => {
-                return canonicalize_existing(role, &path).map(Some);
-            }
+            Ok(metadata) if metadata.is_dir() => match canonicalize_existing(role, &path) {
+                Err(LocalCompilerHostError::Canonicalize { ref source, .. })
+                    if ambient_path_absent(source) =>
+                {
+                    continue;
+                }
+                result => return result.map(Some),
+            },
             Ok(_) => continue,
-            Err(source) if source.kind() == io::ErrorKind::NotFound => continue,
+            Err(source) if ambient_path_absent(&source) => continue,
             Err(source) => {
                 return Err(LocalCompilerHostError::Canonicalize {
                     role,
@@ -941,6 +970,37 @@ pub(super) fn canonicalize_existing(
         path: path.to_path_buf().into_boxed_path(),
         source,
     })
+}
+
+// A missing candidate or a PATH component that is a file is not a selected tool.
+// Other I/O errors, including permission failures, retain their diagnostics.
+pub(super) fn ambient_path_absent(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+    )
+}
+
+// Roslyn assemblies and TypeScript compiler scripts can be loaded by a runtime.
+pub(super) fn ambient_file_is_usable(role: LocalHostPathRole, metadata: &fs::Metadata) -> bool {
+    if !metadata.is_file() {
+        return false;
+    }
+    if matches!(
+        role,
+        LocalHostPathRole::RoslynHelper | LocalHostPathRole::Native(NativeTool::TypeScriptCompiler)
+    ) {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 fn push_candidate(candidates: &mut ArrayVec<PathBuf, PLATFORM_PATH_CAPACITY>, candidate: PathBuf) {
@@ -3105,6 +3165,127 @@ mod tests {
     }
 
     #[test]
+    fn installed_selection_ignores_file_path_entry_in_both_orders() {
+        let (root, mut environment) = installed_fixture("file-path-python", false);
+        if let Some(python) = std::env::var_os("NUDOX_RELEASE_TEST_PYTHON") {
+            let fixture = root.join("bin/python3");
+            fs::remove_file(&fixture).unwrap();
+            std::os::unix::fs::symlink(python, fixture).unwrap();
+        }
+        let file = root.join("not-a-directory");
+        fs::write(&file, b"regular file on PATH").unwrap();
+        let python_directory = root.join("bin");
+        for entries in [
+            [python_directory.clone(), file.clone()],
+            [file.clone(), python_directory.clone()],
+        ] {
+            environment.search_path = Some(std::env::join_paths(entries).unwrap());
+            let selection =
+                LocalCompilerHost::new(environment.clone(), LocalHostDiscovery::InstalledTools)
+                    .capture_installed_selection()
+                    .expect("a file in PATH must not abort installed compiler selection");
+            assert_eq!(
+                selection
+                    .snapshot()
+                    .path(LocalHostVariable::NudoxPythonDefault),
+                Some(root.join("bin/python3").canonicalize().unwrap().as_path())
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn path_search_skips_file_parent_and_non_executable_candidate() {
+        let root = private_test_directory("path-file-and-mode");
+        let file = root.join("file");
+        let blocked = root.join("blocked");
+        let good = root.join("good");
+        fs::write(&file, b"PATH entry").unwrap();
+        executable(&blocked.join("python3"));
+        fs::set_permissions(blocked.join("python3"), fs::Permissions::from_mode(0o644)).unwrap();
+        executable(&good.join("python3"));
+        let search = std::env::join_paths([file, blocked, good.clone()]).unwrap();
+        assert_eq!(
+            first_executable_on_search_path(
+                LocalHostPathRole::Native(NativeTool::Python),
+                Some(search),
+                "python3",
+            )
+            .unwrap(),
+            Some(good.join("python3").canonicalize().unwrap())
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ambient_rustup_proxy_keeps_its_invocation_name() {
+        let root = private_test_directory("rustup-proxy");
+        let rustup = root.join("rustup");
+        let rustc = root.join("rustc");
+        executable(&rustup);
+        std::os::unix::fs::symlink(&rustup, &rustc).unwrap();
+        let search = std::env::join_paths([&root]).unwrap();
+        assert_eq!(
+            first_executable_on_search_path(
+                LocalHostPathRole::Native(NativeTool::Rustc),
+                Some(search),
+                "rustc",
+            )
+            .unwrap(),
+            Some(rustc)
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn runtime_loaded_authority_files_do_not_require_execute_bits() {
+        let root = private_test_directory("runtime-loaded-files");
+        let file = root.join("authority");
+        fs::write(&file, b"fixture").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+        for role in [
+            LocalHostPathRole::RoslynHelper,
+            LocalHostPathRole::Native(NativeTool::TypeScriptCompiler),
+        ] {
+            let mut candidates = ArrayVec::new();
+            candidates.push(file.clone());
+            assert_eq!(
+                first_existing(role, candidates).unwrap(),
+                Some(file.canonicalize().unwrap())
+            );
+        }
+        assert!(!ambient_path_absent(&io::Error::from(
+            io::ErrorKind::PermissionDenied
+        )));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn invalid_explicit_tool_never_falls_back_to_ambient_executable() {
+        let root = private_test_directory("explicit-overrides");
+        let fallback = root.join("bin/tool");
+        executable(&fallback);
+        for (variable, tool) in [
+            (LocalHostVariable::NudoxPython, NativeTool::Python),
+            (LocalHostVariable::NudoxDotnet, NativeTool::CSharpCompiler),
+        ] {
+            let invalid = root.join(format!("missing-{tool:?}"));
+            let mut environment = InstalledToolsEnvironment::default();
+            environment.set(variable, &invalid);
+            let host = LocalCompilerHost::new(environment, LocalHostDiscovery::InstalledTools);
+            let mut candidates = ArrayVec::new();
+            candidates.push(fallback.clone());
+            let error = host
+                .executable(variable, LocalHostPathRole::Native(tool), candidates)
+                .unwrap_err();
+            assert!(matches!(error, LocalCompilerHostError::ConfiguredPath {
+                variable: actual, path, source, ..
+            } if actual == variable && path.as_ref() == invalid && source.kind() == io::ErrorKind::NotFound));
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn ordinary_python_capture_freezes_all_independent_versions_and_keeps_override_strict() {
         let (root, mut environment) = installed_fixture("python-candidate-policy", false);
         let alternate = root.join("python312/bin").join(if cfg!(windows) { "python.exe" } else { "python3.12" });
@@ -3239,7 +3420,10 @@ mod tests {
             snapshot.path(LocalHostVariable::NudoxGoRoot),
             Some(fs::canonicalize(root.join("go/pkg/mod")).unwrap().as_path()),
         );
-        assert!(first.issues().is_empty());
+        assert_eq!(
+            first.issues(),
+            &[super::super::LocalCompilerHostSelectionIssue::MissingTypeScriptNode]
+        );
         assert_eq!(first.fingerprint(), restarted.fingerprint());
         assert_eq!(first.fingerprint_hex(), restarted.fingerprint_hex(),);
         let incoming = super::super::LocalCompilerHostSelection::from_closed_snapshot(
@@ -3556,5 +3740,29 @@ mod tests {
         ));
         assert_eq!(growing.consumed, 9);
         fs::remove_dir_all(root).expect("remove size-cap fixture");
+    }
+}
+
+#[cfg(test)]
+mod dotnet_candidate_tests {
+    use super::super::{LocalCompilerHost, LocalHostDiscovery, ProcessHostEnvironment};
+    use backend_semantic::vocabulary::NativeTool;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn dotnet_is_looked_for_where_the_installers_put_it() {
+        let host = LocalCompilerHost::new(ProcessHostEnvironment, LocalHostDiscovery::ExplicitOnly);
+        let candidates = host
+            .executable_candidates(Some(Path::new("/home/someone")), NativeTool::CSharpCompiler)
+            .into_iter()
+            .collect::<Vec<PathBuf>>();
+        for expected in [
+            "/home/someone/.dotnet/dotnet",
+            "/usr/local/share/dotnet/dotnet",
+            "/usr/share/dotnet/dotnet",
+            "/usr/lib/dotnet/dotnet",
+        ] {
+            assert!(candidates.contains(&PathBuf::from(expected)), "{expected} in {candidates:?}");
+        }
     }
 }

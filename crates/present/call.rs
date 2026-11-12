@@ -11,7 +11,7 @@
 //! Nothing here performs I/O, and nothing here renders. An operand the engine
 //! cannot admit fails with a [`Fault`] naming that exact operand.
 
-use crate::fault::{Fault, Operand};
+use crate::fault::{Affordance, Fault, Operand};
 use crate::grammar::{ArgumentKind, ArgumentSpec, CommandGrammar, grammar_for};
 use backend_library::{
     CommandId, CompileExecutionIntent, DeclarationRead, DeclarationSelector, IndexJobTicket,
@@ -220,9 +220,9 @@ fn take_json(
         return Ok(());
     }
     if spec.kind() == ArgumentKind::Flag {
-        let enabled = value.as_bool().ok_or_else(|| {
-            Fault::usage(spec.name(), "a flag takes a JSON boolean")
-        })?;
+        let enabled = value
+            .as_bool()
+            .ok_or_else(|| Fault::usage(spec.name(), "a flag takes a JSON boolean"))?;
         if enabled {
             call.raise(spec.name());
         }
@@ -242,6 +242,10 @@ fn take_json(
                 | ArgumentKind::PackageCompilerOutcomeSelector
                 | ArgumentKind::SemanticShapeRequest
                 | ArgumentKind::SemanticSourceRequest
+                | ArgumentKind::ImpactCaptureRequest
+                | ArgumentKind::ImpactCompareRequest
+                | ArgumentKind::ImpactSourceRequest
+                | ArgumentKind::ImpactDiffRequest
         ) && scalar.is_object()
             || matches!(
                 spec.continuation_domain(),
@@ -344,6 +348,15 @@ pub enum Request {
         /// Original owner query credit, preserved by every continuation.
         limit: u16,
     },
+    /// A bounded page of incoming and outgoing related edges.
+    RelatedPage {
+        /// Exact selected declaration or coordinate.
+        selector: DeclarationSelector,
+        /// Original owner query credit.
+        limit: u16,
+        /// Opaque owner-sealed predecessor, if resuming.
+        cursor: Option<String>,
+    },
     /// A bounded search page.
     Search {
         /// Query text.
@@ -420,6 +433,15 @@ pub fn declaration_selector(invocation: &Invocation) -> Result<DeclarationSelect
 
 fn declaration_request(invocation: &Invocation, read: DeclarationRead) -> Result<Request, Fault> {
     let selector = declaration_selector(invocation)?;
+    if read == DeclarationRead::Related
+        && (invocation.option("limit").is_some() || invocation.option("cursor").is_some())
+    {
+        let cursor = invocation.option("cursor").map(str::to_owned);
+        if cursor.as_deref() == Some("") {
+            return Err(Fault::usage("cursor", "related continuation must not be empty"));
+        }
+        return Ok(Request::RelatedPage { selector, limit: limit(invocation)?, cursor });
+    }
     if read == DeclarationRead::Graph
         && (invocation.option("limit").is_some() || invocation.option("cursor").is_some())
     {
@@ -666,8 +688,28 @@ fn text(invocation: &Invocation, index: usize) -> Result<ProductText, Fault> {
 
 fn package(invocation: &Invocation, index: usize) -> Result<PackageReference, Fault> {
     let value = invocation.require(index)?;
-    PackageReference::parse(value)
-        .map_err(|error| Fault::admission(error, Operand::Argument(value.to_owned())))
+    PackageReference::parse(value).map_err(|error| {
+        let unversioned_name = value
+            .strip_prefix("pkg:")
+            .and_then(|purl| purl.split_once('/'))
+            .filter(|(ecosystem, path)| {
+                !ecosystem.is_empty() && !path.contains(['?', '#'])
+            })
+            .and_then(|(_, path)| path.rsplit('/').next())
+            .filter(|name| !name.is_empty() && !name.contains('@'));
+        if let Some(name) = unversioned_name {
+            Fault::usage(
+                value,
+                "registry package facts require an exact version; search the configured registry index by package name, then choose a returned pinned coordinate. An empty or unavailable index may require registry discovery to be configured",
+            )
+            .with_affordance(Affordance::UseCommand {
+                name: "index-search",
+                args: Box::new([name.to_owned()]),
+            })
+        } else {
+            Fault::admission(error, Operand::Argument(value.to_owned()))
+        }
+    })
 }
 
 fn selector(invocation: &Invocation, index: usize) -> Result<ProjectSelector, Fault> {
@@ -1003,6 +1045,195 @@ fn surface(
                     format!("invalid semantic source request: {error}"),
                 )
             })?,
+        },
+        CommandId::StyloQuery => {
+            use backend_library::stylo_query::{
+                StyloNameRole, StyloQueryCursor, StyloQueryRequest,
+            };
+            let (role, name) = match (
+                invocation.option("class"),
+                invocation.option("custom-property"),
+            ) {
+                (Some(name), None) => (StyloNameRole::Class, name),
+                (None, Some(name)) => (StyloNameRole::CustomProperty, name),
+                _ => {
+                    return Err(Fault::usage(
+                        "class",
+                        "supply exactly one of --class or --custom-property",
+                    ));
+                }
+            };
+            let number = |key: &str, default: u32| -> Result<u32, Fault> {
+                invocation.option(key).map_or(Ok(default), |value| {
+                    value
+                        .parse::<u32>()
+                        .map_err(|_| Fault::usage(key, "expected a non-negative integer"))
+                })
+            };
+            let page_rows = limit(invocation)?;
+            let request = StyloQueryRequest {
+                package: package(invocation, 0)?,
+                role,
+                name: name.to_owned(),
+                page_rows,
+                output_bytes: number("output-bytes", 131_072)?,
+                // A whole project's CSS facts fit the admitted ceiling; an agent should
+                // not have to page through an index just to find a class.
+                scan_rows: number("scan-rows", 4096)?,
+                scan_bytes: number("scan-bytes", 4_194_304)?,
+                continuation: invocation
+                    .option("cursor")
+                    .map(|value| StyloQueryCursor::parse(value.to_owned()))
+                    .transpose()
+                    .map_err(|error| Fault::usage("cursor", error.to_string()))?,
+            };
+            request
+                .normalized_name()
+                .map_err(|error| Fault::usage("query", error.to_string()))?;
+            SurfaceCommand::StyloQuery { request }
+        }
+        CommandId::ImpactCapture => {
+            let request = serde_json::from_str::<backend_library::impact_comparison::ImpactCaptureRequest>(invocation.require(0)?).map_err(|e| Fault::usage("request", e.to_string()))?;
+            request.admit().map_err(|e| Fault::usage("request", e.to_string()))?;
+            SurfaceCommand::ImpactCapture { request }
+        }
+        CommandId::ImpactCompare => {
+            let request = serde_json::from_str::<backend_library::impact_comparison::ImpactCompareRequest>(invocation.require(0)?).map_err(|e| Fault::usage("request", e.to_string()))?;
+            request.limits.admit().map_err(|e| Fault::usage("request", e.to_string()))?;
+            SurfaceCommand::ImpactCompare { request }
+        }
+        CommandId::ImpactDiff => {
+            let request = serde_json::from_str::<backend_library::impact_comparison::ImpactDiffRequest>(invocation.require(0)?).map_err(|e| Fault::usage("request", e.to_string()))?;
+            request.limits.admit().map_err(|e| Fault::usage("request", e.to_string()))?;
+            SurfaceCommand::ImpactDiff { request }
+        }
+        CommandId::ImpactReadSource => {
+            let request = serde_json::from_str::<backend_library::impact_comparison::ImpactReadSourceRequest>(invocation.require(0)?).map_err(|e| Fault::usage("request", e.to_string()))?;
+            SurfaceCommand::ImpactReadSource { request }
+        }
+        CommandId::StyloImpact => {
+            let request =
+                serde_json::from_str::<backend_library::stylo_impact::StyloImpactRequest>(
+                    invocation.require(0)?,
+                )
+                .map_err(|error| Fault::usage("request", error.to_string()))?;
+            request
+                .admit()
+                .map_err(|error| Fault::usage("request", error.to_string()))?;
+            SurfaceCommand::StyloImpact { request }
+        }
+        CommandId::Impact => {
+            use backend_library::impact::{
+                ImpactCursor, ImpactDirection, ImpactDomain, ImpactHandle, ImpactRequest,
+                ImpactSeed, ImpactSeedSpec, ImpactStrengthFilter, IMPACT_DEFAULT_DEPTH,
+            };
+            const SEEDS: [(&str, ImpactDomain, &str); 9] = [
+                ("class", ImpactDomain::Css, "class"),
+                ("id", ImpactDomain::Css, "id"),
+                ("selector", ImpactDomain::Css, "selector"),
+                ("custom-property", ImpactDomain::Css, "custom-property"),
+                ("at-rule", ImpactDomain::Css, "at-rule"),
+                ("stylesheet", ImpactDomain::Css, "file"),
+                ("component", ImpactDomain::Code, "component"),
+                ("sql-table", ImpactDomain::Sql, "table"),
+                ("sql-column", ImpactDomain::Sql, "column"),
+            ];
+            let named: Vec<_> = SEEDS
+                .iter()
+                .filter_map(|(option, domain, kind)| {
+                    invocation.option(option).map(|name| (*domain, *kind, name))
+                })
+                .collect();
+            let handle = invocation.option("handle");
+            let seed = match (named.as_slice(), handle) {
+                ([(domain, kind, name)], None) => ImpactSeed::Named(ImpactSeedSpec {
+                    domain: *domain,
+                    kind: (*kind).to_owned(),
+                    name: (*name).to_owned(),
+                    path: invocation.option("in").map(str::to_owned),
+                }),
+                ([], Some(handle)) => ImpactSeed::Handle {
+                    handle: ImpactHandle::parse(handle.to_owned())
+                        .map_err(|error| Fault::usage("handle", error.to_string()))?,
+                },
+                _ => {
+                    return Err(Fault::usage(
+                        "seed",
+                        "name exactly one thing to change: --class, --id, --selector, --custom-property, --at-rule, --stylesheet, --component, or --handle",
+                    ));
+                }
+            };
+            let direction = match invocation.option("direction").unwrap_or("dependents") {
+                "dependents" => ImpactDirection::Dependents,
+                "dependencies" => ImpactDirection::Dependencies,
+                _ => return Err(Fault::usage("direction", "expected dependents or dependencies")),
+            };
+            let depth = invocation.option("depth").map_or(Ok(IMPACT_DEFAULT_DEPTH), |value| {
+                value
+                    .parse::<u8>()
+                    .map_err(|_| Fault::usage("depth", "expected an integer from 1 to 6"))
+            })?;
+            let mut request = ImpactRequest::new(package(invocation, 0)?, seed);
+            request.direction = direction;
+            request.depth = depth;
+            request.strength = if invocation.flag("exact") {
+                ImpactStrengthFilter::Exact
+            } else {
+                ImpactStrengthFilter::Any
+            };
+            request.page_rows = limit(invocation)?;
+            request.continuation = invocation
+                .option("cursor")
+                .map(|value| ImpactCursor::parse(value.to_owned()))
+                .transpose()
+                .map_err(|error| Fault::usage("cursor", error.to_string()))?;
+            request.admit().map_err(|error| Fault::usage("request", error.to_string()))?;
+            SurfaceCommand::Impact { request }
+        }
+        CommandId::StyloReadSite => SurfaceCommand::StyloReadSite {
+            reference: backend_library::stylo_query::StyloSourceReference::parse(
+                invocation.require(0)?.to_owned(),
+            )
+            .map_err(|error| Fault::usage("reference", error.to_string()))?,
+        },
+        CommandId::SqlQuery => {
+            use backend_library::sql_query::{SqlObjectKind, SqlQueryCursor, SqlQueryRequest, SqlQueryRole};
+            let role = match invocation.option("role").unwrap_or("any") {
+                "any" => SqlQueryRole::Any, "relation" => SqlQueryRole::Relation,
+                "output_lineage" => SqlQueryRole::OutputLineage, "diagnostic" => SqlQueryRole::Diagnostic,
+                "column_read" => SqlQueryRole::ColumnRead,
+                "statement" => SqlQueryRole::Statement, "gap" => SqlQueryRole::Gap,
+                "definition" => SqlQueryRole::Definition, "reference" => SqlQueryRole::Reference,
+                _ => return Err(Fault::usage("role", "expected any, definition, reference, gap, statement, relation, output_lineage, diagnostic, or column_read")),
+            };
+            let kind = match invocation.option("kind") {
+                None => None,
+                Some(value) => Some(match value {
+                    "schema" => SqlObjectKind::Schema, "table" => SqlObjectKind::Table, "view" => SqlObjectKind::View,
+                    "column" => SqlObjectKind::Column, "index" => SqlObjectKind::Index, "trigger" => SqlObjectKind::Trigger,
+                    "function" => SqlObjectKind::Function, "type" => SqlObjectKind::Type, "sequence" => SqlObjectKind::Sequence,
+                    _ => return Err(Fault::usage("kind", "expected schema, table, view, column, index, trigger, function, type, or sequence")),
+                }),
+            };
+            let number = |key: &str, default: u32| -> Result<u32, Fault> {
+                invocation.option(key).map_or(Ok(default), |value| value.parse::<u32>()
+                    .map_err(|_| Fault::usage(key, "expected a non-negative integer")))
+            };
+            let request = SqlQueryRequest { package: package(invocation, 0)?, role,
+                name: invocation.option("name").map(str::to_owned), kind,
+                parent: invocation.option("parent").map(str::to_owned),
+                uses: invocation.option("uses").map(str::to_owned), page_rows: limit(invocation)?,
+                output_bytes: number("output-bytes", 131_072)?, scan_rows: number("scan-rows", 65_536)?,
+                scan_bytes: number("scan-bytes", 33_554_432)?,
+                continuation: invocation.option("cursor").map(|value| SqlQueryCursor::parse(value.to_owned()))
+                    .transpose().map_err(|error| Fault::usage("cursor", error.to_string()))?,
+            };
+            request.validate().map_err(|error| Fault::usage("query", error.to_string()))?;
+            SurfaceCommand::SqlQuery { request }
+        }
+        CommandId::SqlReadSource => SurfaceCommand::SqlReadSource {
+            reference: backend_library::sql_query::SqlSourceReference::parse(invocation.require(0)?.to_owned())
+                .map_err(|error| Fault::usage("reference", error.to_string()))?,
         },
         CommandId::SemanticShapes => {
             let request = serde_json::from_str::<backend_library::SemanticShapeReadRequest>(

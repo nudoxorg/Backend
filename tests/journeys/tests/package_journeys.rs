@@ -19,6 +19,9 @@
 #[path = "../src/fake_registry.rs"]
 mod fake_registry;
 
+#[path = "package_journeys/registry_discovery.rs"]
+mod package_registry_discovery_journey;
+
 use backend_client::Session;
 use backend_library::{CommandReply, RowId};
 use fake_registry::{FakeFile, FakePackage, FakeRegistry, RegistryMode};
@@ -525,8 +528,8 @@ fn mcp(
     }));
     let mut input = lines.join("\n").into_bytes();
     input.push(b'\n');
-    // The MCP entry point indexes its `--project` at startup; an empty
-    // directory keeps that from touching anything but the package.
+    // Keep the MCP session rooted in an empty fixture project. Startup does
+    // not index it; indexing is a separate explicit tool operation.
     let project = workspace.with_file_name("mcp-project");
     std::fs::create_dir_all(&project).expect("create empty MCP project");
     let mut command = ProcessCommand::new(env!("CARGO_BIN_EXE_backend-journey-mcp"));

@@ -91,6 +91,13 @@ impl SemanticTally {
         match record {
             ProductSemanticPublicationRecord::Published { coverage, .. } => {
                 self.published = self.published.checked_add(1).ok_or_else(count_overflow)?;
+                // No selected C# publication currently carries an authenticated
+                // compiler-input/generator closure. Source-mode results remain
+                // useful, but cannot certify the full semantic scope. Replace
+                // this conservative gap only when such a receipt is admitted.
+                if matches!(key.profile(), backend_semantic::vocabulary::LanguageProfile::CSharp(_)) {
+                    self.gapped = true;
+                }
                 if matches!(coverage, SemanticPublicationCoverage::Partial(_)) {
                     // Every published artifact is complete; the authority
                     // checked only part of the declared scope. Readable and
@@ -105,6 +112,26 @@ impl SemanticTally {
             ProductSemanticPublicationRecord::Unavailable(reason) => self.retain_terminal(*reason),
         }
         Ok(())
+    }
+
+    /// Selected native file observations do not establish an exhaustive
+    /// discovery inventory or stable ambient ignore policy.
+    fn qualify_observed_native(
+        &mut self,
+        key: &ProductSemanticPublicationKey,
+        record: &ProductSemanticPublicationRecord,
+        activated: &ActivatedProfiles,
+        observed_owners: &BTreeSet<[u8; 32]>,
+        project_present: bool,
+    ) {
+        if project_present && key.is_selected()
+            && matches!(key.profile(), backend_semantic::vocabulary::LanguageProfile::TypeScript(_))
+            && matches!(record, ProductSemanticPublicationRecord::Published { .. })
+            && activated.contains(&(key.package_key(), key.profile()))
+            && observed_owners.contains(key.package_key().as_bytes())
+        {
+            self.gapped = true;
+        }
     }
 
     /// Folds a capture when no separately proved current retained selection applies.
@@ -244,8 +271,8 @@ impl SemanticTally {
     /// 1. Work still moving (a pending capture, or a publication awaiting
     ///    activation) reads as the exact fraction. A reader may wait.
     /// 2. Once everything settled, a readable publication stands for the
-    ///    lane. Source gaps, or a profile refused while another published,
-    ///    make it `Gapped`: usable, and nothing further will change it.
+    ///    lane. Source gaps, unproven compiler-input closure, or a profile
+    ///    refused while another published make it `Gapped`.
     /// 3. With no readable publication, a refused or stale scope is
     ///    `Unavailable`.
     /// 4. With no native refusal, the observed compiler scope is complete.
@@ -657,6 +684,12 @@ pub(super) fn view_coverage(
     let source = snapshot
         .relation::<super::BuiltinWorkspaceRelation>()
         .map_err(|error| BuiltinModelError(error.to_string()))?;
+    let observed_owners = backend_engine::builtin::native_source_evidence_relation(snapshot)
+        .map_err(|error| BuiltinModelError(error.to_string()))?
+        .as_ref()
+        .map(super::view_build::selected_nse_typescript_owners)
+        .transpose()?
+        .unwrap_or_default();
     let mut tally = SemanticTally::default();
     let mut after = None;
     loop {
@@ -673,6 +706,12 @@ pub(super) fn view_coverage(
                 .transpose()
                 .map_err(|error| BuiltinModelError(error.to_string()))?
                 .flatten();
+            let project_present = if observed_owners.contains(key.package_key().as_bytes()) {
+                source.lookup(&key.package_key().to_bytes())
+                    .map_err(|error| BuiltinModelError(format!("read native coverage project: {error}")))?
+                    .as_ref().and_then(|record| record.project_fields()).is_some()
+            } else { false };
+            tally.qualify_observed_native(key, record, activated, &observed_owners, project_present);
             tally.observe_scoped(
                 key,
                 Some(record),
@@ -719,7 +758,28 @@ pub(super) fn view_coverage(
             after = Some(next);
         }
     }
-    Ok(tally.coverage())
+    let mut coverage = tally.coverage();
+    if let Some(sql) = backend_engine::builtin::sql_analysis_relation(snapshot)
+        .map_err(|error| BuiltinModelError(error.to_string()))? {
+        let mut after = None;
+        loop {
+            let page = sql.page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+                .map_err(|error| BuiltinModelError(error.to_string()))?;
+            for (_, row) in page.entries() {
+                if let backend_engine::builtin::SqlAnalysisRecord::Selection { inventory, gaps, .. } = row {
+                    if !matches!(inventory, backend_engine::builtin::SqlInventory::Complete)
+                        || *gaps != Default::default() {
+                        if !coverage.contains(&ViewCoverage::Gapped { lane: Lane::Names }) {
+                            coverage.push(ViewCoverage::Gapped { lane: Lane::Names });
+                        }
+                    }
+                }
+            }
+            let Some(next) = page.next().copied() else { break };
+            after = Some(next);
+        }
+    }
+    Ok(coverage)
 }
 
 #[cfg(test)]

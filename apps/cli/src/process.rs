@@ -451,6 +451,10 @@ pub(crate) fn render_admitted_answer(
     answer: &Answer,
     options: &Options,
 ) -> Result<String, Fault> {
+    let related_cursor = match answer {
+        Answer::Records(records) => records.related_continuation(),
+        _ => None,
+    };
     let cursor = answer
         .continuation()
         .filter(|continuation| session.has_portable_query_continuation(*continuation))
@@ -459,11 +463,12 @@ pub(crate) fn render_admitted_answer(
         .map_err(|error| {
             Fault::from_client_error(&error, Operand::Argument("cursor".to_owned()))
         })?;
-    render::try_answer_with_cursor(answer, options, cursor.as_deref())
+    render::try_answer_with_cursor(answer, options, related_cursor.or(cursor.as_deref()))
 }
 
 struct Plan {
     request: Request,
+    source_range: Option<crate::source_range::Request>,
     wait: Option<crate::index_wait::IndexWaitPolicy>,
     output: Options,
 }
@@ -488,15 +493,21 @@ fn execute_plan_with_recovery(
     mut recovery: Option<&mut crate::owner_recovery::OwnerRecovery>,
 ) -> Result<(Answer, ExitCode), Fault> {
     let cli_context = observed_product_cli_context(workspace, connection_mode(&plan.output));
-    let answer = run::execute_with_output_admission(
-        session,
-        &plan.request,
-        Some(workspace),
-        recovery.as_deref_mut(),
-        plan.output.detail(),
-        cli_context.as_ref(),
-        |answer, cursor| render::admit_answer_with_cursor(answer, &plan.output, cursor),
-    )?;
+    let answer = if let Some(request) = &plan.source_range {
+        let answer = crate::source_range::read(session, workspace, request)?;
+        render::admit_answer_with_cursor(&answer, &plan.output, None)?;
+        answer
+    } else {
+        run::execute_with_output_admission(
+            session,
+            &plan.request,
+            Some(workspace),
+            recovery.as_deref_mut(),
+            plan.output.detail(),
+            cli_context.as_ref(),
+            |answer, cursor| render::admit_answer_with_cursor(answer, &plan.output, cursor),
+        )?
+    };
     if let Some(recovery) = recovery.as_deref() {
         recovery.detach(session).map_err(|error| {
             Fault::from_client_error(&error, Operand::Text("owner replacement".to_owned()))
@@ -529,16 +540,44 @@ fn plan(words: &[String], options: &Options, project: &str) -> Result<Plan, Faul
         })?;
         return lower_surface_json(encoded).map(|request| Plan {
             request,
+            source_range: None,
             wait: None,
             output: options.clone(),
         });
     }
     let invocation = invoke::parse(words, options.limit())?;
     let wait = crate::index_wait::IndexWaitPolicy::from_invocation(&invocation)?;
+    let source_range = if invocation.grammar().name() == "source" {
+        if invocation.option("cursor").is_some() && !invocation.flag("byte-range") {
+            return Err(Fault::usage(
+                "cursor",
+                "source --cursor requires --byte-range",
+            ));
+        }
+        if invocation.flag("byte-range") {
+            let cursor = invocation.option("cursor").map(str::to_owned);
+            if cursor.as_deref() == Some("") {
+                return Err(Fault::usage(
+                    "cursor",
+                    "source continuation must not be empty",
+                ));
+            }
+            Some(crate::source_range::Request {
+                project: project.to_owned(),
+                selector: backend_present::declaration_selector(&invocation)?,
+                cursor,
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let request = lower(&invocation, project)?;
     let request = normalize_package_profile_path(request, project)?;
     Ok(Plan {
         request,
+        source_range,
         wait,
         output: options.clone(),
     })

@@ -261,7 +261,7 @@ fn item_binding_targets(ir: &Ir) -> Result<Vec<TypeId>, TestError> {
         else {
             continue;
         };
-        if ir.atom(spelling) != Some(b"Item") {
+        if ir.atom(spelling) != Some(&b"Item"[..]) {
             continue;
         }
         targets.push(self_type);

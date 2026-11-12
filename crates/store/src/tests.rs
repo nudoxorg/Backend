@@ -2208,3 +2208,181 @@ fn checked_workspace_publication_binds_manifest_refs_and_typed_root() {
     );
     must(std::fs::remove_dir_all(path));
 }
+
+#[test]
+fn selected_ancestor_requires_current_head_exact_history_and_a_scan_budget() {
+    let path = std::env::temp_dir().join(format!(
+        "backend-store-selected-ancestor-{}-{}",
+        std::process::id(),
+        state_byte(41)
+    ));
+    let _ = std::fs::remove_dir_all(&path);
+    let store = must(FileStore::open(&path, 8_192));
+    let authority_value = 7u64;
+    let authority_key =
+        backend_version::ObjectKey::<TestCoverageSchema>::from_value(&authority_value);
+    let authority_version =
+        backend_version::ObjectVersion::<TestCoverageSchema>::from_value(&authority_value);
+    let manifest = must(backend_version::CheckedWorkspaceManifest::from_versions(
+        1,
+        Vec::new(),
+        Vec::new(),
+        authority_version,
+        coverage(),
+    ));
+    let closure = must(ClosureManifest::new(vec![TypedObject::from_value(
+        &authority_key,
+        &authority_value,
+    )]));
+    let layout = LayoutId::derive(b"selected-ancestor");
+    let pack = must(encode_pack(
+        &checked_map([(b"pack".to_vec(), v(1))]),
+        layout,
+        8_192,
+    ));
+    let pack_id = must(store.write_pack(&pack));
+    let authority = must(store.acquire_publication_authority());
+    let publish = |base| {
+        let publication =
+            CheckedWorkspacePublication::new(&manifest, closure.clone(), layout, pack_id, base);
+        must(
+            must(must(store.prepare_checked_workspace_publication(publication)).durable())
+                .publish_with_authority(&authority),
+        )
+    };
+    drop(publish(None));
+    let first = present(must(store.head()));
+    drop(publish(Some(first.as_base())));
+    let current = present(must(store.head()));
+    let root = manifest.root().to_bytes();
+    let found = must(store.workspace_selected_ancestor(
+        root,
+        current.generation(),
+        root,
+        first.generation(),
+        1_000_000,
+    ));
+    assert_eq!(found, first);
+    assert!(matches!(
+        store.workspace_selected_ancestor(
+            root,
+            current.generation(),
+            [0x55; 32],
+            first.generation(),
+            1_000_000
+        ),
+        Err(StoreError::Corrupt)
+    ));
+    assert!(matches!(
+        store.workspace_selected_ancestor(
+            root,
+            current.generation(),
+            root,
+            current.generation() + 1,
+            1_000_000
+        ),
+        Err(StoreError::Corrupt)
+    ));
+    assert!(matches!(
+        store.workspace_selected_ancestor(
+            root,
+            first.generation(),
+            root,
+            first.generation(),
+            1_000_000
+        ),
+        Err(StoreError::Corrupt)
+    ));
+    assert!(matches!(
+        store.workspace_selected_ancestor(
+            [0x55; 32],
+            current.generation(),
+            root,
+            first.generation(),
+            1_000_000
+        ),
+        Err(StoreError::Corrupt)
+    ));
+    assert!(matches!(
+        store.workspace_selected_ancestor(root, current.generation(), root, 0, 1_000_000),
+        Err(StoreError::Corrupt)
+    ));
+    assert!(matches!(
+        store.workspace_selected_ancestor(root, current.generation(), root, first.generation(), 0),
+        Err(StoreError::Bounds)
+    ));
+    drop(authority);
+    drop(store);
+    let reopened = must(FileStore::open(&path, 8_192));
+    assert_eq!(
+        must(reopened.workspace_selected_ancestor(
+            root,
+            current.generation(),
+            root,
+            first.generation(),
+            1_000_000
+        )),
+        first
+    );
+    drop(reopened);
+    must(std::fs::remove_dir_all(path));
+
+    let raw_path = std::env::temp_dir().join(format!(
+        "backend-store-raw-ancestor-{}", std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&raw_path);
+    let raw_store = must(FileStore::open(&raw_path, 8_192));
+    must(raw_store.publish(
+        &checked_map([(b"raw".to_vec(), v(1))]),
+        LayoutId::derive(b"non-workspace-ancestor"),
+    ));
+    let raw_head = present(must(raw_store.head()));
+    assert!(matches!(
+        raw_store.workspace_selected_ancestor(
+            raw_head.descriptor().target(), raw_head.generation(),
+            raw_head.descriptor().target(), raw_head.generation(), 1_000_000,
+        ),
+        Err(StoreError::Corrupt)
+    ));
+    drop(raw_store);
+    must(std::fs::remove_dir_all(raw_path));
+}
+
+#[test]
+fn workspace_history_is_bounded_selected_and_never_promotes_prepared() {
+    use std::sync::atomic::AtomicBool;
+    let path = std::env::temp_dir().join(format!("backend-store-history-{}-{}", std::process::id(), state_byte(47)));
+    let _ = std::fs::remove_dir_all(&path);
+    let store = must(FileStore::open(&path, 8192));
+    let authority_version = backend_version::ObjectVersion::<TestCoverageSchema>::from_value(&7);
+    let manifest = must(backend_version::CheckedWorkspaceManifest::from_versions(1, Vec::new(), Vec::new(), authority_version, coverage()));
+    let object = TypedObject::from_value(&backend_version::ObjectKey::<TestCoverageSchema>::from_value(&7), &7);
+    let closure = must(ClosureManifest::new(vec![object]));
+    let layout = LayoutId::derive(b"bounded-history");
+    let pack = must(encode_pack(&checked_map([(b"pack".to_vec(), v(1))]), layout, 8192));
+    let pack = must(store.write_pack(&pack));
+    let authority = must(store.acquire_publication_authority());
+    let first = CheckedWorkspacePublication::new(&manifest, closure.clone(), layout, pack, None);
+    must(must(must(store.prepare_checked_workspace_publication(first)).durable()).publish_with_authority(&authority));
+    let first_head = present(must(store.head()));
+    let second = CheckedWorkspacePublication::new(&manifest, closure.clone(), layout, pack, Some(first_head.as_base()));
+    must(must(must(store.prepare_checked_workspace_publication(second)).durable()).publish_with_authority(&authority));
+    let selected = present(must(store.head()));
+    let pending = CheckedWorkspacePublication::new(&manifest, closure, layout, pack, Some(selected.as_base()));
+    let _prepared_only = must(must(store.prepare_checked_workspace_publication(pending)).durable());
+    let cancelled = AtomicBool::new(false);
+    let history = must(store.selected_workspace_history(selected, &[1, 2], 100, &cancelled));
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0], first_head);
+    assert_eq!(history[1], selected);
+    assert!(matches!(store.selected_workspace_history(selected, &[3], 100, &cancelled), Err(WorkspaceHistoryError::Missing)));
+    assert!(matches!(store.selected_workspace_history(first_head, &[1], 100, &cancelled), Err(WorkspaceHistoryError::Store(StoreError::WrongBase))));
+    assert!(matches!(store.selected_workspace_history(selected, &[1], 1, &cancelled), Err(WorkspaceHistoryError::Limit)));
+    assert!(matches!(store.selected_workspace_history(selected, &[2, 1], 100, &cancelled), Err(WorkspaceHistoryError::Limit)));
+    cancelled.store(true, std::sync::atomic::Ordering::Release);
+    assert!(matches!(store.selected_workspace_history(selected, &[1], 100, &cancelled), Err(WorkspaceHistoryError::Cancelled)));
+    drop(_prepared_only);
+    drop(authority);
+    drop(store);
+    must(std::fs::remove_dir_all(path));
+}

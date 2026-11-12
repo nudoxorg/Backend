@@ -34,6 +34,10 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+const OPEN_INDEXED_QUESTION: &str = "Already indexed a project with the CLI or MCP?";
+const OPEN_INDEXED_EXPLANATION: &str =
+    "Choose its folder to open the existing index in another window. This does not add or reindex it.";
+
 /// How long a running index is said to have run, at a glance: minutes, and
 /// "just now" before the first.
 const TICK: Duration = Duration::from_secs(60);
@@ -231,9 +235,10 @@ pub(crate) fn empty(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
     let rust = crate::host::toolchain::report().map(|rust| {
         let missing = matches!(rust, crate::host::toolchain::Rust::Missing { .. });
         let words = match &rust {
-            crate::host::toolchain::Rust::Found { .. } => {
-                format!("Selected Rust toolchain: {}.", rust.words())
-            }
+            // Keep the first-run empty state concise and avoid exposing a
+            // machine-specific compiler path in its always-visible copy.
+            // Settings retains the exact selected compiler and provenance.
+            crate::host::toolchain::Rust::Found { .. } => "Rust toolchain found.".to_owned(),
             crate::host::toolchain::Rust::Missing { .. } => rust.words(),
         };
         (ctx.say(words), missing)
@@ -266,6 +271,22 @@ pub(crate) fn empty(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
             .child(control),
     );
     let find = find_packages(ctx, cx);
+    let rust_status = rust.map(|(words, missing)| {
+        let copy = if missing {
+            text(ty::ROW, &measure, palette.ink1)
+                .text_center()
+                .min_w(px(0.0))
+                .child(words.clone())
+        } else {
+            quiet(words.clone(), &measure, palette)
+                .text_center()
+                .min_w(px(0.0))
+        };
+        copy.keyed("empty-library-rust-status")
+            .role(gpui::Role::Status)
+            .aria_label(words)
+            .into_any_element()
+    });
     Leaf::new(
         div()
             .flex()
@@ -280,11 +301,18 @@ pub(crate) fn empty(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
             )
             .child(
                 text(ty::LEDE, &measure, palette.ink0)
+                    .keyed("empty-library-heading")
+                    .role(gpui::Role::Heading)
+                    .aria_level(1)
+                    .aria_label(lede.clone())
                     .text_center()
                     .child(lede),
             )
             .child(
                 text(ty::ROW, &measure, palette.ink2)
+                    .keyed("empty-library-instructions")
+                    .role(gpui::Role::Label)
+                    .aria_label(how.clone())
                     .text_center()
                     .child(how),
             )
@@ -301,25 +329,20 @@ pub(crate) fn empty(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
             )
             .child(find)
             .child(
-                quiet(find_how, &measure, palette)
+                quiet(find_how.clone(), &measure, palette)
+                    .keyed("empty-library-find-instructions")
+                    .role(gpui::Role::Label)
+                    .aria_label(find_how)
                     .text_center()
                     .min_w(px(0.0)),
             )
-            .child(quiet(private, &measure, palette))
-            .children(rust.map(|(words, missing)| {
-                if missing {
-                    text(ty::ROW, &measure, palette.ink1)
-                        .text_center()
-                        .min_w(px(0.0))
-                        .child(words)
-                        .into_any_element()
-                } else {
-                    quiet(words, &measure, palette)
-                        .text_center()
-                        .min_w(px(0.0))
-                        .into_any_element()
-                }
-            })),
+            .child(
+                quiet(private.clone(), &measure, palette)
+                    .keyed("empty-library-private-copy")
+                    .role(gpui::Role::Label)
+                    .aria_label(private),
+            )
+            .children(rust_status),
     )
 }
 
@@ -1175,11 +1198,18 @@ pub(crate) fn saved_workspaces(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> V
         control = control.focus_handle(focus);
     }
     let mut body = div().flex().flex_col().gap(measure.space(Space::Roomy))
-        .child(text(ty::SMALL, &measure, palette.ink2).child("Already indexed a project with the CLI or MCP?"))
-        .child(text(ty::SMALL, &measure, palette.ink3).child("Choose its folder to open the existing index in another window. This does not add or reindex it."))
+        .child(text(ty::SMALL, &measure, palette.ink2)
+            .keyed("open-indexed-question").role(gpui::Role::Label).aria_label(OPEN_INDEXED_QUESTION)
+            .child(OPEN_INDEXED_QUESTION))
+        .child(text(ty::SMALL, &measure, palette.ink3)
+            .keyed("open-indexed-explanation").role(gpui::Role::Label).aria_label(OPEN_INDEXED_EXPLANATION)
+            .child(OPEN_INDEXED_EXPLANATION))
         .child(ctx.targets.track(id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control)));
     if let Some(message) = saved::picker_status(cx) {
-        body = body.child(text(ty::SMALL, &measure, palette.ink3).child(ctx.say(message)));
+        let message = ctx.say(message);
+        body = body.child(text(ty::SMALL, &measure, palette.ink3)
+            .keyed("open-indexed-picker-status").role(gpui::Role::Status).aria_label(message.clone())
+            .child(message));
     }
     if let Some(opening) = saved::opening(cx) {
         let message = match opening {
@@ -1190,7 +1220,10 @@ pub(crate) fn saved_workspaces(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> V
             },
             Answer::Failed(error) => format!("The existing index was not opened: {error}"),
         };
-        body = body.child(text(ty::SMALL, &measure, palette.ink3).child(ctx.say(message)));
+        let message = ctx.say(message);
+        body = body.child(text(ty::SMALL, &measure, palette.ink3)
+            .keyed("open-indexed-opening-status").role(gpui::Role::Status).aria_label(message.clone())
+            .child(message));
     }
     vec![Leaf::new(body)]
 }

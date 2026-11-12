@@ -1,0 +1,959 @@
+// Copyright 2025 The syntaqlite Authors. All rights reserved.
+// Licensed under the Apache License, Version 2.0.
+
+use std::borrow::Cow;
+
+use super::{FormatConfig, KeywordCase};
+
+/// A handle into the `DocArena`. `NIL_DOC` represents an empty/absent document.
+pub(super) type DocId = u32;
+
+/// Sentinel value meaning "no document". Builder methods treat `NIL_DOC` operands
+/// as identity elements (e.g. `cat(NIL_DOC, x) == x`).
+pub(super) const NIL_DOC: DocId = u32::MAX;
+
+/// A node in the Wadler-style document algebra. Lifetime `'a` covers borrowed text
+/// slices; text/keyword nodes may also own their strings via `Cow::Owned` — used
+/// when the source text lives in a transient buffer (e.g. a mini-parse built for
+/// structured macro-arg formatting) that does not outlive render.
+#[derive(Debug, Clone)]
+enum Doc<'a> {
+    /// Source text (identifiers, literals). Never case-transformed.
+    Text(Cow<'a, str>),
+    /// SQL keyword. Subject to `KeywordCase` at render time.
+    Keyword(Cow<'a, str>),
+    /// Flat mode: space. Break mode: newline + indent.
+    Line,
+    /// Flat mode: empty. Break mode: newline + indent.
+    SoftLine,
+    /// Always newline + indent.
+    HardLine,
+    /// Like `HardLine`, but rendered as a no-op if the adjacent emitted
+    /// doc is also a break (`Line`/`SoftLine` in break mode, another
+    /// `HardLine`, or another `CommentBreak`) — on EITHER side. Used as
+    /// both the prefix and the trailing break of a leading-comment
+    /// chunk so that a break already emitted by a surrounding fmt
+    /// opcode (e.g. `SELECT`'s `line child(columns)`) doesn't stack
+    /// with the drain's own break into a blank line, and symmetrically
+    /// so the next break op in the stream doesn't stack onto ours.
+    /// Intentional double-hardlines (e.g. blank lines preserved
+    /// between comment blocks) use `HardLine` directly; when the
+    /// `HardLine` elides because the prior emission was a
+    /// `CommentBreak`, both flags are cleared so a subsequent
+    /// `CommentBreak` will emit the blank line as intended.
+    CommentBreak,
+    /// Concatenation of two documents.
+    Cat { left: DocId, right: DocId },
+    /// Increase indent by `indent` for `child`.
+    Nest { indent: i16, child: DocId },
+    /// Try to fit `child` on one line; break if it doesn't fit.
+    Group { child: DocId },
+    /// Defer `child` to end of current line (for trailing comments).
+    LineSuffix { child: DocId },
+    /// Force the enclosing group to break.
+    BreakParent,
+}
+
+/// Arena-based storage for `Doc` nodes. Push-to-allocate, indexed by `DocId`.
+#[derive(Debug)]
+pub(crate) struct DocArena<'a> {
+    docs: Vec<Doc<'a>>,
+}
+
+impl<'a> DocArena<'a> {
+    pub(crate) fn new() -> Self {
+        DocArena { docs: Vec::new() }
+    }
+
+    /// Create a new arena with pre-allocated capacity.
+    pub(crate) fn with_capacity(cap: usize) -> Self {
+        DocArena {
+            docs: Vec::with_capacity(cap),
+        }
+    }
+
+    /// Create a new arena, reusing the allocation from a previous arena.
+    ///
+    /// The old arena is consumed. The new arena has the same backing
+    /// memory but a fresh (possibly different) lifetime parameter.
+    pub(crate) fn recycle(mut old: DocArena<'_>) -> Self {
+        old.docs.clear();
+        let mut old_docs = std::mem::ManuallyDrop::new(old.docs);
+        let ptr = old_docs.as_mut_ptr();
+        let cap = old_docs.capacity();
+        // SAFETY: Doc<'old> and Doc<'new> have identical layout (enum of
+        // pointers/ids). Clearing removed all elements, so no stale
+        // borrows exist. We reuse the raw allocation with a new lifetime.
+        let docs = unsafe { Vec::from_raw_parts(ptr.cast::<Doc<'a>>(), 0, cap) };
+        DocArena { docs }
+    }
+
+    fn push(&mut self, doc: Doc<'a>) -> DocId {
+        let id = usize_to_doc_id(self.docs.len());
+        debug_assert!(id != NIL_DOC, "DocArena overflow");
+        self.docs.push(doc);
+        id
+    }
+
+    fn get(&self, id: DocId) -> &Doc<'a> {
+        &self.docs[id as usize]
+    }
+
+    // -- Builder methods --
+
+    pub(crate) fn text(&mut self, s: &'a str) -> DocId {
+        self.push(Doc::Text(Cow::Borrowed(s)))
+    }
+
+    pub(crate) fn keyword(&mut self, s: &'a str) -> DocId {
+        self.push(Doc::Keyword(Cow::Borrowed(s)))
+    }
+
+    /// Push a `Text` node whose string is owned by the arena.  Accepts
+    /// any `&str` regardless of lifetime — the contents are copied.
+    /// Use when emitting text sourced from a buffer shorter-lived than
+    /// the arena's `'a` (e.g. the AST of a transient mini-parse built
+    /// for structured macro-arg formatting).
+    pub(crate) fn own_text(&mut self, s: &str) -> DocId {
+        self.push(Doc::Text(Cow::Owned(s.to_owned())))
+    }
+
+    /// Like [`own_text`], but emits a `Keyword` node.
+    pub(crate) fn own_keyword(&mut self, s: &str) -> DocId {
+        self.push(Doc::Keyword(Cow::Owned(s.to_owned())))
+    }
+
+    /// Copy a doc tree from another arena into this one, owning all
+    /// text/keyword strings.  Used when the source arena holds borrows
+    /// into a buffer (e.g. a mini-parse's AST text) that will be
+    /// dropped before this arena is rendered.
+    ///
+    /// Non-text node shapes are reproduced verbatim.
+    pub(crate) fn copy_owned_from(&mut self, src: &DocArena<'_>, src_id: DocId) -> DocId {
+        if src_id == NIL_DOC {
+            return NIL_DOC;
+        }
+        match src.get(src_id) {
+            Doc::Text(s) => self.own_text(s),
+            Doc::Keyword(s) => self.own_keyword(s),
+            Doc::Line => self.line(),
+            Doc::SoftLine => self.softline(),
+            Doc::HardLine => self.hardline(),
+            Doc::CommentBreak => self.comment_break(),
+            Doc::BreakParent => self.break_parent(),
+            Doc::Cat { left, right } => {
+                let l = self.copy_owned_from(src, *left);
+                let r = self.copy_owned_from(src, *right);
+                self.cat(l, r)
+            }
+            Doc::Nest { indent, child } => {
+                let c = self.copy_owned_from(src, *child);
+                self.nest(*indent, c)
+            }
+            Doc::Group { child } => {
+                let c = self.copy_owned_from(src, *child);
+                self.group(c)
+            }
+            Doc::LineSuffix { child } => {
+                let c = self.copy_owned_from(src, *child);
+                self.line_suffix(c)
+            }
+        }
+    }
+
+    pub(crate) fn line(&mut self) -> DocId {
+        self.push(Doc::Line)
+    }
+
+    pub(crate) fn softline(&mut self) -> DocId {
+        self.push(Doc::SoftLine)
+    }
+
+    pub(crate) fn hardline(&mut self) -> DocId {
+        self.push(Doc::HardLine)
+    }
+
+    /// A hardline that elides itself if followed immediately by another
+    /// break at render time. See `Doc::CommentBreak` for rationale.
+    /// A blank line that survives next to a comment break.
+    pub(crate) fn blank_line(&mut self) -> DocId {
+        let hl = self.hardline();
+        let cb = self.comment_break();
+        self.cat(hl, cb)
+    }
+
+    pub(crate) fn comment_break(&mut self) -> DocId {
+        self.push(Doc::CommentBreak)
+    }
+
+    /// Concatenate two documents. If either operand is `NIL_DOC`, returns the other.
+    pub(crate) fn cat(&mut self, left: DocId, right: DocId) -> DocId {
+        if left == NIL_DOC {
+            return right;
+        }
+        if right == NIL_DOC {
+            return left;
+        }
+        self.push(Doc::Cat { left, right })
+    }
+
+    /// Concatenate a slice of documents left-to-right. Skips `NIL_DOC` entries.
+    pub(crate) fn cats(&mut self, ids: &[DocId]) -> DocId {
+        let mut result = NIL_DOC;
+        for &id in ids {
+            result = self.cat(result, id);
+        }
+        result
+    }
+
+    /// Nest (indent) `child` by `indent` spaces. Returns `NIL_DOC` if child is nil.
+    pub(crate) fn nest(&mut self, indent: i16, child: DocId) -> DocId {
+        if child == NIL_DOC {
+            return NIL_DOC;
+        }
+        self.push(Doc::Nest { indent, child })
+    }
+
+    /// Group `child` — try flat first, break if it doesn't fit. Returns `NIL_DOC` if child is nil.
+    pub(crate) fn group(&mut self, child: DocId) -> DocId {
+        if child == NIL_DOC {
+            return NIL_DOC;
+        }
+        self.push(Doc::Group { child })
+    }
+
+    pub(crate) fn line_suffix(&mut self, child: DocId) -> DocId {
+        if child == NIL_DOC {
+            return NIL_DOC;
+        }
+        self.push(Doc::LineSuffix { child })
+    }
+
+    pub(crate) fn break_parent(&mut self) -> DocId {
+        self.push(Doc::BreakParent)
+    }
+
+    // -- Render --
+
+    /// Render the document tree rooted at `root` to a string.
+    #[cfg(test)]
+    pub(crate) fn render(&self, root: DocId, config: &FormatConfig) -> String {
+        let mut bufs = RenderBuffers::new();
+        self.render_into(root, config, &mut bufs);
+        bufs.out
+    }
+
+    /// Render into caller-provided buffers, reusing their allocations.
+    ///
+    /// Uses a Wadler-style pretty-printing strategy:
+    /// - `Group` probes whether content fits in flat mode
+    /// - if it does not fit, rendering switches to break mode
+    /// - `Line`/`SoftLine` choose space vs newline based on that mode
+    ///
+    /// This avoids re-allocating the render stack, fits stack, and output
+    /// string on every format call.
+    #[expect(clippy::too_many_lines)]
+    pub(crate) fn render_into(&self, root: DocId, config: &FormatConfig, bufs: &mut RenderBuffers) {
+        let RenderBuffers {
+            out,
+            stack,
+            fits_stack,
+            line_suffix_buf,
+        } = bufs;
+        if root == NIL_DOC {
+            return;
+        }
+
+        let keyword_case = config.keyword_case();
+        let indent_width = usize_to_i32(config.indent_width());
+
+        out.reserve(self.docs.len() * 4);
+        let mut pos: usize = 0;
+        let line_width_i32 = usize_to_i32(config.line_width());
+        stack.push((0, Mode::Break, root));
+
+        // `just_emitted_comment_break`: set by a `CommentBreak` emission.
+        // Consumed by the immediately following break (any break variant)
+        // so the drain's trailing `CommentBreak` doesn't stack with the
+        // next fmt-stream break.
+        //
+        // `last_emitted_break`: set by ANY break emission (HardLine,
+        // CommentBreak, Line/SoftLine in break mode). Consumed by a
+        // following `CommentBreak` so a drain's leading `CommentBreak`
+        // doesn't stack on top of a break already emitted by a
+        // surrounding fmt op.
+        //
+        // When a `HardLine` elides because the prior emission was a
+        // `CommentBreak`, BOTH flags are cleared — otherwise the
+        // `HardLine+CommentBreak` blank-line-preservation pattern
+        // between comment blocks would see `last_emitted_break` still
+        // set and collapse to a single newline.
+        let mut just_emitted_comment_break = false;
+        let mut last_emitted_break = false;
+
+        while let Some((indent, mode, doc_id)) = stack.pop() {
+            if doc_id == NIL_DOC {
+                continue;
+            }
+
+            match self.get(doc_id) {
+                Doc::Text(s) => {
+                    just_emitted_comment_break = false;
+                    last_emitted_break = false;
+                    if maybe_emit_auto_space(s.as_bytes().first().copied(), out) {
+                        pos += 1;
+                    }
+                    out.push_str(s);
+                    pos += s.len();
+                }
+
+                Doc::Keyword(s) => {
+                    just_emitted_comment_break = false;
+                    last_emitted_break = false;
+                    if maybe_emit_auto_space(s.as_bytes().first().copied(), out) {
+                        pos += 1;
+                    }
+                    push_keyword(s, keyword_case, out);
+                    pos += s.len();
+                }
+
+                Doc::Line => {
+                    if matches!(mode, Mode::Flat) {
+                        just_emitted_comment_break = false;
+                        last_emitted_break = false;
+                        out.push(' ');
+                        pos += 1;
+                    } else if !just_emitted_comment_break {
+                        flush_line_suffixes(self, line_suffix_buf, config, out, &mut pos);
+                        emit_newline(indent, out, &mut pos);
+                        last_emitted_break = true;
+                    } else {
+                        just_emitted_comment_break = false;
+                        last_emitted_break = false;
+                    }
+                }
+
+                Doc::SoftLine => {
+                    if matches!(mode, Mode::Break) {
+                        if just_emitted_comment_break {
+                            just_emitted_comment_break = false;
+                            last_emitted_break = false;
+                        } else {
+                            flush_line_suffixes(self, line_suffix_buf, config, out, &mut pos);
+                            emit_newline(indent, out, &mut pos);
+                            last_emitted_break = true;
+                        }
+                    }
+                }
+
+                Doc::HardLine => {
+                    if just_emitted_comment_break {
+                        just_emitted_comment_break = false;
+                        last_emitted_break = false;
+                    } else {
+                        flush_line_suffixes(self, line_suffix_buf, config, out, &mut pos);
+                        emit_newline(indent, out, &mut pos);
+                        last_emitted_break = true;
+                    }
+                }
+
+                Doc::CommentBreak => {
+                    if just_emitted_comment_break || last_emitted_break {
+                        // Elide to avoid stacking with an adjacent break.
+                    } else {
+                        flush_line_suffixes(self, line_suffix_buf, config, out, &mut pos);
+                        emit_newline(indent, out, &mut pos);
+                        just_emitted_comment_break = true;
+                        last_emitted_break = true;
+                    }
+                }
+
+                Doc::Cat { left, right } => {
+                    stack.push((indent, mode, *right));
+                    stack.push((indent, mode, *left));
+                }
+
+                Doc::Nest { indent: di, child } => {
+                    let spaces = i32::from(*di) * indent_width;
+                    stack.push((indent + spaces, mode, *child));
+                }
+
+                Doc::Group { child } => {
+                    if self.fits_with(
+                        *child,
+                        indent,
+                        line_width_i32 - usize_to_i32(pos),
+                        indent_width,
+                        fits_stack,
+                    ) {
+                        stack.push((indent, Mode::Flat, *child));
+                    } else {
+                        stack.push((indent, Mode::Break, *child));
+                    }
+                }
+
+                Doc::LineSuffix { child } => {
+                    line_suffix_buf.push((indent, mode, *child));
+                }
+
+                Doc::BreakParent => {}
+            }
+        }
+
+        flush_line_suffixes(self, line_suffix_buf, config, out, &mut pos);
+    }
+
+    /// Check whether a document fits within `remaining` columns when rendered flat.
+    /// Reuses `scratch` to avoid per-call allocation.
+    fn fits_with(
+        &self,
+        doc_id: DocId,
+        indent: i32,
+        remaining: i32,
+        indent_width: i32,
+        scratch: &mut Vec<(i32, DocId)>,
+    ) -> bool {
+        if remaining < 0 {
+            return false;
+        }
+
+        let mut remaining = remaining;
+        scratch.clear();
+        scratch.push((indent, doc_id));
+        // Tracks the trailing byte of the most recent atomic emission so
+        // we can mirror the renderer's auto-spacer when budgeting width
+        // (renderer inserts 1 byte between two adjacent word-class atoms).
+        let mut last_byte: Option<u8> = None;
+
+        while let Some((indent, doc_id)) = scratch.pop() {
+            if remaining < 0 {
+                return false;
+            }
+            if doc_id == NIL_DOC {
+                continue;
+            }
+
+            match self.get(doc_id) {
+                Doc::Text(s) | Doc::Keyword(s) => {
+                    let bytes = s.as_bytes();
+                    if let (Some(&first), Some(prev)) = (bytes.first(), last_byte)
+                        && is_word_byte(prev)
+                        && is_word_byte(first)
+                    {
+                        remaining -= 1;
+                    }
+                    remaining -= usize_to_i32(s.len());
+                    if let Some(&last) = bytes.last() {
+                        last_byte = Some(last);
+                    }
+                }
+                Doc::Line => {
+                    remaining -= 1;
+                    last_byte = Some(b' ');
+                }
+                Doc::SoftLine | Doc::LineSuffix { .. } => {}
+                Doc::HardLine | Doc::CommentBreak | Doc::BreakParent => {
+                    return false;
+                }
+                Doc::Cat { left, right } => {
+                    scratch.push((indent, *right));
+                    scratch.push((indent, *left));
+                }
+                Doc::Nest { indent: di, child } => {
+                    let spaces = i32::from(*di) * indent_width;
+                    scratch.push((indent + spaces, *child));
+                }
+                Doc::Group { child } => {
+                    scratch.push((indent, *child));
+                }
+            }
+        }
+
+        remaining >= 0
+    }
+
+    /// Dump the document tree as an indented text representation (for debugging).
+    pub(crate) fn dump(&self, root: DocId) -> String {
+        use std::fmt::Write;
+        let mut out = String::new();
+        let mut stack: Vec<(DocId, usize)> = vec![(root, 0)];
+
+        while let Some((id, depth)) = stack.pop() {
+            if id == NIL_DOC {
+                continue;
+            }
+            let indent_str: String = "  ".repeat(depth);
+            match self.get(id) {
+                Doc::Text(s) => {
+                    let _ = writeln!(out, "{indent_str}Text({s:?})");
+                }
+                Doc::Keyword(s) => {
+                    let _ = writeln!(out, "{indent_str}Keyword({s:?})");
+                }
+                Doc::Line => {
+                    let _ = writeln!(out, "{indent_str}Line");
+                }
+                Doc::SoftLine => {
+                    let _ = writeln!(out, "{indent_str}SoftLine");
+                }
+                Doc::HardLine => {
+                    let _ = writeln!(out, "{indent_str}HardLine");
+                }
+                Doc::CommentBreak => {
+                    let _ = writeln!(out, "{indent_str}CommentBreak");
+                }
+                Doc::BreakParent => {
+                    let _ = writeln!(out, "{indent_str}BreakParent");
+                }
+                Doc::LineSuffix { child } => {
+                    let _ = writeln!(out, "{indent_str}LineSuffix");
+                    stack.push((*child, depth + 1));
+                }
+                Doc::Cat { left, right } => {
+                    // Push right first so left is processed first (stack LIFO).
+                    stack.push((*right, depth));
+                    stack.push((*left, depth));
+                }
+                Doc::Nest { indent, child } => {
+                    let _ = writeln!(out, "{indent_str}Nest({indent})");
+                    stack.push((*child, depth + 1));
+                }
+                Doc::Group { child } => {
+                    let _ = writeln!(out, "{indent_str}Group");
+                    stack.push((*child, depth + 1));
+                }
+            }
+        }
+
+        out
+    }
+}
+
+// ── Private helpers ──────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Mode {
+    Flat,
+    Break,
+}
+
+/// Reusable buffers for `DocArena::render_into`. Keeping these across
+/// format calls avoids re-allocating the render stack, fits stack, and
+/// output string on every invocation.
+pub(crate) struct RenderBuffers {
+    pub out: String,
+    pub stack: Vec<(i32, Mode, DocId)>,
+    pub fits_stack: Vec<(i32, DocId)>,
+    pub line_suffix_buf: Vec<(i32, Mode, DocId)>,
+}
+
+impl RenderBuffers {
+    pub(crate) fn new() -> Self {
+        Self {
+            out: String::new(),
+            stack: Vec::new(),
+            fits_stack: Vec::new(),
+            line_suffix_buf: Vec::new(),
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.out.clear();
+        self.stack.clear();
+        self.fits_stack.clear();
+        self.line_suffix_buf.clear();
+    }
+}
+
+impl Default for RenderBuffers {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Static buffer of spaces for indent emission (avoids per-char push).
+const SPACES: &str = "                                                                                                                                ";
+
+fn emit_newline(indent: i32, out: &mut String, pos: &mut usize) {
+    while out.ends_with(' ') {
+        out.pop();
+    }
+    out.push('\n');
+    let spaces = non_negative_i32_to_usize(indent.max(0));
+    let mut remaining = spaces;
+    while remaining > 0 {
+        let chunk = remaining.min(SPACES.len());
+        out.push_str(&SPACES[..chunk]);
+        remaining -= chunk;
+    }
+    *pos = spaces;
+}
+
+/// Insert a single space when two adjacent word-class atoms (keyword/text)
+/// would otherwise butt up against each other in the output. Returns
+/// `true` if a space was emitted so the caller can advance `pos`.
+///
+/// "Word-class" here is ASCII alphanumeric + `_`, matching SQL identifier
+/// rules. Punctuation transitions (e.g. `FILTER` followed by `(`) are
+/// untouched: those need an explicit `line` in the .synq fmt block.
+///
+/// While keyword literals still carry baked-in whitespace this is a
+/// no-op (the previous emission ends in ' '). Once those spaces are
+/// stripped (issue #5) the auto-spacer takes over inter-token spacing.
+#[inline]
+fn maybe_emit_auto_space(next_first: Option<u8>, out: &mut String) -> bool {
+    let Some(first) = next_first else {
+        return false;
+    };
+    let Some(&last) = out.as_bytes().last() else {
+        return false;
+    };
+    let needs_space = if is_word_byte(first) {
+        is_word_byte(last)
+    } else {
+        would_lex_as_one_token(last, first)
+    };
+    if !needs_space {
+        return false;
+    }
+    out.push(' ');
+    true
+}
+
+#[inline]
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Operator bytes that `SQLite`'s tokenizer reads as a single token when
+/// adjacent, so emitting them flush would change what the output means.
+///
+/// `-` before `-` is the dangerous one: it opens a line comment that eats the
+/// rest of the statement. The others cannot currently be produced by any fmt
+/// block, but the pair is what makes the output wrong, not the caller, so the
+/// guard belongs here rather than at each emission site.
+#[inline]
+fn would_lex_as_one_token(last: u8, first: u8) -> bool {
+    matches!(
+        (last, first),
+        (b'-', b'-' | b'>')
+            | (b'/', b'*')
+            | (b'*', b'/')
+            | (b'|', b'|')
+            | (b'<', b'<' | b'=' | b'>')
+            | (b'>', b'>' | b'=')
+            | (b'=' | b'!', b'=')
+    )
+}
+
+/// Push a keyword string with the appropriate casing to the output.
+///
+/// Collapse a duplicated leading space: several grammar literals (`" AS "`,
+/// `" OVER "`, ...) carry a baked-in leading space that doubles up when the
+/// preceding emission already ended with whitespace (e.g. the trailing
+/// space of a block comment's leading chunk, or a line-rendered softline).
+/// The collapse is conservative — only the first byte, only when both sides
+/// are a literal `' '` — so it doesn't swallow indentation.
+///
+/// This hack lives here because spacing currently comes from a mix of
+/// `line` ops and leading spaces baked into grammar literals.  The real
+/// fix is to strip leading spaces from keyword literals and always rely
+/// on explicit `line`/`space` ops in the grammar; see
+/// <https://github.com/LalitMaganti/syntaqlite/issues/5>.
+#[inline]
+fn push_keyword(s: &str, case: KeywordCase, out: &mut String) {
+    let bytes = s.as_bytes();
+    let skip = usize::from(bytes.first() == Some(&b' ') && out.as_bytes().last() == Some(&b' '));
+    let slice = &bytes[skip..];
+    match case {
+        KeywordCase::Upper => {
+            for &b in slice {
+                out.push(b.to_ascii_uppercase() as char);
+            }
+        }
+        KeywordCase::Lower => {
+            for &b in slice {
+                out.push(b.to_ascii_lowercase() as char);
+            }
+        }
+    }
+}
+
+/// Render buffered line suffixes directly to output (before the next newline).
+fn flush_line_suffixes(
+    arena: &DocArena,
+    buf: &mut Vec<(i32, Mode, DocId)>,
+    config: &FormatConfig,
+    out: &mut String,
+    pos: &mut usize,
+) {
+    if buf.is_empty() {
+        return;
+    }
+    for (indent, _mode, doc_id) in buf.drain(..) {
+        render_inline(arena, doc_id, indent, config, out, pos);
+    }
+}
+
+/// Render a doc tree directly into the output string (used for line suffixes).
+fn render_inline(
+    arena: &DocArena,
+    doc_id: DocId,
+    indent: i32,
+    config: &FormatConfig,
+    out: &mut String,
+    pos: &mut usize,
+) {
+    let keyword_case = config.keyword_case();
+    let indent_width = usize_to_i32(config.indent_width());
+    if doc_id == NIL_DOC {
+        return;
+    }
+    let mut stack: Vec<(i32, DocId)> = vec![(indent, doc_id)];
+    while let Some((indent, doc_id)) = stack.pop() {
+        if doc_id == NIL_DOC {
+            continue;
+        }
+        match arena.get(doc_id) {
+            Doc::Text(s) => {
+                if maybe_emit_auto_space(s.as_bytes().first().copied(), out) {
+                    *pos += 1;
+                }
+                out.push_str(s);
+                *pos += s.len();
+            }
+            Doc::Keyword(s) => {
+                if maybe_emit_auto_space(s.as_bytes().first().copied(), out) {
+                    *pos += 1;
+                }
+                push_keyword(s, keyword_case, out);
+                *pos += s.len();
+            }
+            Doc::Cat { left, right } => {
+                stack.push((indent, *right));
+                stack.push((indent, *left));
+            }
+            Doc::Nest { indent: di, child } => {
+                let spaces = i32::from(*di) * indent_width;
+                stack.push((indent + spaces, *child));
+            }
+            _ => {}
+        }
+    }
+}
+
+#[inline]
+fn usize_to_doc_id(value: usize) -> DocId {
+    u32::try_from(value).expect("DocArena index must fit in DocId")
+}
+
+#[inline]
+fn usize_to_i32(value: usize) -> i32 {
+    i32::try_from(value).expect("value must fit in i32")
+}
+
+#[inline]
+fn non_negative_i32_to_usize(value: i32) -> usize {
+    usize::try_from(value).expect("value must be non-negative")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg() -> FormatConfig {
+        FormatConfig::default()
+    }
+
+    fn cfg_width(line_width: usize) -> FormatConfig {
+        FormatConfig::default().with_line_width(line_width)
+    }
+
+    #[test]
+    fn arena_alloc_and_get() {
+        let mut arena = DocArena::new();
+        let id = arena.text("hello");
+        assert_eq!(id, 0);
+        match arena.get(id) {
+            Doc::Text(s) => assert_eq!(s.as_ref(), "hello"),
+            _ => panic!("expected Text"),
+        }
+    }
+
+    #[test]
+    fn nil_doc_identity_in_cat() {
+        let mut arena = DocArena::new();
+        let a = arena.text("a");
+        assert_eq!(arena.cat(NIL_DOC, a), a);
+        assert_eq!(arena.cat(a, NIL_DOC), a);
+        assert_eq!(arena.cat(NIL_DOC, NIL_DOC), NIL_DOC);
+    }
+
+    #[test]
+    fn nil_doc_identity_in_nest_and_group() {
+        let mut arena = DocArena::new();
+        assert_eq!(arena.nest(4, NIL_DOC), NIL_DOC);
+        assert_eq!(arena.group(NIL_DOC), NIL_DOC);
+        assert_eq!(arena.line_suffix(NIL_DOC), NIL_DOC);
+    }
+
+    #[test]
+    fn cats_skips_nil() {
+        let mut arena = DocArena::new();
+        let a = arena.text("a");
+        let b = arena.text("b");
+        let result = arena.cats(&[NIL_DOC, a, NIL_DOC, b, NIL_DOC]);
+        match arena.get(result) {
+            Doc::Cat { left, right } => {
+                assert_eq!(*left, a);
+                assert_eq!(*right, b);
+            }
+            _ => panic!("expected Cat"),
+        }
+    }
+
+    #[test]
+    fn cats_single_element() {
+        let mut arena = DocArena::new();
+        let a = arena.text("a");
+        assert_eq!(arena.cats(&[a]), a);
+    }
+
+    #[test]
+    fn cats_empty() {
+        let mut arena = DocArena::new();
+        assert_eq!(arena.cats(&[]), NIL_DOC);
+    }
+
+    #[test]
+    fn plain_text() {
+        let mut arena = DocArena::new();
+        let doc = arena.text("hello world");
+        assert_eq!(arena.render(doc, &cfg()), "hello world");
+    }
+
+    #[test]
+    fn cat_two_texts() {
+        let mut arena = DocArena::new();
+        let a = arena.text("hello");
+        let b = arena.text(" world");
+        let doc = arena.cat(a, b);
+        assert_eq!(arena.render(doc, &cfg()), "hello world");
+    }
+
+    #[test]
+    fn group_fits_flat() {
+        let mut arena = DocArena::new();
+        let a = arena.text("a");
+        let sp = arena.line();
+        let b = arena.text("b");
+        let inner = arena.cats(&[a, sp, b]);
+        let doc = arena.group(inner);
+        assert_eq!(arena.render(doc, &cfg()), "a b");
+    }
+
+    #[test]
+    fn group_breaks() {
+        let mut arena = DocArena::new();
+        let a = arena.text("aaaa");
+        let sp = arena.line();
+        let b = arena.text("bbbb");
+        let inner = arena.cats(&[a, sp, b]);
+        let doc = arena.group(inner);
+        assert_eq!(arena.render(doc, &cfg_width(6)), "aaaa\nbbbb");
+    }
+
+    #[test]
+    fn nest_indentation() {
+        let mut arena = DocArena::new();
+        let a = arena.text("a");
+        let sp = arena.line();
+        let b = arena.text("b");
+        let inner = arena.cats(&[a, sp, b]);
+        // nest(1, ..) = 1 indent level; default indent_width=2 → 2 spaces
+        let nested = arena.nest(1, inner);
+        let doc = arena.group(nested);
+        assert_eq!(arena.render(doc, &cfg_width(3)), "a b");
+        assert_eq!(arena.render(doc, &cfg_width(2)), "a\n  b");
+    }
+
+    #[test]
+    fn nil_doc_renders_empty() {
+        let arena = DocArena::new();
+        assert_eq!(arena.render(NIL_DOC, &cfg()), "");
+    }
+
+    #[test]
+    fn auto_space_between_adjacent_words() {
+        let mut arena = DocArena::new();
+        let a = arena.keyword("ORDER");
+        let b = arena.keyword("BY");
+        let doc = arena.cat(a, b);
+        assert_eq!(arena.render(doc, &cfg()), "ORDER BY");
+    }
+
+    #[test]
+    fn auto_space_skipped_when_separator_present() {
+        let mut arena = DocArena::new();
+        let a = arena.keyword("ORDER");
+        let sp = arena.line();
+        let b = arena.keyword("BY");
+        let inner = arena.cats(&[a, sp, b]);
+        let doc = arena.group(inner);
+        assert_eq!(arena.render(doc, &cfg()), "ORDER BY");
+    }
+
+    #[test]
+    fn auto_space_skipped_around_punctuation() {
+        let mut arena = DocArena::new();
+        let kw = arena.keyword("FILTER");
+        let lp = arena.text("(");
+        let doc = arena.cat(kw, lp);
+        assert_eq!(arena.render(doc, &cfg()), "FILTER(");
+    }
+
+    #[test]
+    fn auto_space_handles_text_and_keyword() {
+        let mut arena = DocArena::new();
+        let t = arena.text("foo");
+        let k = arena.keyword("AS");
+        let doc = arena.cat(t, k);
+        assert_eq!(arena.render(doc, &cfg()), "foo AS");
+    }
+
+    #[test]
+    fn auto_space_no_space_after_newline() {
+        let mut arena = DocArena::new();
+        let a = arena.text("aaaa");
+        let nl = arena.hardline();
+        let b = arena.keyword("BY");
+        let doc = arena.cats(&[a, nl, b]);
+        assert_eq!(arena.render(doc, &cfg()), "aaaa\nBY");
+    }
+
+    #[test]
+    fn nest_respects_indent_width() {
+        use crate::fmt::FormatConfig;
+
+        let mut arena = DocArena::new();
+        let a = arena.text("a");
+        let sp = arena.line();
+        let b = arena.text("b");
+        let inner = arena.cats(&[a, sp, b]);
+        // nest(1, ..) = 1 indent level
+        let nested = arena.nest(1, inner);
+        let doc = arena.group(nested);
+
+        // With indent_width=4, one level should produce 4 spaces.
+        let config = FormatConfig::default()
+            .with_line_width(2)
+            .with_indent_width(4);
+        assert_eq!(arena.render(doc, &config), "a\n    b");
+
+        // With indent_width=8, one level should produce 8 spaces.
+        let config = FormatConfig::default()
+            .with_line_width(2)
+            .with_indent_width(8);
+        assert_eq!(arena.render(doc, &config), "a\n        b");
+    }
+}

@@ -518,7 +518,23 @@ fn public_items_by_file(tree: &Path) -> Vec<(String, String)> {
             let Ok(source) = std::fs::read_to_string(&path) else {
                 continue;
             };
+            // An item under `#[cfg(doctest)]` or `#[cfg(test)]` is not part of
+            // the crate the owner compiles (`toml_edit` declares a
+            // `ReadmeDoctests` marker that way), so it is not an expected name.
+            let mut inactive = false;
             let item = source.lines().find_map(|line| {
+                let trimmed = line.trim_start();
+                if trimmed.starts_with("#[cfg(doctest)]") || trimmed.starts_with("#[cfg(test)]") {
+                    inactive = true;
+                    return None;
+                }
+                if trimmed.starts_with("#[") || trimmed.starts_with("///") {
+                    return None;
+                }
+                let gated = std::mem::take(&mut inactive);
+                if gated {
+                    return None;
+                }
                 let rest = line.strip_prefix("pub ")?;
                 let rest = ["struct ", "enum ", "trait "]
                     .iter()
@@ -823,11 +839,49 @@ fn an_owner_killed_mid_compile_reopens_at_its_last_publication_and_indexes_again
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// A Cargo home made for one test: the real trees named in `real` copied beside
+/// `thin_fixture 1.0.0`, a crate the compiler cannot finish however the machine
+/// is set up: its manifest names a path dependency that does not exist, so
+/// Cargo cannot resolve it and no compiler authority can be opened. (The
+/// compiler used to stop on `serde_core 1.0.229` for this; it finishes that
+/// now, and a source it cannot lower is a gap in the package, not a refusal.)
+fn cargo_home_with_a_thin_package(root: &Path, real: &[&str]) -> CargoCache {
+    fn copy_tree(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).expect("tree directory");
+        for entry in std::fs::read_dir(from).expect("tree").flatten() {
+            let (from, to) = (entry.path(), to.join(entry.file_name()));
+            if from.is_dir() {
+                copy_tree(&from, &to);
+            } else {
+                std::fs::copy(&from, &to).expect("copy file");
+            }
+        }
+    }
+    let home = root.join("cargo-home");
+    let index = home.join("registry/src/index.crates.io-1949cf8c6b5b557f");
+    for stem in real {
+        copy_tree(&cached(stem), &index.join(stem));
+    }
+    let thin = index.join("thin_fixture-1.0.0");
+    std::fs::create_dir_all(thin.join("src")).expect("thin fixture");
+    std::fs::write(
+        thin.join("Cargo.toml"),
+        "[package]\nname = \"thin_fixture\"\nversion = \"1.0.0\"\nedition = \"2021\"\n\n[dependencies]\nmissing_sibling = { path = \"../missing_sibling\" }\n\n[workspace]\n",
+    )
+    .expect("manifest");
+    std::fs::write(
+        thin.join("src/lib.rs"),
+        "//! The compiler cannot open this package, but its source still spells its names.\n\npub struct Deserializer;\n",
+    )
+    .expect("source");
+    CargoCache::at(home.canonicalize().expect("canonical home"), root.join("unpacked"))
+}
+
 #[test]
 fn a_package_the_compiler_could_not_finish_still_says_so_after_a_relaunch() {
     use crate::runtime::acquire::{Listed, Stage, index_release};
     let owner = Owner::start("thin");
-    let source = CargoCache::from_env(owner.root.join("unpacked")).expect("a cargo home");
+    let source = cargo_home_with_a_thin_package(&owner.root, &[]);
     let refusals = owner.root.join("data/registry-sources/refusals.json");
     let composition = Composition {
         endpoint: owner.host.endpoint().to_path_buf(),
@@ -836,15 +890,16 @@ fn a_package_the_compiler_could_not_finish_still_says_so_after_a_relaunch() {
         generation: crate::host::registry::CompositionGeneration::default(),
         refusals: Some(refusals.clone()),
     };
-    // serde_core 1.0.229: the compiler stops on a generic parameter it cannot
-    // lower (src/de/mod.rs); the owner still lists it on its source's names.
-    let release = Release::new("serde_core", "1.0.229").expect("release");
+    // thin_fixture 1.0.0: Cargo cannot resolve its manifest, so the compiler
+    // refuses it at its first source (src/lib.rs); the owner still lists it on
+    // its source's names.
+    let release = Release::new("thin_fixture", "1.0.0").expect("release");
     let first = index_release(&composition, &release, Listed::Any, &|_| {});
     let Stage::Partial { page, words } = &first else {
-        panic!("the compiler finishes serde_core now; pick another refused crate: {first:?}")
+        panic!("the compiler finished a package Cargo cannot resolve: {first:?}")
     };
     assert!(
-        words.contains("src/de/mod.rs"),
+        words.contains("src/lib.rs"),
         "the owner's words name the file: {words}"
     );
     // A relaunch: the owner already lists it, so it is not compiled again,
@@ -996,7 +1051,7 @@ fn searched_at(endpoint: &Path, text: &str) -> Result<Vec<(String, Option<String
 }
 
 /// The child half of [`a_search_finds_names_in_every_package_the_library_holds_even_one_the_compiler_could_not_finish`]:
-/// an owner at `NX_SEARCH_ROOT` adds toml_datetime (compiles) and serde_core
+/// an owner at `NX_SEARCH_ROOT` adds toml_datetime (compiles) and thin_fixture
 /// (the compiler cannot finish it), then searches as the app does, printing
 /// each answer. Its standard error is the owner's.
 #[test]
@@ -1005,7 +1060,7 @@ fn search_child() {
     use crate::runtime::acquire::{Listed, index_release};
     let root = PathBuf::from(std::env::var_os("NX_SEARCH_ROOT").expect("NX_SEARCH_ROOT"));
     let host = DesktopHost::start_with_paths(anchored_at(&root)).expect("the owner starts");
-    let source = CargoCache::from_env(root.join("unpacked")).expect("a cargo home");
+    let source = cargo_home_with_a_thin_package(&root, &["toml_datetime-0.6.11", "toml-0.8.23", "toml_edit-0.22.27"]);
     let composition = Composition {
         endpoint: host.endpoint().to_path_buf(),
         source: Arc::new(source),
@@ -1015,7 +1070,7 @@ fn search_child() {
     };
     for (name, version) in [
         ("toml_datetime", "0.6.11"),
-        ("serde_core", "1.0.229"),
+        ("thin_fixture", "1.0.0"),
         ("toml", "0.8.23"),
         ("toml_edit", "0.22.27"),
     ] {
@@ -1076,8 +1131,8 @@ fn a_search_finds_names_in_every_package_the_library_holds_even_one_the_compiler
         "toml_datetime compiles: {stdout}"
     );
     assert!(
-        stdout.contains("SEARCH-STAGE serde_core Partial"),
-        "serde_core is the package the compiler could not finish: {stdout}"
+        stdout.contains("SEARCH-STAGE thin_fixture Partial"),
+        "thin_fixture is the package the compiler could not finish: {stdout}"
     );
     for failed in stdout
         .lines()
@@ -1102,8 +1157,8 @@ fn a_search_finds_names_in_every_package_the_library_holds_even_one_the_compiler
         "toml_datetime's Datetime is found (the compiler's row): {stdout}"
     );
     assert!(
-        found("Deserializer", "Deserializer", "serde_core-1.0.229"),
-        "serde_core's Deserializer is found from its source's names: {stdout}"
+        found("Deserializer", "Deserializer", "thin_fixture-1.0.0"),
+        "thin_fixture's Deserializer is found from its source's names: {stdout}"
     );
     // ⌘K `toml Value` ↵ opens the first row: toml's own Value, not
     // toml_edit's (its path has the word toml too), nor a row whose words
@@ -1765,4 +1820,50 @@ fn probe_registry_roots_on_a_real_owner() {
         );
     }
     drop(session);
+}
+
+/// GUI-05: a release in the library leaves it through the owner's own
+/// `remove`, only at the exact root its page reads; its source stays on this
+/// machine and it can be added again.
+#[test]
+fn a_release_in_the_library_is_removed_by_the_owner_and_can_be_added_again() {
+    use crate::runtime::acquire::{Listed, Removal, Stage, index_release, remove_release};
+    let owner = Owner::start("remove");
+    let source = CargoCache::from_env(owner.root.join("unpacked")).expect("a cargo home");
+    let composition = Composition {
+        endpoint: owner.host.endpoint().to_path_buf(),
+        source: Arc::new(source),
+        authority: Arc::from("test-authority"),
+        generation: crate::host::registry::CompositionGeneration::default(),
+        refusals: None,
+    };
+    let release = anyhow();
+    let page = match index_release(&composition, &release, Listed::Any, &|_| {}) {
+        Stage::Added(page) | Stage::Partial { page, .. } => page,
+        other => panic!("{release} is in the library first: {other:?}"),
+    };
+    let listed = |coordinate: &str| {
+        let mut session = Session::connect(owner.host.endpoint()).expect("session");
+        let CommandReply::Packages(snapshot) = session.packages().expect("packages").reply else { panic!("a packages reply") };
+        snapshot.root.rows().iter().any(|row| row.label == coordinate)
+    };
+    assert!(listed(page.as_str()), "the owner lists {page:?}");
+    let steps = std::sync::Mutex::new(Vec::new());
+    let remove = |at: &PackageRef| {
+        steps.lock().expect("steps").clear();
+        remove_release(&composition, &release, at, &|step| steps.lock().expect("steps").push(step));
+        steps.lock().expect("steps").clone()
+    };
+    let anchor = PackageRef::parse(owner.root.join("anchor").to_str().expect("UTF-8")).expect("anchor root");
+    assert!(matches!(remove(&anchor).as_slice(), [Removal::Failed(words)] if words.contains("is not the registry source")),
+        "a root the registry source does not own is never removed");
+    assert!(listed(page.as_str()), "and nothing was removed");
+    assert_eq!(remove(&page), [Removal::Removing, Removal::Removed(page.clone())], "the page's own root is removed");
+    assert!(!listed(page.as_str()), "the owner no longer lists it");
+    assert!(Path::new(page.as_str()).is_dir(), "its source stays on this machine");
+    assert!(matches!(remove(&page).as_slice(), [Removal::Failed(words)] if words.contains("is not in the library")),
+        "removing again says there is nothing to remove");
+    assert!(matches!(index_release(&composition, &release, Listed::Any, &|_| {}),
+        Stage::Added(again) | Stage::Partial { page: again, .. } if again == page), "it can be added again");
+    assert!(listed(page.as_str()));
 }

@@ -972,7 +972,7 @@ impl OsvSnapshotBuilder {
         // handle, so every staged file is closed before the publish below.
         drop(index);
         let package_index_digest = *index_hasher.finalize().as_bytes();
-        let generation = generation_id(self.scope, source_digest);
+        let generation = generation_id(self.scope, source_digest, package_index_digest);
         let manifest = OsvSnapshotManifest {
             schema: SNAPSHOT_SCHEMA,
             generation: generation.clone(),
@@ -1139,11 +1139,13 @@ fn package_key(package: &PackageIdentity) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
-fn generation_id(scope: OsvFeedScope, digest: [u8; 32]) -> String {
+fn generation_id(scope: OsvFeedScope, digest: [u8; 32], index_digest: [u8; 32]) -> String {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"nudox.osv.snapshot.v1\0");
+    // Parsed rows include observation provenance and can differ for the same ZIP.
+    hasher.update(b"nudox.osv.snapshot.v2\0");
     hasher.update(&[as_u8(scope)]);
     hasher.update(&digest);
+    hasher.update(&index_digest);
     hex(hasher.finalize().as_bytes())
 }
 

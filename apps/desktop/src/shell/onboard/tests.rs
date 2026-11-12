@@ -39,6 +39,73 @@ fn first_run(cx: &mut TestAppContext, width: f32) -> Rig {
     rig_with_reads(cx, Some(Route::Orbit(OrbitRoute::Home)), width, 900.0, ReadPool::start(2, |_| NothingYet).expect("pool"))
 }
 
+#[gpui::test]
+fn empty_library_copy_has_one_named_native_reading_node_per_message(cx: &mut TestAppContext) {
+    let mut rig = first_run(cx, 1120.0);
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    rig.repaint();
+
+    let nodes = rig.cx.update(|window, _| {
+        window.a11y_tree().expect("forced empty Library tree").nodes.iter()
+            .map(|(_, node)| (node.role(), node.label().map(str::to_owned), node.level()))
+            .collect::<Vec<_>>()
+    });
+    let count = |role, words: &str| nodes.iter().filter(|(node_role, label, _)| {
+        *node_role == role && label.as_deref() == Some(words)
+    }).count();
+
+    assert_eq!(count(gpui::Role::Heading, "Read the code you depend on."), 1);
+    assert_eq!(nodes.iter().find(|(role, label, _)| {
+        *role == gpui::Role::Heading && label.as_deref() == Some("Read the code you depend on.")
+    }).and_then(|(_, _, level)| *level), Some(1), "the empty-state lede is the page's first-level heading");
+    assert_eq!(count(gpui::Role::Label,
+        "Add a project folder. Nudox compiles it and every package it uses, then keeps them together here, ready to browse."), 1);
+    assert_eq!(count(gpui::Role::Label,
+        "Find searches indexed declarations and registry releases. Inspect an exact version and its recorded standing before adding it."), 1);
+    assert_eq!(count(gpui::Role::Label, "Your source stays on this machine."), 1);
+    assert_eq!(count(gpui::Role::Button, "Add a folder"), 1, "the button keeps its own native name");
+    // The titlebar offers the same door, so a page that names its own button
+    // also meets the titlebar's.
+    assert!(count(gpui::Role::Button, "Add package") >= 1, "the package button keeps its own native name");
+
+    if let Some(rust) = crate::host::toolchain::report() {
+        let words = match &rust {
+            crate::host::toolchain::Rust::Found { .. } => "Rust toolchain found.".to_owned(),
+            crate::host::toolchain::Rust::Missing { .. } => rust.words(),
+        };
+        assert_eq!(count(gpui::Role::Status, &words), 1, "toolchain status is announced once");
+        assert!(!words.contains('/') && !words.contains('\\'), "the empty-state status exposes no compiler path");
+    }
+}
+
+/// A person who cannot see the first page hears it from the native tree. Every
+/// sentence the empty Library paints must reach that tree, so no prose is
+/// visible-only. Single glyphs and counters are decoration, not prose.
+#[gpui::test]
+fn no_prose_the_empty_library_paints_is_missing_from_the_native_tree(cx: &mut TestAppContext) {
+    let mut rig = first_run(cx, 1120.0);
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    rig.repaint();
+    let spoken = rig.cx.update(|window, _| {
+        window.a11y_tree().expect("forced empty Library tree").nodes.iter()
+            .flat_map(|(_, node)| [node.label().map(str::to_owned), node.value().map(str::to_owned)])
+            .flatten()
+            .collect::<Vec<_>>()
+    });
+    let prose = painted_words(&mut rig).into_iter()
+        .filter(|line| line.split_whitespace().count() >= 3)
+        .collect::<Vec<_>>();
+    assert!(!prose.is_empty(), "the empty Library paints sentences");
+    let silent = prose.iter()
+        .filter(|line| {
+            // A line cut to fit its box ends in an ellipsis; the tree keeps the whole sentence.
+            let shown = line.strip_suffix('\u{2026}').unwrap_or(line.as_str());
+            !spoken.iter().any(|said| said.contains(shown) || line.contains(said.as_str()))
+        })
+        .collect::<Vec<_>>();
+    assert!(silent.is_empty(), "visible but absent from the native tree: {silent:#?}\nnative words: {spoken:#?}");
+}
+
 /// Mount the same focus-independent action listeners as host launch. Native
 /// menu dispatch must still work when no Shell focus handle is in the current
 /// rendered dispatch path.
@@ -303,6 +370,9 @@ fn empty_library_opens_real_find_without_adding_a_project_or_claiming_an_index(c
         rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
         rig.settle();
         assert_eq!(rig.route(), Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::FindHome)));
+        // The platform builds the native tree only for a client that asked.
+        rig.cx.update(|window, _| window.set_a11y_forced(true));
+        rig.repaint();
         let query_mounted = rig.cx.update(|window, _| window.a11y_tree().expect("native Find tree")
             .nodes.iter().any(|(_, node)| node.label() == Some("Find query")));
         assert!(query_mounted, "the real Find editor mounts even while its first owner read is pending or failed");
@@ -377,10 +447,18 @@ fn enter_adds_the_folder_and_lands_on_the_library_saying_what_it_is_doing(cx: &m
     rig.keys("enter");
     assert_eq!(overlay(&mut rig), None, "adding closes the dialog");
     assert!(!dialog_open(&mut rig));
+    // The Shell keeps one persistent keyboard owner of its own so that keys
+    // still reach the Reader; what must not happen is the keyboard returning
+    // to the "Add a folder" control, whose ring would stand on a page that
+    // moved on (D6). So: either nothing has focus, or the Shell's own owner
+    // has it and no control is the focused target.
     let focused = rig.cx.update(|window, cx| window.focused(cx));
+    let shell = rig.shell.clone();
+    let shell_owns = rig.cx.update(|window, cx| shell.read(cx).allows_reader_native_return(window));
+    let focused_control = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).1);
     assert!(
-        focused.is_none(),
-        "an add lands on a Library that changed: focus does not go back to \"Add a folder\", whose keyboard ring would stand on a page that moved on (D6)"
+        focused.is_none() || (shell_owns && focused_control.is_none()),
+        "an add lands on a Library that changed: focus does not go back to \"Add a folder\", whose keyboard ring would stand on a page that moved on (D6); focused {focused:?}, shell owns {shell_owns}, control {focused_control:?}"
     );
     let snapshot = snapshot(&mut rig);
     let admitted = snapshot.workspace().projects.iter().find(|project| project.path.as_ref() == folder.to_str().expect("utf-8")).expect("the folder is on the shelf");
@@ -388,12 +466,15 @@ fn enter_adds_the_folder_and_lands_on_the_library_saying_what_it_is_doing(cx: &m
     assert_eq!(snapshot.workspace().active.as_ref(), Some(&admitted.id));
     assert_eq!(rig.route(), Route::Orbit(OrbitRoute::Home), "the Library is where a new project shows what it is doing");
     let said = rig.said();
+    // The Library says only what the owner has evidenced (7edbfd213, 60635b212):
+    // a request sent with a saved claim and no answer yet is "Awaiting receipt",
+    // not "indexing" or "Compiling". The fake engine here never answers.
     for expected in [
         "toml_pin".to_owned(),
-        "indexing".to_owned(),
-        "Compiling toml_pin.".to_owned(),
-        "Then each package it uses is indexed from your cargo cache, one at a time. A first install takes a few minutes.".to_owned(),
-        "started just now".to_owned(),
+        "toml_pin: Awaiting receipt.".to_owned(),
+        "Waiting for the owner's answer to this saved index operation.".to_owned(),
+        "waiting just now".to_owned(),
+        "This index may already be running. Its outcome will be checked.".to_owned(),
     ] {
         assert!(said.iter().any(|line| *line == expected), "the Library does not say {expected:?}: {said:#?}");
     }
@@ -445,10 +526,11 @@ fn tab_takes_the_folder_the_text_continues_to(cx: &mut TestAppContext) {
     let mut rig = first_run(cx, 1440.0);
     rig.keys("secondary-o");
     type_in(&mut rig, &format!("{}/tom", parent.display()));
+    let before = drawn(&mut rig);
     rig.keys("tab");
     let field = rig.cx.update(|window, cx| super::field(window, cx)).expect("field");
     let typed = rig.cx.update(|_, cx| field.read(cx).value().to_string());
-    assert_eq!(typed, format!("{}/toml_pin/", parent.display()), "one folder to go to: Tab takes it");
+    assert_eq!(typed, format!("{}/toml_pin/", parent.display()), "one folder to go to: Tab takes it; the dialog said {before:#?}");
 }
 
 #[gpui::test]
@@ -521,11 +603,13 @@ fn a_project_that_did_not_index_says_what_stopped_and_every_way_forward_works(cx
     rig.go(Intent::AddProject { project: id });
     assert_eq!(phases(&mut rig), [ProjectPhase::Failed], "the owner's refusal is the project's phase");
     let said = rig.said();
+    // Failure wording comes from the typed lifecycle (7edbfd213, 60635b212): the
+    // owner's refusal is "Index refused", and no compiler cause or retained
+    // index is claimed from the owner's raw words (they wait behind a disclosure).
     for expected in [
-        "toml_pin stopped.",
-        "The compiler could not finish reading src/lib.rs.",
-        "The last good index of this project is still in use.",
-        "stopped",
+        "toml_pin: Index refused.",
+        "The owner refused the latest index attempt before publication.",
+        "Index refused",
     ] {
         assert!(said.iter().any(|line| line == expected), "the Library does not say {expected:?}: {said:#?}");
     }
@@ -1224,6 +1308,9 @@ fn released_folder_answer_keeps_its_original_visit_through_a_coalesced_return(cx
 fn queued_path_enter_keeps_its_emitting_visit_across_a_native_replacement_paint(cx: &mut TestAppContext) {
     let (parent, folder) = project("queued-enter-repaint");
     let mut rig = first_run(cx, 1440.0);
+    // `a11y_frame_number` counts native trees, which the platform builds only
+    // for a client that asked; this test counts them to prove a repaint.
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
     rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
     rig.go(Intent::OpenAddProject);
     type_in(&mut rig, folder.to_str().expect("folder"));

@@ -368,6 +368,8 @@ pub use wire::{FRAGMENT_MAGIC, FRAGMENT_SCHEMA};
 
 mod source_coverage;
 mod typescript_snapshot_witness;
+mod csharp_invocation_evidence;
+pub use csharp_invocation_evidence::{CSharpInvocationEvidenceSchema, MAX_CSHARP_INVOCATION_EVIDENCE_BYTES};
 pub use source_coverage::{
     MAX_SOURCE_COVERAGE_BYTES, MAX_SOURCE_COVERAGE_ROWS, SOURCE_COVERAGE_OBSERVATION_OVERHEAD,
     SourceCoverageCapacityReason, SourceCoverageGapCause, SourceCoverageGapDiagnostic,

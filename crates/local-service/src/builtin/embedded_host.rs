@@ -147,6 +147,14 @@ impl LocalHostEnvironment for EmbeddedCompilerEnvironment {
         )
     }
 
+    fn python_checker_failure(
+        &self,
+    ) -> Option<&backend_engine::application::LocalPythonCheckerFailure> {
+        self.compiler_environment.as_ref().and_then(
+            backend_engine::application::ClosedLocalHostEnvironmentSnapshot::python_checker_failure,
+        )
+    }
+
     fn user_profile(&self) -> Option<OsString> {
         self.compiler_environment.is_none().then(|| ProcessHostEnvironment.user_profile()).flatten()
     }

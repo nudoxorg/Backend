@@ -53,6 +53,21 @@ pub(super) fn validate_head_record(
     Ok(())
 }
 
+/// Read an existing HEAD without following links or allocating from its file
+/// length. Used by bounded historical publication verification.
+pub(super) fn read_head_bounded(path: &Path) -> Result<Option<JournalCheckpoint>, StoreError> {
+    use std::io::Read as _;
+    let file = match backend_platform::durability::open_regular_file_nofollow(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(io_error(&error)),
+    };
+    let mut bytes = Vec::with_capacity(HEAD_BYTES + 1);
+    file.take((HEAD_BYTES + 1) as u64).read_to_end(&mut bytes).map_err(|error| io_error(&error))?;
+    if bytes.len() != HEAD_BYTES || !bytes.starts_with(HEAD_MAGIC) { return Err(StoreError::Corrupt); }
+    decode_head(&bytes).map(Some)
+}
+
 pub(super) fn read_head(path: &Path) -> Result<Option<JournalCheckpoint>, StoreError> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,

@@ -1033,6 +1033,128 @@ fn load_selected_images(
     })
 }
 
+/// Reopen durable compiler history while the workspace owner lease is held.
+/// Raw NSE rows remain claims: this proves only the admitted Program/image
+/// join; serving source bytes must independently verify both content domains.
+pub(super) fn admit_replayed_native_evidence(
+    workspace_store: &FileStore,
+    captures: &[super::profile::BuiltinCaptureChange],
+    rows: &[&backend_engine::builtin::NativeSourceEvidence],
+    retirements: &[&backend_engine::builtin::NativeSourceEvidence],
+) -> Result<(), BuiltinModelError> {
+    if rows.is_empty() && retirements.is_empty() {
+        return Ok(());
+    }
+    let root = workspace_store.root();
+    if root.file_name() != Some(std::ffi::OsStr::new("objects")) {
+        return Err(BuiltinModelError("native replay has an unexpected workspace store".into()));
+    }
+    let workspace = root.parent().ok_or_else(|| BuiltinModelError("native replay workspace missing".into()))?;
+    let authority_path = workspace.join(AUTHORITY_FILE);
+    let cas_path = workspace.join(CAS_DIRECTORY);
+    if !authority_path.is_file() || !cas_path.is_dir() {
+        return Err(BuiltinModelError("native replay compiler history is missing".into()));
+    }
+    // Turso preflights the existing schema and takes a local schema transaction.
+    // Recovery runs under the workspace owner lease; it does not select a head.
+    let authority = futures_executor::block_on(TursoAuthority::open(&authority_path))
+        .map_err(|error| BuiltinModelError(format!("open native replay history: {error}")))?;
+    let metadata_store = FileStore::open(&cas_path, 8 * 1024 * 1024)
+        .map_err(|error| BuiltinModelError(format!("open bounded native replay metadata CAS: {error:?}")))?;
+    let store = FileStore::open(cas_path, 128 * 1024 * 1024)
+        .map_err(|error| BuiltinModelError(format!("open native replay compiler CAS: {error:?}")))?;
+    for capture in captures {
+        let matching = rows.iter().copied().filter(|row| {
+            row.project == capture.key.package_key().to_bytes() && row.profile == capture.key.profile()
+        }).collect::<Vec<_>>();
+        let removed = retirements.iter().copied().filter(|row| {
+            row.project == capture.key.package_key().to_bytes() && row.profile == capture.key.profile()
+        }).collect::<Vec<_>>();
+        if matching.is_empty() && removed.is_empty() { continue; }
+        if matching.is_empty() {
+            return Err(BuiltinModelError("native replay retirement requires a nonempty selected Program".into()));
+        }
+        let backend_engine::builtin::ProductSemanticCaptureOutcome::Published { coverage, claim } = capture.outcome else {
+            return Err(BuiltinModelError("native replay capture is not published".into()));
+        };
+        let namespace = SemanticAuthority::namespace(capture.key.package(), capture.key.coordinate(), capture.key.profile())?;
+        let expected = ProductSemanticPublicationRecord::Published { coverage, claim };
+        let binding = *claim.binding().identity.as_ref();
+        let selected = futures_executor::block_on(authority.selected_generation_for_binding(
+            &namespace, &binding, capture.capture.input_digest(),
+        )).map_err(|error| BuiltinModelError(format!("read native replay history: {error}")))?
+            .ok_or_else(|| BuiltinModelError("native replay compiler generation is absent".into()))?;
+        let closure = metadata_store.open_closure_claim(ArtifactClosureClaim::from_bytes(*selected.closure_id()))
+            .map_err(|error| BuiltinModelError(format!("open native replay metadata closure: {error:?}")))?;
+        if closure.entry_count().is_none_or(|count| count > 8192) {
+            return Err(BuiltinModelError("native replay metadata closure exceeds admission limit".into()));
+        }
+        let (actual_claim, record) = reopen_record(&metadata_store, &selected)?;
+        if actual_claim != claim || record != expected || selected.input_digest() != capture.capture.input_digest() {
+            return Err(BuiltinModelError("native replay compiler history differs from capture".into()));
+        }
+        let loaded = load_selected_images(&store, generation_residence::SelectedSemanticImageSelection::Admitted(selected), 128 * 1024 * 1024, 4096)?;
+        let program = loaded.native_program_sources.as_ref().ok_or_else(|| BuiltinModelError("native replay Program is unavailable".into()))?;
+        let mut remaining = std::collections::BTreeMap::new();
+        for row in matching {
+            if remaining.insert(row.path.as_str(), row).is_some() {
+                return Err(BuiltinModelError("duplicate native replay source path".into()));
+            }
+        }
+        let mut removed_paths = std::collections::BTreeSet::new();
+        for row in removed {
+            if remaining.contains_key(row.path.as_str()) || !removed_paths.insert(row.path.as_str()) {
+                return Err(BuiltinModelError("duplicate native replay retirement path".into()));
+            }
+        }
+        let mut members = std::collections::BTreeMap::new();
+        for entry in program.sources() {
+            let Some(path) = entry.package_path else { continue };
+            if removed_paths.contains(path) {
+                return Err(BuiltinModelError("native replay retired path remains in Program".into()));
+            }
+            let Some(row) = remaining.get(path) else { continue };
+            if entry.source.byte_len != row.byte_length
+                || entry.source.identity.as_ref() != row.source_digest.as_slice()
+                || members.insert(path, entry.source).is_some() {
+                return Err(BuiltinModelError("native replay Program source differs from evidence".into()));
+            }
+        }
+        let mut witnessed = std::collections::BTreeSet::new();
+        for image in &loaded.images {
+            let view = image.reopen().map_err(|error| BuiltinModelError(format!("open native replay image: {error}")))?;
+            let ImageProvenance::Captured { source, recipe, scope, .. } = view.image_facts().provenance else { continue };
+            let Some(path) = view.atom(scope.path).and_then(|bytes| std::str::from_utf8(bytes).ok()) else { continue };
+            if witnessed.contains(path) {
+                return Err(BuiltinModelError("duplicate native replay image path".into()));
+            }
+            let Some(row) = remaining.remove(path) else { continue };
+            witnessed.insert(path.to_owned());
+            if !row.admits_image() {
+                return Err(BuiltinModelError("native replay Program member unexpectedly has an image".into()));
+            }
+            capture.key.admit_image(&view).map_err(|error| BuiltinModelError(format!("bind native replay image: {error}")))?;
+            if members.remove(path) != Some(source) || recipe.profile != row.profile
+                || recipe.tool != backend_semantic::vocabulary::NativeTool::TypeScriptCompiler
+                || recipe.toolchain != program.toolchain()
+                || !program.image_matches(path, backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(image.as_ref()).as_ref()) {
+                return Err(BuiltinModelError("native replay image differs from Program or evidence".into()));
+            }
+        }
+        for (path, row) in remaining {
+            // Non-emitted inputs still bind the exact Program, but cannot
+            // authorize an image or source projection.
+            if row.admits_image() || members.remove(path).is_none() {
+                return Err(BuiltinModelError("native replay source lacks its claimed Program evidence".into()));
+            }
+        }
+        if !members.is_empty() {
+            return Err(BuiltinModelError("native replay Program evidence was not consumed".into()));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 struct HistoryFact {
     selected: SelectedGeneration,
@@ -1907,6 +2029,40 @@ impl SemanticAuthority {
         }
         backend_extension_turso::reopen_selected_typescript_snapshot_witness(&self.store, &selected)
             .ok()?
+    }
+
+    /// Reopens only a structurally correlated C# evidence claim from the exact
+    /// current compiler selection. This is not source/read/foreign authority:
+    /// helper/runtime identity and current M0 source still require admission.
+    pub(super) fn selected_csharp_evidence_claim(
+        &self,
+        key: &ProductSemanticPublicationKey,
+        binding: [u8; 32],
+        input: [u8; 32],
+    ) -> Option<Vec<u8>> {
+        if !key.is_selected() || !matches!(key.profile(), LanguageProfile::CSharp(_)) { return None; }
+        let (expected, selected) = self.read_selected_pair(key).ok()?;
+        if *expected.binding().identity.as_ref() != binding || selected.input_digest() != &input
+            || selected.target_root() != &binding { return None; }
+        let reopened = reopen_selected_compiler_metadata(&self.store, &selected).ok()?;
+        let (claim, _) = reopen_record_from_metadata(&selected, &reopened).ok()?;
+        if claim != expected { return None; }
+        let bytes = backend_extension_turso::reopen_selected_csharp_evidence(&self.store, &selected).ok()??;
+        let decoded = backend_engine::application::decode_csharp_evidence(&bytes)?;
+        let target = backend_engine::application::CompilerPackageTargetV2::new(
+            key.coordinate().clone(),
+            backend_engine::application::CompilationUnitKeyV2::CSharpProject { project_path: decoded.project_path.into() },
+        ).ok()?;
+        if target.target().as_ref() != &decoded.target || decoded.input != input || decoded.profile != key.profile() { return None; }
+        let images = reopened.metadata().images();
+        if images.len() != decoded.sources.len() { return None; }
+        let mut expected_images = images.iter().map(|image| (*image.semantic_image_identity(), image.byte_length())).collect::<std::collections::BTreeSet<_>>();
+        if expected_images.len() != images.len() { return None; }
+        for source in &decoded.sources {
+            if !expected_images.remove(&(source.image_identity, source.image_length)) { return None; }
+        }
+        if !expected_images.is_empty() { return None; }
+        Some(bytes)
     }
 
     /// Resolves one product key from the selection admitted by the committed
@@ -3426,6 +3582,39 @@ impl SemanticAuthority {
                 None
             };
 
+        // A C# captured-input attempt must retain its complete checked
+        // invocation aggregate in the same compiler closure. Missing or
+        // over-budget evidence is a refusal, never a silent completeness claim.
+        let csharp_evidence_member = if !staged.csharp_invocation_evidence().is_empty() {
+            if staged.profile().language() != backend_semantic::vocabulary::Language::CSharp {
+                return Err(BuiltinModelError("C# evidence has the wrong compiler profile".to_owned()));
+            }
+            let bytes = staged.csharp_invocation_evidence_object(*attempt.input_digest())
+                .ok_or_else(|| BuiltinModelError("C# invocation evidence could not be bound to staged images".to_owned()))?;
+            let decoded = backend_engine::application::decode_csharp_evidence(&bytes)
+                .ok_or_else(|| BuiltinModelError("C# invocation evidence failed strict replay".to_owned()))?;
+            let target = backend_engine::application::CompilerPackageTargetV2::new(
+                key.coordinate().clone(),
+                backend_engine::application::CompilationUnitKeyV2::CSharpProject { project_path: decoded.project_path.into() },
+            ).map_err(|_| BuiltinModelError("C# evidence target is invalid".to_owned()))?;
+            if target.target().as_ref() != &decoded.target || &decoded.input != attempt.input_digest()
+                || decoded.profile != key.profile() {
+                return Err(BuiltinModelError("C# evidence differs from the staged compiler attempt".to_owned()));
+            }
+            if bytes.len() > MAX_OBJECT_BYTES
+                || !payload_ids.len().checked_add(2).is_some_and(|count| count <= backend_extension_turso::MAX_COMPILER_PUBLICATION_MEMBER_IDS)
+                || !u64::try_from(bytes.len()).is_ok_and(|length| streamed_payload_bytes.checked_add(length).is_some_and(|total| total <= MAX_PAYLOAD_BYTES)) {
+                return Err(BuiltinModelError("C# invocation evidence exceeds publication budget".to_owned()));
+            }
+            let object_id = stream_payload::<backend_semantic::ir::CSharpInvocationEvidenceSchema>(&mut builder, &bytes)?;
+            account_streamed_payload(&mut streamed_payload_bytes, &bytes);
+            payload_ids.insert(object_id);
+            let verified = self.store.verify_object_claim(UntrustedObjectId::from_bytes(*object_id.as_bytes()))
+                .map_err(|error| BuiltinModelError(format!("verify C# invocation evidence: {error:?}")))?;
+            Some(backend_extension_turso::CompilerCSharpEvidenceMember::from_verified_object(verified, &bytes)
+                .map_err(|error| BuiltinModelError(format!("admit C# invocation evidence: {error}")))?)
+        } else { None };
+
         let payload_pin = builder.seal_pinned().map_err(|error| {
             BuiltinModelError(format!("seal staged semantic output closure: {error:?}"))
         })?;
@@ -3471,6 +3660,10 @@ impl SemanticAuthority {
                 .map_err(|error| {
                     BuiltinModelError(format!("bind TypeScript snapshot witness: {error}"))
                 })?;
+        }
+        if let Some(member) = csharp_evidence_member {
+            metadata = metadata.with_csharp_evidence(member)
+                .map_err(|error| BuiltinModelError(format!("bind C# invocation evidence: {error}")))?;
         }
         let claim =
             SemanticPublicationClaim::admit(staged.manifest_facts(), staged.binding_facts())
@@ -5139,13 +5332,15 @@ mod tests {
         }
 
         const SOURCE: &str = "export const answer: number = 42;";
+        const SPARE: &str = "export const spare: number = 7;";
         let workspace = ScratchWorkspace::new();
         let package_root = workspace.0.join("package");
         std::fs::create_dir_all(package_root.join("src")).expect("create native source root");
         std::fs::write(package_root.join("src/main.ts"), SOURCE).expect("write native source");
+        std::fs::write(package_root.join("src/spare.ts"), SPARE).expect("write spare source");
         std::fs::write(
             package_root.join("tsconfig.json"),
-            r#"{"compilerOptions":{"noLib":true,"types":[]},"files":["src/main.ts"]}"#,
+            r#"{"compilerOptions":{"noLib":true,"types":[]},"files":["src/main.ts","src/spare.ts"]}"#,
         )
         .expect("write native configured root");
         let package_root = package_root.canonicalize().expect("canonical package root");
@@ -5176,8 +5371,10 @@ mod tests {
                 OwnedPackageSourceSet::new(
                     request,
                     package_root.clone(),
-                    vec![OwnedPackageSource::new("src/main.ts", SOURCE).expect("native source")]
-                        .into_boxed_slice(),
+                    vec![
+                        OwnedPackageSource::new("src/main.ts", SOURCE).expect("native source"),
+                        OwnedPackageSource::new("src/spare.ts", SPARE).expect("spare source"),
+                    ].into_boxed_slice(),
                 )
                 .expect("native package frontier"),
             )
@@ -5194,7 +5391,7 @@ mod tests {
         .expect("native publication key");
         let mut authority = SemanticAuthority::open(&workspace.0).expect("semantic authority");
         let observation = authority
-            .observe(&key, input, 1)
+            .observe(&key, input, 2)
             .expect("observe exact input");
         let attempt = authority
             .begin_candidate_attempt(&key, &observation)
@@ -5326,6 +5523,74 @@ mod tests {
             )
             .is_err()
         );
+        // Exercise replay against the actual selected TSZ Program and its
+        // durable compiler history, rather than a hand-written path resolver.
+        let (_, published) = reopen_record(&authority.store, &selected)
+            .expect("reopen exact compiler publication");
+        let ProductSemanticPublicationRecord::Published { coverage, claim: replay_claim } = published else {
+            panic!("fixture compiler publication must be published")
+        };
+        assert_eq!(replay_claim, claim);
+        let capture = super::super::profile::BuiltinCaptureChange {
+            cargo_target: None,
+            key: key.clone(),
+            expected: None,
+            capture: backend_engine::builtin::SemanticSourceCapture::new(
+                None, [21; 32], input, 1, 2,
+            ).expect("capture fixture"),
+            outcome: backend_engine::builtin::ProductSemanticCaptureOutcome::Published {
+                coverage, claim,
+            },
+            compiler_failure: None,
+        };
+        let source = backend_semantic::ir::SourceIdentity::from_bytes(SOURCE.as_bytes())
+            .expect("fixture source identity");
+        let current = backend_engine::builtin::NativeSourceEvidence {
+            project: key.package_key().to_bytes(),
+            profile,
+            path: "src/main.ts".into(),
+            input_digest: backend_compile::VerifiedSourceText::capture(SOURCE.as_bytes())
+                .expect("fixture input identity").content().to_bytes(),
+            source_digest: *source.identity.as_ref(),
+            byte_length: source.byte_len,
+            kind: backend_engine::builtin::NativeSourceEvidenceKind::Image,
+            line_starts: None,
+        };
+        let spare_source = backend_semantic::ir::SourceIdentity::from_bytes(SPARE.as_bytes())
+            .expect("spare source identity");
+        let mut spare = current.clone();
+        spare.path = "src/spare.ts".into();
+        spare.source_digest = *spare_source.identity.as_ref();
+        spare.input_digest = backend_compile::VerifiedSourceText::capture(SPARE.as_bytes())
+            .expect("spare input identity").content().to_bytes();
+        spare.byte_length = spare_source.byte_len;
+        let mut removed = current.clone();
+        removed.path = "src/removed.ts".into();
+        drop(authority);
+        std::fs::create_dir_all(workspace.0.join("objects"))
+            .expect("create workspace object store");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(workspace.0.join("objects"), std::fs::Permissions::from_mode(0o700))
+                .expect("make workspace object store private");
+        }
+        let workspace_store = FileStore::open(workspace.0.join("objects"), 8 * 1024 * 1024)
+            .expect("open copied workspace object store");
+        assert!(admit_replayed_native_evidence(
+            &workspace_store, std::slice::from_ref(&capture), &[&current], &[&removed],
+        ).is_ok(), "a fresh Program may retire an omitted path");
+        assert!(admit_replayed_native_evidence(
+            &workspace_store, std::slice::from_ref(&capture), &[&spare], &[&current],
+        ).is_err(), "a path still present in the Program cannot retire");
+        assert!(admit_replayed_native_evidence(
+            &workspace_store, std::slice::from_ref(&capture), &[&current], &[&removed, &removed],
+        ).is_err(), "duplicate retirements must refuse");
+        let mut wrong_source = current.clone();
+        wrong_source.source_digest[0] ^= 1;
+        assert!(admit_replayed_native_evidence(
+            &workspace_store, std::slice::from_ref(&capture), &[&wrong_source], &[],
+        ).is_err(), "selected Program source identity must match the retained row");
         drop(client);
     }
 
@@ -5440,7 +5705,7 @@ mod tests {
             .compile_package_sources_staged(
                 OwnedPackageSourceSet::new(
                     request,
-                    package_root,
+                    package_root.clone(),
                     vec![
                         OwnedPackageSource::new("src/child.rs", CHILD)
                             .expect("admit child Rust source"),
@@ -5498,10 +5763,15 @@ mod tests {
             "an otherwise valid image recipe cannot be joined to another source image"
         );
 
-        let package = backend_engine::PackageReference::parse(
-            "pkg:cargo/semantic-recipe-join-fixture@0.1.0".to_owned(),
-        )
-        .expect("admit product package reference");
+        let local_project = package_root
+            .canonicalize()
+            .expect("canonical native project");
+        let local_label = local_project
+            .to_str()
+            .expect("UTF8 native project")
+            .to_owned();
+        let package = backend_engine::PackageReference::parse(local_label.clone())
+            .expect("admit product package reference");
         let key = ProductSemanticPublicationKey::new(package.clone(), package_url.clone(), profile)
             .expect("build exact Rust semantic publication key");
         let wrong_profile_key = ProductSemanticPublicationKey::new(
@@ -5606,6 +5876,240 @@ mod tests {
             2
         );
 
+        let mut adapter_case = None;
+        // Admit the real native Rust images under a selected product source
+        // frontier with no syntax declarations. This exercises file freshness
+        // independently from pageable owner extents.
+        {
+            use backend_engine::application::DocumentationSession;
+            use backend_engine::builtin::{
+                ProductSemanticCaptureOutcome, ProductSemanticPublicationRecord,
+                SemanticPublicationCoverage, SemanticSourceCapture, semantic_capture_relation,
+            };
+            use backend_semantic::ir::{SemanticCoreReader as _, SemanticReader as _};
+            let profile_descriptor =
+                super::super::profile_descriptor(super::super::BuiltinProfile::Product)
+                    .expect("product descriptor");
+            let dispatcher =
+                super::super::builtin_dispatcher(Some([0x79; 32]), profile_descriptor, 60_000)
+                    .expect("product dispatcher");
+            let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
+                &workspace.0,
+                super::super::BuiltinModel,
+                super::super::genesis().expect("genesis"),
+                dispatcher,
+                backend_engine::DaemonConfig::default(),
+                super::super::product_relation_registry().expect("product relations"),
+            )
+            .expect("open product owner");
+            let package = key.package_key();
+            let sources = [("src/lib.rs", LIB), ("src/child.rs", CHILD)];
+            let mut files = sources
+                .iter()
+                .map(|(path, text)| {
+                    let file_key =
+                        backend_engine::product_source_file_key(package.to_bytes(), path);
+                    let identity = backend_version::ContentId::<
+                            backend_version::SourceFactDomain,
+                        >::from_canonical_bytes(
+                            text.as_bytes()
+                        );
+                    let record = backend_engine::ProductSourceRecord::file(
+                        package.to_bytes(),
+                        *path,
+                        backend_compile::SourceLanguage::Rust,
+                        backend_compile::typed_of::<backend_compile::InputContentSchema>(
+                            text.as_bytes(),
+                        )
+                        .to_bytes(),
+                        [7; 32],
+                        Vec::<backend_compile::SourceDeclaration>::new(),
+                    )
+                    .expect("empty declarations")
+                    .with_source_identity(identity)
+                    .expect("source identity");
+                    (file_key, record)
+                })
+                .collect::<Vec<_>>();
+            files.sort_by_key(|(file_key, _)| *file_key);
+            let source_version = *blake3::hash(b"native Rust selected frontier").as_bytes();
+            let project = backend_engine::ProductSourceRecord::project(
+                key.package().as_str(),
+                source_version,
+                files
+                    .iter()
+                    .map(|(file_key, _)| *file_key)
+                    .collect::<Vec<_>>(),
+            )
+            .expect("project frontier");
+            let mut source_changes = vec![super::super::BuiltinSourceChange {
+                key: package.to_bytes(),
+                after: Some(project),
+            }];
+            source_changes.extend(files.into_iter().map(|(file_key, record)| {
+                super::super::BuiltinSourceChange {
+                    key: file_key,
+                    after: Some(record),
+                }
+            }));
+            let capture = SemanticSourceCapture::new(
+                None,
+                source_version,
+                *staged.input_witness().input_root(),
+                observation.sequence(),
+                2,
+            )
+            .expect("compiler observation capture");
+            let pending = super::super::BuiltinIntent::index_with_capture(
+                package,
+                key.package().as_str(),
+                source_changes,
+                Vec::new(),
+                vec![super::super::BuiltinCaptureChange {
+                    cargo_target: None,
+                    key: key.clone(),
+                    expected: None,
+                    capture,
+                    outcome: ProductSemanticCaptureOutcome::Pending { prior: None },
+                    compiler_failure: None,
+                }],
+            )
+            .expect("pending capture");
+            super::super::commands::commit_builtin_intent(&mut daemon, 12, &pending)
+                .expect("commit source frontier");
+            let before = semantic_capture_relation(&daemon.engine().daemon().owner().snapshot())
+                .expect("capture relation")
+                .expect("capture root")
+                .lookup(&key)
+                .expect("capture lookup")
+                .expect("pending record");
+            let coverage = SemanticPublicationCoverage::Complete;
+            let published = ProductSemanticPublicationRecord::Published { coverage, claim };
+            let generation = key
+                .for_generation_bytes(*claim.binding().identity.as_ref())
+                .expect("generation");
+            let terminal = super::super::BuiltinIntent::index_with_capture(
+                package,
+                key.package().as_str(),
+                Vec::new(),
+                vec![
+                    super::super::BuiltinSemanticChange {
+                        key: generation,
+                        after: Some(published.clone()),
+                    },
+                    super::super::BuiltinSemanticChange {
+                        key: key.clone(),
+                        after: Some(published),
+                    },
+                ],
+                vec![super::super::BuiltinCaptureChange {
+                    cargo_target: None,
+                    key: key.clone(),
+                    expected: Some(before),
+                    capture,
+                    outcome: ProductSemanticCaptureOutcome::Published { coverage, claim },
+                    compiler_failure: None,
+                }],
+            )
+            .expect("terminal publication");
+            authority
+                .commit_product_selection_changes(vec![(key.clone(), claim)], Vec::new(), || {
+                    super::super::commands::commit_builtin_intent(&mut daemon, 13, &terminal)
+                })
+                .expect("commit native selected publication");
+            let snapshot = daemon.engine().daemon().owner().snapshot();
+            let indexed =
+                super::super::read_package_sources(&snapshot, package).expect("selected frontier");
+            let mut generations = super::super::SemanticGenerationResidence::default();
+            authority.install_image_loader(&mut generations);
+            let mut proved = 0;
+            for ordinal in 0..staged.artifacts().len() {
+                let output = staged
+                    .semantic_output_object(ordinal)
+                    .expect("native image");
+                let image = backend_semantic::ir::SemanticImageView::reopen(output.bytes())
+                    .expect("image proof");
+                let backend_semantic::ir::ImageProvenance::Captured { source, scope, .. } =
+                    image.image_facts().provenance
+                else {
+                    panic!("native provenance")
+                };
+                let path = std::str::from_utf8(image.atom(scope.path).expect("native path"))
+                    .expect("UTF8 path")
+                    .to_owned();
+                let identity = source.identity;
+                for item in DocumentationSession::new(&image).publication_entities() {
+                    let item = item.expect("native entity");
+                    if item.entity.authority.source_file
+                        != backend_semantic::ir::FactAvailability::Captured
+                        || item.entity.source.is_none()
+                    {
+                        continue;
+                    }
+                    let selected = backend_engine::RowId::Symbol(
+                        super::super::view_build::test_native_symbol(
+                            package,
+                            item.entity.version.identity(),
+                        ),
+                    );
+                    let file = super::super::view_build::admitted_native_source_file(
+                        &indexed,
+                        &snapshot,
+                        &client,
+                        package,
+                        selected,
+                        &mut generations,
+                    )
+                    .expect("selected Rust admission");
+                    if file == Some((path.clone(), identity)) {
+                        if let backend_engine::RowId::Symbol(symbol) = selected {
+                            adapter_case.get_or_insert((symbol, package_root.join(&path)));
+                        }
+                        if proved == 0 {
+                            let text = sources
+                                .iter()
+                                .find(|(candidate, _)| *candidate == path)
+                                .expect("selected host")
+                                .1;
+                            let input = backend_compile::typed_of::<
+                                backend_compile::InputContentSchema,
+                            >(text.as_bytes())
+                            .to_bytes();
+                            assert_eq!(
+                                super::super::ingest::indexed_source_matches(
+                                    &package_root,
+                                    &path,
+                                    identity,
+                                    input
+                                ),
+                                Ok(true)
+                            );
+                            let source_path = package_root.join(&path);
+                            let mut changed = text.as_bytes().to_vec();
+                            changed[0] = if changed[0] == b'X' { b'Y' } else { b'X' };
+                            std::fs::write(&source_path, &changed)
+                                .expect("same-length source edit");
+                            assert_eq!(
+                                super::super::ingest::indexed_source_matches(
+                                    &package_root,
+                                    &path,
+                                    identity,
+                                    input
+                                ),
+                                Ok(false)
+                            );
+                            std::fs::write(&source_path, text).expect("restore fixture source");
+                        }
+                        proved += 1;
+                    }
+                }
+            }
+            assert!(
+                proved > 0,
+                "at least one actual selected native Rust identity proves its current file without syntax facts"
+            );
+        }
+
         let changed_input = [0xa7; 32];
         assert_ne!(changed_input, *staged.input_witness().input_root());
         let wrong_attempt_observation = authority
@@ -5619,6 +6123,32 @@ mod tests {
                 .publish_staged(&key, wrong_attempt, &staged, |_| Ok(()))
                 .is_err(),
             "a real staged candidate cannot be rebound to a later compiler attempt"
+        );
+        let (symbol, source_path) = adapter_case.expect("selected Rust adapter fixture");
+        // Reopen the selected owner for the adapter-facing document route;
+        // the previously committed semantic capture remains durable.
+        let descriptor = super::super::profile_descriptor(super::super::BuiltinProfile::Product)
+            .expect("product descriptor");
+        let dispatcher = super::super::builtin_dispatcher(Some([0x79; 32]), descriptor, 60_000)
+            .expect("dispatcher");
+        let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
+            &workspace.0,
+            super::super::BuiltinModel,
+            super::super::genesis().expect("genesis"),
+            dispatcher,
+            backend_engine::DaemonConfig::default(),
+            super::super::product_relation_registry().expect("product relations"),
+        )
+        .expect("reopen selected product owner");
+        super::super::commands::test_native_document_freshness(
+            &mut daemon,
+            &workspace.0,
+            key.package_key(),
+            &local_label,
+            symbol,
+            &source_path,
+            client.clone(),
+            authority,
         );
         drop(client);
     }

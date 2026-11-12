@@ -747,6 +747,7 @@ fn current_code_display_does_not_wait_for_a_failed_symbol_pane() {
         declaration: Known::Known(LineSpan { first: 1, last: 1 }),
         identifiers: Known::Known(Arc::from([])),
         uses: Known::Known(Arc::from([])),
+        references_gap: None,
         uses_elsewhere: Arc::from([]),
     };
     land(&mut store, &PageKey::Source(symbol.clone()), PageValue::Source(source));

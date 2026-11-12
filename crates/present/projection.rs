@@ -44,6 +44,7 @@ pub struct PageProjection<'a> {
     source: PageSection<'a, Source>,
     source_site: Option<&'a SourceSite>,
     source_fault: Option<&'a Fault>,
+    source_policy: &'a backend_library::SourcePolicyQualification,
     notes: &'a [Fault],
     section_page: Option<&'a crate::DocumentSectionPage>,
 }
@@ -68,6 +69,7 @@ impl<'a> PageProjection<'a> {
             source: section(page.source(), detail),
             source_site: page.source().site(),
             source_fault: page.source().fault(),
+            source_policy: page.source_policy(),
             notes: page.notes(),
             section_page: page.section_page(),
         }
@@ -143,6 +145,12 @@ impl<'a> PageProjection<'a> {
     #[must_use]
     pub const fn source_fault(&self) -> Option<&'a Fault> {
         self.source_fault
+    }
+
+    /// Owner-reported policy claim retained at every detail level.
+    #[must_use]
+    pub const fn source_policy(&self) -> &'a backend_library::SourcePolicyQualification {
+        self.source_policy
     }
 
     /// Actual section faults, never discarded as optional documentation.

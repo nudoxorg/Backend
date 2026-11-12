@@ -466,7 +466,7 @@ impl Map {
         // repaint over an existing scene must not derive keys or touch Memo
         // while that producer is unavailable. A ready attachment can still
         // discover and replace a changed serving generation below.
-        if self.graph.is_some() && self.links.store.read(cx).current_owner_attachment().is_none() {
+        if self.links.store.read(cx).current_owner_attachment().is_none() {
             self.unavailable_world(cx);
             return;
         }

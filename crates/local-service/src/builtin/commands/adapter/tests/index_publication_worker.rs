@@ -347,6 +347,8 @@ fn start(
             daemon,
             &mut job,
             PreparedProductSelection {
+                native_noop_expectation: None,
+                native_noop_proof: None,
                 intent: Some(
                     BuiltinIntent::add(package, label).expect("actual empty-project intent"),
                 ),
@@ -2546,6 +2548,8 @@ fn staged_selection_removal(
         "selection planner must receive retained descriptors before queue transfer"
     );
     Ok(PreparedProductSelection {
+        native_noop_expectation: None,
+        native_noop_proof: None,
         intent: Some(intent),
         selected: Vec::new(),
         revision_fence: None,

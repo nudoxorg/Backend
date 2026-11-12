@@ -63,12 +63,32 @@ const ECHO_AUTHORITY_SECRET: [u8; 32] = [0x5a; 32];
 mod index_work_observation;
 #[path = "builtin/ingest.rs"]
 mod ingest;
+mod native_ts_admission;
+mod owner_receipt_context;
+mod sql_capture;
+mod sql_admission;
+mod sql_intent;
+mod sql_receipt;
+mod sql_receipt_index;
+mod sql_catalog;
+mod sql_index;
+#[cfg(test)]
+mod sql_journey_support;
+mod sql_resolve;
+mod sql_worker_install;
+#[path = "builtin/source_range.rs"]
+mod source_range;
 #[path = "builtin/profile.rs"]
 mod profile;
 #[path = "builtin/source_budget.rs"]
 mod source_budget;
 #[path = "builtin/source_frontier.rs"]
 mod source_frontier;
+mod stylo_worker;
+mod stylo_worker_install;
+mod stylo_capture;
+mod stylo_admission;
+mod csharp_admission;
 #[path = "builtin/staged_intent.rs"]
 mod staged_intent;
 #[path = "builtin/staged_transport.rs"]
@@ -99,10 +119,25 @@ pub(super) fn product_relation_registry() -> Result<RelationAdmissionRegistry, B
         .with_relation::<backend_engine::builtin::ProductSourceFileFactsRelation>()
         .map_err(|error| BuiltinModelError(format!("register source facts relation: {error:?}")))?
         .with_relation::<backend_engine::builtin::ProductNativeFrontierRelation>()
-        .map_err(|error| BuiltinModelError(format!("register native frontier relation: {error:?}")))
+        .map_err(|error| BuiltinModelError(format!("register native frontier relation: {error:?}")))?
+        .with_relation::<backend_engine::builtin::StyloAnalysisRelation>()
+        .map_err(|error| BuiltinModelError(format!("register native Stylo relation: {error:?}")))?
+        .with_relation::<backend_engine::builtin::NativeSourceEvidenceRelation>()
+        .map_err(|error| BuiltinModelError(format!("register native source evidence relation: {error:?}")))?
+        .with_relation::<backend_engine::builtin::SqlAnalysisRelation>()
+        .map_err(|error| BuiltinModelError(format!("register native SQL relation: {error:?}")))?
+        .with_relation::<backend_engine::builtin::SqlReceiptIndexRelation>()
+        .map_err(|error| BuiltinModelError(format!("register SQL receipt index: {error:?}")))?
+        .with_relation::<backend_frontend_vue::VueInventoryRelation>()
+        .map_err(|error| BuiltinModelError(format!("register Vue inventory relation: {error:?}")))
 }
 
 type ProductDaemon = crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>;
+
+#[path = "builtin/vue_style.rs"]
+mod vue_style;
+#[path = "builtin/vue_admission.rs"]
+mod vue_admission;
 
 #[path = "builtin/replication.rs"]
 mod replication;
@@ -173,6 +208,7 @@ use product_state::ProductState;
 mod coverage;
 #[path = "builtin/local_manifest.rs"]
 mod local_manifest;
+mod installed_packages;
 #[path = "builtin/project_root_residence.rs"]
 mod project_root_residence;
 #[path = "builtin/search_source_page.rs"]
@@ -430,6 +466,15 @@ pub(super) struct LazyClosureUpdate<'a> {
     pub(super) source_facts_pointer: Option<&'a TypedObject>,
     pub(super) native_frontier_objects: &'a [TypedObject],
     pub(super) native_frontier_pointer: Option<&'a TypedObject>,
+    pub(super) stylo_objects: &'a [TypedObject],
+    pub(super) stylo_pointer: Option<&'a TypedObject>,
+    pub(super) native_evidence_objects: &'a [TypedObject],
+    pub(super) native_evidence_pointer: Option<&'a TypedObject>,
+    pub(super) sql_objects: &'a [TypedObject],
+    pub(super) sql_pointer: Option<&'a TypedObject>,
+    pub(super) sql_receipt_index_objects: &'a [TypedObject],
+    pub(super) sql_receipt_index_pointer: Option<&'a TypedObject>,
+    pub(super) sql_receipt: Option<&'a TypedObject>,
 }
 
 fn transition_closure_lazy(
@@ -492,12 +537,53 @@ fn transition_closure_lazy(
     if let Some(pointer) = update.native_frontier_pointer {
         objects.push(pointer.clone());
     }
+    objects.extend(
+        update
+            .stylo_objects
+            .iter()
+            .filter(|object| {
+                update
+                    .stylo_pointer
+                    .is_some_and(|pointer| pointer.bytes() == object.version())
+            })
+            .cloned(),
+    );
+    if let Some(pointer) = update.stylo_pointer {
+        objects.push(pointer.clone());
+    }
+    objects.extend(
+        update
+            .native_evidence_objects
+            .iter()
+            .filter(|object| {
+                update
+                    .native_evidence_pointer
+                    .is_some_and(|pointer| pointer.bytes() == object.version())
+            })
+            .cloned(),
+    );
+    if let Some(pointer) = update.native_evidence_pointer {
+        objects.push(pointer.clone());
+    }
+    objects.extend(update.sql_objects.iter().filter(|object| {
+        update.sql_pointer.is_some_and(|pointer| pointer.bytes() == object.version())
+    }).cloned());
+    if let Some(pointer) = update.sql_pointer { objects.push(pointer.clone()); }
+    objects.extend(update.sql_receipt_index_objects.iter().filter(|object| {
+        update.sql_receipt_index_pointer.is_some_and(|pointer| pointer.bytes() == object.version())
+    }).cloned());
+    if let Some(pointer) = update.sql_receipt_index_pointer { objects.push(pointer.clone()); }
+    if let Some(receipt) = update.sql_receipt { objects.push(receipt.clone()); }
     let registry = product_relation_registry()?;
     let mut frontier = update
         .capture_objects
         .iter()
         .chain(update.source_facts_objects)
         .chain(update.native_frontier_objects)
+        .chain(update.stylo_objects)
+        .chain(update.native_evidence_objects)
+        .chain(update.sql_objects)
+        .chain(update.sql_receipt_index_objects)
         .cloned()
         .collect::<Vec<_>>();
     let closure = if update.changed_sources.is_empty() {
@@ -1928,6 +2014,9 @@ fn compose_owner_timed(
             })?,
         )
     };
+    // One configured, non-owning receipt context is shared with the worker;
+    // the actual owner lease/store bind occurs only inside WorkspaceModel.
+    let receipt_context = product_secret.map(|key| Arc::new(owner_receipt_context::OwnerReceiptContext::new(key, config.workspace.clone())));
     let profile = profile_descriptor(profile).map_err(ProcessError::Profile)?;
     // The attempt lease spans one closure exchange, one execution/fallback
     // exchange, and the worker's declared wall budget. All values use the
@@ -1948,7 +2037,7 @@ fn compose_owner_timed(
     }
     let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
         &config.workspace,
-        BuiltinModel,
+        BuiltinModel::with_receipt_context(receipt_context.clone()),
         genesis,
         dispatcher,
         DaemonConfig::default(),
@@ -2348,6 +2437,7 @@ fn compose_owner_timed(
         pending_stored_acks,
     )
     .map_err(|error| ProcessError::Profile(format!("start command read lane: {error}")))?;
+    commands.set_receipt_context(receipt_context);
     // A previous owner process may have died between committing a Pending
     // source capture and recording its terminal. Pending is not a lease, so
     // close every such marker now, before the first client read can observe
@@ -2809,6 +2899,19 @@ pub fn run(config: ProcessConfig) -> ExitCode {
 
 #[path = "builtin/projection.rs"]
 mod projection;
+#[cfg(all(test, unix))]
+#[path = "builtin/native_ts_react_owner_journey_tests.rs"]
+mod native_ts_react_owner_journey_tests;
+
+#[cfg(all(test, unix))]
+#[path = "builtin/nuget_owner_wire_tests.rs"]
+mod nuget_owner_wire_tests;
+#[cfg(all(test, unix))]
+#[path = "builtin/native_ts_owner_journey_tests.rs"]
+mod native_ts_owner_journey_tests;
+#[cfg(test)]
+mod vue_owner_journey_tests;
+
 #[cfg(test)]
 #[path = "builtin/publication_transport_tests.rs"]
 mod publication_transport_tests;

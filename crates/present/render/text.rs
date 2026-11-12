@@ -178,20 +178,39 @@ fn records_with_cursor(
 ) -> String {
     let mut lines = Lines::new();
     lines.push(coverage(list.coverage(), theme));
-    let cursor_note = if list.has_more() && list.continuation().is_some() {
+    if let Some(gap) = list.graph_gap() {
+        lines.push(format!("graph relations incomplete: {gap}"));
+    }
+    if !list.graph_source_policies().is_empty() || list.graph_edges().iter().any(|edge| !edge.source_policy.is_unknown()) {
+        lines.push("Unverified captured-source claims; effective ignore-policy stability unknown.".to_owned());
+    }
+    for edge in list.related_edges() {
+        lines.push(format!("related {} -> {}; relation {:?}; confidence {:?}", edge.from, edge.to, edge.relation, edge.confidence));
+    }
+    for edge in list.graph_edges().iter().filter(|_| list.related_edges().is_empty()) {
+        lines.push(format!(
+            "graph edge {} -> {}; relation {:?}; confidence {:?}; availability {:?}",
+            list.graph_label(edge.from),
+            list.graph_label(edge.to),
+            edge.kind,
+            edge.provenance.confidence,
+            edge.availability,
+        ));
+    }
+    let cursor_note = if list.has_more() && (list.continuation().is_some() || list.related_continuation().is_some()) {
         cursor.map(|cursor| continuation_note(target, cursor))
     } else {
         None
     };
     if let Some(note) = &cursor_note {
         lines.push(theme.paint(Style::Dim, note));
-    } else if list.has_more() && list.continuation().is_some() {
+    } else if list.has_more() && (list.continuation().is_some() || list.related_continuation().is_some()) {
         lines.push(theme.paint(
             Style::Dim,
             "… more rows; this rendering does not include the continuation token",
         ));
     }
-    if list.has_more() && list.continuation().is_none() {
+    if list.has_more() && (list.continuation().is_none() && list.related_continuation().is_none()) {
         lines.push(theme.paint(
             Style::Dim,
             "… more rows at this revision; raise --limit to see them",
@@ -287,6 +306,13 @@ pub fn page_projection(page: &PageProjection<'_>, theme: Theme) -> String {
     } else if let Some(reason) = page.source_fault() {
         lines.blank();
         lines.push(fault(reason, theme));
+    }
+    if !page.source_policy().is_unknown() {
+        lines.blank();
+        lines.push(
+            "Unverified captured-source claim; effective ignore-policy stability unknown."
+                .to_owned(),
+        );
     }
     push_notes(&mut lines, page.notes(), theme);
     if let Some(window) = page.section_page() {
@@ -511,6 +537,7 @@ pub fn outline(tree: &OutlineTree, theme: Theme) -> String {
         tree.count(),
         tree.truncation().name()
     );
+    summary.push_str(" (outline pagination only; analysis coverage is not certified)");
     if tree.unresolved() > 0 {
         let _ = write!(summary, " · {} unnamed", tree.unresolved());
     }
@@ -584,7 +611,12 @@ pub fn status(status: &Status, theme: Theme) -> String {
         lines.push("observed failed compiler attempt (served coverage above is unchanged)");
         lines.push(fault(cause, theme));
     }
-    if let Some(observation) = status.source_selection() {
+    if let Some(sql) = status.sql_analysis() {
+        lines.push(sql.render());
+    }
+    if let Some(scope) = status.source_selection_scope() {
+        lines.push(scope.render());
+    } else if let Some(observation) = status.source_selection() {
         lines.push(observation.render());
     }
     lines.finish()
@@ -597,6 +629,25 @@ pub fn product(view: &ProductView, theme: Theme) -> String {
 }
 
 fn product_projection(view: &ProductView, theme: Theme, detail: Detail) -> String {
+    if let Some(range) = view.declaration_source_range() {
+        let mut output = range.source.text.clone();
+        output.push_str("\n\n");
+        output.push_str(range.source.scope.description());
+        output.push_str("\n\n");
+        output.push_str(match (range.source.source_policy.is_unknown(), range.verified_at_read) {
+            (false, true) => "Source bytes match the indexed capture; unverified policy claim; ignore-policy stability unknown.",
+            (false, false) => "Unverified captured-source claim; ignore-policy stability unknown.",
+            (true, true) => "Source bytes match the indexed capture; effective ignore-policy stability is not established.",
+            (true, false) => "Effective ignore-policy stability is not established.",
+        });
+        if let Some(cursor) = &range.next_cursor {
+            output.push_str(
+                "\n\nMore source: repeat this source --byte-range command with --cursor ",
+            );
+            output.push_str(cursor);
+        }
+        return output;
+    }
     let mut lines = Lines::new();
     lines.push(theme.paint(Style::Heading, view.heading()));
     if detail == Detail::Summary
@@ -608,6 +659,12 @@ fn product_projection(view: &ProductView, theme: Theme, detail: Detail) -> Strin
         lines.push(
             "For native source references, request --detail full (fresh discovery).".to_owned(),
         );
+    }
+    if let Some(warning) = view.partial_publication_warning() {
+        lines.push(format!("Warning: {}", warning.detail));
+        if let Some(shell) = &warning.shell {
+            lines.push(format!("  → {shell}"));
+        }
     }
     if let Some(reason) = view.fault() {
         lines.push(fault(reason, theme));
@@ -650,6 +707,9 @@ fn product_projection(view: &ProductView, theme: Theme, detail: Detail) -> Strin
             );
         }
         lines.push(head);
+        if let Some(note) = crate::product::source_policy_note(record.source_policy()) {
+            lines.push(format!("  {note}"));
+        }
         if let Some(operand) = record.operand() {
             lines.push(format!("  {}", theme.paint(Style::Coordinate, operand)));
         }

@@ -1367,6 +1367,33 @@ fn journal_v3_payload(bytes: &[u8], field: &str, version: u16) -> Vec<u8> {
 }
 
 #[test]
+fn journal_v3_writes_fixed_35_snapshot_and_event_without_changing_payloads() {
+    let head = super::super::genesis().expect("workspace");
+    let capability = super::super::test_builtin_view_capability().expect("coverage");
+    let (base, cursor) = super::super::initial_view().expect("base");
+    let (view, cursor, event) = journal_v3_test_advance(base, cursor, &capability, "journal::fixed");
+    let snapshot: serde_json::Value = serde_json::from_slice(
+        &encode_envelope(head.root(), cursor, &view, None).expect("snapshot"),
+    ).expect("snapshot JSON");
+    let mut expected_view: serde_json::Value = serde_json::from_slice(&encode_view(&view).expect("live view"))
+        .expect("view JSON");
+    expected_view["version"] = serde_json::json!(35);
+    assert_eq!(serde_json::to_vec(&snapshot["view"]).unwrap(), serde_json::to_vec(&expected_view).unwrap());
+    let CursorEvent::View { delta } = &event else { panic!("compact view event"); };
+    let certificate = projection::certificate_for_compact_event(delta).expect("event certificate");
+    let mut expected_event: serde_json::Value = serde_json::from_slice(
+        &backend_engine::encode_compact_view_event(cursor, delta, certificate).expect("live event"),
+    ).expect("event JSON");
+    expected_event["version"] = serde_json::json!(35);
+    let persisted: serde_json::Value = serde_json::from_slice(
+        &encode_envelope(head.root(), cursor, &view, Some(&event)).expect("event"),
+    ).expect("event envelope");
+    assert_eq!(serde_json::to_vec(&persisted["event"]).unwrap(), serde_json::to_vec(&expected_event).unwrap());
+    assert_eq!(snapshot["version"], 3);
+    assert_eq!(persisted["version"], 3);
+}
+
+#[test]
 fn journal_v3_known_snapshots_events_chain_to_current_without_replacing_history() {
     for version in 21..=backend_library::DTO_VERSION {
         journal_v3_known_version_chain(version);
@@ -1474,7 +1501,7 @@ fn journal_v3_known_version_chain(version: u16) {
         [
             u64::from(version),
             u64::from(version),
-            u64::from(backend_library::DTO_VERSION)
+            u64::from(JOURNAL_ENVELOPE_VERSION)
         ]
     );
     for _ in 0..2 {
@@ -1593,7 +1620,7 @@ fn journal_v3_refuses_unknown_versions_fields_proof_basis_and_descriptor_changes
 
 #[test]
 fn journal_v3_native_v21_fixture_appends_checked_current_and_reopens_twice() {
-    assert_eq!(backend_library::DTO_VERSION, 39);
+    assert_eq!(backend_library::DTO_VERSION, 40);
     // Exact historical codec output: native ARM64 source 9b0001b3af, whose
     // production persisted grammar is still v21. No field/version rewrite.
     let native = include_bytes!("fixtures/view-journal-v3-native-v21.bin");
@@ -1683,7 +1710,7 @@ fn journal_v3_native_v21_fixture_appends_checked_current_and_reopens_twice() {
             Ok(())
         })
         .expect("mixed native frames");
-    assert_eq!(versions, [21, 21, u64::from(backend_library::DTO_VERSION)]);
+    assert_eq!(versions, [21, 21, u64::from(JOURNAL_ENVELOPE_VERSION)]);
     drop(journal);
     for _ in 0..2 {
         let cold = ViewJournal::open(&path).expect("independent cold journal");
