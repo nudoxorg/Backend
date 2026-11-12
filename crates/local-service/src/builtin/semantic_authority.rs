@@ -5426,7 +5426,7 @@ mod tests {
             }
         }
 
-        const SOURCE: &str = "export const answer: number = 42;";
+        const SOURCE: &str = "export const answer: number = 42; export async function run(): Promise<number> { return answer; }";
         const SPARE: &str = "export const spare: number = 7;";
         let workspace = ScratchWorkspace::new();
         let package_root = workspace.0.join("package");
@@ -5505,6 +5505,15 @@ mod tests {
             .expect("exact selected closure admits its typed member")
             .expect("selected optional member is present");
         assert_eq!(selected_certificate.as_bytes(), certificate.as_slice());
+        let native_headers = backend_extension_turso::reopen_selected_native_headers(&authority.store, &selected, 64 * 1024 * 1024)
+            .expect("open exact compiler header member").expect("header member present");
+        let native_aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical(native_headers.as_bytes())
+            .expect("valid native header aggregate");
+        let native_file = native_aggregate.file("src/main.ts").expect("function header file");
+        let native_reference = backend_engine::builtin::NativeHeaderEvidence {
+            image_identity: native_file.image_identity, image_byte_len: native_file.image_byte_len,
+            producer_recipe: native_file.producer_recipe, aggregate_digest: *native_headers.object_id(),
+        };
         let cancelled = std::sync::atomic::AtomicBool::new(false);
         std::fs::write(package_root.join("src/unrelated.txt"), "")
             .expect("add unrelated unsupported text under the selected source root");
@@ -5650,11 +5659,12 @@ mod tests {
             byte_length: source.byte_len,
             kind: backend_engine::builtin::NativeSourceEvidenceKind::Image,
             line_starts: None,
-            headers: None,
+            headers: Some(native_reference.clone()),
         };
         let spare_source = backend_semantic::ir::SourceIdentity::from_bytes(SPARE.as_bytes())
             .expect("spare source identity");
         let mut spare = current.clone();
+        spare.headers = None;
         spare.path = "src/spare.ts".into();
         spare.source_digest = *spare_source.identity.as_ref();
         spare.input_digest = backend_compile::VerifiedSourceText::capture(SPARE.as_bytes())
@@ -5682,6 +5692,25 @@ mod tests {
         assert!(admit_replayed_native_evidence(
             &workspace_store, std::slice::from_ref(&capture), &[&current], &[&removed, &removed],
         ).is_err(), "duplicate retirements must refuse");
+        let mut missing_header = current.clone();
+        missing_header.headers = None;
+        assert!(admit_replayed_native_evidence(
+            &workspace_store, std::slice::from_ref(&capture), &[&missing_header], &[],
+        ).is_err(), "selected compiler header cannot be removed from evidence");
+        for mutate_start in [false, true] {
+            let mut altered = native_aggregate.clone();
+            let file = altered.files.iter_mut().find(|file| file.path == "src/main.ts").expect("header file");
+            let entry = file.entries.first_mut().expect("header entry");
+            if mutate_start { entry.header_extent.0 += 1; } else { entry.header_extent.1 = entry.compiler_extent.1; }
+            let bytes = altered.encode_checked().expect("valid but forged header geometry");
+            let mut budget = 1024 * 1024;
+            let forged = backend_extension_turso::compiler_native_headers_object(&bytes, &mut budget).expect("forged object");
+            let mut row = current.clone();
+            row.headers.as_mut().unwrap().aggregate_digest = *forged.id().as_bytes();
+            assert!(admit_replayed_native_evidence(
+                &workspace_store, std::slice::from_ref(&capture), &[&row], &[],
+            ).is_err(), "mutated header extent must not match the selected compiler closure");
+        }
         let mut wrong_source = current.clone();
         wrong_source.source_digest[0] ^= 1;
         assert!(admit_replayed_native_evidence(
