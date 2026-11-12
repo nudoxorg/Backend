@@ -668,8 +668,7 @@ fn member(
                 None if catalog.entities[relation].columns_known => Member::Missing,
                 None => Member::Unknown(Some(relation)),
             },
-            Some(Err(())) => Member::Unknown(None),
-            None => Member::Missing,
+            Some(Err(())) | None => Member::Unknown(None),
         },
     }
 }
@@ -1001,6 +1000,9 @@ mod tests {
         ] };
         let id = reference(source, source, RefKind::Column, RefRole::Read, None, "id");
         assert!(matches!(resolve_column(&catalog, SqlDialect::Sqlite, &statement, &id), Res::Unresolved(SqlUnresolved::OpaqueScope)));
+        let mut external_peer = statement.clone();
+        external_peer.scope[1] = ScopeEntry { kind: ScopeKind::Relation, visible_as: "external_table".into(), relation: Some("external_table".into()), relation_schema: None, columns: None, region: statement.extent.clone() };
+        assert!(matches!(resolve_column(&catalog, SqlDialect::Sqlite, &external_peer, &id), Res::Unresolved(SqlUnresolved::OpaqueScope)));
         let mut only_known = statement.clone();
         only_known.scope.pop();
         assert!(matches!(resolve_column(&catalog, SqlDialect::Sqlite, &only_known, &id), Res::Resolved(found) if found == column));
