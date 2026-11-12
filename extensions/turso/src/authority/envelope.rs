@@ -2740,6 +2740,15 @@ impl Schema for CompilerNativeHeadersBytesSchema {
     type Value = [u8];
     fn encode(value: &Self::Value, output: &mut Vec<u8>) { output.extend_from_slice(value); }
 }
+/// Checks the logical key against authenticated canonical bytes without
+/// allocating a second encoding of the metadata value.
+fn verified_payload_key(schema: SchemaIdentity, bytes: &[u8], expected: &AuthorityHash) -> Result<(), String> {
+    let mut hash = backend_version::ObjectKeyHasher::new(schema, bytes.len()).map_err(|e| format!("compiler key: {e:?}"))?;
+    hash.update(bytes).map_err(|e| format!("compiler key: {e:?}"))?;
+    if &hash.finish().map_err(|e| format!("compiler key: {e:?}"))? != expected { return Err("compiler typed object key differs from canonical bytes".into()); }
+    Ok(())
+}
+
 fn native_headers_key(bytes: &[u8]) -> Result<[u8; 32], String> {
     let mut hash = backend_version::ObjectKeyHasher::new(COMPILER_NATIVE_HEADERS_SCHEMA, bytes.len()).map_err(|e| format!("header key: {e:?}"))?;
     hash.update(bytes).map_err(|e| format!("header key: {e:?}"))?;
