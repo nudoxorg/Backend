@@ -113,7 +113,13 @@ pub fn compiler_native_lines_object(bytes: &[u8], budget: &mut usize, checkpoint
     let copies = bytes.len().checked_mul(3).and_then(|n| n.checked_add(2 * std::mem::size_of::<usize>())).ok_or(CompilerEnvelopeError::NativeHeaders)?;
     *budget = budget.checked_sub(copies).ok_or(CompilerEnvelopeError::NativeHeaders)?;
     backend_semantic::native_source_lines::NativeSourceLineAggregateView::parse(bytes, checkpoint).map_err(|_| CompilerEnvelopeError::NativeHeaders)?;
-    Ok(TypedObject::from_value(&ObjectKey::<CompilerNativeLinesBytesSchema>::from_value(bytes), bytes))
+    let mut key = backend_version::ObjectKeyHasher::new(COMPILER_NATIVE_LINES_SCHEMA, bytes.len()).map_err(|_| CompilerEnvelopeError::NativeHeaders)?;
+    for chunk in bytes.chunks(64 * 1024) { checkpoint(chunk.len())?; key.update(chunk).map_err(|_| CompilerEnvelopeError::NativeHeaders)?; }
+    let key = key.finish_key::<CompilerNativeLinesBytesSchema>().map_err(|_| CompilerEnvelopeError::NativeHeaders)?;
+    checkpoint(0)?;
+    let object = TypedObject::from_value(&key, bytes);
+    checkpoint(0)?;
+    Ok(object)
 }
 
 pub const COMPILER_NATIVE_HEADERS_SCHEMA: SchemaIdentity = SchemaIdentity::new(0x7a, 0xc00e, 1);
