@@ -33,10 +33,10 @@ check() {
         failed=1
     fi
 }
-check status-wire cargo test -p backend-library --locked --offline sql_analysis_progress_round_trips_and_rejects_empty_or_overflow -- --nocapture
-check status-render cargo test -p backend-present --locked --offline status_exposes_selected_sql_analysis_at_every_detail -- --nocapture
-check native-upsert cargo test --manifest-path frontends/sqlite/Cargo.toml --locked --offline excluded_upsert_without_update_where_has_valid_native_outline -- --nocapture
-for test in shared_upsert_syntax_does_not_select_postgres_or_poison_project_consensus sqlite_project_indexes_publishes_queries_reindexes_and_survives_cold_reopen unsupported_statement_and_unparseable_file_are_reported_as_gaps_never_as_empty flat_sql_upsert_and_renamed_objects_keep_precise_owner_edges; do
+check status-wire cargo test -p backend-library --lib --locked --offline sql_analysis_progress_round_trips_and_rejects_empty_or_overflow -- --nocapture
+check status-render cargo test -p backend-present --lib --locked --offline status_exposes_selected_sql_analysis_at_every_detail -- --nocapture
+check native-upsert cargo test --manifest-path frontends/sqlite/Cargo.toml --test outline --locked --offline excluded_upsert_without_update_where_has_valid_native_outline -- --nocapture
+for test in sql_stage_scope_rejects_missing_duplicate_and_cancelled_members shared_upsert_syntax_does_not_select_postgres_or_poison_project_consensus sqlite_project_indexes_publishes_queries_reindexes_and_survives_cold_reopen unsupported_statement_and_unparseable_file_are_reported_as_gaps_never_as_empty flat_sql_upsert_and_renamed_objects_keep_precise_owner_edges; do
     check "$test" cargo test -p backend-local-service --lib --locked --offline "$test" -- --nocapture --test-threads=1
 done
 cargo build --locked --offline -p backend-locald -p backend-cli -p backend-mcp

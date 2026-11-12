@@ -891,8 +891,22 @@ pub(super) fn visit_staged_scope(
     budget: ArtifactBudget,
     exact_count: Option<u64>,
     cancellation: Option<&std::sync::atomic::AtomicBool>,
-    mut visit: impl FnMut(EvidenceKind, &[u8]) -> Result<(), StoreError>,
+    visit: impl FnMut(EvidenceKind, &[u8]) -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
+    visit_staged_scope_ids(store, manifest_id, closure, expected, budget, exact_count, cancellation, visit).map(|_| ())
+}
+
+/// Authenticates each staged manifest member for an exact union comparison.
+pub(super) fn visit_staged_scope_ids(
+    store: &FileStore,
+    manifest_id: ObjectId,
+    closure: backend_store::ClosureId,
+    expected: StageBasis,
+    budget: ArtifactBudget,
+    exact_count: Option<u64>,
+    cancellation: Option<&std::sync::atomic::AtomicBool>,
+    mut visit: impl FnMut(EvidenceKind, &[u8]) -> Result<(), StoreError>,
+) -> Result<BTreeSet<ObjectId>, StoreError> {
     let check = || if cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) { Err(StoreError::Io("staged hydration cancelled".into())) } else { Ok(()) };
     check()?;
     // A receipt may have been produced by another FileStore containing the
@@ -1020,7 +1034,7 @@ pub(super) fn visit_staged_scope(
     if exact_count.is_some_and(|count| seen.len() as u64 != count) {
         return Err(StoreError::Corrupt);
     }
-    Ok(())
+    Ok(seen)
 }
 
 #[cfg(test)]
@@ -1147,8 +1161,42 @@ mod tests {
         visit_staged(&store, manifest, &closure, basis(), budget(), |_, _| Ok(())).test_value()?;
         let cancelled = std::sync::atomic::AtomicBool::new(true);
         assert!(visit_staged_scope(&store, manifest, closure.receipt().closure(), basis(), budget(), None, Some(&cancelled), |_, _| Ok(())).is_err());
+        // The retained SQL receipt can also be a typed control. Exact union
+        // cardinality must subtract that overlap, while rejecting missing or
+        // unrelated members. The receipt is real staged storage evidence.
+        struct TestControl;
+        impl Schema for TestControl {
+            const DOMAIN: u8 = 0x7b;
+            const TYPE: u16 = 77;
+            const VERSION: u8 = 1;
+            type Value = [u8];
+            fn encode(value: &[u8], output: &mut Vec<u8>) { output.extend_from_slice(value); }
+        }
+        let extra = typed::<TestControl>(b"control");
+        let unrelated = typed::<TestControl>(b"unrelated");
+        store.write_object(&extra).test_value()?;
+        store.write_object(&unrelated).test_value()?;
+        let stage_claim = ArtifactClosureClaim::from_id(closure.receipt().closure());
+        let composition = ClosureCompositionBudget::new(33, 33, 1024 * 1024, StagePool::metadata_required(32).test_value()?);
+        let candidate = |include_unrelated: bool| -> Result<backend_store::DurableClosureManifest, String> {
+            let mut edits = vec![ClosureMembershipChange::add(extra.id())];
+            if include_unrelated { edits.push(ClosureMembershipChange::add(unrelated.id())); }
+            edits.sort_by_key(|edit| edit.object_id());
+            let pin = store.compose_closure_index(Some(stage_claim), &edits, composition).test_value()?;
+            backend_store::DurableClosureManifest::from_pinned(&store, pin, composition).test_value()
+        };
+        let controls = backend_store::ClosureManifest::new(vec![receipt.clone(), extra.clone()]).test_value()?;
+        let cancelled_false = std::sync::atomic::AtomicBool::new(false);
+        super::super::staged_transport::validate_staged_membership_union(&store, manifest, basis(), &cancelled_false, &candidate(false)?, &controls).test_value()?;
+        let disjoint_controls = backend_store::ClosureManifest::new(vec![extra.clone()]).test_value()?;
+        super::super::staged_transport::validate_staged_membership_union(&store, manifest, basis(), &cancelled_false, &candidate(false)?, &disjoint_controls).test_value()?;
+        assert!(super::super::staged_transport::validate_staged_membership_union(&store, manifest, basis(), &cancelled_false, &candidate(true)?, &controls).is_err(), "unrelated extra member cannot pass exact union");
+        let missing_control = backend_store::ClosureManifest::new(vec![receipt.clone(), unrelated.clone()]).test_value()?;
+        assert!(super::super::staged_transport::validate_staged_membership_union(&store, manifest, basis(), &cancelled_false, &candidate(false)?, &missing_control).is_err(), "missing control cannot pass exact union");
         let (missing, closure) = fixture(false, false)?;
         assert!(visit_staged(&store, missing, &closure, basis(), budget(), |_, _| Ok(())).is_err());
+        let missing_membership = backend_store::DurableClosureManifest::from_pinned(&store, closure, composition).test_value()?;
+        assert!(super::super::staged_transport::validate_staged_membership_union(&store, missing, basis(), &cancelled_false, &missing_membership, &disjoint_controls).is_err(), "missing staged receipt cannot pass exact union");
         let (duplicate, closure) = fixture(true, true)?;
         assert!(visit_staged(&store, duplicate, &closure, basis(), budget(), |_, _| Ok(())).is_err());
         Ok(())
