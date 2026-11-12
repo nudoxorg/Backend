@@ -55,11 +55,19 @@ fn compiler_worker_captures_five_thousand_function_headers() -> Result<(), Box<d
         correlation: CorrelationId(415), profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript), stage: Stage::LowerIr,
     }, PackageUrl::parse("pkg:npm/header-many@1.0.0".to_owned()).map_err(|e| format!("package: {e:?}"))?)
         .map_err(|e| format!("request: {e:?}"))?;
-    let staged = client.compile_package_sources_staged(OwnedPackageSourceSet::new(request, package,
+    let staged = client.compile_package_sources_staged(OwnedPackageSourceSet::new(request.clone(), package.clone(),
         vec![OwnedPackageSource::new("many.ts", &source)?].into_boxed_slice())?)?;
     let file = staged.native_typescript_headers().iter().find(|file| file.path == "many.ts").ok_or("headers absent")?;
     assert_eq!(file.entries.len(), 5000);
     assert!(file.entries.iter().any(|entry| source.get(entry.header_extent.0 as usize..entry.header_extent.1 as usize) == Some("export function f4999()")));
+    drop(staged);
+    let malformed = "export function broken() { return 1;\n";
+    fs::write(package.join("many.ts"), malformed)?;
+    let malformed_result = client.compile_package_sources_staged(OwnedPackageSourceSet::new(request, package,
+        vec![OwnedPackageSource::new("many.ts", malformed)?].into_boxed_slice())?);
+    if let Ok(staged) = malformed_result {
+        assert!(staged.native_typescript_headers().iter().all(|file| file.path != "many.ts"));
+    }
     Ok(())
 }
 
