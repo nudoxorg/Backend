@@ -9,7 +9,9 @@ use axum::{
     routing::any,
 };
 use backend_client::Session;
-use backend_engine::registry::{RegistryEcosystem, RegistryEndpoint};
+use backend_engine::registry::{
+    RegistryEcosystem, RegistryEndpoint, RegistrySource, RegistrySourceSet,
+};
 use backend_library::{
     PackageReference, ProductText, RegistryDiscoveryCandidate, RegistryEvidenceFacet,
     RegistryPackageDiscoveryObservation, RegistrySearchHit, RegistrySearchRelease, SurfaceCommand,
@@ -190,6 +192,15 @@ fn start_owner(
         args.push("--registry-discovery-offline".to_owned());
     }
     let mut config = ProcessConfig::parse(args)?;
+    // Parsed process configuration includes official default registry sources
+    // and can include environment overrides. Close both source sets to this
+    // private feed before the owner starts, with no registry credentials.
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Nuget, feed.endpoint())?;
+    config.registry.sources =
+        RegistrySourceSet::empty().with_source(RegistrySource::new(endpoint.clone()))?;
+    config.registry.endpoint = None;
+    config.registry.authentication = None;
+    config.discovery.sources = vec![endpoint];
     config.profile = "builtin".to_owned();
     config.worker_endpoint = None;
     config.authority_secret = Some(paths.authority_secret().to_path_buf());
