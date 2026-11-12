@@ -1831,7 +1831,13 @@ fn metadata_member_ids_with_id(metadata: &CompilerPublicationMetadata, metadata_
         .versioned_planes
         .as_ref()
         .map_or(0, VersionedPlaneMetadata::segment_count);
-    let mut members = Vec::with_capacity(metadata.images.len() + plane_count + 1);
+    let artifact_count = metadata.versioned_planes.as_ref().map_or(0, |planes| planes.artifacts().len());
+    let optional_count = usize::from(metadata.native_program_sources.is_some())
+        + usize::from(metadata.source_coverage.is_some())
+        + usize::from(metadata.typescript_snapshot.is_some())
+        + usize::from(metadata.csharp_evidence.is_some())
+        + usize::from(metadata.native_headers.is_some());
+    let mut members = Vec::with_capacity(metadata.images.len() + plane_count + artifact_count + optional_count + 1);
     members.push(metadata_id);
     if let Some(member) = metadata.native_program_sources() {
         members.push(*member.object_id());
