@@ -1940,7 +1940,8 @@ pub fn reopen_selected_native_headers_budgeted(
     verified_payload_key(schema, &wire, &key)?;
     header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
     // Validate all canonical NHA1 framing without materializing decoded rows.
-    let _view = backend_semantic::native_ts_headers::NativeTsHeaderAggregateView::parse_canonical(&wire).map_err(|e| e.to_owned())?;
+    let _view = backend_semantic::native_ts_headers::NativeTsHeaderAggregateView::parse_canonical_checkpointed(&wire, &mut |_| header_checkpoint(&budget.work, cancelled))
+        .map_err(|e| format!("selected header scan: {e:?}"))?;
     header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
     let retained = wire.len().checked_add(2 * std::mem::size_of::<usize>()).ok_or("header retained budget overflow")?;
     let bytes = wire;
@@ -2022,7 +2023,8 @@ pub fn reopen_selected_native_headers_in_scratch<'a>(
     verified_payload_key(schema, &wire, &key)?;
     header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
     // Validate all canonical NHA1 framing without materializing decoded rows.
-    let view = backend_semantic::native_ts_headers::NativeTsHeaderAggregateView::parse_canonical(wire).map_err(|e| e.to_owned())?;
+    let view = backend_semantic::native_ts_headers::NativeTsHeaderAggregateView::parse_canonical_checkpointed(wire, &mut |_| header_checkpoint(&budget.work, cancelled))
+        .map_err(|e| format!("selected header scan: {e:?}"))?;
     header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
     budget.memory = initial.checked_sub(scratch_charge).ok_or("scratch budget exceeded")?;
     Ok(Some(VerifiedNativeHeadersView { view, object_id: id }))
