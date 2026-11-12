@@ -635,7 +635,7 @@ fn sql_impact_distinguishes_drop_recreate_epochs() {
     let workers = admitted_workers(Some(frontend_worker("sqlite", "sqlite-worker")), None);
     let files = [
         ("db/0001.sql", "CREATE TABLE books (id INTEGER, price INTEGER);\nCREATE VIEW old_book AS SELECT price FROM books;"),
-        ("db/0002.sql", "DROP TABLE books;\nCREATE TABLE books (id INTEGER, price INTEGER);\nCREATE VIEW new_book AS SELECT price FROM books;"),
+        ("db/0002.sql", "DROP TABLE books; CREATE TABLE books (id INTEGER, price INTEGER); CREATE VIEW new_book AS SELECT price FROM books;"),
     ].into_iter().map(|(path, text)| (path.to_owned(), text.as_bytes().to_vec())).collect();
     let mut wire = SourceWire::start_sql(TestStage::BeforeSourcePreparation, true, SqlFixture { files, workers });
     wire.wait_at_source_within(TERMINAL_WAIT);
