@@ -822,8 +822,8 @@ fn mounted_graph_recovers_from_owner_renewal_without_navigation_or_forced_redraw
     let mounted = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx));
     assert!(mounted.is_some(), "the same visible route must remount after admission without an external wake");
     let mounted = mounted.expect("remounted graph");
-    assert_ne!(mounted.entity_id(), before,
-        "the old serving scene must not survive an owner replacement");
+    assert_eq!(mounted.entity_id(), before,
+        "same-generation renewal retains the mounted local scene");
     assert!(rig.cx.update(|window, cx| mounted.focus_handle(cx).is_focused(window)),
         "the admitted replacement inherits its predecessor's uninterrupted native ownership");
 }
