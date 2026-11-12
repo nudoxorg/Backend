@@ -13,6 +13,7 @@ import pathlib
 import re
 
 from csharp_public_route import Journey
+from runtime_build_receipt import stable_file, verify_runtime_build_receipt
 
 COUNT = 5000
 LIMIT = 137
@@ -99,10 +100,30 @@ def index(j, project, label):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bin-dir", required=True, help="directory containing matched backend-cli, backend-mcp and backend-locald")
-    parser.add_argument("--output", required=True, help="directory for transcripts and result")
+    parser.add_argument("--output", required=True, help="new directory for transcripts and result")
+    parser.add_argument("--build-receipt", required=True, help="successful exact Cargo build receipt")
+    parser.add_argument("--source-commit", required=True, help="exact checked-out source commit")
     args = parser.parse_args()
+    source = pathlib.Path(__file__).resolve().parents[3]
+    output = pathlib.Path(args.output)
+    if output.exists() or output.is_symlink():
+        raise RuntimeError("output directory must be new")
+
+    def verify_build():
+        verified = verify_runtime_build_receipt(pathlib.Path(args.build_receipt).resolve(), source)
+        if verified["source"]["commit"] != args.source_commit:
+            raise RuntimeError("requested source differs from the verified Cargo build")
+        for name, artifact in verified["artifacts"].items():
+            candidate = stable_file(pathlib.Path(args.bin_dir).resolve() / name, name, executable=True)
+            if any(candidate[key] != artifact[key] for key in ("sha256", "bytes", "architecture")):
+                raise RuntimeError(f"{name} differs from the verified Cargo build")
+        return verified
+
+    build = verify_build()
     j = Journey(args.bin_dir, args.output, label="related-edge")
-    result = {"status": "failed", "expected_callers": COUNT}
+    result = {"status": "failed", "expected_callers": COUNT,
+              "build_receipt_sha256": build["receipt_sha256"],
+              "source_commit": args.source_commit, "artifacts": build["artifacts"]}
     try:
         project = j.root / "project"
         fixture(project)
@@ -143,9 +164,17 @@ def main():
         result.update(error=repr(error), records=j.records)
         raise
     finally:
-        pathlib.Path(args.output).mkdir(parents=True, exist_ok=True)
-        (pathlib.Path(args.output) / "related-edge-result.json").write_text(json.dumps(result, indent=2) + "\n")
         j.close()
+        try:
+            verified_after = verify_build()
+            if verified_after["receipt_sha256"] != build["receipt_sha256"]:
+                raise RuntimeError("Cargo build receipt changed during the journey")
+        except Exception as error:
+            result.update(status="failed", verification_error=repr(error), records=j.records)
+            (output / "related-edge-result.json").write_text(json.dumps(result, indent=2) + "\n")
+            raise
+        result["records"] = j.records
+        (output / "related-edge-result.json").write_text(json.dumps(result, indent=2) + "\n")
 
 
 if __name__ == "__main__":
