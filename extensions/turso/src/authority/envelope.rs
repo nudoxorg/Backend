@@ -5,6 +5,9 @@
 //! the outer `ClosureId`: that ID is derived from a closure containing this
 //! envelope and would create a content-addressing cycle if embedded here.
 
+#[path = "borrowed_metadata.rs"]
+mod borrowed_metadata;
+
 use super::types::{
     AuthorityHash, AuthorityNamespace, AuthorityPlane, CandidateAttempt, CandidateGeneration,
     ClosureClaim, DurableClosureVerifier, SelectedGeneration,
@@ -1888,10 +1891,43 @@ fn header_object_bounded(store: &FileStore, pin: &backend_store::GcPinGuard, id:
     Ok((bytes, schema, key))
 }
 
+fn selected_borrowed_metadata_member(
+    wire: &[u8], schema: SchemaIdentity, metadata_id: AuthorityHash,
+    envelope: &BorrowedSelectedEnvelope<'_>, budget: &mut SelectedNativeHeaderBudget,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Option<CompilerNativeHeadersMember>, String> {
+    let version_at = METADATA_MAGIC.len();
+    let version = wire.get(version_at..version_at + 2).ok_or("truncated metadata version")?;
+    let version = u16::from_le_bytes([version[0], version[1]]);
+    let expected = match version {
+        METADATA_VERSION => COMPILER_PUBLICATION_METADATA_SCHEMA,
+        PROGRAM_METADATA_VERSION => COMPILER_PROGRAM_METADATA_SCHEMA,
+        COVERAGE_METADATA_VERSION => COMPILER_COVERAGE_METADATA_SCHEMA,
+        TYPESCRIPT_SNAPSHOT_METADATA_VERSION => COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA,
+        CSHARP_EVIDENCE_METADATA_VERSION => COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA,
+        NATIVE_HEADERS_METADATA_VERSION => COMPILER_NATIVE_HEADERS_METADATA_SCHEMA,
+        _ => return Err("invalid compiler metadata version".into()),
+    };
+    if schema != expected { return Err("compiler metadata schema differs".into()); }
+    let bitmap_len = (MAX_MEMBER_IDS + 7) / 8;
+    let mut bitmap = backend_store::try_allocate_exact_zeroed_bytes_budgeted(bitmap_len, &mut budget.memory)
+        .map_err(|e| format!("allocate metadata bitmap: {e:?}"))?;
+    let metadata = borrowed_metadata::BorrowedCompilerMetadata::parse(wire, metadata_id, envelope.member_wire,
+        &mut bitmap, &mut |_| header_checkpoint(&budget.work, cancelled))
+        .map_err(|e| format!("selected metadata validation: {e:?}"))?;
+    if envelope.logical_generation != metadata.binding_identity || envelope.semantic_root != metadata.semantic_catalog_root {
+        return Err("selected compiler metadata differs from envelope".into());
+    }
+    let member = metadata.native_headers;
+    drop(bitmap);
+    budget.memory = budget.memory.checked_add(bitmap_len).ok_or("metadata bitmap refund overflow")?;
+    Ok(member)
+}
+
 /// Reopens selected header evidence while charging metadata, member traversal,
 /// payload decoding, and work to one caller-owned budget. Cancellation is
 /// checked before each bounded store operation and before/after decoding.
-/// A schema-bounded metadata decode is one work token; it is not preemptible.
+/// Metadata validation checks cancellation throughout borrowed traversal.
 pub fn reopen_selected_native_headers_budgeted(
     store: &FileStore, selected: &SelectedGeneration, budget: &mut SelectedNativeHeaderBudget,
     cancelled: &dyn Fn() -> bool,
@@ -1919,20 +1955,12 @@ pub fn reopen_selected_native_headers_budgeted(
     let (wire, schema, key) = header_object_bounded(store, &pin, metadata_id, &schemas, metadata_max, budget, cancelled)?;
     header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected metadata stopped: {e:?}"))?;
     verified_payload_key(schema, &wire, &key)?;
-    let charge = compiler_metadata_decode_bound(&wire).map_err(|e| e.to_string())?;
-    header_reserve(&mut budget.memory, charge)?;
-    let metadata = CompilerPublicationMetadata::decode(&wire).map_err(|e| e.to_string())?;
-    if metadata.schema() != schema { return Err("compiler metadata schema differs".into()); }
-    drop(wire);
-    if envelope.logical_generation != metadata.binding_identity || envelope.semantic_root != metadata.semantic_manifest_root().copied() {
-        return Err("selected compiler metadata differs from envelope".into());
-    }
-    verify_metadata_member_bitmap(&envelope, &metadata, metadata_id, budget, cancelled)?;
+    let member = selected_borrowed_metadata_member(&wire, schema, metadata_id, &envelope, budget, cancelled)?;
     for id in envelope.members() {
         if header_member_bounded(store, &pin, closure, id, budget, cancelled)? != count { return Err("selected closure count changed".into()); }
     }
     header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
-    let Some(member) = metadata.native_headers() else { budget.memory = initial; return Ok(None) };
+    let Some(member) = member else { budget.memory = initial; return Ok(None) };
     let id = *member.object_id();
     let length = member.byte_length() as usize;
     let (wire, schema, key) = header_object_bounded(store, &pin, id, &[COMPILER_NATIVE_HEADERS_SCHEMA], length, budget, cancelled)?;
@@ -1973,7 +2001,7 @@ fn header_object_into_scratch<'a>(store: &FileStore, pin: &backend_store::GcPinG
 
 /// Reopens selected claims in caller-provisioned, operation-charged scratch.
 /// The returned borrowed view cannot outlive that scratch. Metadata decoding
-/// still uses owned vectors and needs independent capacity assurance.
+/// is validated without allocating owned metadata vectors.
 pub fn reopen_selected_native_headers_in_scratch<'a>(
     store: &FileStore, selected: &SelectedGeneration, budget: &mut SelectedNativeHeaderBudget,
     cancelled: &dyn Fn() -> bool, scratch: &'a mut [u8],
@@ -2003,19 +2031,12 @@ pub fn reopen_selected_native_headers_in_scratch<'a>(
     let (wire, _, schema, key) = header_object_into_scratch(store, &pin, metadata_id, &schemas, metadata_max, budget, cancelled, &mut *remaining_scratch)?;
     header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected metadata stopped: {e:?}"))?;
     verified_payload_key(schema, &wire, &key)?;
-    let charge = compiler_metadata_decode_bound(&wire).map_err(|e| e.to_string())?;
-    header_reserve(&mut budget.memory, charge)?;
-    let metadata = CompilerPublicationMetadata::decode(&wire).map_err(|e| e.to_string())?;
-    if metadata.schema() != schema { return Err("compiler metadata schema differs".into()); }
-    if envelope.logical_generation != metadata.binding_identity || envelope.semantic_root != metadata.semantic_manifest_root().copied() {
-        return Err("selected compiler metadata differs from envelope".into());
-    }
-    verify_metadata_member_bitmap(&envelope, &metadata, metadata_id, budget, cancelled)?;
+    let member = selected_borrowed_metadata_member(&wire, schema, metadata_id, &envelope, budget, cancelled)?;
     for id in envelope.members() {
         if header_member_bounded(store, &pin, closure, id, budget, cancelled)? != count { return Err("selected closure count changed".into()); }
     }
     header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
-    let Some(member) = metadata.native_headers() else { budget.memory = initial.checked_sub(scratch_charge).ok_or("scratch budget exceeded")?; return Ok(None) };
+    let Some(member) = member else { budget.memory = initial.checked_sub(scratch_charge).ok_or("scratch budget exceeded")?; return Ok(None) };
     let id = *member.object_id();
     let length = member.byte_length() as usize;
     let (wire, _, schema, key) = header_object_into_scratch(store, &pin, id, &[COMPILER_NATIVE_HEADERS_SCHEMA], length, budget, cancelled, &mut *remaining_scratch)?;
@@ -3881,6 +3902,22 @@ mod tests {
             let bytes = value.canonical_bytes();
             assert_eq!(metadata_member_ids_checked(&value).unwrap(), metadata_member_ids(&value));
             assert_eq!(u16::from_le_bytes(bytes[METADATA_MAGIC.len()..METADATA_MAGIC.len()+2].try_into().unwrap()), expected_version);
+            let ids = metadata_member_ids_checked(&value).unwrap();
+            let cells: Vec<u8> = ids.iter().flat_map(|id| id.iter().copied()).collect();
+            let mut bitmap = vec![0; (MAX_MEMBER_IDS + 7) / 8];
+            let parsed = borrowed_metadata::BorrowedCompilerMetadata::parse(
+                &bytes, value.object_id(), &cells, &mut bitmap, &mut |_| Ok::<(), ()>(())).unwrap();
+            assert_eq!(parsed.binding_identity, value.binding_identity);
+            assert_eq!(parsed.semantic_catalog_root, value.semantic_manifest_root().copied());
+            assert_eq!(parsed.native_headers, value.native_headers().copied());
+            assert!(borrowed_metadata::BorrowedCompilerMetadata::parse(
+                &bytes[..bytes.len()-1], value.object_id(), &cells, &mut bitmap, &mut |_| Ok::<(), ()>(())).is_err());
+            let mut wrong_id = value.object_id(); wrong_id[0] ^= 1;
+            assert!(borrowed_metadata::BorrowedCompilerMetadata::parse(
+                &bytes, wrong_id, &cells, &mut bitmap, &mut |_| Ok::<(), ()>(())).is_err());
+            assert!(matches!(borrowed_metadata::BorrowedCompilerMetadata::parse(
+                &bytes, value.object_id(), &cells, &mut bitmap, &mut |_| Err::<(), ()>(())),
+                Err(borrowed_metadata::BorrowedMetadataError::Stopped(()))));
             let bound = compiler_metadata_decode_bound(&bytes).unwrap();
             let mut reopened = None;
             let peak = allocation_counter::measure(|| { reopened = Some(CompilerPublicationMetadata::decode(&bytes).unwrap()); });
