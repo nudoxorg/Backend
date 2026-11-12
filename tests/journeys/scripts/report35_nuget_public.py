@@ -28,7 +28,7 @@ def digest(path):
 BLAKE3_HELPER = None
 
 def blake3_short(data):
-    check(len(data)<=1024,'fixture proof input exceeds bound')
+    check(len(data)<=4096,'fixture proof input exceeds bound')
     check(BLAKE3_HELPER is not None,'native BLAKE3 helper required')
     result=subprocess.run([str(BLAKE3_HELPER)],input=data,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=10,check=True)
     text=result.stdout.decode('ascii').strip()
@@ -321,7 +321,7 @@ def self_check():
     check(blake3_short(b'abc').hex()=='6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85','BLAKE3 abc vector')
     legacy=bytes.fromhex('d9f440943d5aa3ed9269bfe6715329730f37a7c9dbc11fe417eb8a57c377bdd6df83ad493da92a564542d61a9eed1d0c6035f1523af61af193d6cd6cb99b6423000000000000000100000000000002dc')
     check(blake3_short(legacy).hex()=='f9d90452269fcb4381ff122526c49cfb4e6937c4f680e9b31597fd141dab1008','BLAKE3 multi-block sealed-backend vector')
-    try:blake3_short(bytes(1025))
+    try:blake3_short(bytes(4097))
     except Failure:pass
     else:raise Failure('long proof input should fail closed')
     # Validate typed product projection checks without running a product.
