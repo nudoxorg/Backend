@@ -29,6 +29,9 @@ def make_source_repo(root: Path) -> tuple[str, str, str]:
     subprocess.run(["git", "-C", str(root), "config", "user.name", "t"], check=True)
     (root / "Cargo.toml").write_text('[workspace.package]\nversion = "0.2.0"\n')
     (root / "Cargo.lock").write_text("# lock\n")
+    sqlite_lock = root / "frontends/sqlite/Cargo.lock"
+    sqlite_lock.parent.mkdir(parents=True)
+    sqlite_lock.write_text("# SQLite fixture lock\n")
     policy = root / "tools" / "package" / "linux_system_sonames.txt"
     policy.parent.mkdir(parents=True)
     policy.write_bytes((Path(release.__file__).with_name("linux_system_sonames.txt")).read_bytes())
@@ -249,6 +252,7 @@ class BuildManifestAndArchiveTests(unittest.TestCase):
             source = root / "source"
             source.mkdir()
             revision, tree, lock = make_source_repo(source)
+            sqlite_lock = release.sha256(source / "frontends/sqlite/Cargo.lock")
             artifact = root / "artifact"
             make_t1_artifact(artifact, revision)
             raw_worker = root / "raw-worker"
@@ -275,13 +279,13 @@ class BuildManifestAndArchiveTests(unittest.TestCase):
                 "dependency": dependency, "dependency_source": dependency,
                 "sqlite": {"dependency_source": dependency, "observer": identity(observer),
                            "worker": record_bytes(payloads["backend-sqlite-worker"]),
-                           "sqlite_lock_sha256": "b" * 64, "artifact_identity": "c" * 64, "basis_json": "basis"}}
+                           "sqlite_lock_sha256": sqlite_lock, "artifact_identity": "c" * 64, "basis_json": "basis"}}
             observation = {"state": "observed-build-helper", "artifact_identity": "c" * 64,
                 "basis": {"engine": "Syntaqlite4e4de76", "native_revision": sqlite_common.REVISION,
-                    "recipe": sqlite_common.RECIPE, "lock_sha256": list(bytes.fromhex("b" * 64)),
+                    "recipe": sqlite_common.RECIPE, "lock_sha256": list(bytes.fromhex(sqlite_lock)),
                     "support_sha256": [1] * 32, "settings": {"Sqlite": {"version": 2147483647, "cflags": 0, "analyzer_dqs_fallback": True}}}}
             observation_bytes = json.dumps(observation).encode()
-            companion["sqlite"]["basis_json"] = sqlite_common.validate_observation(observation, "b" * 64)[1]
+            companion["sqlite"]["basis_json"] = sqlite_common.validate_observation(observation, sqlite_lock)[1]
             output = root / "candidate"
             def portabilize(_bin, names, out, *_args):
                 package = out / "Nudox"

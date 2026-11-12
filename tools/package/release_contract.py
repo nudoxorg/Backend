@@ -384,6 +384,8 @@ def validate(directory, source=None, platform=None, require_qa=True):
             return subprocess.check_output(["git", "-C", str(source), "show", f"{revision}:{path}"])
         if hashlib.sha256(blob("Cargo.lock")).hexdigest() != manifest["cargo_lock_sha256"]:
             raise ValueError("candidate lock differs from selected canonical source")
+        if selected == "linux-x64" and hashlib.sha256(blob("frontends/sqlite/Cargo.lock")).hexdigest() != build["companion"]["sqlite_lock_sha256"]:
+            raise ValueError("SQLite companion lock differs from selected canonical source")
         tree = subprocess.check_output(["git", "-C", str(source), "rev-parse", revision + "^{tree}"], text=True).strip()
         if tree != manifest["source_tree"] or tomllib.loads(blob("Cargo.toml").decode())["workspace"]["package"]["version"] != manifest["version"]:
             raise ValueError("candidate version/tree differs from selected canonical source")
