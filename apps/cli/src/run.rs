@@ -728,6 +728,11 @@ fn outline_with_output_admission<E: Engine>(
     }
 }
 
+// A fresh page uses a conservative work budget; existing cursor scope remains valid.
+fn related_initial_delivery(issued: u16, continuation_delivery: Option<u16>) -> u16 {
+    continuation_delivery.unwrap_or(issued.min(32))
+}
+
 /// Preserves native graph credit, input frontier and source through full output admission.
 fn related_with_output_admission<E: Engine>(
     engine: &mut E,
@@ -741,7 +746,7 @@ fn related_with_output_admission<E: Engine>(
         .ok_or_else(|| Fault::usage("limit", "invalid related query credit"))?;
     let cursor = token.map(crate::related_cursor::decode).transpose()
         .map_err(|error| Fault::usage("cursor", error))?;
-    let mut delivery = cursor.as_ref().map_or(issued, |cursor| cursor.scope().delivery);
+    let mut delivery = related_initial_delivery(issued, cursor.as_ref().map(|cursor| cursor.scope().delivery));
     let mut pinned = None;
     let mut pinned_root = None;
     let heading = match selector {
@@ -1254,5 +1259,18 @@ mod graph_admission_tests {
             "advice never creates a workspace or authority"
         );
         assert!(!paths.endpoint().exists(), "advice never starts an owner");
+    }
+}
+
+#[cfg(test)]
+mod related_delivery_tests {
+    use super::related_initial_delivery;
+
+    #[test]
+    fn fresh_delivery_is_bounded_and_existing_cursor_delivery_is_preserved() {
+        assert_eq!(related_initial_delivery(200, None), 32);
+        assert_eq!(related_initial_delivery(12, None), 12);
+        assert_eq!(related_initial_delivery(200, Some(100)), 100);
+        assert_eq!(related_initial_delivery(200, Some(7)), 7);
     }
 }
