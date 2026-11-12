@@ -590,6 +590,19 @@ mod tests {
     }
 
     #[test]
+    fn malformed_line_count_is_rejected_before_vector_allocation() {
+        let mut claim = row(); claim.line_starts = Some(vec![0]);
+        let mut bytes = Vec::new(); NativeSourceEvidenceRelation::encode_value(&claim, &mut bytes);
+        let offset = bytes.len() - 8;
+        bytes[offset..offset + 4].copy_from_slice(&u32::MAX.to_be_bytes());
+        let measured = allocation_counter::measure(|| {
+            assert!(NativeSourceEvidenceRelation::decode_value(&bytes).is_err());
+        });
+        // The bounded path may be copied; the forged count must never allocate a line vector.
+        assert!(measured.bytes_total < 8192);
+    }
+
+    #[test]
     fn claims_roundtrip_and_reject_noncanonical_input() {
         let row = row();
         let mut bytes = Vec::new();
