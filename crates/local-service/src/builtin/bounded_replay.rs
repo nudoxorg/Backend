@@ -317,8 +317,10 @@ fn admit_inner(
                 let mut checkpoint = |n| charge_native_header_work(budget, stopped, n);
                 if let Some(claimed) = &row.headers {
                     let (aggregate, digest) = headers.as_ref().ok_or("native replay header witness absent")?;
-                    let file = super::super::native_ts_headers::witnessed_file_borrowed(row, aggregate, *digest, &mut checkpoint)?;
-                    super::super::native_ts_headers::admit_image_borrowed(row, claimed, file, &view, bytes, &mut checkpoint)?;
+                    let file = super::super::native_ts_headers::witnessed_file_borrowed(row, aggregate, *digest, &mut checkpoint)
+                        .map_err(|e| format!("native replay header: {e}"))?;
+                    super::super::native_ts_headers::admit_image_borrowed(row, claimed, file, &view, bytes, &mut checkpoint)
+                        .map_err(|e| format!("native replay header: {e}"))?;
                     plan.flags[index] |= 8;
                 } else if let Some((aggregate, _)) = &headers {
                     if aggregate.find_file_checkpointed(&row.path, &mut checkpoint)?.is_some() { return Err("native replay lost compiler header reference".into()); }
