@@ -147,7 +147,10 @@ fn has_carrier_bindings(layout: FullImageLayout) -> bool {
 /// Returns the exact scratch reservation needed by bounded full-image
 /// admission. This performs only fixed-size directory checks and does not
 /// admit the image: the caller must subsequently call `reopen_bounded` on
-/// the same immutable bytes. No bytes are retained by this preflight.
+/// the same immutable bytes. No bytes are retained by this preflight. The
+/// validator uses sequential typed-edge decoding; the grouped reader index
+/// is not built by admission. Any change to that property must also update
+/// this preflight and its peak-accounting tests.
 pub fn semantic_image_admission_scratch(
     bytes: &[u8],
     meter: &dyn SemanticImageAdmissionMeter,
