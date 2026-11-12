@@ -1665,16 +1665,13 @@ impl CSharpOracle {
                 .map(|(key, value)| (key.to_os_string(), value.map(|value| value.to_os_string())))
                 .collect(),
         };
-        let result = backend_platform::child_output::capture(
+        let result = capture_authority_command(
             &spec,
-            backend_platform::child_output::CaptureLimits {
-                deadline: request.control.deadline,
-                stdout_bytes: self.output_limit,
-                stderr_bytes: self.output_limit,
-            },
-            request.control.cancelled,
-        )
-        .map_err(|cause| capture_error(cause, request.toolchain, &self.oracle))?;
+            request.control,
+            self.output_limit,
+            request.toolchain,
+            &self.oracle,
+        )?;
         if !result.status.success() {
             return Err(CSharpAuthorityError::Exit {
                 status: result.status.to_string(),
@@ -2152,6 +2149,25 @@ pub enum CSharpAuthorityError {
         /// Digest retained in the image envelope.
         observed: [u8; 32],
     },
+}
+
+fn capture_authority_command(
+    spec: &backend_platform::child_output::CaptureCommand,
+    control: CSharpAuthorityControl<'_>,
+    output_limit: usize,
+    toolchain: &Path,
+    oracle: &Path,
+) -> Result<backend_platform::child_output::CapturedOutput, CSharpAuthorityError> {
+    backend_platform::child_output::capture(
+        spec,
+        backend_platform::child_output::CaptureLimits {
+            deadline: control.deadline,
+            stdout_bytes: output_limit,
+            stderr_bytes: output_limit,
+        },
+        control.cancelled,
+    )
+    .map_err(|cause| capture_error(cause, toolchain, oracle))
 }
 
 fn capture_error(
@@ -2717,39 +2733,50 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn producer_deadline_includes_descendant_holding_output_pipes() {
-        use std::os::unix::fs::PermissionsExt;
+        use backend_platform::child_output::{CaptureCommand, CaptureEnvironment};
+
         let directory = tempfile::tempdir().expect("private fixture");
-        let source_path = directory.path().join("A.cs");
-        let tool = directory.path().join("fake-dotnet");
-        fs::write(&source_path, b"class A {}").expect("source fixture");
-        fs::write(&tool, b"#!/bin/sh\nsleep 10 & exit 0\n").expect("tool fixture");
-        fs::set_permissions(&tool, fs::Permissions::from_mode(0o700)).expect("tool permissions");
-        let helper = directory.path().join("oracle.dll");
-        let oracle = CSharpOracle::new(helper);
+        let marker = directory.path().join("descendant-started");
+        let shell = Path::new("/bin/sh");
+        // The descendant records its startup, then retains both inherited pipes.
+        // The leader waits for that record and exits without waiting for it.
+        let script = r#"( printf ready > "$1"; exec /bin/sleep 10 ) &
+while [ ! -f "$1" ]; do :; done
+exit 0"#;
+        let spec = CaptureCommand {
+            program: shell.as_os_str().to_owned(),
+            args: vec![
+                "-c".into(),
+                script.into(),
+                "deadline-fixture".into(),
+                marker.as_os_str().to_owned(),
+            ],
+            cwd: Some(directory.path().to_path_buf()),
+            environment: CaptureEnvironment::Clear,
+            overrides: Vec::new(),
+        };
         let cancelled = AtomicBool::new(false);
         let start = Instant::now();
-        let result = oracle.authority_image(CSharpAuthorityRequest {
-            package_root: directory.path(),
-            source_path: &source_path,
-            project_file: None,
-            source: b"class A {}",
-            captured_sources: None,
-            captured_config: None,
-            captured_project_graph: None,
-            execution_closure: None,
-            profile: CSharpVersion::CSharp14,
-            native_tool: NativeTool::CSharpCompiler,
-            toolchain: &tool,
-            control: CSharpAuthorityControl {
+        let result = capture_authority_command(
+            &spec,
+            CSharpAuthorityControl {
                 deadline: start + Duration::from_millis(300),
                 cancelled: &cancelled,
             },
-            configuration: CSharpAuthorityConfiguration::DEFAULT,
-        });
+            1024,
+            shell,
+            Path::new("/oracle.dll"),
+        );
         assert!(
-            matches!(result, Err(CSharpAuthorityError::Deadline { .. })),
+            matches!(
+                result,
+                Err(CSharpAuthorityError::Deadline {
+                    phase: CSharpAuthorityPhase::Process
+                })
+            ),
             "{result:?}"
         );
+        assert_eq!(fs::read(&marker).expect("descendant ran"), b"ready");
         assert!(start.elapsed() < Duration::from_secs(3));
     }
 
