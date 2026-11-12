@@ -62,7 +62,7 @@ fn maximum_evidence_error_bytes() -> usize {
         "semantic row refers to a missing graph target",
         "semantic graph edge crossed its package authority",
         "compiler external target has no compiler declaration source",
-        "compiler external edge crossed its exact image authority",
+        "compiler external edge crossed its exact image authority or qualification",
         "package Cargo aliases failed their bounded admission",
         "compiler evidence language authority differs from its package coordinate",
         "compiler evidence lacks captured image provenance",
