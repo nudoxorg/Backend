@@ -679,6 +679,14 @@ pub fn probe_basis_checked(
     if !supported_basis(&basis, dialect, engine) {
         return Err(CheckedError::UnsupportedSettings);
     }
+    if launch.cancellation.is_cancelled() {
+        return Err(CheckedError::Cancelled);
+    }
+    if std::time::Instant::now() >= deadline {
+        return Err(CheckedError::Process(
+            backend_compile::ProcessError::Deadline,
+        ));
+    }
     Ok(basis)
 }
 
@@ -1024,6 +1032,26 @@ mod tests {
             probe_basis_checked(launch(), Dialect::Sqlite, Engine::Syntaqlite4e4de76).unwrap(),
             basis
         );
+        cancelled.store(true, std::sync::atomic::Ordering::Release);
+        assert!(matches!(
+            probe_basis_checked(launch(), Dialect::Sqlite, Engine::Syntaqlite4e4de76),
+            Err(CheckedError::Cancelled)
+        ));
+        cancelled.store(false, std::sync::atomic::Ordering::Release);
+        let mut with_environment = launch();
+        with_environment.environment =
+            ProcessEnvironment::new(vec![("PATH".into(), "/untrusted".into())]).unwrap();
+        assert!(matches!(
+            probe_basis_checked(with_environment, Dialect::Sqlite, Engine::Syntaqlite4e4de76),
+            Err(CheckedError::UnsupportedSettings)
+        ));
+        let mut with_dependency = launch();
+        with_dependency.artifact =
+            ToolchainArtifact::new(artifact.executable().clone(), vec![artifact.identity()]);
+        assert!(matches!(
+            probe_basis_checked(with_dependency, Dialect::Sqlite, Engine::Syntaqlite4e4de76),
+            Err(CheckedError::UnsupportedSettings)
+        ));
         std::fs::write(&path, b"#!/bin/sh\nexit 0\n").unwrap();
         assert!(probe_basis_checked(launch(), Dialect::Sqlite, Engine::Syntaqlite4e4de76).is_err());
         std::fs::remove_file(path).unwrap();
