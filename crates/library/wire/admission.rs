@@ -659,6 +659,9 @@ fn admit_projection_page(
         ));
     }
 
+    if page.graph_alias_witness.is_some() && !matches!(command, Command::GraphPage { .. }) {
+        return Err(ReplyAdmissionError::Protocol("graph alias witness crossed its page family".to_owned()));
+    }
     // A bounded qualified graph page may carry its center as a result-only
     // witness when the actual row belongs to another page. It is an observed
     // claim on the authenticated local channel, not a raw-key authority mint.
@@ -669,6 +672,9 @@ fn admit_projection_page(
             .collect::<std::collections::BTreeSet<_>>();
         let captured = graph.nodes.iter().any(|node| !node.source_policy.is_unknown())
             || graph.edges.iter().any(|edge| !edge.source_policy.is_unknown());
+        if page.graph_alias_witness.is_some() && (!captured || !local_policy) {
+            return Err(ReplyAdmissionError::Protocol("graph alias witness requires a qualified local graph".to_owned()));
+        }
         let center_is_witness = !page_nodes.contains(&graph.center);
         if center_is_witness && !captured {
             return Err(ReplyAdmissionError::Protocol("graph page center witness is not admitted".to_owned()));
@@ -680,8 +686,20 @@ fn admit_projection_page(
                 || graph.admit().is_err()
             { return Err(invalid()); }
             let Some(center) = graph.nodes.iter().find(|node| node.id == graph.center) else { return Err(invalid()) };
+            let alias_admitted = page.graph_alias_witness.as_ref().is_some_and(|document| {
+                let Some(selection) = document.selection.as_ref() else { return false };
+                !symbol.is_selected()
+                    && crate::symbol_key(selection.coordinate()).to_bytes() == symbol.claimed_bytes()
+                    && selection.source() == page.snapshot.root.basis()
+                    && document.source_basis() == Some(selection.source())
+                    && document.symbol == selection.symbol()
+                    && crate::GraphNodeId::for_row(crate::RowId::Symbol(selection.symbol())) == graph.center
+                    && !document.source_policy.is_unknown()
+                    && document.source_policy.matches_document(document)
+            });
+            if page.graph_alias_witness.is_some() && !alias_admitted { return Err(invalid()); }
             if center.source_policy.is_unknown()
-                || !center.source_policy.matches_graph_page_address(*symbol)
+                || !(center.source_policy.matches_graph_page_address(*symbol) || alias_admitted)
                 || graph.nodes.iter().any(|node| {
                     (!page_nodes.contains(&node.id) && node.id != graph.center)
                         || node.source_policy.is_unknown()
@@ -701,6 +719,10 @@ fn admit_projection_page(
                 })
             { return Err(invalid()); }
         }
+    }
+
+    if page.graph_alias_witness.is_some() && page.snapshot.rich_graph.is_none() {
+        return Err(ReplyAdmissionError::Protocol("graph alias witness requires a graph center".to_owned()));
     }
 
     if let Command::MembersPage { owner, .. } = command
@@ -794,6 +816,7 @@ pub fn reply_memory_bound(reply: &ReplyDto) -> usize {
                 add_bound(&mut bound, 2048usize.saturating_add(page.keys.len().saturating_mul(1024)));
             }
             if let CommandReply::ProjectionPage(page) = &reply.reply {
+                if let Some(witness) = &page.graph_alias_witness { add_document_bound(&mut bound, witness); }
                 if let Some(order) = &page.outline_order {
                     add_bound(&mut bound, 256usize.saturating_add(order.symbols().len().saturating_mul(128)));
                 }
@@ -1923,7 +1946,7 @@ mod query_preparation_tests {
         let basis = crate::Basis::new(crate::view_state_root(&[]), crate::object_version(b"graph-page-witness"));
         let mut rows = (0..2).map(|index| {
             let label = format!("fixture::node{index}");
-            crate::Row::new(crate::RowId::Symbol(crate::symbol_key(&label)), basis, label)
+            crate::Row::new(crate::RowId::Symbol(crate::symbol_key(&format!("fixture::native{index}"))), basis, label)
         }).collect::<Vec<_>>();
         rows.sort_by_key(|row| row.id);
         let center = match rows[0].id { crate::RowId::Symbol(symbol) => symbol, _ => unreachable!() };
@@ -1981,6 +2004,71 @@ mod query_preparation_tests {
         assert!(admit_projection_page(&command, &second, true).is_ok());
         assert!(matches!(second.terminal, crate::PageTerminal::Complete));
         assert!(admit_projection_page(&command, &second, false).is_err());
+        // A distinct alias gets its own owner-issued selection and qualification;
+        // the selected native center policy remains independently checked.
+        let alias = root.row_ref(crate::RowId::Symbol(center)).expect("center row").label.as_str();
+        let alias_address = crate::SymbolAddress::canonical(crate::symbol_key(alias));
+        let alias_first = library.graph_page_from_ids(center, alias_address, first_request, &ids).expect("alias first");
+        let crate::PageTerminal::More(alias_next) = alias_first.terminal else { panic!("alias continuation") };
+        let alias_request = first_request.with_continuation(alias_next);
+        let mut alias_page = library.graph_page_from_ids(center, alias_address, alias_request, &ids).expect("alias second");
+        alias_page.snapshot.rich_graph = second.snapshot.rich_graph.clone();
+        // The center is off-page. Its selected native-coordinate policy must
+        // differ from the requested alias, otherwise the old direct-address
+        // guard already admits this graph and the witness proves nothing.
+        let native_coordinate = "fixture::native-center-coordinate";
+        let native_row = crate::Row::new(crate::RowId::Symbol(center), selected_basis, native_coordinate);
+        let mut native_center = crate::RichGraphNode::new(
+            crate::GraphNodeId::for_symbol(center), native_coordinate.to_owned(),
+            Some(native_coordinate.to_owned()), None, crate::GraphAvailability::Ready, None,
+        ).expect("native center");
+        native_center.source_policy = source_policy_at(&native_row, selected_basis);
+        let graph = alias_page.snapshot.rich_graph.as_mut().expect("qualified graph");
+        let center_id = graph.center;
+        let center_node = std::sync::Arc::make_mut(&mut graph.nodes).iter_mut()
+            .find(|node| node.id == center_id).expect("off-page center");
+        *center_node = native_center;
+        assert!(graph.admit().is_ok(), "native center remains graph-shape valid");
+        alias_page.snapshot.graph_relations = None;
+        let selection = crate::DocumentSelection::from_admitted_parts(center, selected_basis, alias.to_owned()).expect("selection");
+        let profile = crate::SemanticLanguageProfile::from_name("tsx").expect("profile");
+        let policy = crate::SourcePolicyQualification::issue_observed(&[7; 32], &selection, crate::SourcePolicyObservation {
+            workspace_root: [1; 32], evidence_root: [2; 32], project: [3; 32], profile, publication_profile: profile,
+            publication_coordinate: "pkg:npm/fixture@1.0.0".into(), source_path: "page.tsx".into(),
+            source_fact: [4; 32], input_digest: [5; 32], byte_len: 30, publication_binding: [6; 32],
+            image_identity: [7; 32], image_byte_len: 128, program_membership: [8; 32], entity_index: 1,
+            declaration_family: [9; 16], declaration_variant: [10; 16],
+        }).expect("alias policy");
+        let mut witness = crate::Document::new(center, selected_basis.root, Vec::new());
+        witness.source = Some(selected_basis);
+        witness = witness.with_selection(selection).expect("selection basis");
+        witness.source_policy = policy;
+        alias_page.graph_alias_witness = Some(witness);
+        let alias_command = Command::GraphPage { symbol: alias_address, page: alias_request };
+        assert!(admit_projection_page(&alias_command, &alias_page, true).is_ok());
+        let wire = crate::wire::reply::reply_to_wire(&CommandReply::ProjectionPage(alias_page.clone())).expect("encode reply");
+        let encoded = serde_json::to_vec(&wire).expect("serialize witness");
+        let decoded: crate::wire::reply::ReplyWire = serde_json::from_slice(&encoded).expect("decode witness wire grammar");
+        let reencoded = serde_json::to_vec(&decoded).expect("re-encode witness");
+        assert_eq!(encoded, reencoded);
+        let value: serde_json::Value = serde_json::from_slice(&encoded).expect("JSON");
+        assert!(value.to_string().contains(alias), "alias selection survives wire serialization");
+        assert!(admit_projection_page(&alias_command, &alias_page, false).is_err());
+        let mut missing_alias = alias_page.clone();
+        missing_alias.graph_alias_witness = None;
+        assert!(admit_projection_page(&alias_command, &missing_alias, true).is_err());
+        let mut wrong_alias = alias_page.clone();
+        wrong_alias.graph_alias_witness.as_mut().expect("witness").selection = Some(crate::DocumentSelection::from_admitted_parts(center, selected_basis, "fixture::wrong".into()).expect("other alias"));
+        assert!(admit_projection_page(&alias_command, &wrong_alias, true).is_err());
+        let mut wrong_center = alias_page.clone();
+        wrong_center.graph_alias_witness.as_mut().expect("witness").symbol = neighbor;
+        assert!(admit_projection_page(&alias_command, &wrong_center, true).is_err());
+        let mut unknown_policy = alias_page.clone();
+        unknown_policy.graph_alias_witness.as_mut().expect("witness").source_policy = crate::SourcePolicyQualification::Unknown;
+        assert!(admit_projection_page(&alias_command, &unknown_policy, true).is_err());
+        let mut wrong_basis = alias_page.clone();
+        wrong_basis.graph_alias_witness.as_mut().expect("witness").source = Some(crate::Basis { object: crate::object_version(b"foreign"), ..selected_basis });
+        assert!(admit_projection_page(&alias_command, &wrong_basis, true).is_err());
         let wrong = Command::GraphPage { symbol: crate::SymbolAddress::selected(neighbor), page: request };
         assert!(admit_projection_page(&wrong, &second, true).is_err());
         // Removing every policy must not bypass center/request/peer admission.
@@ -2147,17 +2235,86 @@ mod query_preparation_tests {
                 });
             for row in materialized.rows() {
                 let crate::RowId::Symbol(symbol) = row.id else { panic!("symbol row") };
-                certificate = certificate.with_claim(crate::WireClaim::Key {
-                    schema: crate::WireSchema::Symbol, id: crate::encode_id(symbol.as_bytes()), value: row.label.clone(),
+                certificate = certificate.with_claim(crate::WireClaim::KeyCommitment {
+                    schema: crate::WireSchema::Symbol, id: crate::encode_id(symbol.as_bytes()),
                 });
             }
-            let certified = with_witness.clone().with_certificate(certificate);
+            let certified = with_witness.clone().with_certificate(certificate.clone());
             let encoded = crate::wire::encode_reply_body_bounded(&certified).expect("certified encoding");
             assert!(crate::decode_reply_body(&encoded).is_err());
             let decoded = crate::decode_reply_body_with_local_source_policy(&encoded, &peer).expect("authenticated local decode");
             let request = CommandDto::new(1, command.clone());
             assert!(crate::admit_reply(&request, &decoded).is_err());
             assert!(crate::admit_reply_with_local_source_policy(&request, &decoded, None, &peer).is_ok());
+
+            // Replay the alias-bearing successor through the actual certified
+            // local wire decoder and request correlation, not serde alone.
+            let alias_root = &alias_page.snapshot.root;
+            let alias_recipe = crate::QueryPageRecipe::graph_window(selected_basis.root, alias_address, alias_request.window());
+            let witness = alias_page.graph_alias_witness.as_ref().expect("alias witness");
+            let selection = witness.selection.as_ref().expect("selected alias");
+            let alias_certificate = certificate
+                .with_claim_once(crate::WireClaim::KeyBytes {
+                    schema: crate::WireSchema::ViewRecipe,
+                    id: crate::encode_id(alias_root.recipe().as_bytes()),
+                    value: alias_recipe.canonical_preimage().to_vec().into_boxed_slice(),
+                })
+                .with_claim_once(crate::WireClaim::Version {
+                    schema: crate::WireSchema::ViewVersion,
+                    id: crate::encode_id(alias_root.version().as_bytes()),
+                    value: crate::view_version_preimage(alias_root.recipe(), alias_root.basis(), alias_root.frontier(), alias_root.root(), alias_root.coverage()).into_boxed_slice(),
+                })
+                .with_claim_once(crate::WireClaim::Root {
+                    schema: crate::WireSchema::ViewRelation,
+                    id: crate::encode_id(alias_root.root().as_bytes()),
+                    canonical: alias_root.canonical_relation_bytes().expect("alias relation").into_boxed_slice(),
+                })
+                .with_claim_once(crate::WireClaim::KeyCommitment {
+                    schema: crate::WireSchema::Symbol, id: crate::encode_id(center.as_bytes()),
+                })
+                .with_claim_once(crate::WireClaim::Version {
+                    schema: crate::WireSchema::Document,
+                    id: crate::encode_id(selection.version().as_bytes()),
+                    value: selection.canonical_bytes().into_boxed_slice(),
+                });
+            let dto = ReplyDto::new(2, CommandReply::ProjectionPage(alias_page.clone())).with_certificate(alias_certificate);
+            let encoded = crate::wire::encode_reply_body_bounded(&dto).expect("certified alias encoding");
+            assert!(crate::decode_reply_body(&encoded).is_err(), "policy requires local peer");
+            let decoded = crate::decode_reply_body_with_local_source_policy(&encoded, &peer).expect("certified local alias decode");
+            let requested = CommandDto::new(2, alias_command.clone());
+            crate::admit_reply_with_local_source_policy(&requested, &decoded, None, &peer).expect("exact alias and predecessor");
+            let CommandReply::ProjectionPage(decoded_page) = &decoded.reply else { panic!("alias page") };
+            assert_eq!(decoded_page.graph_alias_witness, alias_page.graph_alias_witness);
+            assert_eq!(decoded_page.terminal, alias_page.terminal);
+
+            // The predecessor was issued to this exact alias, not another
+            // locator of the same symbol or a different selected center.
+            for wrong_address in [
+                crate::SymbolAddress::canonical(crate::symbol_key("fixture::different-alias")),
+                crate::SymbolAddress::selected(neighbor),
+                crate::SymbolAddress::selected(center),
+                // Canonical native-key locator resolves to the same selected row
+                // but is a different address from the original label alias.
+                crate::SymbolAddress::canonical(center),
+            ] {
+                let wrong = CommandDto::new(2, Command::GraphPage { symbol: wrong_address, page: alias_request });
+                assert!(crate::admit_reply_with_local_source_policy(&wrong, &decoded, None, &peer).is_err());
+            }
+            let original: serde_json::Value = serde_json::from_slice(&encoded).expect("wire JSON");
+            for mutation in ["coordinate", "symbol", "source"] {
+                let mut forged = original.clone();
+                let document = &mut forged["reply"]["data"]["graph_alias_witness"];
+                match mutation {
+                    "coordinate" => document["selection"]["coordinate"] = serde_json::json!("fixture::different-alias"),
+                    "symbol" => document["selection"]["symbol"] = serde_json::json!(crate::encode_id(neighbor.as_bytes())),
+                    "source" => document["selection"]["source"]["object"] = serde_json::json!(crate::encode_id(crate::object_version(b"foreign").as_bytes())),
+                    _ => unreachable!(),
+                }
+                let bytes = serde_json::to_vec(&forged).expect("tampered wire");
+                let accepted = crate::decode_reply_body_with_local_source_policy(&bytes, &peer).ok()
+                    .is_some_and(|value| crate::admit_reply_with_local_source_policy(&requested, &value, None, &peer).is_ok());
+                assert!(!accepted, "forged {mutation} must fail certified admission");
+            }
             std::fs::remove_file(path).expect("remove fixture socket");
             std::fs::remove_dir(directory).expect("remove fixture directory");
         }

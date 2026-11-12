@@ -452,7 +452,10 @@ fn centerless_graph_page_preserves_edges_witness_and_continuation() {
         text::answer(&answer, Theme::plain()),
         markdown::answer(&answer),
     ] {
-        assert!(rendered.contains("graph edge "));
+        let row = rendered.find("/project::source.ts:2::caller").expect("named result row");
+        let edge = rendered.find("graph edge caller -> center witness").expect("labelled edge");
+        assert!(row < edge, "named rows precede graph edge details");
+        assert!(!rendered.contains("graph edge node "), "raw node identifiers are not a human preview");
         assert!(rendered.contains("policy stability unknown"));
     }
     for detail in [Detail::Summary, Detail::Standard, Detail::Full] {

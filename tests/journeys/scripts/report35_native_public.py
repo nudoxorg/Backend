@@ -287,6 +287,14 @@ def main() -> int:
                     continue
                 check("mcp:path-identity:" + label,
                       any("generateSchedule" in part for part in strings(result)), result)
+                if label == "document":
+                    check("mcp:path-document:source-available",
+                          isinstance(result, dict) and result.get("source_fault") is None
+                          and any("return loadSectionsCsv() + req;" in part for part in strings(result)), result)
+                if label == "graph":
+                    check("mcp:path-graph:qualified-edges",
+                          isinstance(result, dict) and isinstance(result.get("graph_edges"), list)
+                          and bool(result["graph_edges"]), result)
         mcp_status = tool("status", "backend.status", {})
         check("mcp:status:json", isinstance(mcp_status, dict) and bool(mcp_status), mcp_status)
         mcp_status_body = mcp_status

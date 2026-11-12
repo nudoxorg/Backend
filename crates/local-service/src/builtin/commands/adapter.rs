@@ -6685,7 +6685,7 @@ impl CommandAdapter {
                 .row_ref(backend_engine::RowId::Symbol(*symbol))
                 .is_some()
         });
-        let reply = if let Some(resolved) = resolved {
+        let mut reply = if let Some(resolved) = resolved {
             let query =
                 backend_engine::GraphNeighborhoodQuery::new(resolved, library.revision_root());
             // A stale page must be refused before executing against a newer graph.
@@ -6712,6 +6712,44 @@ impl CommandAdapter {
                 .execute(command.clone())
                 .unwrap_or_else(|error| CommandReply::Failed(error.into()))
         };
+        if let (Some(resolved), CommandReply::ProjectionPage(graph_page)) = (resolved, &mut reply) {
+            let captured = graph_page.snapshot.rich_graph.as_ref().is_some_and(|graph|
+                graph.nodes.iter().any(|node| !node.source_policy.is_unknown()));
+            if captured && !symbol.is_selected() && symbol.claimed_bytes() != resolved.to_bytes() {
+                let alias = certificate.as_ref().and_then(|proof| proof.claims.iter().find_map(|claim| match claim {
+                    WireClaim::Key { schema: backend_engine::WireSchema::Symbol, id, value }
+                        if *id == backend_engine::encode_id(&symbol.claimed_bytes())
+                            && backend_engine::symbol_key(value).to_bytes() == symbol.claimed_bytes() => Some(value.clone()),
+                    _ => None,
+                }));
+                let Some(alias) = alias else {
+                    return Self::certify(daemon, &command, CommandReply::Failed(backend_library::CommandFailure::CursorMismatch), certificate);
+                };
+                let view = daemon.engine().daemon().library().view();
+                let basis = backend_library::Basis { root: view.root(), ..view.basis() };
+                let Some(selection) = backend_library::DocumentSelection::from_selected_view(view, basis, &alias)
+                    .filter(|selection| selection.symbol() == resolved) else {
+                    return Self::certify(daemon, &command, CommandReply::Failed(backend_library::CommandFailure::CursorMismatch), certificate);
+                };
+                let Some(row) = view.row_ref(backend_engine::RowId::Symbol(resolved)) else {
+                    return Self::certify(daemon, &command, CommandReply::Failed(backend_library::CommandFailure::CursorMismatch), certificate);
+                };
+                let mut source_budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
+                let mut header_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(source_budget, super::super::semantic_authority::NATIVE_HEADER_WORK_UNITS);
+                let header_deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
+                let qualified = self.selected_native_document_source(daemon, row, &selection, None, false, &mut source_budget, &mut header_budget, header_deadline);
+                let qualification = match qualified {
+                    Ok(Some((qualification, _, _, _, _))) if !qualification.is_unknown() => qualification,
+                    Ok(_) => return Self::certify(daemon, &command, CommandReply::Failed(backend_library::CommandFailure::CursorMismatch), certificate),
+                    Err(failure) => return Self::certify(daemon, &command, CommandReply::Failed(failure), certificate),
+                };
+                let mut document = backend_library::Document::new(resolved, basis.root, Vec::new());
+                document.source = Some(basis);
+                document = document.with_selection(selection).map_err(|error| BuiltinModelError(error.to_owned()))?;
+                document.source_policy = qualification;
+                graph_page.graph_alias_witness = Some(document);
+            }
+        }
         Self::certify(daemon, &command, reply, certificate)
     }
 
@@ -7782,7 +7820,7 @@ impl CommandAdapter {
                     &command.as_document_query(daemon.engine().daemon().library().revision_root())
                         .expect("document command"),
                     certificate.as_ref(),
-                    matches!(command, Command::Source(_)),
+                    matches!(command, Command::Document(_) | Command::Source(_)),
                 ) {
                 Ok(Some(document)) => CommandReply::Document(document),
                 Ok(None) if command.as_document_query(daemon.engine().daemon().library().revision_root())
