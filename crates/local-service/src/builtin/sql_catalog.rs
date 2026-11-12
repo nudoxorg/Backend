@@ -470,6 +470,10 @@ pub(super) struct BoundedSqlHost {
 }
 pub(super) struct BoundedProjectSql {
     pub(super) root: String,
+    /// Exact selected-row digest, including its configuration identity.
+    pub(super) selection_digest: [u8; 32],
+    /// Exact verified selected-host inventory digest.
+    pub(super) inventory_digest: [u8; 32],
     /// Complete only when the retained selection and latest attempt both support it.
     pub(super) inventory_complete: bool,
     /// The latest attempt observed the retained selection rather than failing.
@@ -1003,6 +1007,10 @@ pub(super) fn load_projects_bounded<'a>(
         )?;
         plan.sql = Some(BoundedProjectSql {
             root: String::new(),
+            selection_digest: plan
+                .selection_digest
+                .ok_or("SQL selection digest missing")?,
+            inventory_digest: plan.inventory_digest,
             inventory_complete: false,
             latest_observed: plan.attempt_observed,
             implicit: false,
