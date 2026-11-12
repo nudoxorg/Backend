@@ -81,8 +81,23 @@ pub(super) fn reopen_and_query(workspace: &Path, project: &Path) -> Result<Reope
     let (catalog, _) = super::sql_catalog::load_projects_bounded(
         &snapshot, std::iter::once(&project_key), &|| false, 64 * 1024 * 1024, 64,
     )?;
-    if catalog.get(&project_key).is_none() {
-        return Err("cold selected SQL catalog missing".into());
+    let selected = catalog.get(&project_key).ok_or("cold selected SQL catalog missing")?;
+    let mut expected_live = table_hits.iter().filter_map(|hit| match &hit.fact {
+        SqlFact::Definition(d) if d.live_at_head && matches!(d.action, SqlDefinitionAction::Create) => Some(d.head_name.as_deref().unwrap_or(&d.name).to_owned()),
+        _ => None,
+    }).collect::<Vec<_>>();
+    let mut actual_live = selected.facts.iter().filter_map(|(host, _, fact)| match fact {
+        SqlFact::Definition(d) if d.kind == SqlObjectKind::Table && d.live_at_head && matches!(d.action, SqlDefinitionAction::Create) => {
+            let basis = &selected.hosts[*host];
+            assert!(basis.input.is_some() && basis.source.is_some() && basis.producer.is_some() && basis.settings.is_some());
+            Some(d.head_name.as_deref().unwrap_or(&d.name).to_owned())
+        }
+        _ => None,
+    }).collect::<Vec<_>>();
+    expected_live.sort();
+    actual_live.sort();
+    if expected_live != actual_live {
+        return Err("cold selected catalog table identities differ from SQL query".into());
     }
     let mut tables = table_hits
         .into_iter()
