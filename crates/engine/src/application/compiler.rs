@@ -5878,13 +5878,16 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 (tsz_budget.as_ref(), tsz_package_membership.get(source.relative_path()))
             {
                 if let Some(project) = tsz_projects.get(*program).copied().flatten() {
-                    let captured = project.with_source_nodes(program_path, |arena, text| {
+                    // Recovered parse trees cannot attest authored header boundaries.
+                    let clean_parse = project.bind_result(program_path)
+                        .is_some_and(|bind| bind.parse_diagnostics.is_empty());
+                    let captured = clean_parse.then(|| project.with_source_nodes(program_path, |arena, text| {
                         if text != source.source { return Ok(None); }
                         super::typescript_program_lane::capture_headers(
                             arena, text, source.relative_path(), compiled.source,
                             &compiled.semantic_image, budget, &mut native_header_budget,
                         )
-                    });
+                    })).flatten();
                     if let Some(result) = captured {
                         if let Some(headers) = result.map_err(|_| PackageSemanticError::Capacity { lane: "TypeScript header capture" })? {
                             let previous_capacity = native_typescript_headers.capacity();

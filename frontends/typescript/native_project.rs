@@ -669,6 +669,25 @@ pub fn function_headers_from_arena(
     Ok(headers)
 }
 
+/// Index admitted captures in place by end offset. The caller budgets the
+/// existing rows; this index has no second row allocation.
+pub fn index_function_headers_by_end(rows: &mut [NativeFunctionHeader], checkpoint: &dyn ExecutionCheckpoint) -> Result<(), String> {
+    let work = u64::try_from(rows.len()).ok().and_then(|n| n.checked_mul(64)).ok_or("native header index work overflow")?;
+    poll(checkpoint, work)?;
+    rows.sort_unstable_by_key(|row| (row.declaration.1, row.declaration.0));
+    poll(checkpoint, 0)
+}
+
+/// Return every same-end candidate, retaining ambiguity for the exact join.
+pub fn function_headers_with_end<'a>(rows: &'a [NativeFunctionHeader], end: u32, checkpoint: &dyn ExecutionCheckpoint) -> Result<&'a [NativeFunctionHeader], String> {
+    let steps = u64::from(usize::BITS - rows.len().leading_zeros()).saturating_mul(2).saturating_add(2);
+    poll(checkpoint, steps)?;
+    let first = rows.partition_point(|row| row.declaration.1 < end);
+    let last = rows.partition_point(|row| row.declaration.1 <= end);
+    poll(checkpoint, 0)?;
+    Ok(&rows[first..last])
+}
+
 /// Joins parser captures to an independently selected compiler-owned function.
 /// A same-name collision or an ambiguous extent yields no header. The caller
 /// must first authenticate the source bytes, image, entity and source policy.
@@ -1242,6 +1261,44 @@ mod tests {
             Ok(())
         }
     }
+    #[test]
+    fn five_thousand_arena_headers_join_with_bounded_index_and_ambiguity() -> Result<(), Box<dyn Error>> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        struct Budget(AtomicU64);
+        impl ExecutionCheckpoint for Budget {
+            fn checkpoint(&self, work: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
+                let used = self.0.fetch_add(work, Ordering::Relaxed).saturating_add(work);
+                if used > 2_000_000 { Err(tsz_common::ProjectExecutionStop::WorkBudgetExhausted) } else { Ok(()) }
+            }
+        }
+        struct Stopped;
+        impl ExecutionCheckpoint for Stopped {
+            fn checkpoint(&self, _: u64) -> Result<(), tsz_common::ProjectExecutionStop> { Err(tsz_common::ProjectExecutionStop::WorkBudgetExhausted) }
+        }
+        let source = (0..5000).map(|i| format!("function f{i}() {{ return {i}; }}\n")).collect::<String>();
+        let mut parser = MeteredParserState::new("src/many.ts".to_owned(), source.clone());
+        parser.parse_source_file_with_execution_checkpoint(&Unlimited).map_err(|e| format!("parse: {e:?}"))?;
+        assert!(parser.get_diagnostics().is_empty());
+        let budget = Budget(AtomicU64::new(0));
+        let mut rows = function_headers_from_arena(&parser.arena, &source, &budget)?;
+        assert_eq!(rows.len(), 5000);
+        index_function_headers_by_end(&mut rows, &budget)?;
+        for row in &rows {
+            let name = &source[row.name.0 as usize..row.name.1 as usize];
+            let candidates = function_headers_with_end(&rows, row.declaration.1, &budget)?;
+            assert!(selected_function_header_range(candidates, &source, row.declaration, name, &budget)?.is_some());
+        }
+        let last = rows.last().ok_or("last function")?;
+        let name = &source[last.name.0 as usize..last.name.1 as usize];
+        assert_eq!(name, "f4999");
+        let duplicate = [*last, *last];
+        assert_eq!(selected_function_header_range(&duplicate, &source, last.declaration, name, &budget)?, None);
+        assert!(function_headers_with_end(&rows, last.declaration.1, &Stopped).is_err());
+        assert!(index_function_headers_by_end(&mut rows, &Stopped).is_err());
+        assert!(budget.0.load(Ordering::Relaxed) < 2_000_000);
+        Ok(())
+    }
+
     #[test]
     fn function_headers_use_native_body_and_modifier_spans() -> Result<(), Box<dyn Error>> {
         let source = "// λ\nexport async function run(x: { a: number }): Promise<string> { return ''; }\nfunction other() {}\n";

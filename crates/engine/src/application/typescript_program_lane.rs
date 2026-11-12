@@ -205,9 +205,10 @@ pub(super) fn capture_headers(
     {
         return Ok(None);
     }
-    let rows = backend_frontend_typescript::native_project::function_headers_from_arena(
+    let mut rows = backend_frontend_typescript::native_project::function_headers_from_arena(
         arena, text, checkpoint,
     )?;
+    backend_frontend_typescript::native_project::index_function_headers_by_end(&mut rows, checkpoint)?;
     let session = super::DocumentationSession::new(&image);
     let mut slots = BTreeMap::new();
     for item in session.publication_entities() {
@@ -250,7 +251,7 @@ pub(super) fn capture_headers(
         };
         let Some(header_extent) =
             backend_frontend_typescript::native_project::selected_function_header_range(
-                &rows,
+                backend_frontend_typescript::native_project::function_headers_with_end(&rows, end, checkpoint)?,
                 text,
                 (start, end),
                 name,
