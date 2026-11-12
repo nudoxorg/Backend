@@ -1381,10 +1381,12 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
     // this test; it grants no image or declaration authority.
     let profile = super::profile_descriptor(super::BuiltinProfile::Product)?;
     let dispatcher = super::builtin_dispatcher(Some(super::ECHO_AUTHORITY_SECRET), profile, 60_000)?;
-    let daemon = crate::Locald::open_with_dispatcher_and_registry(
+    let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
         paths.data(), super::BuiltinModel, super::genesis()?, dispatcher,
         backend_engine::DaemonConfig::default(), super::product_relation_registry()?,
     )?;
+    let mut selected_authority = super::semantic_authority::SemanticAuthority::open(paths.data())?;
+    selected_authority.reconcile_workspace(&mut daemon)?;
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let project_key = backend_engine::PackageKey::from_value(project.canonicalize()?.to_str().ok_or("project path")?).to_bytes();
     let relation = native_source_evidence_relation(&snapshot)?.ok_or("missing selected NSE")?;
@@ -1421,7 +1423,6 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
     assert_eq!(publications.lookup(selected_key)?, Some(backend_engine::builtin::ProductSemanticPublicationRecord::Published { coverage, claim }));
     {
         use backend_semantic::ir::{SourceCoverageGapCause, SourceCoverageRow};
-        let selected_authority = super::semantic_authority::SemanticAuthority::open(paths.data())?;
         let observed = selected_authority.selected_source_coverage(selected_key, claim)?
             .ok_or("selected compiler coverage absent")?;
         assert_eq!((observed.source_count(), observed.completed()), (4, 3));
@@ -1466,6 +1467,7 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
     }
     drop(relation);
     drop(snapshot);
+    drop(selected_authority);
     drop(daemon);
 
     let owner = start_owner(&paths)?;
