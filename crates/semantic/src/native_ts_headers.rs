@@ -157,8 +157,12 @@ impl<'a> NativeTsHeaderAggregateView<'a> {
     }
     /// Scans file headers with a work/cancellation checkpoint per file.
     pub fn find_file_checkpointed<E>(&self, path: &str, checkpoint: &mut impl FnMut(usize) -> Result<(), E>) -> Result<Option<NativeTsHeaderFileView<'a>>, E> {
-        for file in self.files() {
-            checkpoint(file.path.len())?;
+        let mut files = self.files();
+        while files.remaining != 0 {
+            // Path validation permits at most 4096 bytes; debit its worst case
+            // before the iterator decodes or compares the next file header.
+            checkpoint(4096 + 114)?;
+            let Some(file) = files.next() else { break; };
             if file.path == path { return Ok(Some(file)); }
             if file.path > path { break; }
         }
