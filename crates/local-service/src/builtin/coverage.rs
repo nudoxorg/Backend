@@ -790,7 +790,7 @@ pub(super) fn view_coverage(
                 Ok(())
             }).map_err(|error| BuiltinModelError(error.to_string()))?;
             match next {
-                Some(next) if after != Some(next) => after = Some(next),
+                Some(next) if after.is_none_or(|previous| previous < next) => after = Some(next),
                 Some(_) => return Err(BuiltinModelError("SQL coverage cursor did not advance".into())),
                 None => break,
             }
