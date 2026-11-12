@@ -14,6 +14,18 @@ pub(super) struct CSharpSdkOptions {
     pub include_assets: Vec<(String, String)>,
 }
 
+/// Restore reports effective framework references, including SDK-implicit
+/// references. The admitted project grammar rejects explicit FrameworkReference
+/// items, so only frameworks implicit in the captured SDK kind can be carried
+/// forward without inventing project declarations.
+pub(super) fn restored_frameworks_are_implicit(kind: CSharpSdkKind, references: &[String]) -> bool {
+    references.iter().all(|name| match name.as_str() {
+        "Microsoft.NETCore.App" => true,
+        "Microsoft.AspNetCore.App" => matches!(kind, CSharpSdkKind::Web),
+        _ => false,
+    })
+}
+
 /// Properties that change what the compiler binds or how it treats the
 /// project's entry point. Each is forwarded to the SDK observation.
 const FORWARDED: [&str; 5] = [
@@ -320,6 +332,18 @@ pub(super) fn simple_csharp_sdk_options(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn restored_frameworks_do_not_become_project_declarations() {
+        let net = "Microsoft.NETCore.App".to_owned();
+        let asp = "Microsoft.AspNetCore.App".to_owned();
+        assert!(restored_frameworks_are_implicit(CSharpSdkKind::Web, &[net.clone(), asp.clone()]));
+        assert!(restored_frameworks_are_implicit(CSharpSdkKind::Standard, &[net]));
+        assert!(!restored_frameworks_are_implicit(CSharpSdkKind::Standard, &[asp]));
+        assert!(!restored_frameworks_are_implicit(CSharpSdkKind::Web, &["Other".into()]));
+        let explicit = r#"<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup><ItemGroup><FrameworkReference Include="Microsoft.AspNetCore.App" /></ItemGroup></Project>"#;
+        assert!(simple_csharp_sdk_options(explicit, true).is_none());
+    }
+
     #[test]
     fn simple_project_refuses_ambiguous_sdk_options() {
         let good = r#"<Project Sdk="Microsoft.NET.Sdk.Web"><PropertyGroup><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings></PropertyGroup></Project>"#;

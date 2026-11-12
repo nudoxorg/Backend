@@ -18,7 +18,10 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::Command,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::Instant,
 };
 
@@ -41,7 +44,7 @@ pub const DEFAULT_IMAGE_LIMIT: usize = 32 * 1024 * 1024;
 pub const DEFAULT_SOURCE_LIMIT: usize = 16 * 1024 * 1024;
 /// Versioned identity of the isolated Roslyn host-process environment.
 pub const CSHARP_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1: &str =
-    "csharp-package-child-environment.v1";
+    "csharp-package-child-environment.v2;dotnet-globalization-invariant.v1";
 /// Captured compilation-unit input and image-fidelity policy, used to invalidate
 /// producer caches made by the earlier live source-directory walk.
 pub const CSHARP_CAPTURED_UNIT_POLICY_ID_V1: &str = "csharp-captured-unit.v1";
@@ -74,6 +77,9 @@ pub struct CSharpAuthorityConfiguration<'config> {
     pub exact_unsafe: Option<bool>,
     /// Captured SDK output type when observed.
     pub exact_output_type: Option<&'config str>,
+    /// Captured SDK kind and explicit project framework references.
+    pub exact_sdk_kind: Option<&'config str>,
+    pub exact_framework_references: Option<&'config [String]>,
     /// Additional global usings, in caller order.
     pub extra_usings: &'config [&'config str],
     /// Whether SDK-style implicit global usings are reconstructed.
@@ -96,6 +102,8 @@ impl CSharpAuthorityConfiguration<'static> {
         exact_nullable: None,
         exact_unsafe: None,
         exact_output_type: None,
+        exact_sdk_kind: None,
+        exact_framework_references: None,
         extra_usings: &[],
         implicit_usings: true,
         include_non_public: true,
@@ -119,6 +127,9 @@ pub struct CSharpAuthorityControl<'cancel> {
 /// [`CSharpOracle`] and must be an absolute path to the published helper DLL.
 #[derive(Clone, Copy, Debug)]
 pub struct CSharpAuthorityRequest<'request, 'config, 'cancel> {
+    /// Immutable SDK-selected reference custody for this attempt.
+    pub resolved_reference_snapshot:
+        Option<&'config crate::legacy::sdk::CSharpResolvedReferenceSnapshot>,
     /// Package tree that supplies source and package-local C# files.
     pub package_root: &'request Path,
     /// Exact source file whose bytes and spans the image must bind.
@@ -245,10 +256,12 @@ pub struct CSharpOracle {
 /// [`CSharpImage`] can be opened from [`Self::as_bytes`] for exactly as long
 /// as this value remains alive, without introducing a self-referential Rust
 /// object.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct CSharpAuthorityImage {
     bytes: Box<[u8]>,
     evidence: Option<Box<[u8]>>,
+    resolver_receipt: Option<crate::legacy::sdk::CSharpResolverReceipt>,
+    resolved_reference_snapshot: Option<Arc<crate::legacy::sdk::CSharpResolvedReferenceSnapshot>>,
 }
 
 impl CSharpAuthorityImage {
@@ -257,6 +270,21 @@ impl CSharpAuthorityImage {
     #[must_use]
     pub fn captured_evidence(&self) -> Option<&[u8]> {
         self.evidence.as_deref()
+    }
+
+    /// SDK resolver custody carried with this same-attempt image, when the
+    /// caller supplied an SDK-selected reference snapshot.
+    #[must_use]
+    pub fn resolver_receipt(&self) -> Option<&crate::legacy::sdk::CSharpResolverReceipt> {
+        self.resolver_receipt.as_ref()
+    }
+
+    /// Independently owned selected-reference custody retained for replay.
+    #[must_use]
+    pub fn resolved_reference_snapshot(
+        &self,
+    ) -> Option<&Arc<crate::legacy::sdk::CSharpResolvedReferenceSnapshot>> {
+        self.resolved_reference_snapshot.as_ref()
     }
 
     /// Borrows the exact validated image bytes for the next compiler boundary.
@@ -275,6 +303,19 @@ impl CSharpAuthorityImage {
     #[must_use]
     pub fn into_parts(self) -> (Box<[u8]>, Option<Box<[u8]>>) {
         (self.bytes, self.evidence)
+    }
+
+    /// Separates image, helper evidence, and the same-attempt SDK resolver
+    /// receipt for callers that persist a typed invocation sidecar.
+    #[must_use]
+    pub fn into_parts_with_resolver_receipt(
+        self,
+    ) -> (
+        Box<[u8]>,
+        Option<Box<[u8]>>,
+        Option<crate::legacy::sdk::CSharpResolverReceipt>,
+    ) {
+        (self.bytes, self.evidence, self.resolver_receipt)
     }
 
     /// Reopens the retained bytes through the typed image reader.
@@ -365,7 +406,21 @@ impl CSharpOracle {
                 observed: request.native_tool,
             });
         }
+        if let Some(snapshot) = request.resolved_reference_snapshot {
+            if !snapshot.receipt_is_consistent()
+                || !resolver_receipt_matches_options(snapshot.receipt(), request.profile, request.configuration)
+                || request.configuration.reference_directory.is_some()
+                || !request
+                    .configuration
+                    .additional_reference_directories
+                    .is_empty()
+            {
+                return Err(CSharpAuthorityError::Configuration);
+            }
+        }
         validate_absolute_paths(&self.oracle, request)?;
+        let helper_digest = executable_digest(&self.oracle, "helper")?;
+        let toolchain_digest = executable_digest(request.toolchain, "dotnet")?;
         let maximum_source_bytes = request.configuration.maximum_source_bytes;
         if request.source.len() > maximum_source_bytes {
             return Err(CSharpAuthorityError::SourceLimit {
@@ -598,6 +653,11 @@ impl CSharpOracle {
         }
 
         let configuration = request.configuration;
+        if let Some(snapshot) = request.resolved_reference_snapshot {
+            command
+                .arg("--ref-dir")
+                .arg(snapshot.root().join("selected"));
+        }
         if request.captured_project_graph.is_none() {
             if let Some(name) = configuration.assembly_name {
                 command.args(["--assembly-name", name]);
@@ -661,6 +721,8 @@ impl CSharpOracle {
             request.control.cancelled,
         )
         .map_err(|cause| capture_error(cause, request.toolchain, &self.oracle))?;
+        ensure_executable_unchanged(&self.oracle, "helper", helper_digest)?;
+        ensure_executable_unchanged(request.toolchain, "dotnet", toolchain_digest)?;
         if !result.status.success() {
             return Err(CSharpAuthorityError::Exit {
                 status: result.status.to_string(),
@@ -725,11 +787,34 @@ impl CSharpOracle {
         &self,
         request: CSharpAuthorityRequest<'request, 'config, 'cancel>,
     ) -> Result<CSharpAuthorityImage, CSharpAuthorityError> {
+        let resolver_receipt = request
+            .resolved_reference_snapshot
+            .map(|snapshot| snapshot.receipt().clone());
         self.authority_image_with_evidence(request)
             .map(|(bytes, evidence)| CSharpAuthorityImage {
                 bytes: bytes.into_boxed_slice(),
                 evidence,
+                resolver_receipt,
+                resolved_reference_snapshot: None,
             })
+    }
+
+    /// Produces an image while retaining the independently owned selected
+    /// reference snapshot for publication-time replay custody.
+    pub fn produce_with_owned_reference_snapshot<'request, 'config, 'cancel>(
+        &self,
+        request: CSharpAuthorityRequest<'request, 'config, 'cancel>,
+        snapshot: Arc<crate::legacy::sdk::CSharpResolvedReferenceSnapshot>,
+    ) -> Result<CSharpAuthorityImage, CSharpAuthorityError> {
+        // Reconstruct the covariant request with a lifetime scoped to this
+        // invocation; the incoming configuration can outlive this Arc.
+        let scoped_request = CSharpAuthorityRequest {
+            resolved_reference_snapshot: Some(snapshot.as_ref()),
+            ..request
+        };
+        let mut image = self.produce(scoped_request)?;
+        image.resolved_reference_snapshot = Some(snapshot);
+        Ok(image)
     }
 }
 
@@ -1132,6 +1217,14 @@ pub enum CSharpAuthorityError {
         /// Digest retained in the image envelope.
         observed: [u8; 32],
     },
+    /// The selected helper or dotnet host changed while the child was running.
+    #[error("C# authority {kind} executable changed during invocation: {path:?}")]
+    ExecutableChanged {
+        kind: &'static str,
+        path: Box<Path>,
+        expected: [u8; 32],
+        observed: [u8; 32],
+    },
 }
 
 fn capture_error(
@@ -1168,6 +1261,27 @@ fn capture_error(
             detail: format!("{other:?}"),
         },
     }
+}
+
+fn resolver_receipt_matches_options(
+    receipt: &crate::legacy::sdk::CSharpResolverReceipt,
+    profile: CSharpVersion,
+    configuration: CSharpAuthorityConfiguration<'_>,
+) -> bool {
+    let language = match profile {
+        CSharpVersion::CSharp10 => "10.0",
+        CSharpVersion::CSharp11 => "11.0",
+        CSharpVersion::CSharp12 => "12.0",
+        CSharpVersion::CSharp13 => "13.0",
+        CSharpVersion::CSharp14 => "14.0",
+    };
+    let Some(frameworks) = configuration.exact_framework_references else { return false; };
+    configuration.target_framework == Some(receipt.target_framework.as_str())
+        && configuration.exact_nullable == Some(receipt.nullable.as_ref())
+        && configuration.exact_output_type == Some(receipt.output_type.as_ref())
+        && configuration.exact_sdk_kind == Some(receipt.sdk_kind.as_ref())
+        && receipt.language_version.as_ref() == language
+        && frameworks.iter().map(String::as_str).eq(receipt.framework_references.iter().map(|name| name.as_ref()))
 }
 
 fn profile_tag(profile: CSharpVersion) -> &'static str {
@@ -1214,6 +1328,33 @@ fn validate_absolute_paths(
     Ok(())
 }
 
+fn executable_digest(path: &Path, _kind: &'static str) -> Result<[u8; 32], CSharpAuthorityError> {
+    let bytes = backend_platform::durable::read_regular_bounded_stable(path, 64 * 1024 * 1024)
+        .map_err(|source| CSharpAuthorityError::Path {
+            phase: CSharpAuthorityPhase::Spawn,
+            path: path.to_path_buf(),
+            source,
+        })?;
+    Ok(Sha256::digest(bytes).into())
+}
+
+fn ensure_executable_unchanged(
+    path: &Path,
+    kind: &'static str,
+    expected: [u8; 32],
+) -> Result<(), CSharpAuthorityError> {
+    let observed = executable_digest(path, kind)?;
+    if observed != expected {
+        return Err(CSharpAuthorityError::ExecutableChanged {
+            kind,
+            path: path.to_path_buf().into_boxed_path(),
+            expected,
+            observed,
+        });
+    }
+    Ok(())
+}
+
 fn checkpoint(
     control: CSharpAuthorityControl<'_>,
     phase: CSharpAuthorityPhase,
@@ -1244,6 +1385,8 @@ fn join_stream<T>(
 /// Package and reference roots are already carried in the command arguments.
 fn isolate_authority_environment(command: &mut Command) {
     command.env_clear();
+    command.env(crate::legacy::sdk::CSHARP_GLOBALIZATION_ENV_NAME,
+        crate::legacy::sdk::CSHARP_GLOBALIZATION_ENV_VALUE);
     #[cfg(windows)]
     if let Some(system_root) = std::env::var_os("SystemRoot") {
         command.env("SystemRoot", system_root);
@@ -1258,8 +1401,63 @@ fn stderr_tail(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use backend_semantic::vocabulary::{MAX_NATIVE_WORKER_PANIC_BYTES, NativeWorkerPanicClass};
+    use backend_semantic::vocabulary::{NativeWorkerPanicClass, MAX_NATIVE_WORKER_PANIC_BYTES};
     use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn resolver_options_must_match_producer_configuration() {
+        let receipt = crate::legacy::sdk::CSharpResolverReceipt {
+            globalization_policy: crate::legacy::sdk::CSHARP_GLOBALIZATION_POLICY_ID.into(),
+            sdk_directory: PathBuf::from("/sdk/Sdks"), sdk_kind: "Microsoft.NET.Sdk".into(),
+            nullable: "warnings".into(), language_version: "12.0".into(), output_type: "Library".into(),
+            framework_references: Box::new([]), target_framework: "net10.0".into(),
+            global_json_digest: None, candidate_digest: [0; 32], selected_digest: [0; 32],
+            selected_names: Box::new([]), selected_fusion_names: Box::new([]),
+        };
+        let base = CSharpAuthorityConfiguration {
+            target_framework: Some("net10.0"), exact_nullable: Some("warnings"),
+            exact_output_type: Some("Library"), exact_sdk_kind: Some("Microsoft.NET.Sdk"),
+            exact_framework_references: Some(&[]), ..CSharpAuthorityConfiguration::DEFAULT
+        };
+        assert!(resolver_receipt_matches_options(&receipt, CSharpVersion::CSharp12, base));
+        assert!(!resolver_receipt_matches_options(&receipt, CSharpVersion::CSharp13, base));
+        for config in [
+            CSharpAuthorityConfiguration { target_framework: Some("net9.0"), ..base },
+            CSharpAuthorityConfiguration { exact_nullable: Some("enable"), ..base },
+            CSharpAuthorityConfiguration { exact_output_type: Some("Exe"), ..base },
+            CSharpAuthorityConfiguration { exact_sdk_kind: Some("Microsoft.NET.Sdk.Web"), ..base },
+            CSharpAuthorityConfiguration { exact_framework_references: None, ..base },
+        ] {
+            assert!(!resolver_receipt_matches_options(&receipt, CSharpVersion::CSharp12, config));
+        }
+        let frameworks = vec!["Microsoft.AspNetCore.App".to_owned()];
+        let changed = CSharpAuthorityConfiguration { exact_framework_references: Some(&frameworks), ..base };
+        assert!(!resolver_receipt_matches_options(&receipt, CSharpVersion::CSharp12, changed));
+    }
+
+    #[test]
+    fn captured_source_retains_unicode_path_and_text() {
+        let source = CSharpCapturedSource {
+            path: "项目/δοκιμή.cs",
+            text: "namespace Δοκιμή; public class 東京 {}",
+        };
+        let encoded = serde_json::to_vec(&source).unwrap();
+        let decoded: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded["Path"], source.path);
+        assert_eq!(decoded["Text"], source.text);
+    }
+
+    #[test]
+    fn authority_environment_uses_fixed_invariant_policy() {
+        let mut command = Command::new("dotnet");
+        command.env("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "0");
+        isolate_authority_environment(&mut command);
+        let values = command.get_envs().collect::<Vec<_>>();
+        assert!(values.iter().any(|(key, value)| *key == "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"
+            && *value == Some(std::ffi::OsStr::new("1"))));
+        assert!(CSHARP_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1.contains(
+            crate::legacy::sdk::CSHARP_GLOBALIZATION_POLICY_ID));
+    }
 
     #[test]
     fn captured_graph_protocol_keeps_project_edges_and_buffers_separate() {
@@ -1352,6 +1550,7 @@ mod tests {
         let cancelled = AtomicBool::new(true);
         let oracle = CSharpOracle::new(PathBuf::from("/oracle.dll"));
         let result = oracle.authority_image(CSharpAuthorityRequest {
+            resolved_reference_snapshot: None,
             package_root: Path::new("/missing"),
             source_path: Path::new("/missing/source.cs"),
             project_file: None,
@@ -1384,6 +1583,7 @@ mod tests {
         let cancelled = AtomicBool::new(false);
         let oracle = CSharpOracle::new(PathBuf::from("/oracle.dll"));
         let result = oracle.authority_image(CSharpAuthorityRequest {
+            resolved_reference_snapshot: None,
             package_root,
             source_path: &source_path,
             project_file: None,
@@ -1421,6 +1621,7 @@ mod tests {
         let cancelled = AtomicBool::new(false);
         let start = Instant::now();
         let result = oracle.authority_image(CSharpAuthorityRequest {
+            resolved_reference_snapshot: None,
             package_root: directory.path(),
             source_path: &source_path,
             project_file: None,

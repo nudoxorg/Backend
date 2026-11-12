@@ -2051,6 +2051,9 @@ fn compiler_environment_identity_for_projection(
     let mut environment = blake3::Hasher::new();
     environment.update(b"compiler-application.execution-environment.v3\0");
     environment.update(&<[u8; 2]>::from(profile));
+    if matches!(profile, LanguageProfile::CSharp(_)) {
+        environment.update(backend_frontend_csharp::legacy::CSHARP_GLOBALIZATION_POLICY_ID.as_bytes());
+    }
     environment.update(crate::application::NATIVE_COMPILER_ENVIRONMENT_POLICY_ID);
     environment.update(&backend_compile::NATIVE_PAYLOAD_VERSION.to_be_bytes());
     environment.update(&semantic_projection_version.to_be_bytes());
@@ -5735,11 +5738,14 @@ fn run_worker_generation(
                 exact_nullable: None,
                 exact_unsafe: None,
                 exact_output_type: None,
+                exact_sdk_kind: None,
+                exact_framework_references: None,
                 extra_usings: csharp_using_storage.as_deref().unwrap_or_default(),
                 implicit_usings: csharp.implicit_usings,
                 include_non_public: csharp.include_non_public,
                 maximum_source_bytes: csharp.maximum_source_bytes,
             },
+            resolved_reference_snapshot: None,
         });
     let authority = PackageAuthorityConfiguration {
         clang: configuration.package_authority.clang.as_ref(),

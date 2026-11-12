@@ -69,9 +69,10 @@ use backend_version::{
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
+    fs,
     io,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{Arc, atomic::{AtomicBool, Ordering}},
     time::Instant,
 };
 use thiserror::Error;
@@ -81,6 +82,7 @@ use backend_replication::{
     ProducedSemanticTypedPlaneContentV3, SemanticTypedPlaneBoundaryPoliciesV3,
     produce_semantic_typed_plane_content_v3,
 };
+use sha2::{Digest, Sha256};
 
 use crate::application::executor::StagedOutputLease;
 use crate::application::package_authority::{
@@ -1762,6 +1764,30 @@ impl StagedSemanticPackage {
         &self.staged.csharp_evidence
     }
 
+    /// Exact typed SDK resolver receipt retained by the selected C# owner.
+    #[must_use]
+    pub fn csharp_resolver_receipt(
+        &self,
+    ) -> Option<&backend_frontend_csharp::legacy::CSharpResolverReceipt> {
+        self.staged.csharp_resolver_receipt.as_ref()
+    }
+
+    /// Bounded typed sidecar bytes for the selected SDK receipt. The bytes are
+    /// claim-only until publication replays them against independently owned
+    /// selected-reference custody.
+    #[must_use]
+    pub fn csharp_resolver_receipt_sidecar(&self) -> Option<Box<[u8]>> {
+        self.csharp_resolver_receipt()?.encode().ok()
+    }
+
+    /// Independently owned selected-reference custody retained for replay.
+    #[must_use]
+    pub fn csharp_resolver_snapshot(
+        &self,
+    ) -> Option<&std::sync::Arc<backend_frontend_csharp::legacy::CSharpResolvedReferenceSnapshot>> {
+        self.staged.csharp_resolver_snapshot.as_ref()
+    }
+
     /// Builds a bounded claim-only C# evidence aggregate tied to these staged
     /// image bytes and this exact input. Publication selection is still required.
     pub fn csharp_invocation_evidence_object(&self, input: [u8; 32]) -> Option<Vec<u8>> {
@@ -3172,7 +3198,7 @@ mod source_degradation_tests {
             });
             assert_eq!(
                 typescript_source_gap_cause(&terminal, source()),
-                None,
+                restored_csharp_references.as_ref().map(|references| references.digest),
                 "{failure:?}"
             );
         }
@@ -3419,6 +3445,11 @@ pub(crate) enum PackageExecutionAuthority {
 /// contributed to a C# compile: the installed SDK location, the selected
 /// framework and compiler options, reference directories, usings, defines,
 /// and the captured global.json and project configuration texts.
+fn captured_sdk_global_json<'a>(probes: &[backend_frontend_csharp::legacy::CSharpSdkProbe<'a>]) -> Option<&'a str> {
+    // SDK probe validation requires nearest-first project ancestor order.
+    probes.iter().find_map(|probe| probe.text)
+}
+
 fn csharp_sdk_observation_fingerprint(
     observed: &backend_frontend_csharp::legacy::CSharpSdkObservation,
     probes: &[backend_frontend_csharp::legacy::CSharpSdkProbe<'_>],
@@ -3430,7 +3461,8 @@ fn csharp_sdk_observation_fingerprint(
         hasher.update(value.as_bytes());
     }
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"compiler.csharp.sdk-observation.v1\0");
+    hasher.update(b"compiler.csharp.sdk-observation.v2\0");
+    text(&mut hasher, backend_frontend_csharp::legacy::CSHARP_GLOBALIZATION_POLICY_ID);
     text(&mut hasher, &observed.sdk_directory.to_string_lossy());
     text(&mut hasher, requested_framework);
     text(&mut hasher, &observed.target_framework);
@@ -3529,6 +3561,10 @@ pub(crate) struct StagedPackageCompilation {
     image_plan: Box<[crate::publication::manifest::SemanticImageRegion]>,
     semantic_images: Box<[u8]>,
     csharp_evidence: Box<[StagedCSharpInvocationEvidence]>,
+    csharp_resolver_receipt:
+        Option<backend_frontend_csharp::legacy::CSharpResolverReceipt>,
+    csharp_resolver_snapshot:
+        Option<std::sync::Arc<backend_frontend_csharp::legacy::CSharpResolvedReferenceSnapshot>>,
     csharp_config: Box<[StagedCSharpConfigProbe]>,
     csharp_unit: Option<Box<str>>,
     package_identity: [u8; 32],
@@ -4300,8 +4336,10 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         // observed paths/options remain attempt-local and never inherit a
         // startup fingerprint or establish input-closure authority.
         let mut sdk_fingerprint: Option<[u8; 32]> = None;
+        let mut captured_global_json: Option<&str> = None;
         let mut restored_csharp_references = None;
         let sdk_observation = if let Some(probes) = package.csharp_sdk_probes {
+            captured_global_json = captured_sdk_global_json(probes);
             let config = package.csharp_config.ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "captured C# project configuration" })?;
             let options = super::csharp_sdk_options::simple_csharp_sdk_options(
                 config.first().and_then(|entry| entry.text).ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "captured C# project configuration" })?,
@@ -4325,10 +4363,16 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 Ok(ToolchainSelection::ResolvedNative(toolchain)) => toolchain.external().map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK host unavailable" })?,
                 _ => return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK host unavailable" }),
             };
-            let mut properties = options.properties.clone();
+            // Restore reports effective references, including SDK implicit
+            // frameworks. The captured project grammar rejects explicit
+            // FrameworkReference items; do not turn restore observations into
+            // declarations. Refuse any framework not implicit for this SDK.
             if let Some(references) = restored_csharp_references.as_ref() {
-                properties.framework_references.clone_from(&references.framework_references);
+                if !super::csharp_sdk_options::restored_frameworks_are_implicit(options.kind, &references.framework_references) {
+                    return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# restored framework reference provenance unavailable" });
+                }
             }
+            let properties = options.properties.clone();
             let observed = backend_frontend_csharp::legacy::observe_csharp_sdk_with(
                 toolchain.executable(), project_path, probes, options.kind, &options.target_framework,
                 options.implicit_usings, &properties, control.deadline, cancelled,
@@ -4361,31 +4405,65 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             sdk_fingerprint = Some(fingerprint);
             Some(observed)
         } else { None };
-        // Use one private copy of the observed targeting assemblies throughout
-        // this compile. The snapshot is a byte custody improvement, not proof of
-        // the SDK observation or of the helper/runtime execution closure.
-        let targeting_snapshot = sdk_observation.as_ref().map(|observation| {
-            let mut directories = observation.targeting_directories.clone();
-            if let Some(references) = restored_csharp_references.as_ref() {
-                directories.push(references.reference_directory().to_path_buf());
+        let csharp_project_path = match package.package_target.unit_key() {
+            CompilationUnitKeyV2::CSharpProject { project_path } => Some(project_path),
+            _ => None,
+        };
+        let mut resolver_owner = None;
+        if let Some(observed) = sdk_observation.as_ref() {
+            let mut candidates = Vec::new();
+            for directory in &observed.targeting_directories {
+                for (index, entry) in fs::read_dir(directory).map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK candidate directory unavailable" })?.enumerate() {
+                    if index >= 16384 { return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK candidate directory limit" }); }
+                    let path = entry.map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK candidate unavailable" })?.path();
+                    if path.extension().is_some_and(|extension| extension == "dll") {
+                        if candidates.len() >= 8192 { return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK candidate limit" }); }
+                        candidates.push(path);
+                    }
+                }
             }
-            backend_frontend_csharp::legacy::CSharpTargetingSnapshot::capture(&directories)
-                .map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# targeting assembly snapshot unavailable" })
-        }).transpose()?;
-        if let (Some(fingerprint), Some(snapshot)) = (sdk_fingerprint.as_mut(), targeting_snapshot.as_ref()) {
-            let mut hasher = blake3::Hasher::new();
-            hasher.update(b"compiler.csharp.targeting-snapshot.v1\0");
-            hasher.update(fingerprint);
-            hasher.update(&snapshot.digest());
-            *fingerprint = *hasher.finalize().as_bytes();
+            if candidates.is_empty() { return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK resolver candidates unavailable" }); }
+            let _project_path = csharp_project_path.ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK project path unavailable" })?;
+            let global_json = captured_global_json;
+            let toolchain = match self.toolchain(first_application_request) {
+                Ok(ToolchainSelection::ResolvedNative(toolchain)) => toolchain.external()
+                    .map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK host unavailable" })?,
+                _ => return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK host unavailable" }),
+            };
+            let snapshot = backend_frontend_csharp::legacy::resolve_references_with_sdk(
+                toolchain.executable(),
+                &observed.target_framework,
+                &observed.sdk_directory,
+                global_json,
+                observed.sdk_kind,
+                &observed.nullable,
+                &observed.language_version,
+                &observed.output_type,
+                &[],
+                &candidates,
+                restored_csharp_references.as_ref().map_or(&[][..], |references| references.files.as_slice()),
+                restored_csharp_references.as_ref().map(|references| references.assets_bytes()),
+                control.deadline,
+                cancelled,
+            ).map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK reference resolution unavailable" })?;
+            if let Some(fingerprint) = sdk_fingerprint.as_mut() {
+                let mut hasher = blake3::Hasher::new();
+                hasher.update(b"compiler.csharp.resolved-snapshot.v1\0");
+                hasher.update(fingerprint);
+                hasher.update(&snapshot.receipt().digest());
+                *fingerprint = *hasher.finalize().as_bytes();
+            }
+            resolver_owner = Some(Arc::new(snapshot));
         }
-        let sdk_reference_paths = targeting_snapshot.as_ref().map(|snapshot| snapshot.directories().iter().map(PathBuf::as_path).collect::<Vec<_>>());
         let mut sdk_using_names = sdk_observation.as_ref().map(|observation| observation.usings.iter().map(String::as_str).collect::<Vec<_>>());
         let mut sdk_define_names = sdk_observation.as_ref().map(|observation| observation.defines.iter().map(String::as_str).collect::<Vec<_>>());
         let mut package_authority_configuration = self.package_authority;
-        if let Some(paths) = sdk_reference_paths.as_deref() {
+        if let Some(csharp) = package_authority_configuration.csharp.as_mut() {
+            csharp.resolved_reference_snapshot = resolver_owner.as_deref();
+        }
+        if sdk_observation.is_some() {
             let csharp = package_authority_configuration.csharp.as_mut().ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "C# helper unavailable" })?;
-            if csharp.configuration.reference_directory.is_some() || !csharp.configuration.additional_reference_directories.is_empty() || paths.is_empty() {
+            if csharp.configuration.reference_directory.is_some() || !csharp.configuration.additional_reference_directories.is_empty() || resolver_owner.is_none() {
                 return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "conflicting C# reference selection" });
             }
             let names = sdk_using_names.as_mut().ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK usings unavailable" })?;
@@ -4398,8 +4476,14 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             csharp.configuration.exact_nullable = sdk_observation.as_ref().map(|observation| observation.nullable.as_str());
             csharp.configuration.exact_unsafe = sdk_observation.as_ref().map(|observation| observation.allow_unsafe);
             csharp.configuration.exact_output_type = sdk_observation.as_ref().map(|observation| observation.output_type.as_str());
-            csharp.configuration.reference_directory = Some(paths[0]);
-            csharp.configuration.additional_reference_directories = &paths[1..];
+            csharp.configuration.exact_sdk_kind = sdk_observation.as_ref().map(|observation| match observation.sdk_kind {
+                backend_frontend_csharp::legacy::CSharpSdkKind::Standard => "Microsoft.NET.Sdk",
+                backend_frontend_csharp::legacy::CSharpSdkKind::Web => "Microsoft.NET.Sdk.Web",
+            });
+            // The admitted project grammar excludes explicit FrameworkReference items.
+            csharp.configuration.exact_framework_references = Some(&[]);
+            csharp.configuration.reference_directory = None;
+            csharp.configuration.additional_reference_directories = &[];
             csharp.configuration.extra_usings = names;
             csharp.configuration.implicit_usings = false;
         }
@@ -5012,6 +5096,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         let mut native_typescript_headers = Vec::new();
         let mut native_header_budget = 32 * 1024 * 1024usize;
         let mut csharp_evidence = Vec::new();
+        let mut csharp_resolver_receipt = None;
+        let mut csharp_resolver_snapshot = None;
         let csharp_config = package.csharp_config.map_or_else(Vec::new, |probes| {
             probes.iter().map(|probe| StagedCSharpConfigProbe {
                 path: probe.path.into(), text: probe.text.map(Into::into),
@@ -5885,12 +5971,53 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     continue;
                 }
             };
-            if let Some(snapshot) = targeting_snapshot.as_ref() {
+            if let Some(snapshot) = resolver_owner.as_ref() {
+                let receipt = match transient_authority.as_ref() {
+                    Some(super::package_authority::PackageAuthorityOwner::CSharp {
+                        resolver_receipt: Some(receipt), ..
+                    }) => Some(receipt),
+                    _ => None,
+                };
+                if let Some(receipt) = receipt {
+                    let owner_snapshot = match transient_authority.as_ref() {
+                        Some(super::package_authority::PackageAuthorityOwner::CSharp {
+                            resolver_snapshot: Some(snapshot), ..
+                        }) => snapshot,
+                        _ => return Err(PackageSemanticError::CSharpSdkUnavailable {
+                            reason: "C# selected reference custody unavailable",
+                        }),
+                    };
+                    csharp_resolver_snapshot = match csharp_resolver_snapshot {
+                        Some(previous) if !std::sync::Arc::ptr_eq(&previous, owner_snapshot) => {
+                            return Err(PackageSemanticError::CSharpSdkUnavailable {
+                                reason: "C# selected reference custody changed within attempt",
+                            });
+                        }
+                        Some(previous) => Some(previous),
+                        None => Some(std::sync::Arc::clone(owner_snapshot)),
+                    };
+                    if !snapshot.references().iter().all(|path| path.is_absolute()) {
+                        return Err(PackageSemanticError::CSharpSdkUnavailable {
+                            reason: "C# selected reference path is not absolute",
+                        });
+                    }
+                    csharp_resolver_receipt = match csharp_resolver_receipt {
+                        Some(previous) if &previous != receipt => {
+                            return Err(PackageSemanticError::CSharpSdkUnavailable {
+                                reason: "C# SDK resolver receipt changed within attempt",
+                            });
+                        }
+                        Some(previous) => Some(previous),
+                        None => Some(receipt.clone()),
+                    };
+                }
+                else { return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# resolver receipt unavailable" }); }
                 let evidence = match transient_authority.as_ref() {
                     Some(super::package_authority::PackageAuthorityOwner::CSharp { evidence: Some(evidence), .. }) => evidence,
                     _ => return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# reference evidence unavailable" }),
                 };
-                if !super::csharp_evidence::references_match_snapshot(evidence, snapshot.references()) {
+                let selected_references = snapshot.targeting_references().map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# selected reference custody unavailable" })?;
+                if !super::csharp_evidence::references_match_snapshot(evidence, &selected_references) {
                     return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# reference evidence differs from snapshot" });
                 }
             }
@@ -6430,6 +6557,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             image_plan: image_plan.into_boxed_slice(),
             semantic_images: semantic_images.into_boxed_slice(),
             csharp_evidence: csharp_evidence.into_boxed_slice(),
+            csharp_resolver_receipt,
+            csharp_resolver_snapshot,
             csharp_config: csharp_config.into_boxed_slice(),
             csharp_unit: match package.package_target.unit_key() {
                 CompilationUnitKeyV2::CSharpProject { project_path } if package.csharp_config.is_some() => Some(project_path.clone()),
@@ -8431,6 +8560,19 @@ const fn toolchain_terminal(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn nearest_present_captured_global_json_wins() {
+        use backend_frontend_csharp::legacy::CSharpSdkProbe;
+        let probes = [
+            CSharpSdkProbe { path: "a/b/global.json", text: None },
+            CSharpSdkProbe { path: "a/global.json", text: Some("ancestor pin") },
+            CSharpSdkProbe { path: "global.json", text: Some("root pin") },
+        ];
+        assert_eq!(super::captured_sdk_global_json(&probes), Some("ancestor pin"));
+        let absent = [CSharpSdkProbe { path: "global.json", text: None }];
+        assert_eq!(super::captured_sdk_global_json(&absent), None);
+    }
+
     use crate::test_support::host_path;
     use std::{
         error::Error as StdError,

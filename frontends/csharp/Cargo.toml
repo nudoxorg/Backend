@@ -16,5 +16,8 @@ sha2 = "=0.10.9"
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tree-sitter-c-sharp = "=0.23.5"
+[dev-dependencies]
+allocation-counter.workspace = true
+
 [lib]
 path = "lib.rs"

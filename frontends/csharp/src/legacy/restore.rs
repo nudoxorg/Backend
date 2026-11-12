@@ -41,6 +41,8 @@ pub enum RestoreError {
 #[derive(Debug)]
 pub struct RestoreClosure {
     pub files: Vec<PathBuf>,
+    /// Exact bounded project.assets.json bytes admitted for this closure.
+    pub assets_bytes: Box<[u8]>,
     pub digest: [u8; 32],
     pub framework_references: Vec<String>,
     directory: tempfile::TempDir,
@@ -52,6 +54,9 @@ impl RestoreClosure {
     pub fn reference_directory(&self) -> &Path {
         self.directory.path()
     }
+
+    #[must_use]
+    pub fn assets_bytes(&self) -> &[u8] { &self.assets_bytes }
 }
 
 pub fn resolve_project_assets(
@@ -469,6 +474,7 @@ pub fn resolve_project_assets_with_metadata(
     }
     Ok(RestoreClosure {
         files,
+        assets_bytes: bytes.into_boxed_slice(),
         digest: digest.finalize().into(),
         framework_references: framework_references.into_iter().collect(),
         directory,

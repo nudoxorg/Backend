@@ -8,7 +8,7 @@
 
 use std::{
     path::{Component, Path},
-    sync::atomic::Ordering,
+    sync::{atomic::Ordering, Arc},
     time::Instant,
 };
 
@@ -34,7 +34,7 @@ use backend_frontend_python::legacy::checker::{
     PythonProjectReport, PythonProjectSource,
 };
 use backend_frontend_python::legacy::{
-    CheckerError as PyreflyError, CheckerReport as PythonReport, ExtractionError, Pyrefly, extract,
+    extract, CheckerError as PyreflyError, CheckerReport as PythonReport, ExtractionError, Pyrefly,
 };
 use backend_frontend_rust::legacy::{
     RustAnalysisControl, RustAuthorityError, RustCargoMetadataPolicy, RustFeatureControl,
@@ -104,6 +104,9 @@ pub struct CSharpPackageAuthorityConfiguration<'config> {
     pub producer: &'config CSharpOracle,
     /// Closed helper policy borrowed by each C# authority transaction.
     pub configuration: CSharpAuthorityConfiguration<'config>,
+    /// Resolver-selected references to clone into owner custody.
+    pub resolved_reference_snapshot:
+        Option<&'config backend_frontend_csharp::legacy::CSharpResolvedReferenceSnapshot>,
 }
 
 /// Explicit Rust project authority inputs that cannot be inferred from source
@@ -254,6 +257,11 @@ pub enum PackageAuthorityOwner<'workspace> {
         image: Box<[u8]>,
         /// Same-invocation evidence claim; not selected authority.
         evidence: Option<Box<[u8]>>,
+        /// SDK resolver receipt retained with this exact invocation image.
+        resolver_receipt: Option<backend_frontend_csharp::legacy::CSharpResolverReceipt>,
+        /// Independently owned selected references for cold replay custody.
+        resolver_snapshot:
+            Option<Arc<backend_frontend_csharp::legacy::CSharpResolvedReferenceSnapshot>>,
     },
     /// Java authority image and its doclet session retained until lowering.
     Java {
@@ -334,6 +342,32 @@ impl PackageAuthorityOwner<'_> {
             | Self::CSharp { profile, .. }
             | Self::Java { profile, .. } => *profile,
             Self::TypeScript { profile, .. } => LanguageProfile::TypeScript(*profile),
+        }
+    }
+
+    /// Returns the same-attempt SDK resolver receipt retained with a C# image.
+    #[must_use]
+    pub fn csharp_resolver_receipt(
+        &self,
+    ) -> Option<&backend_frontend_csharp::legacy::CSharpResolverReceipt> {
+        match self {
+            Self::CSharp {
+                resolver_receipt, ..
+            } => resolver_receipt.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Returns independently owned selected-reference custody for C# replay.
+    #[must_use]
+    pub fn csharp_resolver_snapshot(
+        &self,
+    ) -> Option<&Arc<backend_frontend_csharp::legacy::CSharpResolvedReferenceSnapshot>> {
+        match self {
+            Self::CSharp {
+                resolver_snapshot, ..
+            } => resolver_snapshot.as_ref(),
+            _ => None,
         }
     }
 }
@@ -1059,27 +1093,38 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                         });
                     }
                 };
-                let image = configuration
-                    .producer
-                    .produce(CSharpAuthorityRequest {
-                        package_root: request.package_root,
-                        source_path: request.source_path,
-                        project_file: project_file.as_deref(),
-                        source: request.source,
-                        captured_sources: request.csharp_sources,
-                        captured_config: request.csharp_config,
-                        captured_project_graph: None,
-                        profile,
-                        native_tool: resolved.tool,
-                        toolchain: resolved.as_ref(),
-                        control: CSharpAuthorityControl {
-                            deadline: request.control.deadline,
-                            cancelled: request.control.cancelled,
-                        },
-                        configuration: configuration.configuration,
-                    })
-                    .map_err(PackageAuthorityError::CSharp)?;
-                let (image, evidence) = image.into_parts();
+                let csharp_request = CSharpAuthorityRequest {
+                    resolved_reference_snapshot: None,
+                    package_root: request.package_root,
+                    source_path: request.source_path,
+                    project_file: project_file.as_deref(),
+                    source: request.source,
+                    captured_sources: request.csharp_sources,
+                    captured_config: request.csharp_config,
+                    captured_project_graph: None,
+                    profile,
+                    native_tool: resolved.tool,
+                    toolchain: resolved.as_ref(),
+                    control: CSharpAuthorityControl {
+                        deadline: request.control.deadline,
+                        cancelled: request.control.cancelled,
+                    },
+                    configuration: configuration.configuration,
+                };
+                let image = match configuration.resolved_reference_snapshot {
+                    Some(snapshot) => configuration
+                        .producer
+                        .produce_with_owned_reference_snapshot(
+                            csharp_request,
+                            std::sync::Arc::new(snapshot.clone_owned().map_err(|_| {
+                                PackageAuthorityError::CSharp(CSharpAuthorityError::Configuration)
+                            })?),
+                        ),
+                    None => configuration.producer.produce(csharp_request),
+                }
+                .map_err(PackageAuthorityError::CSharp)?;
+                let resolver_snapshot = image.resolved_reference_snapshot().cloned();
+                let (image, evidence, resolver_receipt) = image.into_parts_with_resolver_receipt();
                 let image = retain_image(
                     image.into_vec(),
                     request.configuration.maximum_image_bytes,
@@ -1095,6 +1140,8 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                     profile: request.profile,
                     image,
                     evidence,
+                    resolver_receipt,
+                    resolver_snapshot,
                 }
             }
         };

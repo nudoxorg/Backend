@@ -29,8 +29,9 @@ pub use self::producer::{
     CSHARP_CAPTURED_UNIT_POLICY_ID_V1, CSHARP_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1,
     CSharpAuthorityConfiguration, CSharpAuthorityControl, CSharpAuthorityError,
     CSharpAuthorityImage, CSharpAuthorityPhase, CSharpAuthorityProducer, CSharpAuthorityRequest,
-    CSharpCapturedConfig, CSharpCapturedProjectGraph, CSharpCapturedProjectNode, CSharpCapturedSource, CSharpOracle, DEFAULT_IMAGE_LIMIT,
-    DEFAULT_OUTPUT_LIMIT, DEFAULT_SOURCE_LIMIT,
+    CSharpCapturedConfig, CSharpCapturedProjectGraph, CSharpCapturedProjectNode,
+    CSharpCapturedSource, CSharpOracle, DEFAULT_IMAGE_LIMIT, DEFAULT_OUTPUT_LIMIT,
+    DEFAULT_SOURCE_LIMIT,
 };
 
 pub use self::restore::{
@@ -38,6 +39,10 @@ pub use self::restore::{
     resolve_project_assets_with_metadata,
 };
 pub use self::sdk::{
-    resolve_sdk_owned_references, CSharpSdkKind, CSharpSdkObservation, CSharpSdkProbe, CSharpSdkProjectProperties, CSharpTargetingReference, CSharpTargetingSnapshot,
-    observe_csharp_sdk, observe_csharp_sdk_with,
+    CSharpResolvedReferenceSnapshot, CSharpResolverReceipt, CSharpSdkKind, CSharpSdkObservation,
+    CSharpSdkProbe, CSharpSdkProjectProperties, CSharpTargetingReference, CSharpTargetingSnapshot,
+    CSHARP_GLOBALIZATION_POLICY_ID,
+    observe_csharp_sdk, observe_csharp_sdk_with, resolve_references_with_sdk,
+    resolve_references_with_sdk_diagnostics,
+    resolve_sdk_owned_references,
 };
