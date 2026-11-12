@@ -4600,7 +4600,7 @@ mod tests {
             type Value = [u8];
             fn encode(value: &Self::Value, out: &mut Vec<u8>) { out.extend_from_slice(value); }
         }
-        let bad_wire: &[u8] = b"NLM1\0\0\0\1";
+        let bad_wire: &[u8] = b"NLM1\0\0\0\x01";
         let bad_object = TypedObject::from_value(&ObjectKey::<TestLineBytes>::from_value(bad_wire), bad_wire);
         for bad_member in [
             CompilerNativeLinesMember { object_id: *program_object.id().as_bytes(), byte_length: program_object.bytes().len() as u32 },
