@@ -150,6 +150,8 @@ def main():
         if (binary_dir / name).resolve(strict=True) != pathlib.Path(artifact['path']):
             raise SystemExit(f'{name} is not the verified build receipt artifact')
     output = pathlib.Path(args.output).resolve()
+    if output == repo or repo in output.parents:
+        raise SystemExit('output must be outside the source checkout')
     output.mkdir(parents=True, exist_ok=False)
     checks = []
     journey = StrictJourney(binary_dir, output, label='vue-packages')
