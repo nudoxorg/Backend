@@ -202,7 +202,7 @@ pub(super) mod tests {
     use super::*;
     use backend_engine::builtin::{CSharpMemberOutcome, CSharpReceiptUnit, csharp_receipt_key};
 
-    pub(super) fn example(project: [u8; 32]) -> CSharpReceiptIntentExtension {
+    pub(in crate::builtin) fn example(project: [u8; 32]) -> CSharpReceiptIntentExtension {
         let row = CSharpReceiptRecord::Member {
             project, unit: CSharpReceiptUnit::Project { path: "App.csproj".into() },
             path: "Program.cs".into(), source_identity: [1; 32], input_content: [2; 32],
