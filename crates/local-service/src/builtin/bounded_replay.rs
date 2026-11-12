@@ -138,11 +138,18 @@ impl Program {
         match self { Self::Single { .. } => Ok(true), Self::Forest { value, .. } => value.image_matches_bytes(path, identity, |n| step(budget, stopped, n)) }
     }
 }
-struct Meter<'a> { budget: &'a SelectedNativeHeaderBudget, stopped: &'a dyn Fn() -> bool, free: Cell<usize> }
+struct Meter<'a> {
+    budget: &'a SelectedNativeHeaderBudget, stopped: &'a dyn Fn() -> bool, free: Cell<usize>,
+    #[cfg(test)] reopen_work: Option<Cell<usize>>,
+}
 impl SemanticImageAdmissionMeter for Meter<'_> {
     fn work(&self, units: u64) -> bool {
         #[cfg(test)]
-        super::TEST_COLD_REPLAY_IMAGE_PHASE.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(count) = &self.reopen_work {
+            let next = count.get().saturating_add(1);
+            count.set(next);
+            if next >= 3 { super::TEST_COLD_REPLAY_IMAGE_PHASE.store(true, std::sync::atomic::Ordering::Release); }
+        }
         self.budget.checkpoint(units, self.stopped).is_ok()
     }
     fn reserve(&self, bytes: usize) -> bool { match self.free.get().checked_sub(bytes) { Some(left) => { self.free.set(left); true }, None => false } }
@@ -324,14 +331,14 @@ fn admit_inner(
             }
             SelectedPublicationWire::Image { member, bytes } => {
                 if !seen_program { return Err("native replay Program unavailable".into()); }
-                let preflight = Meter { budget, stopped, free: Cell::new(0) };
-                let scratch = backend_semantic::ir::semantic_image_admission_scratch(bytes, &preflight).map_err(|e| format!("native replay image preflight: {e:?}"))?;
+                let preflight = Meter { budget, stopped, free: Cell::new(0), #[cfg(test)] reopen_work: None };
+                let scratch = backend_semantic::ir::semantic_image_admission_scratch(bytes, &preflight).map_err(|e| if stopped() { "native replay stopped: owner shutdown or deadline".to_owned() } else { format!("native replay image preflight: {e:?}") })?;
                 if scratch > plan.scratch_credit {
                     budget.reserve_retained(scratch - plan.scratch_credit).map_err(|e| format!("native replay image memory: {e:?}"))?;
                     plan.scratch_credit = scratch;
                 }
-                let meter = Meter { budget, stopped, free: Cell::new(plan.scratch_credit) };
-                let view = SemanticImageView::reopen_bounded(bytes, &meter).map_err(|e| format!("native replay image: {e:?}"))?;
+                let meter = Meter { budget, stopped, free: Cell::new(plan.scratch_credit), #[cfg(test)] reopen_work: Some(Cell::new(0)) };
+                let view = SemanticImageView::reopen_bounded(bytes, &meter).map_err(|e| if stopped() { "native replay stopped: owner shutdown or deadline".to_owned() } else { format!("native replay image: {e:?}") })?;
                 let ImageProvenance::Captured { source, recipe, scope, .. } = view.image_facts().provenance else { return Err("selected program image has no provenance".into()); };
                 let path = view.atom(scope.path).ok_or("native replay image path absent")?;
                 if program.source_for_package_bytes(path, budget, stopped)? != Some(source)
