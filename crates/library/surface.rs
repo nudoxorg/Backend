@@ -8633,6 +8633,29 @@ mod tests {
     }
 
     #[test]
+    fn discovery_search_response_charges_release_text_bytes() {
+        let candidate = RegistryDiscoveryCandidate {
+            source: [1; 32],
+            coordinate: PackageCoordinate::parse("pkg:nuget/example@1.0.0").unwrap(),
+            standing: RegistryDiscoveryStanding::Published,
+            completeness: RegistryDiscoveryCompleteness::Windowed,
+            caught_up: false,
+            freshness: RegistryDiscoveryFreshness::Historical { observed_at_millis: 1 },
+            proof: [2; 32],
+            metadata: RegistryDiscoveryMetadata::default(),
+        };
+        let reply = |candidate| SurfaceReply::IndexSearchWithDiscovery(
+            vec![RegistrySearchHit::Discovered(candidate)].into_boxed_slice()
+        );
+        let baseline = reply(candidate.clone()).encoded_size_bound();
+        let mut with_text = candidate;
+        with_text.metadata.description = RegistryEvidenceFacet::Known(ProductText::new("x".repeat(4000)).unwrap());
+        let enriched = reply(with_text);
+        assert!(enriched.encoded_size_bound() >= baseline + 4000);
+        assert!(enriched.encoded_size_bound() >= serde_json::to_vec(&enriched).unwrap().len());
+    }
+
+    #[test]
     fn registry_advisory_alias_coverage_survives_wire_and_admission_bounds() {
         let aliases_states: [RegistryEvidenceFacet<Box<[ProductText]>>; 3] = [
             RegistryEvidenceFacet::Known(Vec::new().into_boxed_slice()),
