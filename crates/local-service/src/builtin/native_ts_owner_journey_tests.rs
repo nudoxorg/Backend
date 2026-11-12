@@ -1414,7 +1414,7 @@ fn omitted_program_member_cold_replay(mixed: bool) -> Result<(), Box<dyn Error>>
     fs::create_dir_all(project.join("src/types"))?;
     // A parser-valid tuple over the native lowering width limit produces a
     // source-local gap without inventing a Program member or compiler fact.
-    let config = if mixed { r#"{"compilerOptions":{"noLib":true,"types":[],"module":"ESNext","moduleResolution":"bundler","jsx":"preserve"},"files":["src/app/layout.tsx","src/app/page.tsx","src/components/NavBar.tsx","src/types/react-node.tsx","src/types/shared.ts"]}"# } else { r#"{"compilerOptions":{"noLib":true,"types":[],"module":"ESNext","moduleResolution":"bundler","jsx":"preserve"},"files":["src/app/layout.tsx","src/app/page.tsx","src/components/NavBar.tsx","src/types/react-node.tsx"]}"# };
+    let config = if mixed { r#"{"compilerOptions":{"noLib":true,"types":[],"module":"ESNext","moduleResolution":"bundler","jsx":"preserve"},"files":["src/app/layout.tsx","src/app/page.tsx","src/components/NavBar.tsx","src/types/react-node.tsx","src/types/shared.ts","src/types/valid.ts"]}"# } else { r#"{"compilerOptions":{"noLib":true,"types":[],"module":"ESNext","moduleResolution":"bundler","jsx":"preserve"},"files":["src/app/layout.tsx","src/app/page.tsx","src/components/NavBar.tsx","src/types/react-node.tsx"]}"# };
     fs::write(project.join("tsconfig.json"), config)?;
     let member = format!("export declare const wide: [{}];\n", std::iter::repeat_n("unknown", 256).collect::<Vec<_>>().join(", "));
     let image = "export function NavBar() { return \"nav\"; }\n";
@@ -1422,8 +1422,11 @@ fn omitted_program_member_cold_replay(mixed: bool) -> Result<(), Box<dyn Error>>
     let changed_image = "export function NavBar() { return \"nax\"; }\n";
     fs::write(project.join("src/types/react-node.tsx"), "export type ReactNode = { readonly children?: ReactNode };\n")?;
     let shared = format!("export declare const shared: [{}];\n", std::iter::repeat_n("unknown", 256).collect::<Vec<_>>().join(", "));
-    if mixed { fs::write(project.join("src/types/shared.ts"), &shared)?; }
-    let page = if mixed { "import { NavBar } from \"../components/NavBar\";\nimport type { shared } from \"../types/shared\";\nexport function Page() { return NavBar(); }\n" } else { "import { NavBar } from \"../components/NavBar\";\nexport function Page() { return NavBar(); }\n" };
+    if mixed {
+        fs::write(project.join("src/types/shared.ts"), &shared)?;
+        fs::write(project.join("src/types/valid.ts"), "export const valid = 1;\n")?;
+    }
+    let page = if mixed { "import { NavBar } from \"../components/NavBar\";\nimport type { shared } from \"../types/shared\";\nimport { valid } from \"../types/valid\";\nexport function Page() { return NavBar(); }\n" } else { "import { NavBar } from \"../components/NavBar\";\nexport function Page() { return NavBar(); }\n" };
     fs::write(project.join("src/app/page.tsx"), page)?;
     assert_eq!(member.len(), changed_member.len());
     assert_eq!(image.len(), changed_image.len());
@@ -1502,7 +1505,7 @@ fn omitted_program_member_cold_replay(mixed: bool) -> Result<(), Box<dyn Error>>
         use backend_semantic::ir::{SourceCoverageGapCause, SourceCoverageRow};
         let observed = selected_authority.selected_source_coverage(selected_key, claim)?
             .ok_or("selected compiler coverage absent")?;
-        assert_eq!((observed.source_count(), observed.completed()), (if mixed { 5 } else { 4 }, 3));
+        assert_eq!((observed.source_count(), observed.completed()), (if mixed { 6 } else { 4 }, if mixed { 4 } else { 3 }));
         let catalog = observed.catalog().ok_or("selected compiler gap catalog absent")?;
         assert_eq!(catalog.rows().iter().filter(|row| matches!(row,
             SourceCoverageRow::Gap { path, source, byte_len, cause, .. }
