@@ -2819,6 +2819,40 @@ fn pending_find_read_keeps_query_focus_across_ask_and_late_landing(cx: &mut Test
 enum SupersedeLookup { Focus, Route, Root, Release, Overlay }
 
 #[gpui::test]
+fn held_graph_open_cannot_navigate_after_same_owner_renewal(cx: &mut TestAppContext) {
+    use std::sync::atomic::Ordering;
+    let held = Arc::new(LookupGate::default());
+    let worker = held.clone();
+    let pool = ReadPool::start(2, move |_| HeldLookupFixture { gate: worker.clone(), stage: HeldLookupStage::Search }).expect("held reader pool");
+    let root = VersionedRoot::synthetic(backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4);
+    let owner = OwnerGate::ready(root, crate::model::ServiceMode::Attached);
+    let mut rig = rig_with_engine_gate(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0, pool, RootOnly, Some(owner.clone()));
+    let _release_on_drop = LookupRelease(held.clone());
+    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.settle();
+    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::SetView(View::Page), cx));
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !held.entered() {
+        rig.frame(16);
+        assert!(Instant::now() < deadline, "the actual lookup must enter its worker");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(held.returned.load(Ordering::SeqCst), 0);
+    assert!(!rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)), "the open is pending");
+    let key = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let old_attachment = rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_attachment()).expect("old attachment");
+    owner.publish(crate::runtime::owner::OwnerState::Starting);
+    owner.publish(crate::runtime::owner::OwnerState::Ready { key, mode: crate::model::ServiceMode::Attached });
+    rig.cx.run_until_parked();
+    assert!(!rig.graph.store.read_with(rig.cx, |store, _| store.admits_owner_attachment(&old_attachment)), "the old attachment was retired");
+    held.release();
+    rig.settle();
+    assert_eq!(held.returned.load(Ordering::SeqCst), 1, "the held lookup really returned");
+    assert_eq!(rig.route(), view_route("RelationLabel", View::Graph), "the old open cannot navigate after renewal");
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)), "the stale open stays cancelled");
+}
+
+#[gpui::test]
 fn late_graph_search_and_continuation_cannot_navigate_after_superseding_state(cx: &mut TestAppContext) {
     use std::sync::atomic::Ordering;
     for stage in [HeldLookupStage::Search, HeldLookupStage::More] {

@@ -236,6 +236,7 @@ fn an_empty_library_requests_no_frames_after_startup(cx: &mut TestAppContext) {
     settle(cx, &rig);
     let renders = rig.shell.read_with(cx, |shell, cx| shell.render_counts(cx));
     let (drawn, requested) = vsync(cx, &rig, 1_875);
+    eprintln!("empty Library: 1875 ticks, {drawn} drawn, {requested} requested");
     assert_eq!((drawn, requested), (0, 0), "thirty virtual seconds of idle Library");
     assert_eq!(rig.shell.read_with(cx, |shell, cx| shell.render_counts(cx)), renders);
 }
@@ -253,6 +254,7 @@ fn an_idle_shell_with_a_running_index_requests_no_frames(cx: &mut TestAppContext
 
     // Ten virtual seconds with the index still running.
     let (drawn, requested) = vsync(cx, &rig, 625);
+    eprintln!("indexing idle: 625 ticks, {drawn} drawn, {requested} requested");
     assert_eq!(phase(cx, &rig), Some(ProjectPhase::Indexing), "the index is still running");
     assert_eq!(requested, 0, "no animation frame was requested while idle");
     assert_eq!(drawn, 0, "no frame was drawn while idle");
@@ -286,6 +288,7 @@ fn the_measurement_sees_a_descent_and_then_sees_it_stop(cx: &mut TestAppContext)
     cx.run_until_parked();
     draw(cx, &rig);
     let (drawn, requested) = vsync(cx, &rig, 20);
+    eprintln!("descent control: 20 ticks, {drawn} drawn, {requested} requested");
     assert!(requested >= 10 && drawn >= 10, "the descent asked for frames: {requested} requested, {drawn} drawn");
     settle(cx, &rig);
     let (drawn, requested) = vsync(cx, &rig, 120);
