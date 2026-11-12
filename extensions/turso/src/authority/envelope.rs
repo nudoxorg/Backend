@@ -3556,7 +3556,12 @@ mod tests {
         for (expected_version, value) in [(4, base), (5, v5), (6, v6), (7, v7), (8, v8), (9, v9)] {
             let bytes = value.canonical_bytes();
             assert_eq!(u16::from_le_bytes(bytes[METADATA_MAGIC.len()..METADATA_MAGIC.len()+2].try_into().unwrap()), expected_version);
-            assert_eq!(CompilerPublicationMetadata::decode(&bytes).unwrap(), value);
+            let bound = compiler_metadata_decode_bound(&bytes).unwrap();
+            let mut reopened = None;
+            let peak = allocation_counter::measure(|| { reopened = Some(CompilerPublicationMetadata::decode(&bytes).unwrap()); });
+            assert_eq!(reopened.unwrap(), value);
+            assert!(peak.bytes_max as usize <= bound, "metadata v{expected_version} allocation peak {peak:?}, bound {bound}");
+            assert!(compiler_metadata_decode_bound(&bytes[..bytes.len()-1]).is_err());
             assert!(CompilerPublicationMetadata::decode(&bytes[..bytes.len()-1]).is_err());
         }
     }
