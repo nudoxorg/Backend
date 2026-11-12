@@ -83,10 +83,10 @@ impl RetainedProgramGraph {
         self.toolchain
     }
     /// Visit actual leaf memberships with the live shared work checkpoint.
-    pub fn visit_sources<E>(
-        &self,
+    pub fn visit_sources<'a, E>(
+        &'a self,
         checkpoint: impl FnMut(u64) -> Result<(), E>,
-        visit: impl FnMut(NativeProgramOwnedSourceRef<'_>) -> Result<(), E>,
+        visit: impl FnMut(NativeProgramOwnedSourceRef<'a>) -> Result<(), E>,
     ) -> Result<(), E> {
         self.view().visit_sources(checkpoint, visit)
     }

@@ -329,10 +329,10 @@ impl RetainedNativeProgramSourceManifest {
         self.toolchain
     }
     /// Visit validated rows with the live operation's shared work checkpoint.
-    pub fn visit_sources<E>(
-        &self,
+    pub fn visit_sources<'a, E>(
+        &'a self,
         checkpoint: impl FnMut(u64) -> Result<(), E>,
-        visit: impl FnMut(NativeProgramSourceRef<'_>) -> Result<(), E>,
+        visit: impl FnMut(NativeProgramSourceRef<'a>) -> Result<(), E>,
     ) -> Result<(), E> {
         BorrowedNativeProgramSourceManifest {
             bytes: &self.bytes,
