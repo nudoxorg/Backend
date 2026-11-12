@@ -1547,6 +1547,12 @@ impl AdmittedCompilation {
                 .admit_claim(UntrustedObjectId::from_bytes(*member.object_id()))
                 .map_err(|error| BuiltinModelError(format!("admit native header membership: {error:?}")))?
                 .ok_or_else(|| BuiltinModelError("native headers are absent from their output closure".to_owned()))?;
+            let verified = store.verify_object_claim(UntrustedObjectId::from_bytes(*member.object_id()))
+                .map_err(|error| BuiltinModelError(format!("verify native header member: {error:?}")))?;
+            if verified.id() != id || verified.schema() != backend_extension_turso::COMPILER_NATIVE_HEADERS_SCHEMA
+                || verified.payload_len() != u64::from(member.byte_length()) {
+                return Err(BuiltinModelError("native header member schema or extent mismatch".to_owned()));
+            }
             expected_members.insert(id);
         }
         let program_mappings = native_program.as_ref().map(|program| {
@@ -1650,6 +1656,24 @@ impl AdmittedCompilation {
         if payload_pin.receipt().object_count()
             != u64::try_from(expected_members.len()).unwrap_or(u64::MAX)
         {
+            #[cfg(test)]
+            {
+                let mut after = None;
+                let mut extra_schemas = BTreeMap::new();
+                let mut observed = BTreeSet::new();
+                loop {
+                    let page = payload_index.page_ids(after, 256).map_err(|error| BuiltinModelError(format!("inspect payload inventory: {error:?}")))?;
+                    for &id in page.object_ids() {
+                        observed.insert(id);
+                        if !expected_members.contains(&id) {
+                            let object = store.verify_object_claim(UntrustedObjectId::from_bytes(*id.as_bytes())).map_err(|error| BuiltinModelError(format!("inspect extra payload kind: {error:?}")))?;
+                            *extra_schemas.entry(format!("{:?}", object.schema())).or_insert(0usize) += 1;
+                        }
+                    }
+                    match page.next() { Some(next) => after = Some(next), None => break }
+                }
+                eprintln!("compiler payload inventory mismatch: expected={} observed={} missing={} extra_by_schema={extra_schemas:?}", expected_members.len(), observed.len(), expected_members.difference(&observed).count());
+            }
             return Err(BuiltinModelError(
                 "selected semantic closure contains missing or unrelated payload members"
                     .to_owned(),
