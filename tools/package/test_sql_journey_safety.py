@@ -11,10 +11,29 @@ import time
 import unittest
 from unittest import mock
 
-from sql_journey_safety import OwnedProcesses, _retire_spawned_group, remove_private_root
+from sql_journey_safety import OwnedProcesses, _retire_spawned_group, remove_private_root, verified_build
 
 
 class OwnedProcessTests(unittest.TestCase):
+    def test_verified_build_receipt_serializes_canonical_source_path(self):
+        checkout = Path(__file__).resolve().parents[2]
+        scripts = checkout / 'tests/journeys/scripts'
+        sys.path.insert(0, str(scripts))
+        import runtime_build_receipt
+        with tempfile.TemporaryDirectory() as base:
+            bundle = Path(base)
+            artifacts = {}
+            for name in ('backend-locald', 'backend-cli', 'backend-mcp'):
+                (bundle / name).write_bytes(name.encode())
+                artifacts[name] = {'sha256': hashlib.sha256(name.encode()).hexdigest()}
+            verified = {'receipt_path': str(bundle / 'receipt.json'), 'receipt_sha256': 'abc',
+                        'source': {'path': checkout, 'commit': '123', 'clean': True}, 'artifacts': artifacts}
+            with mock.patch.object(runtime_build_receipt, 'verify_runtime_build_receipt', return_value=verified):
+                before = verified_build(bundle / 'receipt.json', checkout, bundle, checkout / 'tools/package/sql_public_journey.py')
+                after = verified_build(bundle / 'receipt.json', checkout, bundle, checkout / 'tools/package/sql_public_journey.py')
+            self.assertEqual(before, after)
+            self.assertEqual(json.loads(json.dumps(before))['source']['path'], str(checkout))
+
     def test_run_collects_output_and_retires_owned_child(self):
         owner = OwnedProcesses()
         result = owner.run([sys.executable, '-c', 'import time; print("ready", flush=True); time.sleep(.2)'], timeout=5)
