@@ -27,10 +27,18 @@ p.add_argument('--sdk-kind', choices=['Standard', 'Web'], default='Standard')
 p.add_argument('--nullable', default='enable')
 p.add_argument('--language', default='default')
 p.add_argument('--output', default='Exe')
-p.add_argument('--frameworks', default='', help='comma separated')
+p.add_argument('--frameworks', default='', help='explicit project framework references, comma separated')
+p.add_argument('--exclude-project-output', help='exact project output path excluded from this component-only comparison')
 a = p.parse_args()
 pack = a.pack_list.split(os.pathsep)
 packages = a.package_list.split(os.pathsep) if a.package_list else []
+excluded = Path(a.exclude_project_output).resolve() if a.exclude_project_output else None
+if excluded:
+    print('scope: component-only; excluding exact project output', excluded, flush=True)
+    packages = [path for path in packages if Path(path).resolve() != excluded]
+    a.package_list = os.pathsep.join(packages)
+print('SDK options:', json.dumps(dict(target=a.target, sdk_kind=a.sdk_kind, nullable=a.nullable,
+    language=a.language, output=a.output, explicit_frameworks=a.frameworks), sort_keys=True), flush=True)
 for path in pack + packages:
     if not Path(path).is_absolute() or not Path(path).is_file():
         raise SystemExit('candidate unavailable: ' + path)
@@ -69,10 +77,17 @@ with tempfile.TemporaryDirectory(prefix='csharp-baseline-') as scratch:
     if Path(observed['Properties']['MSBuildSDKsPath']).resolve() != Path(a.sdk_dir).resolve():
         raise SystemExit('baseline invoked a different SDK')
     baseline = []
+    excluded_seen = False
     for item in observed['Items']['ReferencePath']:
         path = Path(item.get('FullPath') or item['Identity']).resolve()
+        if excluded and path == excluded:
+            excluded_seen = True
+            print('baseline excluded project output:', path, flush=True)
+            continue
         data = path.read_bytes()
         baseline.append(dict(path=str(path), name=path.name, fusion_name=item['FusionName'], length=len(data), sha256=hashlib.sha256(data).hexdigest()))
+    if excluded and not excluded_seen:
+        raise SystemExit('declared project output exclusion was not present in SDK baseline')
     env.update(CSHARP_FIXTURE_PACKAGE_CANDIDATES=a.package_list, CSHARP_FIXTURE_SDK_KIND=a.sdk_kind, CSHARP_FIXTURE_NULLABLE=a.nullable, CSHARP_FIXTURE_LANGUAGE=a.language, CSHARP_FIXTURE_OUTPUT=a.output, CSHARP_FIXTURE_FRAMEWORKS=a.frameworks)
     fixture_args = [a.fixture, a.dotnet, a.sdk_dir, a.target, a.pack_list, a.assets]
     if a.global_json:
