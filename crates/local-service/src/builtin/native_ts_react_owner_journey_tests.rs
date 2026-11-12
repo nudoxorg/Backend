@@ -285,7 +285,7 @@ fn native_react_children_journey(
             let matches = observed
                 .sources
                 .iter()
-                .filter(|(actual, identity, size)| {
+                .filter(|(actual, _, identity, size)| {
                     actual == path
                         && identity == source_id.as_ref()
                         && *size as usize == bytes.len()

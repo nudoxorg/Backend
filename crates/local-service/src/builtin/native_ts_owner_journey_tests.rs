@@ -1528,6 +1528,11 @@ fn omitted_program_member_cold_replay(mixed: bool) -> Result<(), Box<dyn Error>>
     if mixed {
         let ts_profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
         let (key, capture) = capture_page.entries().iter().find(|(key, capture)| key.package_key().to_bytes() == project_key && key.profile() == ts_profile && key.is_selected() && matches!(capture.outcome(), backend_engine::builtin::ProductSemanticCaptureOutcome::Published { .. })).ok_or("published selected TS capture")?;
+        let backend_engine::builtin::ProductSemanticCaptureOutcome::Published { claim, .. } = capture.outcome() else { return Err("TS capture unpublished".into()) };
+        let observed = super::ingest::TEST_NATIVE_PROGRAMS.lock().map_err(|_| "program lock")?;
+        let program = observed.iter().find(|entry| entry.binding.as_slice() == claim.binding().identity.as_ref()).ok_or("selected TS Program observation")?;
+        let digest = backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(shared.as_bytes());
+        assert_eq!(program.sources.iter().filter(|(_, package, identity, length)| package.as_deref() == Some("src/types/shared.ts") && identity == digest.as_ref() && *length as usize == shared.len()).count(), 1, "TS selected Program owns exact shared.ts mapping");
         changes.push(super::profile::BuiltinCaptureChange { cargo_target: None, key: key.clone(), expected: Some(capture.clone()), capture: capture.capture(), outcome: capture.outcome(), compiler_failure: None });
     }
     let store = backend_engine::FileStore::open(paths.data().join("objects"), 8 * 1024 * 1024)
