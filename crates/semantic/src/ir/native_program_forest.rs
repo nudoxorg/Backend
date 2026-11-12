@@ -604,11 +604,14 @@ mod tests {
         let toolchain = ContentId::from_canonical_bytes(b"compiler");
         let graph = NativeProgramSources::from_forest(toolchain, 1, nodes())
             .unwrap()
-            .with_image_bindings(vec![("src/app.ts".to_owned(), [7; 32])])
+            .with_image_bindings(vec![
+                ("src/app.ts".to_owned(), [7; 32]),
+                ("vite.config.ts".to_owned(), [9; 32]),
+            ])
             .unwrap();
         let shape = BorrowedProgramGraph::scratch(graph.as_bytes(), |_| Ok::<_, ()>(())).unwrap();
         let mut nodes = vec![0; shape.nodes * 8];
-        let mut rows = vec![0; shape.rows * 12];
+        let mut rows = vec![0; shape.row_bytes()];
         let mut paths = vec![0; shape.leaf_paths];
         let view = BorrowedProgramGraph::decode(
             graph.as_bytes(),
@@ -642,6 +645,15 @@ mod tests {
                 .image_matches("src/app.ts", &[8; 32], |_| Ok::<_, ()>(()))
                 .unwrap()
         );
+        assert!(
+            view.image_matches("vite.config.ts", &[9; 32], |_| Ok::<_, ()>(()))
+                .unwrap()
+        );
+        assert!(
+            !view
+                .image_matches("missing.ts", &[9; 32], |_| Ok::<_, ()>(()))
+                .unwrap()
+        );
         assert!(matches!(
             BorrowedProgramGraph::scratch(graph.as_bytes(), |_| Err(())),
             Err(crate::ir::BorrowedNativeProgramError::Stopped(()))
@@ -650,7 +662,7 @@ mod tests {
         let node_offset = corrupt.len() - 64;
         corrupt[node_offset] ^= 1;
         let mut nodes = vec![0; shape.nodes * 8];
-        let mut rows = vec![0; shape.rows * 12];
+        let mut rows = vec![0; shape.row_bytes()];
         let mut paths = vec![0; shape.leaf_paths];
         assert!(NativeProgramSources::decode(&corrupt).is_err());
         assert!(
@@ -674,7 +686,7 @@ mod tests {
         .unwrap();
         let shape = BorrowedProgramGraph::scratch(graph.as_bytes(), |_| Ok::<_, ()>(())).unwrap();
         let mut nodes = vec![0; shape.nodes * 8];
-        let mut rows = vec![0; shape.rows * 12];
+        let mut rows = vec![0; shape.row_bytes()];
         let mut paths = vec![0; shape.leaf_paths];
         let view = BorrowedProgramGraph::decode(
             graph.as_bytes(),

@@ -9,7 +9,7 @@ use crate::ir::native_program_sources::{
 pub struct BorrowedProgramGraphScratch {
     /// Number of graph nodes (each requires eight scratch bytes).
     pub nodes: usize,
-    /// Number of source rows (each requires twelve scratch bytes).
+    /// Number of source rows (each requires sixteen scratch bytes).
     pub rows: usize,
     /// Scratch bytes required for the largest individual leaf.
     pub leaf_paths: usize,
@@ -22,7 +22,7 @@ impl BorrowedProgramGraphScratch {
     }
     /// Exact bytes needed for the source-row index.
     pub const fn row_bytes(self) -> usize {
-        self.rows * 12
+        self.rows * 16
     }
 }
 
@@ -31,8 +31,6 @@ pub struct BorrowedProgramGraph<'a, 's> {
     bytes: &'a [u8],
     toolchain: ContentId<ToolchainDomain>,
     rows: &'s [u8],
-    images: &'a [u8],
-    image_count: usize,
     identity: [u8; 32],
 }
 
@@ -59,7 +57,7 @@ fn put_u32(bytes: &mut [u8], offset: usize, value: usize) {
     bytes[offset..offset + 4].copy_from_slice(&(value as u32).to_le_bytes());
 }
 fn row_at<'a>(wire: &'a [u8], rows: &[u8], index: usize) -> NativeProgramOwnedSourceRef<'a> {
-    let base = index * 12;
+    let base = index * 16;
     let row = super::super::native_program_sources::borrowed_row(&wire[get_u32(rows, base)..])
         .expect("validated row");
     let node_offset = get_u32(rows, base + 4);
@@ -76,7 +74,7 @@ fn charge_row<E>(
     index: usize,
     checkpoint: &mut impl FnMut(u64) -> Result<(), E>,
 ) -> Result<(), E> {
-    let offset = get_u32(rows, index * 12);
+    let offset = get_u32(rows, index * 16);
     let path_len = get_u32(wire, offset);
     let tag = offset + 4 + path_len + 32 + 4;
     let package_len = if wire[tag] == 1 {
@@ -103,8 +101,8 @@ fn sort_rows<E>(
         }
     }
     fn swap(rows: &mut [u8], a: usize, b: usize) {
-        for i in 0..12 {
-            rows.swap(a * 12 + i, b * 12 + i);
+        for i in 0..16 {
+            rows.swap(a * 16 + i, b * 16 + i);
         }
     }
     fn sift<E>(
@@ -149,7 +147,7 @@ fn sort_rows<E>(
             root = child;
         }
     }
-    let count = rows.len() / 12;
+    let count = rows.len() / 16;
     for root in (0..count / 2).rev() {
         sift(wire, rows, root, count, package, checkpoint)?;
     }
@@ -224,7 +222,7 @@ impl<'a, 's> BorrowedProgramGraph<'a, 's> {
         let invalid = NativeProgramSourceManifestError::Encoding;
         let shape = Self::scratch(bytes, &mut checkpoint)?;
         if nodes.len() < shape.nodes * 8
-            || rows.len() < shape.rows * 12
+            || rows.len() < shape.rows * 16
             || leaf_paths.len() < shape.leaf_paths
         {
             return Err(Scratch);
@@ -312,9 +310,10 @@ impl<'a, 's> BorrowedProgramGraph<'a, 's> {
                 leaf.visit_sources(&mut checkpoint, |row| {
                     let row_offset =
                         row.program_path.as_ptr() as usize - bytes.as_ptr() as usize - 4;
-                    put_u32(rows, row_count * 12, row_offset);
-                    put_u32(rows, row_count * 12 + 4, node_offset);
-                    put_u32(rows, row_count * 12 + 8, leaf_offset);
+                    put_u32(rows, row_count * 16, row_offset);
+                    put_u32(rows, row_count * 16 + 4, node_offset);
+                    put_u32(rows, row_count * 16 + 8, leaf_offset);
+                    put_u32(rows, row_count * 16 + 12, 0);
                     row_count += 1;
                     Ok(())
                 })
@@ -376,7 +375,7 @@ impl<'a, 's> BorrowedProgramGraph<'a, 's> {
         if state[..count].iter().any(|s| *s != 2) {
             return Err(Manifest(invalid));
         }
-        let rows = &mut rows[..row_count * 12];
+        let rows = &mut rows[..row_count * 16];
         sort_rows(bytes, rows, false, &mut checkpoint).map_err(Stopped)?;
         let mut prior: Option<NativeProgramOwnedSourceRef<'_>> = None;
         let mut owner = None;
@@ -423,7 +422,6 @@ impl<'a, 's> BorrowedProgramGraph<'a, 's> {
         if image_count > MAX_NATIVE_PROGRAM_SOURCES {
             return Err(Manifest(NativeProgramSourceManifestError::Limit));
         }
-        let images = input.0;
         let mut prior_image = None;
         for _ in 0..image_count {
             checkpoint(1).map_err(Stopped)?;
@@ -434,7 +432,8 @@ impl<'a, 's> BorrowedProgramGraph<'a, 's> {
             }
             prior_image = Some(path);
             let recorded_node: [u8; 32] = input.take(32).map_err(Manifest)?.try_into().unwrap();
-            let image: [u8; 32] = input.take(32).map_err(Manifest)?.try_into().unwrap();
+            let image_wire = input.take(32).map_err(Manifest)?;
+            let image: [u8; 32] = image_wire.try_into().unwrap();
             SemanticImageIdentity::try_from(image).map_err(|_| Manifest(invalid))?;
             // Rows are sorted by package path. Binary search with metered comparisons.
             let mut low = 0;
@@ -458,6 +457,11 @@ impl<'a, 's> BorrowedProgramGraph<'a, 's> {
             {
                 return Err(Manifest(invalid));
             }
+            put_u32(
+                rows,
+                low * 16 + 12,
+                image_wire.as_ptr() as usize - bytes.as_ptr() as usize,
+            );
         }
         if !input.0.is_empty() {
             return Err(Manifest(invalid));
@@ -471,8 +475,6 @@ impl<'a, 's> BorrowedProgramGraph<'a, 's> {
             bytes,
             toolchain,
             rows,
-            images,
-            image_count,
             identity: *hash.finalize().as_bytes(),
         })
     }
@@ -490,7 +492,7 @@ impl<'a, 's> BorrowedProgramGraph<'a, 's> {
         mut checkpoint: impl FnMut(u64) -> Result<(), E>,
         mut visit: impl FnMut(NativeProgramOwnedSourceRef<'a>) -> Result<(), E>,
     ) -> Result<(), E> {
-        for index in 0..self.rows.len() / 12 {
+        for index in 0..self.rows.len() / 16 {
             checkpoint(1)?;
             charge_row(self.bytes, self.rows, index, &mut checkpoint)?;
             visit(row_at(self.bytes, self.rows, index))?;
@@ -503,19 +505,35 @@ impl<'a, 's> BorrowedProgramGraph<'a, 's> {
         image: &[u8; 32],
         mut checkpoint: impl FnMut(u64) -> Result<(), E>,
     ) -> Result<bool, E> {
-        let mut input = Input(self.images);
-        for _ in 0..self.image_count {
-            checkpoint(1)?;
-            let recorded = std::str::from_utf8(input.cell().expect("validated image path"))
-                .expect("validated image path");
-            input.take(32).expect("validated image node");
-            let digest = input.take(32).expect("validated image digest");
-            match cmp(recorded, path, &mut checkpoint)? {
-                std::cmp::Ordering::Equal => return Ok(digest == image),
-                std::cmp::Ordering::Greater => return Ok(false),
-                std::cmp::Ordering::Less => {}
+        let mut low = 0;
+        let mut high = self.rows.len() / 16;
+        while low < high {
+            let mid = low + (high - low) / 2;
+            charge_row(self.bytes, self.rows, mid, &mut checkpoint)?;
+            let key = row_at(self.bytes, self.rows, mid)
+                .package_path
+                .unwrap_or("");
+            if cmp(key, path, &mut checkpoint)?.is_lt() {
+                low = mid + 1;
+            } else {
+                high = mid;
             }
         }
-        Ok(false)
+        if low == self.rows.len() / 16 {
+            return Ok(false);
+        }
+        charge_row(self.bytes, self.rows, low, &mut checkpoint)?;
+        if cmp(
+            row_at(self.bytes, self.rows, low)
+                .package_path
+                .unwrap_or(""),
+            path,
+            &mut checkpoint,
+        )? != std::cmp::Ordering::Equal
+        {
+            return Ok(false);
+        }
+        let offset = get_u32(self.rows, low * 16 + 12);
+        Ok(offset != 0 && self.bytes[offset..offset + 32] == *image)
     }
 }
