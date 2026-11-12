@@ -870,6 +870,7 @@ impl<'a> Decoder<'a> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::panic)]
     #[test]
     fn truncated_artifact_count_refuses_before_count_sized_allocation() {
         let mut bytes = Vec::new();
@@ -880,8 +881,6 @@ mod tests {
         let measured = allocation_counter::measure(|| assert!(matches!(super::VersionedPlaneMetadata::decode(&bytes), Err(super::VersionedPlaneError::Truncated))));
         assert!(measured.bytes_max < 32 * 1024, "versioned preflight: {measured:?}");
     }
-
-    #![allow(clippy::expect_used, clippy::panic)]
 
     use super::*;
     use backend_semantic::ir::{
