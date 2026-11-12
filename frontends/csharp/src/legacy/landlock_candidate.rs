@@ -22,6 +22,7 @@ pub(super) fn prepare(
     read_files: &[File],
     executable_files: &[File],
     enumerate_directories: &[File],
+    kernel_observations: &[File],
 ) -> Result<RulesetCreated, ()> {
     if read_files.len().saturating_add(executable_files.len()) > 8192 {
         return Err(());
@@ -59,6 +60,14 @@ pub(super) fn prepare(
             .add_rule(PathBeneath::new(directory, AccessFs::ReadDir))
             .map_err(|_| ())?;
     }
+    // Caller may only supply file descriptions opened from its closed,
+    // typed kernel-observation list. Their changing bytes are not SDK or
+    // immutable execution-closure content.
+    for observation in kernel_observations {
+        ruleset = ruleset
+            .add_rule(PathBeneath::new(observation, AccessFs::ReadFile))
+            .map_err(|_| ())?;
+    }
     Ok(ruleset)
 }
 
@@ -88,7 +97,7 @@ mod tests {
             let outside = root.join("outside");
             let fd = File::open(&allowed).expect("open allowed file");
             let mut inherited = File::open(&outside).expect("open before confinement");
-            let rules = match prepare(&[fd], &[], &[]) {
+            let rules = match prepare(&[fd], &[], &[], &[]) {
                 Ok(rules) => rules,
                 Err(()) => std::process::exit(77),
             };

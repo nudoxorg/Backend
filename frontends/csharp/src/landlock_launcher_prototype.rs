@@ -25,6 +25,35 @@ mod linux {
         execute: bool,
     }
 
+    // These are explicitly requested, volatile kernel-resource observations;
+    // they never become hashes or members of the SDK/native execution closure.
+    #[derive(Clone, Copy, Deserialize, Eq, PartialEq)]
+    enum KernelResourceObservation {
+        ProcessMemoryMap,
+        SystemMemoryInfo,
+        ProcessStatus,
+        ProcessMountInfo,
+        SystemCpuStat,
+        CpuPossible,
+        CpuOnline,
+        RandomDevice,
+    }
+
+    impl KernelResourceObservation {
+        fn path(self) -> &'static str {
+            match self {
+                Self::ProcessMemoryMap => "/proc/self/maps",
+                Self::SystemMemoryInfo => "/proc/meminfo",
+                Self::ProcessStatus => "/proc/self/stat",
+                Self::ProcessMountInfo => "/proc/self/mountinfo",
+                Self::SystemCpuStat => "/proc/stat",
+                Self::CpuPossible => "/sys/devices/system/cpu/possible",
+                Self::CpuOnline => "/sys/devices/system/cpu/online",
+                Self::RandomDevice => "/dev/urandom",
+            }
+        }
+    }
+
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Policy {
@@ -35,6 +64,8 @@ mod linux {
         args: Vec<String>,
         grants: Vec<Grant>,
         enumerate: Vec<PathBuf>,
+        #[serde(default)]
+        kernel_observations: Vec<KernelResourceObservation>,
     }
 
     fn absolute(path: &Path) -> bool {
@@ -146,7 +177,19 @@ mod linux {
         // This grant permits listing descriptor names only; no file reads are
         // authorized by it. The final audit runs after all grant FDs close.
         directories.push(File::open("/proc/self/fd").map_err(|_| ())?);
-        let rules = super::landlock_candidate::prepare(&reads, &executables, &directories)?;
+        if policy.kernel_observations.len() > 8 {
+            return Err(());
+        }
+        let mut observations = Vec::new();
+        for (index, item) in policy.kernel_observations.iter().enumerate() {
+            if policy.kernel_observations[..index].contains(item) {
+                return Err(());
+            }
+            observations.push(File::open(item.path()).map_err(|_| ())?);
+        }
+        let rules =
+            super::landlock_candidate::prepare(&reads, &executables, &directories, &observations)?;
+        drop(observations);
         drop(reads);
         drop(executables);
         drop(directories);
