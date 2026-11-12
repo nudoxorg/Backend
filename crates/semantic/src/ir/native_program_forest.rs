@@ -630,8 +630,8 @@ mod tests {
         )
         .unwrap();
         let mut owned = graph.sources().collect::<Vec<_>>();
-        borrowed.sort_by_key(|row| row.program_path);
-        owned.sort_by_key(|row| row.program_path);
+        borrowed.sort_by(|a, b| a.row.program_path.cmp(b.row.program_path));
+        owned.sort_by(|a, b| a.row.program_path.cmp(b.row.program_path));
         assert_eq!(borrowed, owned);
         assert!(
             view.image_matches("src/app.ts", &[7; 32], |_| Ok::<_, ()>(()))
@@ -646,6 +646,22 @@ mod tests {
             BorrowedProgramGraph::scratch(graph.as_bytes(), |_| Err(())),
             Err(crate::ir::BorrowedNativeProgramError::Stopped(()))
         ));
+        let mut corrupt = graph.as_bytes().to_vec();
+        let node_offset = corrupt.len() - 64;
+        corrupt[node_offset] ^= 1;
+        let mut nodes = vec![0; shape.nodes * 8];
+        let mut rows = vec![0; shape.rows * 12];
+        let mut paths = vec![0; shape.leaf_paths];
+        assert!(NativeProgramSources::decode(&corrupt).is_err());
+        assert!(
+            BorrowedProgramGraph::decode(&corrupt, &mut nodes, &mut rows, &mut paths, |_| Ok::<
+                _,
+                (),
+            >(
+                ()
+            ))
+            .is_err()
+        );
     }
     fn leaf(path: &str) -> NativeProgramSourceManifest {
         NativeProgramSourceManifest::from_sources(
