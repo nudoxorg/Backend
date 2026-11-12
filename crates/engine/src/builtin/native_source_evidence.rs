@@ -313,6 +313,61 @@ mod tests {
     }
 
     #[test]
+    fn selected_pointer_preflight_charges_before_root_and_child_decode() {
+        use backend_store::{FileStore, RelationAdmissionRegistry, StoreError};
+        use backend_version::{CoverageWitness, RelationState, ScopeRoot, UntrustedCoverageScope};
+        use std::sync::Arc;
+        let directory=tempfile::tempdir().unwrap();
+        let registry=RelationAdmissionRegistry::new().with_relation::<NativeSourceEvidenceRelation>().unwrap();
+        let store=FileStore::open_with_registry(directory.path(),1024*1024,registry).unwrap();
+        let mut rows=(0..200).map(|i| {
+            let mut r=row();r.path=format!("pkg/{i:03}.go");r.byte_length=2048;
+            r.line_starts=Some((0..1024).map(|n|n*2).collect());
+            (r.key().unwrap(),r)
+        }).collect::<Vec<_>>();
+        rows.sort_unstable_by_key(|r|r.0);
+        let coverage=CoverageWitness::Partial(UntrustedCoverageScope::from_scope_root(ScopeRoot::from_u64(1)));
+        let state=RelationState::<NativeSourceEvidenceRelation>::from_entries(rows.clone(),coverage).unwrap();
+        store.write_relation_state(&state).unwrap();
+        let handle=crate::workspace::WorkspacePreflightRelationHandle::<NativeSourceEvidenceRelation>::new(Arc::new(store),*state.root().as_bytes()).unwrap();
+        let calls=std::cell::Cell::new(0usize);
+        let mut gate=|node: &backend_version::CanonicalNodeView<'_>, budget: &mut usize| {
+            calls.set(calls.get()+1);
+            if node.is_leaf() { for field in node.leaf_field_iter().map_err(|_|StoreError::Corrupt)? { field.map_err(|_|StoreError::Corrupt)?; } }
+            *budget=budget.checked_sub(128*1024).ok_or(StoreError::Bounds)?;
+            Ok(())
+        };
+        let mut short=0;
+        assert!(handle.lookup(&rows[0].0,32,&mut short,&mut gate).is_err());
+        assert_eq!(calls.get(),0);
+        let mut budget=16*1024*1024;
+        let got=handle.lookup(&rows[0].0,32,&mut budget,&mut gate).unwrap().unwrap();
+        assert_eq!(got,rows[0].1);
+        assert!(calls.get()>=2, "root and child must each be preflighted");
+        assert!(budget<16*1024*1024);
+        let mut visited = Vec::new();
+        let mut cursor = None;
+        let mut visitor = |key: &[u8; 32], row: NativeSourceEvidence, budget: &mut usize| {
+            let line_bytes = match &row.line_starts {
+                Some(lines) => lines.capacity().checked_mul(std::mem::size_of::<u32>()).ok_or(StoreError::Bounds)?,
+                None => 0,
+            };
+            let retained = row.path.capacity().checked_add(line_bytes)
+                .and_then(|n| n.checked_add(std::mem::size_of::<NativeSourceEvidence>() + 128))
+                .ok_or(StoreError::Bounds)?;
+            *budget = budget.checked_sub(retained).ok_or(StoreError::Bounds)?;
+            visited.push((*key, row));
+            Ok(())
+        };
+        loop {
+            cursor = handle.visit(cursor.as_ref(), 64, 32, &mut budget, &mut gate, &mut visitor).unwrap();
+            if cursor.is_none() { break; }
+        }
+        drop(visitor);
+        assert_eq!(visited, rows);
+    }
+
+    #[test]
     fn claims_roundtrip_and_reject_noncanonical_input() {
         let row = row();
         let mut bytes = Vec::new();

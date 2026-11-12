@@ -24,6 +24,7 @@ export NUDOX_TEST_SQLITE_WORKER="$output/bundle/backend-sqlite-worker"
 # prerequisite, so a compiler failure exits before independent behavior checks.
 cargo test -p backend-library --lib --locked --offline --no-run
 cargo test -p backend-present --lib --locked --offline --no-run
+cargo test -p backend-extension-trustfall --lib --locked --offline --no-run
 cargo test --manifest-path frontends/sqlite/Cargo.toml --test outline --locked --offline --no-run
 cargo test -p backend-local-service --lib --locked --offline --no-run
 # The recorder pins this exact runner, source, toolchain and resulting private
@@ -65,9 +66,18 @@ check() {
 check status-wire cargo test -p backend-library --lib --locked --offline sql_analysis_progress_round_trips_and_rejects_empty_or_overflow -- --nocapture
 check status-render cargo test -p backend-present --lib --locked --offline status_exposes_selected_sql_analysis_at_every_detail -- --nocapture
 check native-upsert cargo test --manifest-path frontends/sqlite/Cargo.toml --test outline --locked --offline excluded_upsert_without_update_where_has_valid_native_outline -- --nocapture
-for test in sql_stage_scope_rejects_missing_duplicate_and_cancelled_members shared_upsert_syntax_does_not_select_postgres_or_poison_project_consensus sqlite_project_indexes_publishes_queries_reindexes_and_survives_cold_reopen unsupported_statement_and_unparseable_file_are_reported_as_gaps_never_as_empty flat_sql_upsert_and_renamed_objects_keep_precise_owner_edges; do
-    check "$test" cargo test -p backend-local-service --lib --locked --offline "$test" -- --nocapture --test-threads=1
+run_listed_test() {
+    local package=$1 filter=$2 list="$output/test-list-$2.txt"
+    cargo test -p "$package" --lib --locked --offline "$filter" -- --list > "$list"
+    cat "$list"
+    grep -q ': test$' "$list" || return 1
+    cargo test -p "$package" --lib --locked --offline "$filter" -- --nocapture --test-threads=1
+}
+for test in sql_stage_scope_rejects_missing_duplicate_and_cancelled_members shared_upsert_syntax_does_not_select_postgres_or_poison_project_consensus sqlite_project_indexes_publishes_queries_reindexes_and_survives_cold_reopen unsupported_statement_and_unparseable_file_are_reported_as_gaps_never_as_empty flat_sql_upsert_and_renamed_objects_keep_precise_owner_edges sql_impact_distinguishes_drop_recreate_epochs many_sql_facts_publish_discover_and_reopen_with_bounded_catalog bounded_catalog_tests sql_catalog::snapshot_tests builtin::view_build::sql::tests row_admission failed_latest_sql_attempt_leaves_names_gapped; do
+    check "$test" run_listed_test backend-local-service "$test"
 done
+check corpus-admission run_listed_test backend-extension-trustfall corpus_admission
+check sql-query-evidence run_listed_test backend-extension-trustfall sql_native_evidence_binds_projection_and_host_basis
 sha256sum "$output/bundle/"*
 common=(--build-receipt "$receipt" --source-checkout "$repo")
 check public-python python3 "$here/sql_public_journey.py" --bundle "$output/bundle" --output "$output/python" "${common[@]}" --python

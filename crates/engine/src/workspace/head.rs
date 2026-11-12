@@ -1,6 +1,6 @@
 //! Immutable checked workspace head and snapshots.
 
-use super::lazy::{WorkspaceRelationError, WorkspaceRelationHandle};
+use super::lazy::{WorkspacePreflightRelationHandle, WorkspaceRelationError, WorkspaceRelationHandle};
 use super::owner::WorkspaceError;
 use super::transition::{PersistedTransition, PreparedTransition, TransactionId, TransitionWork};
 use crate::journal::ChainHash;
@@ -302,6 +302,19 @@ impl WorkspaceSnapshot {
             .clone()
             .ok_or(WorkspaceRelationError::StoreUnavailable)?;
         WorkspaceRelationHandle::open(store, root).map(Some)
+    }
+
+    /// Selects an auxiliary pointer without decoding its root. Each operation
+    /// on the returned handle authenticates and preflights every loaded node.
+    pub fn auxiliary_relation_preflight<R: backend_version::CanonicalRelation>(
+        &self, pointer_schema: SchemaIdentity, pointer_key: [u8; backend_version::ID_BYTES],
+    ) -> Result<Option<WorkspacePreflightRelationHandle<R>>, WorkspaceRelationError> {
+        let Some(pointer) = self.closure().control_manifest().objects().iter()
+            .find(|object| object.schema() == pointer_schema && object.key() == &pointer_key)
+        else { return Ok(None); };
+        let root = pointer.bytes().try_into().map_err(|_| WorkspaceRelationError::InvalidRoot)?;
+        let store = self.store.clone().ok_or(WorkspaceRelationError::StoreUnavailable)?;
+        WorkspacePreflightRelationHandle::new(store, root).map(Some)
     }
 
     /// Alias emphasizing the lazy, read-only relation capability.

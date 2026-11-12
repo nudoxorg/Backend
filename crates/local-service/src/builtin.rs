@@ -71,6 +71,7 @@ mod sql_intent;
 mod sql_receipt;
 mod sql_receipt_index;
 mod sql_catalog;
+mod row_admission;
 mod sql_index;
 #[cfg(test)]
 mod sql_journey_support;
@@ -1112,17 +1113,9 @@ fn empty_indexed_sources() -> IndexedSources {
 }
 
 fn row_admission_bytes(row: &Row) -> Option<usize> {
-    let document = row.document.iter().try_fold(0usize, |bytes, fragment| {
-        bytes.checked_add(match fragment {
-            Fragment::Text(value) | Fragment::Code(value) => value.len(),
-            Fragment::Link { label, .. } => label.len(),
-            Fragment::Break => 1,
-        })
-    })?;
-    row.label
-        .len()
-        .checked_add(row.signature.as_deref().map_or(0, str::len))?
-        .checked_add(document)
+    // Source/excerpt Arcs can be shared by many rows and require shared-source
+    // accounting rather than a per-reference multiplier in this row budget.
+    row.retained_owned_requested_bytes()
 }
 
 fn finish_admitted_bytes(bytes: usize) -> Result<usize, BuiltinModelError> {

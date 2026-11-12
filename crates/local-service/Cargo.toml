@@ -43,6 +43,7 @@ backend-store = { path = "../store" }
 backend-store-s3 = { path = "../store-s3" }
 backend-version = { path = "../version" }
 blake3.workspace = true
+bytemuck = { version = "=1.25.2", default-features = false, features = ["extern_crate_alloc"] }
 base64.workspace = true
 hmac.workspace = true
 httpdate.workspace = true
@@ -67,6 +68,7 @@ unicode-normalization = "0.1.25"
 url = "=2.5.8"
 
 [dev-dependencies]
+allocation-counter.workspace = true
 axum.workspace = true
 backend-client = { path = "../client", features = ["test-support"] }
 backend-store-s3 = { path = "../store-s3", features = ["test-support"] }

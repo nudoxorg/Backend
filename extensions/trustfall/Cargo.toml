@@ -12,6 +12,7 @@ backend-flow = { path = "../../crates/flow" }
 backend-semantic = { path = "../../crates/semantic" }
 backend-library = { path = "../../crates/library" }
 blake3.workspace = true
+bytemuck = { version = "=1.25.2", default-features = false, features = ["extern_crate_alloc"] }
 futures-core.workspace = true
 futures-util.workspace = true
 thiserror.workspace = true
