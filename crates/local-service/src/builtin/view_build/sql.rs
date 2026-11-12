@@ -82,10 +82,9 @@ pub(super) fn append(
     let remaining = super::super::MAX_REBUILD_BYTES
         .checked_sub(bytes)
         .ok_or_else(|| BuiltinModelError("SQL view exceeds byte bound".into()))?;
-    let projects = sources.projects.keys().copied().collect();
     let (selected, catalog_bytes) = super::super::sql_catalog::load_projects_bounded(
         snapshot,
-        &projects,
+        sources.projects.keys(),
         &|| false,
         remaining,
         SQL_ALLOCATION_QUOTA_PER_ALLOCATION,
@@ -153,10 +152,9 @@ pub(super) fn append_query(
     use backend_extension_trustfall::{
         SemanticQueryEvidence, SemanticQueryFact, SemanticQueryPresentation, SqlNativeQueryEvidence,
     };
-    let projects = sources.projects.keys().copied().collect();
     let (selected, catalog_bytes) = super::super::sql_catalog::load_projects_bounded(
         snapshot,
-        &projects,
+        sources.projects.keys(),
         &|| cancelled.is_some_and(|c| c.load(std::sync::atomic::Ordering::Acquire)),
         remaining_bytes,
         SQL_ALLOCATION_QUOTA_PER_ALLOCATION,
