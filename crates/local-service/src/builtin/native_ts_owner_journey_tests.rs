@@ -1600,6 +1600,7 @@ fn omitted_program_member_cold_replay(mixed: bool) -> Result<(), Box<dyn Error>>
     let worker_shutdown = shutdown.clone();
     super::semantic_authority::TEST_COLD_REPLAY_REACHED.store(false, Ordering::Release);
     super::semantic_authority::TEST_COLD_REPLAY_IMAGE_PHASE.store(false, Ordering::Release);
+    super::semantic_authority::TEST_COLD_REPLAY_STOP_OBSERVED.store(false, Ordering::Release);
     super::semantic_authority::TEST_COLD_REPLAY_PAUSE.store(true, Ordering::Release);
     let embedded_config = stopped_config.clone();
     let worker = thread::spawn(move || EmbeddedLocalService::start_with_shutdown(embedded_config, worker_shutdown));
@@ -1610,27 +1611,33 @@ fn omitted_program_member_cold_replay(mixed: bool) -> Result<(), Box<dyn Error>>
     super::semantic_authority::TEST_COLD_REPLAY_PAUSE.store(false, Ordering::Release);
     let result = worker.join().map_err(|_| "cold owner worker panicked")?;
     assert!(reached, "cold replay did not reach image admission");
+    assert!(super::semantic_authority::TEST_COLD_REPLAY_STOP_OBSERVED.load(Ordering::Acquire), "replay must observe the actual owner shutdown");
     let error = match result { Ok(owner) => { drop(owner); return Err("mid-replay shutdown unexpectedly started owner".into()); }, Err(error) => error };
     assert!(error.to_string().contains("native replay stopped"), "unexpected live cold refusal: {error}");
     // This test already runs in its own child process. Exercise the daemon's
     // real signal handler while the same persisted image decoder is active.
     super::semantic_authority::TEST_COLD_REPLAY_REACHED.store(false, Ordering::Release);
     super::semantic_authority::TEST_COLD_REPLAY_IMAGE_PHASE.store(false, Ordering::Release);
+    super::semantic_authority::TEST_COLD_REPLAY_STOP_OBSERVED.store(false, Ordering::Release);
     super::semantic_authority::TEST_COLD_REPLAY_PAUSE.store(true, Ordering::Release);
-    let worker = thread::spawn(move || super::run(stopped_config));
+    let signal_shutdown = crate::listener::ListenerShutdown::new();
+    let worker_shutdown = signal_shutdown.clone();
+    let worker = thread::spawn(move || super::run_with_lifecycle(stopped_config, worker_shutdown));
     let deadline = Instant::now() + Duration::from_secs(30);
     while !super::semantic_authority::TEST_COLD_REPLAY_REACHED.load(Ordering::Acquire) && Instant::now() < deadline { thread::yield_now(); }
     let reached = super::semantic_authority::TEST_COLD_REPLAY_REACHED.load(Ordering::Acquire);
-    if reached {
-        rustix::process::kill_process(rustix::process::getpid(), rustix::process::Signal::TERM)?;
-    } else {
-        super::semantic_authority::TEST_COLD_REPLAY_PAUSE.store(false, Ordering::Release);
-    }
+    let started = Instant::now();
+    let signal_result = if reached { rustix::process::kill_process(rustix::process::getpid(), rustix::process::Signal::TERM) } else { signal_shutdown.request(); Ok(()) };
+    if signal_result.is_err() { signal_shutdown.request(); }
     // The real handler requests the shared lifecycle. The test-only pause
     // waits for that request, not for a fabricated cancellation result.
     let status = worker.join().map_err(|_| "signal cold owner worker panicked")?;
+    let elapsed = started.elapsed();
     super::semantic_authority::TEST_COLD_REPLAY_PAUSE.store(false, Ordering::Release);
+    signal_result?;
     assert!(reached, "signal control did not reach image admission");
+    assert!(super::semantic_authority::TEST_COLD_REPLAY_STOP_OBSERVED.load(Ordering::Acquire), "decoder must observe signal's shared shutdown");
+    assert!(elapsed < crate::termination::TERMINATION_GRACE, "signal retirement exceeded existing grace");
     assert_ne!(status, std::process::ExitCode::SUCCESS, "signalled cold startup must stop");
     let owner = start_owner(&paths)?;
     let mut session = Session::connect(owner.endpoint())?;

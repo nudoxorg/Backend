@@ -1155,6 +1155,8 @@ pub(super) static TEST_COLD_REPLAY_PAUSE: std::sync::atomic::AtomicBool = std::s
 pub(super) static TEST_COLD_REPLAY_REACHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 #[cfg(test)]
 pub(super) static TEST_COLD_REPLAY_IMAGE_PHASE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+pub(super) static TEST_COLD_REPLAY_STOP_OBSERVED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub(super) fn admit_replayed_native_evidence_with_shutdown(
     workspace_store: &FileStore,
@@ -1194,6 +1196,9 @@ pub(super) fn admit_replayed_native_evidence_with_shutdown(
             while TEST_COLD_REPLAY_PAUSE.load(std::sync::atomic::Ordering::Acquire)
                 && !shutdown.is_some_and(crate::listener::ListenerShutdown::is_requested)
                 && std::time::Instant::now() < deadline { std::thread::yield_now(); }
+            if shutdown.is_some_and(crate::listener::ListenerShutdown::is_requested) {
+                TEST_COLD_REPLAY_STOP_OBSERVED.store(true, std::sync::atomic::Ordering::Release);
+            }
         }
         std::time::Instant::now() >= deadline || shutdown.is_some_and(crate::listener::ListenerShutdown::is_requested)
     };

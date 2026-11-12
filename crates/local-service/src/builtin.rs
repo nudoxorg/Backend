@@ -2892,7 +2892,10 @@ pub fn measure_semantic_snapshot_residence() {
 /// listener is bound, so an invalid durable directory cannot look ready.
 #[must_use]
 pub fn run(config: ProcessConfig) -> ExitCode {
-    let shutdown = crate::listener::ListenerShutdown::new();
+    run_with_lifecycle(config, crate::listener::ListenerShutdown::new())
+}
+
+fn run_with_lifecycle(config: ProcessConfig, shutdown: crate::listener::ListenerShutdown) -> ExitCode {
     #[cfg(unix)]
     let _termination = crate::termination::install(shutdown.clone(), crate::termination::TERMINATION_GRACE).ok();
     match compose_owner_with_shutdown(&config, Some(shutdown.clone())) {
