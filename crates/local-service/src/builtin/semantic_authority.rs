@@ -2068,7 +2068,17 @@ impl SemanticAuthority {
         }
         let (actual, selected) = self.read_selected_pair(key)?;
         if actual != claim { return Err(BuiltinModelError("native header selected claim differs".into())); }
-        let witness = backend_extension_turso::reopen_selected_native_headers(&self.store, &selected, *budget)
+        self.native_header_aggregate_for_admitted(&selected, budget)
+    }
+
+    /// Caller must have admitted this exact generation against the pending
+    /// capture, publication claim and compiler input before invoking this.
+    pub(super) fn native_header_aggregate_for_admitted(
+        &self,
+        selected: &backend_extension_turso::SelectedGeneration,
+        budget: &mut usize,
+    ) -> Result<Option<(backend_semantic::native_ts_headers::NativeTsHeaderAggregate, [u8; 32])>, BuiltinModelError> {
+        let witness = backend_extension_turso::reopen_selected_native_headers(&self.store, selected, *budget)
             .map_err(|error| BuiltinModelError(format!("reopen selected native headers: {error}")))?;
         let Some(witness) = witness else { return Ok(None) };
         *budget = budget.checked_sub(witness.as_bytes().len().saturating_add(2 * std::mem::size_of::<usize>()))

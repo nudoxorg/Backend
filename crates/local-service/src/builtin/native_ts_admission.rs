@@ -226,7 +226,6 @@ pub(super) fn refresh_native_ts_evidence_plan(
                     ));
                 }
             };
-        let _selected = selected;
         let mut generations = super::generation_residence::SemanticGenerationResidence::default();
         generations.install_selected_loader(Arc::clone(&loader));
         let mut image_rows = super::view_build::ImageRowResidence::default();
@@ -242,9 +241,7 @@ pub(super) fn refresh_native_ts_evidence_plan(
             .as_ref()
             .ok_or_else(|| BuiltinModelError("native TypeScript program is unavailable".into()))?;
         let mut header_budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
-        let header_witness = semantic_authority.selected_native_header_aggregate(
-            candidate.publication.key(), candidate.publication.claim(), &mut header_budget,
-        )?;
+        let header_witness = semantic_authority.native_header_aggregate_for_admitted(&selected, &mut header_budget)?;
         if program.membership_identity() != candidate.program_identity
             || program_package_paths(program)? != candidate.program_paths
             || !activated
@@ -924,9 +921,7 @@ pub(super) fn admit_native_ts_owner_candidate(
         &mut image_rows,
     )?;
     let mut header_budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
-    let header_witness = semantic_authority.selected_native_header_aggregate(
-        publication.key(), publication.claim(), &mut header_budget,
-    )?;
+    let header_witness = semantic_authority.native_header_aggregate_for_admitted(&selected, &mut header_budget)?;
     let evidence = revalidated
         .program_image_evidence(&activated, header_witness.as_ref().map(|(aggregate, digest)| (aggregate, *digest)))
         .map_err(BuiltinModelError)?;
