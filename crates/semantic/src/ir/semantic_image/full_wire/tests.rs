@@ -2552,8 +2552,9 @@ fn bounded_reopen_charges_work_scratch_and_retained_backing() -> Result<(), crat
     let measure = Meter::new(u64::MAX, usize::MAX, u64::MAX);
     let view = SemanticImageView::reopen_bounded(&bytes, &measure).expect("bounded reopen");
     assert_eq!(view.as_ref(), bytes.as_slice());
-    assert_eq!(view.canonical_entities().map(|e| e.version.identity()).collect::<Vec<_>>(),
-        unbounded.canonical_entities().map(|e| e.version.identity()).collect::<Vec<_>>());
+    assert_eq!(view.image_facts(), unbounded.image_facts());
+    assert_eq!(view.canonical_entities().collect::<Vec<_>>(),
+        unbounded.canonical_entities().collect::<Vec<_>>());
     let work = u64::MAX - measure.work.get();
     let scratch = measure.peak.get();
     let preflight = Meter::new(u64::MAX, 0, u64::MAX);
