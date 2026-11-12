@@ -5763,6 +5763,26 @@ mod tests {
         )
         .expect("cold manifest decode");
         assert_eq!(reopened_manifest.semantic_generation(), expected_generation);
+        let cancelled = std::cell::Cell::new(false);
+        let result = visit_selected_publication_wire(&store, &selected, &mut SelectedNativeHeaderBudget::new(64 * 1024 * 1024, 1_000_000), &|| cancelled.get(), 8 * 1024 * 1024, 1, |wire, _| {
+            if matches!(wire, SelectedPublicationWire::Image { .. }) { cancelled.set(true); }
+            Ok(())
+        });
+        assert!(result.is_err(), "stop after image must prevent plane admission");
+        for schema in [VERSIONED_PLANE_SEGMENT_SCHEMA, VERSIONED_PLANE_MANIFEST_SCHEMA] {
+            let object = plane_publication.objects().iter().find(|object| object.schema() == schema).expect("plane object");
+            let hex: String = object.id().as_bytes().iter().map(|byte| format!("{byte:02x}")).collect();
+            let path = directory.join("objects").join(format!("{hex}.object"));
+            let original = std::fs::read(&path).expect("read plane object");
+            let mut corrupt = original.clone();
+            let last = corrupt.len() - 1;
+            corrupt[last] ^= 1;
+            std::fs::remove_file(&path).expect("remove sealed plane object");
+            std::fs::write(&path, &corrupt).expect("replace with corrupted object");
+            assert!(visit_selected_publication_wire(&store, &selected, &mut SelectedNativeHeaderBudget::new(64 * 1024 * 1024, 1_000_000), &|| false, 8 * 1024 * 1024, 1, |_, _| Ok(())).is_err(), "corrupt physical plane object must be refused");
+            std::fs::remove_file(&path).expect("remove corrupted object");
+            std::fs::write(&path, &original).expect("restore plane object");
+        }
         drop(store);
         std::fs::remove_dir_all(directory).expect("remove valid plane store");
 
