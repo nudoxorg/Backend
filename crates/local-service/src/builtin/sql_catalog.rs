@@ -1530,6 +1530,14 @@ mod bounded_catalog_tests {
     }
 
     #[test]
+    fn project_slot_envelope_is_not_limited_by_relation_row_count() {
+        let mut budget = 16 * 1024 * 1024;
+        let slots = Slots::<u8>::new(MAX_ROWS + 1, &mut budget, 64, &|| false).unwrap();
+        assert_eq!(slots.capacity, MAX_ROWS + 1);
+        assert!(budget < 16 * 1024 * 1024);
+    }
+
+    #[test]
     fn staged_fact_bytes_and_slots_stay_within_precharged_peak() {
         const N: usize = 512;
         const BOOKKEEPING: usize = 64;
