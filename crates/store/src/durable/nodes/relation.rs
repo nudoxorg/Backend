@@ -698,16 +698,12 @@ impl FileStore {
         {
             return Err(StoreError::Corrupt);
         }
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(expected_len)
-            .map_err(|_| StoreError::Bounds)?;
-        file.read_to_end(&mut bytes)
-            .map_err(|error| io_error(&error))?;
-        if bytes.len() != expected_len {
-            return Err(StoreError::Corrupt);
-        }
-        wire::decode_relation_ref(&bytes, schema, version).map(Some)
+        let mut bytes = [0u8; 128];
+        if expected_len > bytes.len() { return Err(StoreError::Bounds); }
+        file.read_exact(&mut bytes[..expected_len]).map_err(|error| io_error(&error))?;
+        let mut trailing = [0u8; 1];
+        if file.read(&mut trailing).map_err(|error| io_error(&error))? != 0 { return Err(StoreError::Corrupt); }
+        wire::decode_relation_ref(&bytes[..expected_len], schema, version).map(Some)
     }
 }
 
