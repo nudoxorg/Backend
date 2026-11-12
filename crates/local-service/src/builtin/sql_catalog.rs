@@ -226,7 +226,7 @@ const CHUNKS_PER_GROUP: usize = 64;
 // relation rows retain their existing MAX_ROWS bound. The quota, not a new
 // smaller project cap, decides whether this requested layout fits.
 const GROUPS_PER_ROOT: usize = 512;
-const MAX_SLOTS: usize = SLOTS_PER_CHUNK * CHUNKS_PER_GROUP * GROUPS_PER_ROOT;
+const MAX_SLOTS: usize = 1_000_000;
 struct SlotChunk<T> {
     values: [Option<T>; SLOTS_PER_CHUNK],
 }
