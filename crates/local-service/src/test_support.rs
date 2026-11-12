@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 mod isolated_process;
 #[cfg(test)]
-pub(crate) use isolated_process::run_test_in_child;
+pub(crate) use isolated_process::{run_test_in_child, run_test_in_child_with_env};
 
 /// A short, private temporary directory for fixtures that are admitted as
 /// durable state or contain a local Unix endpoint.

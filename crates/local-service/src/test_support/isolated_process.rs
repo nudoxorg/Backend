@@ -17,6 +17,25 @@ const CHILD_DEADLINE: Duration = Duration::from_secs(3600);
 /// child runs one test on one harness thread, so process-wide frontend hooks
 /// cannot affect another test in the parent harness.
 pub(crate) fn run_test_in_child(module: &str, case: &str) -> io::Result<bool> {
+    run_test_in_child_with_env(module, case, &[])
+}
+
+/// Gives the isolated test its explicit environment before process startup.
+/// Parent-harness environment and cached process configuration stay unchanged.
+pub(crate) fn run_test_in_child_with_env(
+    module: &str,
+    case: &str,
+    environment: &[(&str, &str)],
+) -> io::Result<bool> {
+    if environment
+        .iter()
+        .any(|(key, _)| *key == CHILD_CASE || *key == CHILD_WITNESS)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "isolated test environment cannot replace its execution protocol",
+        ));
+    }
     let test = full_test_name(module, case)?;
     if std::env::var(CHILD_CASE).as_deref() == Ok(test.as_str()) {
         if !std::env::args_os().any(|arg| arg == "--exact")
@@ -25,6 +44,13 @@ pub(crate) fn run_test_in_child(module: &str, case: &str) -> io::Result<bool> {
             return Err(io::Error::other(
                 "isolated test child lacks its exact harness selection",
             ));
+        }
+        for (key, value) in environment {
+            if std::env::var_os(key).as_deref() != Some(std::ffi::OsStr::new(value)) {
+                return Err(io::Error::other(format!(
+                    "isolated child environment differs for {key}"
+                )));
+            }
         }
         let witness = std::env::var_os(CHILD_WITNESS)
             .ok_or_else(|| io::Error::other("isolated test child lacks its entry witness"))?;
@@ -43,6 +69,7 @@ pub(crate) fn run_test_in_child(module: &str, case: &str) -> io::Result<bool> {
             .args(["--exact", &test, "--nocapture", "--test-threads=1"])
             .env(CHILD_CASE, &test)
             .env(CHILD_WITNESS, &witness)
+            .envs(environment.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
@@ -136,5 +163,21 @@ mod tests {
             result.is_err_and(|error| error.to_string().contains("did not enter")),
             "a successful empty libtest selection cannot acknowledge execution"
         );
+    }
+
+    #[test]
+    fn child_environment_is_set_before_startup_without_changing_parent() -> io::Result<()> {
+        const KEY: &str = "NUDOX_TEST_ISOLATED_CONTROL_VALUE";
+        let parent_value = std::env::var_os(KEY);
+        if run_test_in_child_with_env(
+            module_path!(),
+            "child_environment_is_set_before_startup_without_changing_parent",
+            &[(KEY, "child-only")],
+        )? {
+            assert_eq!(std::env::var_os(KEY), parent_value);
+            return Ok(());
+        }
+        assert_eq!(std::env::var(KEY).as_deref(), Ok("child-only"));
+        Ok(())
     }
 }

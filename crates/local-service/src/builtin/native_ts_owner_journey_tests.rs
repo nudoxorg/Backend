@@ -42,8 +42,13 @@ fn start_owner_with_frame_budget(
 }
 
 #[test]
-#[ignore = "real owner index with a one-frame connection budget"]
 fn native_ts_index_polling_reconnects_without_resubmitting() -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child_with_env(
+        module_path!(), "native_ts_index_polling_reconnects_without_resubmitting",
+        &[(backend_client::CONNECTION_FRAME_BUDGET_ENV, "1")],
+    )? {
+        return Ok(());
+    }
     if backend_client::connection_frame_budget() != 1 {
         return Err("run with BACKEND_LOCALD_MAX_FRAMES_PER_CONNECTION=1".into());
     }
@@ -1342,8 +1347,12 @@ fn native_ts_last_file_deletion_retires_selected_evidence() -> Result<(), Box<dy
 /// compiler emits an image for the over-width input, the fixture must fail:
 /// it has not exercised the member-only case.
 #[test]
-#[ignore = "native owner journey; run alone with the frontend failpoint"]
 fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child(
+        module_path!(), "native_ts_omitted_program_member_cold_replay",
+    )? {
+        return Ok(());
+    }
     fn index_member_fixture(session: &mut Session, project: &Path) -> Result<(), Box<dyn Error>> {
         let package = PackageReference::parse(project.to_string_lossy().into_owned()).map_err(|e| io::Error::other(e.to_string()))?;
         let key = IndexOperationKey::from_bytes([0x91; 32]).map_err(|e| io::Error::other(e.to_string()))?;
