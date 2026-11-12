@@ -901,7 +901,7 @@ impl CompilerPublicationMetadata {
         {
             return Err(CompilerEnvelopeError::ManifestFacts);
         }
-        let manifest_bytes = input.take(manifest_length)?.to_vec();
+        let manifest_bytes = input.take(manifest_length)?;
         let binding_bytes = input.array::<COMPILATION_BINDING_BYTES>()?;
         let count =
             usize::try_from(input.u32()?).map_err(|_| CompilerEnvelopeError::MemberCount)?;
@@ -910,6 +910,32 @@ impl CompilerPublicationMetadata {
         }
         let required = count.checked_mul(72).and_then(|n| n.checked_add(1)).ok_or(CompilerEnvelopeError::Truncated)?;
         if input.bytes.len().saturating_sub(input.offset) < required { return Err(CompilerEnvelopeError::Truncated); }
+        // Preflight optional framing without allocating image rows or manifests.
+        let mut scan = Decoder { bytes: input.bytes, offset: input.offset };
+        scan.take(count.checked_mul(72).ok_or(CompilerEnvelopeError::Truncated)?)?;
+        match scan.u8()? {
+            0 => {},
+            1 => { let n = scan.u32()? as usize; scan.take(n)?; },
+            _ => return Err(CompilerEnvelopeError::VersionedPlaneMetadata),
+        }
+        let has_program = if matches!(version, COVERAGE_METADATA_VERSION | TYPESCRIPT_SNAPSHOT_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION) {
+            match scan.u8()? { 0 => false, 1 => true, _ => return Err(CompilerEnvelopeError::NativeProgramSources) }
+        } else { version == PROGRAM_METADATA_VERSION };
+        if has_program { scan.take(68)?; }
+        let has_coverage = match version {
+            COVERAGE_METADATA_VERSION => true,
+            TYPESCRIPT_SNAPSHOT_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION => match scan.u8()? { 0 => false, 1 => true, _ => return Err(CompilerEnvelopeError::SourceCoverage) },
+            _ => false,
+        };
+        if has_coverage { scan.take(68)?; }
+        let has_snapshot = match version {
+            TYPESCRIPT_SNAPSHOT_METADATA_VERSION => true,
+            NATIVE_HEADERS_METADATA_VERSION => match scan.u8()? { 0 => false, 1 => true, _ => return Err(CompilerEnvelopeError::TypeScriptSnapshotWitness) },
+            _ => false,
+        };
+        if has_snapshot { scan.take(36)?; }
+        if version == CSHARP_EVIDENCE_METADATA_VERSION || version == NATIVE_HEADERS_METADATA_VERSION { scan.take(36)?; }
+        if !scan.is_empty() { return Err(CompilerEnvelopeError::TrailingBytes); }
         let mut images = Vec::new();
         images.try_reserve_exact(count).map_err(|_| CompilerEnvelopeError::MemberCount)?;
         for _ in 0..count {
@@ -1030,7 +1056,7 @@ impl CompilerPublicationMetadata {
             return Err(CompilerEnvelopeError::MemberOrder);
         }
         let mut metadata = Self::new_with_versioned_planes(
-            &manifest_bytes,
+            manifest_bytes,
             binding_bytes,
             images,
             versioned_planes,

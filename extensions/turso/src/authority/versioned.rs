@@ -354,6 +354,25 @@ impl VersionedPlaneMetadata {
         // at least one fixed-size member. Check framing before reserving rows.
         let minimum = artifact_count.checked_mul(4 + 32 * 3 + 4 + 1 + 4 + 72).ok_or(VersionedPlaneError::Truncated)?;
         if decoder.bytes.len().saturating_sub(decoder.offset) < minimum { return Err(VersionedPlaneError::Truncated); }
+        // Borrowed first pass proves all variable extents and aggregate counts
+        // before allocating any artifact or segment vector.
+        let mut scan = Decoder { bytes: decoder.bytes, offset: decoder.offset };
+        let mut manifest_total = 0usize;
+        let mut member_total = artifact_count;
+        for _ in 0..artifact_count {
+            scan.take(4 + 32 * 3)?;
+            let manifest_len = scan.u32()? as usize;
+            if manifest_len == 0 || manifest_len > MAX_MANIFEST_BYTES { return Err(VersionedPlaneError::ManifestLength); }
+            manifest_total = manifest_total.checked_add(manifest_len).ok_or(VersionedPlaneError::ManifestLength)?;
+            if manifest_total > MAX_TOTAL_MANIFEST_BYTES { return Err(VersionedPlaneError::ManifestLength); }
+            scan.take(manifest_len)?;
+            let members = scan.u32()? as usize;
+            if members == 0 || members > MAX_SEGMENTS { return Err(VersionedPlaneError::MemberCount); }
+            member_total = member_total.checked_add(members).ok_or(VersionedPlaneError::MemberCount)?;
+            if member_total > MAX_SEGMENTS { return Err(VersionedPlaneError::MemberCount); }
+            scan.take(members.checked_mul(72).ok_or(VersionedPlaneError::Truncated)?)?;
+        }
+        if !scan.is_empty() { return Err(VersionedPlaneError::TrailingBytes); }
         let mut artifacts = Vec::new();
         artifacts
             .try_reserve_exact(artifact_count)
