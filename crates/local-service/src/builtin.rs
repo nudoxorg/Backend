@@ -1968,8 +1968,14 @@ mod startup_timing;
 pub(crate) fn compose_owner(
     config: &ProcessConfig,
 ) -> Result<impl crate::service::OwnerService + 'static, ProcessError> {
+    compose_owner_with_shutdown(config, None)
+}
+
+pub(crate) fn compose_owner_with_shutdown(
+    config: &ProcessConfig, shutdown: Option<crate::listener::ListenerShutdown>,
+) -> Result<impl crate::service::OwnerService + 'static, ProcessError> {
     let mut timing = startup_timing::Timing::new();
-    let result = compose_owner_timed(config, &mut timing);
+    let result = compose_owner_timed(config, &mut timing, shutdown);
     timing.publish(result.is_ok());
     result
 }
@@ -1981,6 +1987,7 @@ pub(crate) fn compose_owner(
 fn compose_owner_timed(
     config: &ProcessConfig,
     timing: &mut startup_timing::Timing,
+    shutdown: Option<crate::listener::ListenerShutdown>,
 ) -> Result<impl crate::service::OwnerService + 'static + use<>, ProcessError> {
     let limits = config.listener.limits.transport;
     let profile = match config.profile.as_str() {
@@ -2034,13 +2041,13 @@ fn compose_owner_timed(
     }
     let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
         &config.workspace,
-        BuiltinModel::with_receipt_context(receipt_context.clone()),
+        BuiltinModel::with_owner_context(receipt_context.clone(), shutdown.clone()),
         genesis,
         dispatcher,
         DaemonConfig::default(),
         relation_registry,
     )
-    .map_err(|error| embedded_host::owner_open_refusal(&config.workspace, error))?;
+    .map_err(|error| embedded_host::owner_open_refusal_with_shutdown(&config.workspace, error, shutdown.clone()))?;
     timing.begin(startup_timing::Phase::DirectoryAdmission);
     let workspace_admission = daemon
         .engine()
@@ -2048,9 +2055,10 @@ fn compose_owner_timed(
         .owner()
         .directory_admission()
         .map_err(|error| {
-            embedded_host::owner_open_refusal(
+            embedded_host::owner_open_refusal_with_shutdown(
                 &config.workspace,
                 crate::LocaldError::Workspace(error),
+                shutdown.clone(),
             )
         })?;
     workspace_admission::admit_local_owner_directories(&workspace_admission).map_err(|error| {
@@ -2881,8 +2889,14 @@ pub fn measure_semantic_snapshot_residence() {
 /// listener is bound, so an invalid durable directory cannot look ready.
 #[must_use]
 pub fn run(config: ProcessConfig) -> ExitCode {
-    match compose_owner(&config) {
-        Ok(owner) => crate::process::run_process(owner, config),
+    run_with_lifecycle(config, crate::listener::ListenerShutdown::new())
+}
+
+fn run_with_lifecycle(config: ProcessConfig, shutdown: crate::listener::ListenerShutdown) -> ExitCode {
+    #[cfg(unix)]
+    let _termination = crate::termination::install(shutdown.clone(), crate::termination::TERMINATION_GRACE).ok();
+    match compose_owner_with_shutdown(&config, Some(shutdown.clone())) {
+        Ok(owner) => crate::process::run_process_with_shutdown(owner, config, shutdown),
         Err(error) => {
             crate::process::report_process_failure(&error);
             if matches!(error, ProcessError::OwnerContended { .. }) {

@@ -5628,6 +5628,7 @@ impl CommandAdapter {
         certificate: Option<&WireCertificate>,
         recover_excerpt: bool,
     ) -> Result<Option<backend_library::Document>, backend_library::CommandFailure> {
+        let header_deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
         let library = daemon.engine().daemon().library();
         let root = library.revision_root();
         let source_basis = backend_library::Basis {
@@ -5708,8 +5709,9 @@ impl CommandAdapter {
                 .map_err(|error| backend_library::CommandFailure::InvalidQuery(error.to_owned()))?;
             document = selected;
             let mut source_budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
+            let mut header_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(source_budget, super::super::semantic_authority::NATIVE_HEADER_WORK_UNITS);
             if let Some((qualification, page, excerpt, location, signature)) = self.selected_native_document_source(
-                daemon, row, &selection, query.source_range(), recover_excerpt, &mut source_budget,
+                daemon, row, &selection, query.source_range(), recover_excerpt, &mut source_budget, &mut header_budget, header_deadline,
             )? {
                 document.source_policy = qualification;
                 document.source_range = page;
@@ -5791,6 +5793,8 @@ impl CommandAdapter {
         request: Option<backend_library::SourceRangeRequest>,
         recover_excerpt: bool,
         source_budget: &mut usize,
+        header_budget: &mut backend_extension_turso::SelectedNativeHeaderBudget,
+        header_deadline: std::time::Instant,
     ) -> Result<Option<(backend_library::SourcePolicyQualification, Option<backend_library::SourceRangePage>, Option<backend_library::SourceExcerpt>, Option<backend_library::SourceLocation>, Option<String>)>, backend_library::CommandFailure> {
         use backend_library::CommandFailure;
         let unavailable = || CommandFailure::InvalidQuery(
@@ -5824,11 +5828,21 @@ impl CommandAdapter {
             &snapshot, selection, &evidence, &root, authority, source_budget,
         )?;
         let signature = if evidence.claim().headers.is_some() {
-            let (aggregate, digest) = self.semantic_authority.selected_native_header_aggregate(
-                evidence.publication_key(), evidence.publication_claim(), source_budget,
+            // Synchronous Source/Read currently has no transport cancellation
+            // capability. Bound this handler by its own deadline and a finite
+            // shared traversal ledger; this is not a client-arrival deadline.
+            let stopped = || std::time::Instant::now() >= header_deadline;
+            header_budget.restrict_memory(*source_budget);
+            let witness = self.semantic_authority.selected_native_header_aggregate(
+                evidence.publication_key(), evidence.publication_claim(), header_budget, &stopped,
             ).map_err(|_| unavailable())?.ok_or_else(unavailable)?;
-            let file = super::super::native_ts_headers::witnessed_file(evidence.claim(), &aggregate, digest)
+            *source_budget = header_budget.remaining_memory();
+            let mut checkpoint = |bytes| super::super::semantic_authority::charge_native_header_work(header_budget, &stopped, bytes);
+            let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregateView::parse_canonical_checkpointed(witness.as_bytes(), &mut checkpoint)
                 .map_err(|_| unavailable())?;
+            let file = super::super::native_ts_headers::witnessed_file_borrowed(evidence.claim(), &aggregate, *witness.object_id(), &mut checkpoint)
+                .map_err(|_| unavailable())?;
+            checkpoint(52 * 15).map_err(|_| unavailable())?;
             if file.producer_recipe != super::super::native_ts_headers::producer_recipe() {
                 None
             } else if let Some(entry) = file.entry(evidence.entity_id().raw) {
@@ -6886,6 +6900,7 @@ impl CommandAdapter {
         surface: backend_engine::SurfaceCommand,
         request_id: u64,
     ) -> Result<AdmittedReply, BuiltinModelError> {
+        let header_deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
         if matches!(&surface, backend_engine::SurfaceCommand::IndexSearch { .. }) {
             let view = daemon.engine().daemon().library().view();
             if let Some(failure) = self
@@ -7034,6 +7049,7 @@ impl CommandAdapter {
                 };
                 let source_basis = backend_library::Basis { root: view.root(), ..view.basis() };
                 let mut source_budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
+                let mut header_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(source_budget, super::super::semantic_authority::NATIVE_HEADER_WORK_UNITS);
                 for (locator, record) in locators.iter().zip(records.iter_mut()) {
                     let row = match backend_library::resolve_selected_document_row(view, locator.as_str()) {
                         Ok(Some(row)) => row,
@@ -7045,7 +7061,7 @@ impl CommandAdapter {
                     );
                     if let Some(selection) = selection {
                         match self.selected_native_document_source(
-                            daemon, row, &selection, None, true, &mut source_budget,
+                            daemon, row, &selection, None, true, &mut source_budget, &mut header_budget, header_deadline,
                         ) {
                             Ok(Some((qualification, _, excerpt, _, _))) => {
                                 record.source_policy = qualification;

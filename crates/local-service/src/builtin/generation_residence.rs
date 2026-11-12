@@ -111,6 +111,15 @@ pub(crate) trait SelectedSemanticImageLoader: Send + Sync {
         max_bytes: usize,
         max_images: usize,
     ) -> Result<SelectedSemanticImages, super::BuiltinModelError>;
+
+    fn native_lines(
+        &self,
+        _selection: &SelectedSemanticImageSelection,
+        _budget: &mut backend_extension_turso::SelectedNativeHeaderBudget,
+        _stopped: &dyn Fn() -> bool,
+    ) -> Result<Option<backend_extension_turso::VerifiedNativeLinesWitness>, super::BuiltinModelError> {
+        Ok(None)
+    }
 }
 
 /// Shared semantic images for claims this process has already activated.
@@ -189,6 +198,17 @@ impl Default for SemanticGenerationResidence {
 }
 
 impl SemanticGenerationResidence {
+    pub(crate) fn selected_native_lines(
+        &self,
+        key: &ProductSemanticPublicationKey,
+        claim: SemanticPublicationClaim,
+        budget: &mut backend_extension_turso::SelectedNativeHeaderBudget,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<Option<backend_extension_turso::VerifiedNativeLinesWitness>, super::BuiltinModelError> {
+        let loader = self.selected_loader.as_ref().ok_or_else(|| super::BuiltinModelError("selected semantic loader unavailable".to_owned()))?;
+        let selection = loader.selection(key, claim)?;
+        loader.native_lines(&selection, budget, stopped)
+    }
     fn with_limit(limit: usize) -> Self {
         let mut budget = ResidenceBudget::default();
         budget.max_generations = limit.max(1);

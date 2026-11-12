@@ -224,6 +224,7 @@ fn write_immutable_descriptor_with_status(
     bytes: &[u8],
     directory: &Path,
 ) -> Result<bool, StoreError> {
+    let _temp_lease = super::super::objects::TempNamespaceLease::writer(directory)?;
     if let Ok(existing) = fs::read(path) {
         return if existing == bytes {
             Ok(false)

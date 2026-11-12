@@ -418,6 +418,20 @@ fn weak_root_handle_expires_with_its_map_generation() {
 }
 
 #[test]
+fn exact_zeroed_u32_cells_precharge_and_preserve_capacity() {
+    let count = 1_000_000usize;
+    let bytes = count * std::mem::size_of::<u32>();
+    let mut short=bytes-1;
+    let peak=allocation_counter::measure(|| assert!(matches!(try_allocate_exact_zeroed_u32_budgeted(count,&mut short),Err(StoreError::Bounds))));
+    assert_eq!(peak.bytes_max,0); assert_eq!(short,bytes-1);
+    let mut exact=bytes; let mut values=None;
+    let peak=allocation_counter::measure(|| values=Some(must(try_allocate_exact_zeroed_u32_budgeted(count,&mut exact))));
+    assert_eq!(peak.bytes_max,bytes as u64); assert_eq!(exact,0);
+    let values=values.unwrap(); assert_eq!(values.len(),count); assert_eq!(values.capacity(),count); assert!(values.iter().all(|v|*v==0));
+    let mut credit=usize::MAX; assert!(matches!(try_allocate_exact_zeroed_u32_budgeted(usize::MAX,&mut credit),Err(StoreError::Bounds))); assert_eq!(credit,usize::MAX);
+}
+
+#[test]
 fn exact_zeroed_scratch_charges_before_allocation() {
     const LEN: usize = 1_048_577;
     let mut short = LEN - 1;

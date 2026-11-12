@@ -3565,15 +3565,19 @@ impl std::error::Error for BuiltinModelError {}
 #[derive(Clone, Debug, Default)]
 pub struct BuiltinModel {
     receipt_context: Option<Arc<super::owner_receipt_context::OwnerReceiptContext>>,
+    shutdown: Option<crate::listener::ListenerShutdown>,
 }
 
 /// Legacy/test model without receipt authority; SQL receipt replay fails closed.
 #[allow(non_upper_case_globals)]
-pub const BuiltinModel: BuiltinModel = BuiltinModel { receipt_context: None };
+pub const BuiltinModel: BuiltinModel = BuiltinModel { receipt_context: None, shutdown: None };
 
 impl BuiltinModel {
     pub(super) fn with_receipt_context(receipt_context: Option<Arc<super::owner_receipt_context::OwnerReceiptContext>>) -> Self {
-        Self { receipt_context }
+        Self { receipt_context, shutdown: None }
+    }
+    pub(super) fn with_owner_context(receipt_context: Option<Arc<super::owner_receipt_context::OwnerReceiptContext>>, shutdown: Option<crate::listener::ListenerShutdown>) -> Self {
+        Self { receipt_context, shutdown }
     }
 }
 
@@ -3634,7 +3638,7 @@ impl WorkspaceModel for BuiltinModel {
         persisted: &backend_engine::PersistedTransition,
         store: &backend_engine::FileStore,
     ) -> Result<PreparedTransition, Self::Error> {
-        admit_persisted_transition(persisted, store)
+        admit_persisted_transition(persisted, store, self.shutdown.as_ref())
             .map_err(|error| BuiltinModelError(format!("builtin persisted transition: {error}")))
     }
 }
@@ -5560,13 +5564,19 @@ pub(super) fn prepare_retired_fixture(
 #[derive(Clone, Debug)]
 pub(super) struct RetiredSourceProbe {
     workspace: std::path::PathBuf,
+    shutdown: Option<crate::listener::ListenerShutdown>,
 }
 
 impl RetiredSourceProbe {
     pub(super) fn new(workspace: &std::path::Path) -> Self {
         Self {
             workspace: workspace.to_owned(),
+            shutdown: None,
         }
+    }
+
+    pub(super) fn with_shutdown(workspace: &std::path::Path, shutdown: Option<crate::listener::ListenerShutdown>) -> Self {
+        Self { workspace: workspace.to_owned(), shutdown }
     }
 
     // WorkspaceOwner opens/repairs its diagnostic journal after model and
@@ -5635,7 +5645,7 @@ impl WorkspaceModel for RetiredSourceProbe {
         store: &backend_engine::FileStore,
     ) -> Result<PreparedTransition, Self::Error> {
         let transition =
-            admit_persisted_transition_with_layout(persisted, store, SourceFileKeyLayout::Retired)?;
+            admit_persisted_transition_with_layout(persisted, store, SourceFileKeyLayout::Retired, self.shutdown.as_ref())?;
         self.admit_unmodified_diagnostics()?;
         Ok(transition)
     }
@@ -5644,14 +5654,16 @@ impl WorkspaceModel for RetiredSourceProbe {
 fn admit_persisted_transition(
     persisted: &backend_engine::PersistedTransition,
     store: &backend_engine::FileStore,
+    shutdown: Option<&crate::listener::ListenerShutdown>,
 ) -> Result<PreparedTransition, BuiltinModelError> {
-    admit_persisted_transition_with_layout(persisted, store, SourceFileKeyLayout::Current)
+    admit_persisted_transition_with_layout(persisted, store, SourceFileKeyLayout::Current, shutdown)
 }
 
 fn admit_persisted_transition_with_layout(
     persisted: &backend_engine::PersistedTransition,
     store: &backend_engine::FileStore,
     layout: SourceFileKeyLayout,
+    shutdown: Option<&crate::listener::ListenerShutdown>,
 ) -> Result<PreparedTransition, BuiltinModelError> {
     let persisted_intent = admit_persisted_intent_with_store(persisted, store)?;
     if layout == SourceFileKeyLayout::Retired
@@ -5672,6 +5684,7 @@ fn admit_persisted_transition_with_layout(
         persisted_intent,
         untrusted_manifest,
         layout,
+        shutdown,
     )
 }
 
@@ -5796,6 +5809,7 @@ fn admit_persisted_relations(
     persisted_intent: BuiltinIntent,
     untrusted_manifest: backend_version::UntrustedWorkspaceManifest,
     layout: SourceFileKeyLayout,
+    shutdown: Option<&crate::listener::ListenerShutdown>,
 ) -> Result<PreparedTransition, BuiltinModelError> {
     let target_root = untrusted_manifest
         .relations()
@@ -6148,6 +6162,7 @@ fn admit_persisted_relations(
         selected.descriptor().target_generation(),
         closure_id,
         persisted_objects.objects(),
+        shutdown,
     )?;
     validate_persisted_sql(
         persisted, store, &persisted_intent, &base_manifest, &manifest,
@@ -6607,6 +6622,7 @@ fn validate_persisted_native_evidence(
     target_sequence: u64,
     target_closure: backend_store::ClosureId,
     target_objects: &[TypedObject],
+    shutdown: Option<&crate::listener::ListenerShutdown>,
 ) -> Result<(), BuiltinModelError> {
     use backend_engine::builtin::{NativeSourceEvidenceRelation, NativeSourceEvidenceRootSchema};
     let target_root = selected_native_evidence_root_from_objects(target_objects)?;
@@ -6942,8 +6958,8 @@ fn validate_persisted_native_evidence(
             .filter(|change| change.after.is_none())
             .filter_map(|change| change.expected.as_ref())
             .collect::<Vec<_>>();
-        super::semantic_authority::admit_replayed_native_evidence(
-            store, intent.capture_changes(), &selected_rows, &retired_rows,
+        super::semantic_authority::admit_replayed_native_evidence_with_shutdown(
+            store, intent.capture_changes(), &selected_rows, &retired_rows, shutdown,
         )?;
     }
     Ok(())

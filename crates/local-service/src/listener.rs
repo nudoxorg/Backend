@@ -169,7 +169,14 @@ pub struct ListenerShutdown {
     stop: Arc<AtomicBool>,
 }
 
+impl Default for ListenerShutdown {
+    fn default() -> Self { Self::new() }
+}
 impl ListenerShutdown {
+    /// Creates a lifecycle capability that can be shared before owner startup.
+    #[must_use]
+    pub fn new() -> Self { Self { stop: Arc::new(AtomicBool::new(false)) } }
+
     /// Requests clean shutdown of the listener that issued this capability.
     pub fn request(&self) {
         self.stop.store(true, Ordering::Release);
@@ -374,6 +381,10 @@ impl<O: OwnerService> UnixListenerService<O> {
         Self::bind_with_peer_policy(service, config, Arc::new(FilesystemPeerPolicy))
     }
 
+    pub(crate) fn bind_with_shutdown(service: LocaldService<O>, config: ListenerConfig, shutdown: ListenerShutdown) -> Result<Self, ListenerError> {
+        Self::bind_with_policy_and_shutdown(service, config, Arc::new(FilesystemPeerPolicy), shutdown)
+    }
+
     /// Binds a private Unix endpoint with an explicit peer credential policy.
     /// The policy runs immediately after `accept`, before the connection is
     /// counted or handed to a worker thread.
@@ -385,6 +396,12 @@ impl<O: OwnerService> UnixListenerService<O> {
         service: LocaldService<O>,
         config: ListenerConfig,
         peer_policy: Arc<dyn PeerPolicy>,
+    ) -> Result<Self, ListenerError> {
+        Self::bind_with_policy_and_shutdown(service, config, peer_policy, ListenerShutdown::new())
+    }
+
+    fn bind_with_policy_and_shutdown(
+        service: LocaldService<O>, config: ListenerConfig, peer_policy: Arc<dyn PeerPolicy>, shutdown: ListenerShutdown,
     ) -> Result<Self, ListenerError> {
         config.validate()?;
         // The owner commits only after preparing a response under these exact
@@ -407,7 +424,7 @@ impl<O: OwnerService> UnixListenerService<O> {
             .set_nonblocking(true)
             .map_err(|error| ListenerError::Io(error.kind()))?;
         let (inbound_sender, inbound) = mpsc::sync_channel(config.max_clients);
-        let stop = Arc::new(AtomicBool::new(false));
+        let stop = Arc::clone(&shutdown.stop);
         // The wire shutdown request is a listener lifecycle operation, never a
         // workspace mutation. Handing the capability to the service here —
         // rather than from one process entry point — keeps it reachable for

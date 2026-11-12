@@ -14,6 +14,15 @@ fn semantic_error<E>(error: BorrowedSemanticManifestError<BorrowedVersionedError
 pub(crate) struct BorrowedVersionedMetadata<'a> {
     bytes: &'a [u8], catalog_root: SemanticPlaneCatalogRoot, artifact_count: usize, segment_count: usize,
 }
+
+/// A checked framing view, still only a physical and logical claim.
+pub(crate) struct BorrowedVersionedArtifact<'a> {
+    pub ordinal: u32,
+    pub generation: GenerationId,
+    pub manifest_id: [u8; 32],
+    pub manifest: &'a [u8],
+    pub members: &'a [u8],
+}
 impl<'a> BorrowedVersionedMetadata<'a> {
     /// Fully checks the canonical record and logical-to-physical bijection.
     /// `bitmap` is caller-owned, precharged scratch and is cleared per artifact.
@@ -103,6 +112,24 @@ impl<'a> BorrowedVersionedMetadata<'a> {
     pub(crate) fn catalog_root(&self) -> SemanticPlaneCatalogRoot { self.catalog_root }
     pub(crate) fn artifact_count(&self) -> usize { self.artifact_count }
     pub(crate) fn segment_count(&self) -> usize { self.segment_count }
+    pub(crate) fn visit_artifacts<E>(&self, checkpoint: &mut impl FnMut(usize) -> Result<(), E>, visit: &mut impl FnMut(BorrowedVersionedArtifact<'a>) -> Result<(), E>) -> Result<(), BorrowedVersionedError<E>> {
+        let mut d = Decoder::new(self.bytes);
+        d.take(MAGIC.len()+2+32)?;
+        let count = d.u32()? as usize;
+        for _ in 0..count {
+            checkpoint(0).map_err(BorrowedVersionedError::Stopped)?;
+            let ordinal = d.u32()?;
+            let generation = GenerationId::from_raw(d.array::<32>()?);
+            d.take(32)?;
+            let manifest_id = d.array::<32>()?;
+            let len = d.u32()? as usize;
+            let manifest = d.take(len)?;
+            let members_count = d.u32()? as usize;
+            let members = d.take(members_count.checked_mul(MEMBER_BYTES).ok_or(VersionedPlaneError::Truncated)?)?;
+            visit(BorrowedVersionedArtifact { ordinal, generation, manifest_id, manifest, members }).map_err(BorrowedVersionedError::Stopped)?;
+        }
+        Ok(())
+    }
     /// Emits physical IDs, including legitimate duplicates; caller must dedup
     /// against its authenticated envelope inventory and track exact coverage.
     pub(crate) fn visit_physical<E>(&self, checkpoint: &mut impl FnMut(usize) -> Result<(), E>, visit: &mut impl FnMut([u8;32]) -> Result<(), E>) -> Result<(), BorrowedVersionedError<E>> {

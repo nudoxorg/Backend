@@ -178,6 +178,30 @@ mod tests {
     }
 
     #[test]
+    fn source_line_capture_handles_million_lines_and_stop() {
+        struct Check(bool);
+        impl backend_frontend_typescript::TszExecutionCheckpoint for Check {
+            fn checkpoint(&self, _: u64) -> Result<(), backend_frontend_typescript::TszProjectExecutionStop> {
+                if self.0 { Err(backend_frontend_typescript::TszProjectExecutionStop::Cancelled) } else { Ok(()) }
+            }
+        }
+        let text = "x\n".repeat(999_999);
+        let identity = backend_semantic::ir::SourceIdentity::from_bytes(text.as_bytes()).unwrap();
+        let mut budget = 8 * 1024 * 1024;
+        let file = super::capture_source_lines(&text, "src/main.ts", identity, &Check(false), &mut budget).unwrap().unwrap();
+        assert_eq!(file.line_starts.len(), 1_000_000);
+        assert_eq!(file.line_starts.last().copied(), Some(text.len() as u32));
+        assert!(super::capture_source_lines(&text, "src/main.ts", identity, &Check(true), &mut budget).is_err());
+        for unsupported in ["a\rb", "a\u{2028}b", "a\u{2029}b"] {
+            let source = backend_semantic::ir::SourceIdentity::from_bytes(unsupported.as_bytes()).unwrap();
+            let mut credit = 4096;
+            assert!(super::capture_source_lines(unsupported, "src/main.ts", source, &Check(false), &mut credit).unwrap().is_none());
+        }
+        let mut empty = 0;
+        assert!(super::capture_source_lines(&text, "src/main.ts", identity, &Check(false), &mut empty).unwrap().is_none());
+    }
+
+    #[test]
     fn duplicate_nodes_cannot_alias_one_mutable_authority() {
         let mut lane = TypeScriptProgramAuthorityLane::default();
         lane.prepare(Path::new("/a"), &[None]).unwrap();
@@ -335,4 +359,47 @@ pub(super) fn capture_headers(
         producer_recipe: *hash.finalize().as_bytes(),
         entries,
     }))
+}
+
+/// Capture line offsets from the exact selected compiler source bytes.
+/// The retained primitive buffers are precharged and allocated at exact capacity.
+pub(super) fn capture_source_lines(
+    text: &str, path: &str, source: backend_semantic::ir::SourceIdentity,
+    checkpoint: &impl backend_frontend_typescript::TszExecutionCheckpoint,
+    remaining: &mut usize,
+) -> Result<Option<backend_semantic::native_source_lines::NativeSourceLineFile>, String> {
+    use backend_semantic::native_source_lines::{NativeSourceLineFile, MAX_NATIVE_SOURCE_LINES_PER_FILE};
+    checkpoint.checkpoint(0).map_err(|e| format!("source lines stopped: {e:?}"))?;
+    if path.len() > 4096 || text.len() > 64 * 1024 * 1024 { return Ok(None); }
+    let bytes = text.as_bytes();
+    let mut count = 1usize;
+    let mut hash = backend_version::ContentPayloadHasher::<backend_version::SourceFactDomain>::new(bytes.len() as u64);
+    for (index, chunk) in bytes.chunks(64 * 1024).enumerate() {
+        checkpoint.checkpoint(1).map_err(|e| format!("source lines stopped: {e:?}"))?;
+        hash.push_chunk(chunk).map_err(|_| "source line hash failed")?;
+        let base = index * 64 * 1024;
+        for (offset, byte) in chunk.iter().enumerate() {
+            let at = base + offset;
+            if *byte == b'\r' && bytes.get(at + 1) != Some(&b'\n') { return Ok(None); }
+            if *byte == 0xe2 && bytes.get(at + 1) == Some(&0x80) && matches!(bytes.get(at + 2), Some(0xa8 | 0xa9)) { return Ok(None); }
+            if *byte == b'\n' { count = count.checked_add(1).ok_or("source line count overflow")?; }
+        }
+    }
+    if count > MAX_NATIVE_SOURCE_LINES_PER_FILE { return Ok(None); }
+    let retained = count.checked_mul(std::mem::size_of::<u32>()).and_then(|n| n.checked_add(path.len())).ok_or("source line capacity overflow")?;
+    if retained > *remaining { checkpoint.checkpoint(0).map_err(|e| format!("source lines stopped: {e:?}"))?; return Ok(None); }
+    if hash.finish().map_err(|_| "source line hash failed")? != source.identity || source.byte_len as usize != bytes.len() { return Err("source line identity differs".into()); }
+    let mut line_starts = backend_store::try_allocate_exact_zeroed_u32_budgeted(count, remaining).map_err(|e| format!("source line capacity: {e:?}"))?;
+    let mut cursor = 1;
+    for (index, chunk) in bytes.chunks(64 * 1024).enumerate() {
+        checkpoint.checkpoint(1).map_err(|e| format!("source lines stopped: {e:?}"))?;
+        for (offset, byte) in chunk.iter().enumerate() {
+            if *byte == b'\n' { line_starts[cursor] = u32::try_from(index * 64 * 1024 + offset + 1).map_err(|_| "source line offset overflow")?; cursor += 1; }
+        }
+    }
+    let mut path_bytes = backend_store::try_allocate_exact_zeroed_bytes_budgeted(path.len(), remaining).map_err(|e| format!("source line path capacity: {e:?}"))?;
+    path_bytes.copy_from_slice(path.as_bytes());
+    let path = String::from_utf8(path_bytes.into_vec()).map_err(|_| "source line path is not UTF-8")?;
+    checkpoint.checkpoint(0).map_err(|e| format!("source lines stopped: {e:?}"))?;
+    Ok(Some(NativeSourceLineFile { path, source, line_starts }))
 }

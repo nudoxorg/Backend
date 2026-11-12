@@ -3134,6 +3134,7 @@ pub(super) fn finish_deferred_profile(
     job: &mut DeferredIndex,
     profile: DeferredProfileTicket,
     compiled: Result<StagedSemanticPackage, PackageSemanticRuntimeError>,
+    cancellation: &AtomicBool,
 ) -> Result<(), DeferredProfileFailure> {
     finish_deferred_profile_for_snapshot(
         &daemon.engine().daemon().owner().snapshot(),
@@ -3141,6 +3142,7 @@ pub(super) fn finish_deferred_profile(
         job,
         profile,
         compiled,
+        cancellation,
     )
 }
 
@@ -3150,6 +3152,7 @@ pub(super) fn finish_deferred_profile_for_snapshot(
     job: &mut DeferredIndex,
     profile: DeferredProfileTicket,
     compiled: Result<StagedSemanticPackage, PackageSemanticRuntimeError>,
+    cancellation: &AtomicBool,
 ) -> Result<(), DeferredProfileFailure> {
     if job.completed_profiles >= job.expected_profiles {
         return Err(BuiltinModelError(
@@ -3205,12 +3208,17 @@ pub(super) fn finish_deferred_profile_for_snapshot(
         profile.attempt.clone(),
         &staged,
         &job.revision_fence,
+        cancellation,
     ) {
         Ok(selected) => selected,
         Err(error) => {
             semantic_authority.retire_candidate_attempt(
                 &profile.attempt,
-                backend_extension_turso::CandidateAttemptRetirementReason::Refused,
+                if cancellation.load(Ordering::Acquire) {
+                    backend_extension_turso::CandidateAttemptRetirementReason::Cancelled
+                } else {
+                    backend_extension_turso::CandidateAttemptRetirementReason::Refused
+                },
             )?;
             return Err(error.into());
         }
@@ -3475,17 +3483,22 @@ pub(super) fn finish_deferred_index_for_snapshot(
             return Err(BuiltinModelError("native TypeScript has no complete fresh compiler outcomes".into()));
         }
         let mut candidates = Vec::new();
+        let mut header_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(
+            backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES,
+            super::super::semantic_authority::NATIVE_HEADER_WORK_UNITS,
+        );
+        let header_deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
         for publication in &job.capture_publications {
             let expected = job.captures.get(publication.key()).ok_or_else(|| BuiltinModelError("native completion missing capture".into()))?;
             let candidate = super::super::native_ts_admission::admit_native_ts_owner_candidate(
-                snapshot, Arc::clone(&capture), publication.clone(), *expected, &job.compiler, semantic,
+                snapshot, Arc::clone(&capture), publication.clone(), *expected, &job.compiler, semantic, &mut header_budget, header_deadline,
             )?;
             candidates.push(Arc::new(candidate));
         }
         let plan = Arc::new(super::super::native_ts_admission::plan_native_ts_evidence(snapshot, candidates)?);
         let mut bytes_read = 0usize;
         Some(Arc::new(super::super::native_ts_admission::refresh_native_ts_evidence_plan(
-            snapshot, plan, &job.compiler, semantic, &mut bytes_read,
+            snapshot, plan, &job.compiler, semantic, &mut bytes_read, &mut header_budget, header_deadline,
         )?))
     } else { None };
     if native_proof.is_some() && job.source_changes.is_empty()
@@ -5179,6 +5192,7 @@ fn compile_semantic_publications_for_snapshot(
                     local_attempt,
                     &staged,
                     revision_fence,
+                    context.cancellation,
                 )?;
                 context.compiler.remember_python_snapshot(
                     context.source_root,
@@ -5526,6 +5540,7 @@ fn publish_local_compile(
     attempt: backend_extension_turso::CandidateAttempt,
     staged: &StagedSemanticPackage,
     revision_fence: &ingest::CompilerRevisionFence,
+    cancellation: &AtomicBool,
 ) -> Result<
     (
         SemanticPublicationClaim,
@@ -5533,15 +5548,15 @@ fn publish_local_compile(
     ),
     BuiltinModelError,
 > {
-    if !ingest::compiler_revision_is_current(revision_fence).map_err(BuiltinModelError)? {
+    if !ingest::compiler_revision_is_current_with_cancellation(revision_fence, Some(cancellation)).map_err(BuiltinModelError)? {
         return Err(BuiltinModelError(
             "compiler source or configuration revision changed during semantic compilation; retry indexing"
                 .to_owned(),
         ));
     }
-    semantic_authority.publish_staged(key, attempt, staged, |_| {
+    semantic_authority.publish_staged_with_stop(key, attempt, staged, &|| cancellation.load(Ordering::Acquire), |_| {
         let source_is_current =
-            ingest::compiler_revision_is_current(revision_fence).map_err(BuiltinModelError)?;
+            ingest::compiler_revision_is_current_with_cancellation(revision_fence, Some(cancellation)).map_err(BuiltinModelError)?;
         if source_is_current {
             Ok(())
         } else {

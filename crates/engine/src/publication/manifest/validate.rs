@@ -48,98 +48,18 @@ impl<'manifest, 'facts> CompilationManifestView<'manifest, 'facts> {
         bytes: &'manifest [u8],
         fact_scratch: &'facts mut [Option<StoredFragmentFacts>],
     ) -> Result<Self, CompilationManifestError> {
-        if bytes.len() < COMPILATION_MANIFEST_HEADER_BYTES {
-            return Err(CompilationManifestError::HeaderLength {
-                observed: bytes.len(),
-            });
-        }
-        let magic = fixed::<8>(bytes, 0);
-        if magic != MAGIC {
-            return Err(CompilationManifestError::Magic { observed: magic });
-        }
-        let version = u16::from_le_bytes(fixed::<2>(bytes, 8));
-        let format = CompilationManifestFormat::from_version(version)
-            .ok_or(CompilationManifestError::Version { observed: version })?;
-        let entry_bytes = format.entry_bytes();
-        let reserved = u16::from_le_bytes(fixed::<2>(bytes, 10));
-        if reserved != 0 {
-            return Err(CompilationManifestError::HeaderReserved { observed: reserved });
-        }
-        let fragment_count = u32::from_le_bytes(fixed::<4>(bytes, 12));
-        let count = usize::try_from(fragment_count).map_err(|source| {
-            CompilationManifestError::FragmentCountAddressSpace {
-                fragment_count,
-                source,
-            }
-        })?;
-        if fact_scratch.len() < count {
-            return Err(CompilationManifestError::FactScratchTooSmall {
-                required: count,
-                available: fact_scratch.len(),
-            });
-        }
-        let expected = COMPILATION_MANIFEST_HEADER_BYTES
-            .checked_add(
-                count
-                    .checked_mul(entry_bytes)
-                    .ok_or(CompilationManifestError::LengthOverflow { fragment_count })?,
-            )
-            .ok_or(CompilationManifestError::LengthOverflow { fragment_count })?;
-        if bytes.len() != expected {
-            return Err(CompilationManifestError::Length {
-                expected,
-                observed: bytes.len(),
-            });
-        }
-        let entries = &mut fact_scratch[..count];
-        entries.fill(None);
-        let mut previous: Option<StoredFragmentFacts> = None;
-        for (ordinal, slot) in entries.iter_mut().enumerate() {
-            let offset = COMPILATION_MANIFEST_HEADER_BYTES + ordinal * entry_bytes;
-            let entry = decode_entry(&bytes[offset..offset + entry_bytes], ordinal, format)?;
-            if let Some(previous_entry) = previous {
-                let compact_order = previous_entry.fragment.cmp(&entry.fragment);
-                if compact_order == Ordering::Greater
-                    || (compact_order == Ordering::Equal
-                        && format != CompilationManifestFormat::SemanticV3)
-                {
-                    return Err(CompilationManifestError::Order {
-                        ordinal,
-                        previous: previous_entry.fragment,
-                        observed: entry.fragment,
-                    });
-                }
-                if compact_order == Ordering::Equal {
-                    let previous_image = previous_entry.semantic_image.map(|facts| facts.identity);
-                    let observed_image = entry.semantic_image.map(|facts| facts.identity);
-                    if previous_image.cmp(&observed_image) != Ordering::Less {
-                        return Err(CompilationManifestError::SemanticOrder {
-                            ordinal,
-                            fragment: entry.fragment,
-                            previous: previous_image,
-                            observed: observed_image,
-                        });
-                    }
-                }
-            }
-            previous = Some(entry);
-            *slot = Some(entry);
-        }
-        let byte_length = u32::try_from(bytes.len()).map_err(|source| {
-            CompilationManifestError::ByteLengthAddressSpace {
-                observed: bytes.len(),
-                source,
-            }
-        })?;
+        let facts = match validate_core(bytes, Some(&mut *fact_scratch), &mut |_| {
+            Ok::<(), core::convert::Infallible>(())
+        }) {
+            Ok(facts) => facts,
+            Err(CheckpointedManifestError::Invalid(error)) => return Err(error),
+            Err(CheckpointedManifestError::Stopped(never)) => match never {},
+        };
+        let count = facts.fragment_count as usize;
         Ok(Self {
             bytes,
-            facts: CompilationManifestFacts {
-                identity: CompilationManifestIdentity::from_encoded_bytes(bytes),
-                format,
-                fragment_count,
-                byte_length,
-            },
-            entries,
+            facts,
+            entries: &fact_scratch[..count],
         })
     }
 
@@ -165,6 +85,150 @@ impl AsRef<[u8]> for CompilationManifestView<'_, '_> {
     fn as_ref(&self) -> &[u8] {
         self.bytes
     }
+}
+
+/// A canonical-validation failure or a caller-requested stop.
+#[derive(Debug)]
+pub enum CheckpointedManifestError<E> {
+    /// The manifest failed its ordinary canonical validation.
+    Invalid(CompilationManifestError),
+    /// The caller's work budget, cancellation, or deadline stopped validation.
+    Stopped(E),
+}
+
+impl<E> From<CompilationManifestError> for CheckpointedManifestError<E> {
+    fn from(error: CompilationManifestError) -> Self {
+        Self::Invalid(error)
+    }
+}
+
+/// Validates the same complete manifest grammar as `CompilationManifestView`,
+/// returning constant-size facts without retaining decoded fragment entries.
+/// The caller must charge each checkpoint and may stop before the next entry or
+/// 64 KiB identity-hash chunk. The input remains an untrusted claim until this
+/// succeeds and the publication owner binds the returned facts to its selection.
+pub fn validate_manifest_facts_checkpointed<E>(
+    bytes: &[u8],
+    mut checkpoint: impl FnMut(usize) -> Result<(), E>,
+) -> Result<CompilationManifestFacts, CheckpointedManifestError<E>> {
+    validate_core(bytes, None, &mut checkpoint)
+}
+
+fn validate_core<E>(
+    bytes: &[u8],
+    mut scratch: Option<&mut [Option<StoredFragmentFacts>]>,
+    checkpoint: &mut impl FnMut(usize) -> Result<(), E>,
+) -> Result<CompilationManifestFacts, CheckpointedManifestError<E>> {
+    checkpoint(0).map_err(CheckpointedManifestError::Stopped)?;
+    if bytes.len() < COMPILATION_MANIFEST_HEADER_BYTES {
+        return Err(CompilationManifestError::HeaderLength {
+            observed: bytes.len(),
+        }
+        .into());
+    }
+    let magic = fixed::<8>(bytes, 0);
+    if magic != MAGIC {
+        return Err(CompilationManifestError::Magic { observed: magic }.into());
+    }
+    let version = u16::from_le_bytes(fixed::<2>(bytes, 8));
+    let format = CompilationManifestFormat::from_version(version)
+        .ok_or(CompilationManifestError::Version { observed: version })?;
+    let entry_bytes = format.entry_bytes();
+    let reserved = u16::from_le_bytes(fixed::<2>(bytes, 10));
+    if reserved != 0 {
+        return Err(CompilationManifestError::HeaderReserved { observed: reserved }.into());
+    }
+    let fragment_count = u32::from_le_bytes(fixed::<4>(bytes, 12));
+    let count = usize::try_from(fragment_count).map_err(|source| {
+        CompilationManifestError::FragmentCountAddressSpace {
+            fragment_count,
+            source,
+        }
+    })?;
+    if let Some(slots) = scratch.as_ref() {
+        if slots.len() < count {
+            return Err(CompilationManifestError::FactScratchTooSmall {
+                required: count,
+                available: slots.len(),
+            }
+            .into());
+        }
+    }
+    let expected = COMPILATION_MANIFEST_HEADER_BYTES
+        .checked_add(
+            count
+                .checked_mul(entry_bytes)
+                .ok_or(CompilationManifestError::LengthOverflow { fragment_count })?,
+        )
+        .ok_or(CompilationManifestError::LengthOverflow { fragment_count })?;
+    if bytes.len() != expected {
+        return Err(CompilationManifestError::Length {
+            expected,
+            observed: bytes.len(),
+        }
+        .into());
+    }
+    if let Some(slots) = scratch.as_deref_mut() {
+        slots[..count].fill(None);
+    }
+    let mut previous: Option<StoredFragmentFacts> = None;
+    for ordinal in 0..count {
+        checkpoint(entry_bytes).map_err(CheckpointedManifestError::Stopped)?;
+        let offset = COMPILATION_MANIFEST_HEADER_BYTES + ordinal * entry_bytes;
+        let entry = decode_entry(&bytes[offset..offset + entry_bytes], ordinal, format)?;
+        if let Some(previous_entry) = previous {
+            let compact_order = previous_entry.fragment.cmp(&entry.fragment);
+            if compact_order == Ordering::Greater
+                || (compact_order == Ordering::Equal
+                    && format != CompilationManifestFormat::SemanticV3)
+            {
+                return Err(CompilationManifestError::Order {
+                    ordinal,
+                    previous: previous_entry.fragment,
+                    observed: entry.fragment,
+                }
+                .into());
+            }
+            if compact_order == Ordering::Equal {
+                let previous_image = previous_entry.semantic_image.map(|facts| facts.identity);
+                let observed_image = entry.semantic_image.map(|facts| facts.identity);
+                if previous_image.cmp(&observed_image) != Ordering::Less {
+                    return Err(CompilationManifestError::SemanticOrder {
+                        ordinal,
+                        fragment: entry.fragment,
+                        previous: previous_image,
+                        observed: observed_image,
+                    }
+                    .into());
+                }
+            }
+        }
+        previous = Some(entry);
+        if let Some(slots) = scratch.as_deref_mut() {
+            slots[ordinal] = Some(entry);
+        }
+    }
+    let byte_length = u32::try_from(bytes.len()).map_err(|source| {
+        CompilationManifestError::ByteLengthAddressSpace {
+            observed: bytes.len(),
+            source,
+        }
+    })?;
+    let mut hasher = backend_version::ArtifactHasher::<
+        backend_version::IrManifestEncoding,
+        backend_version::IrManifestDomain,
+    >::new();
+    for chunk in bytes.chunks(64 * 1024) {
+        checkpoint(chunk.len()).map_err(CheckpointedManifestError::Stopped)?;
+        hasher.write_chunk(chunk);
+    }
+    checkpoint(0).map_err(CheckpointedManifestError::Stopped)?;
+    Ok(CompilationManifestFacts {
+        identity: hasher.finalize(),
+        format,
+        fragment_count,
+        byte_length,
+    })
 }
 
 /// One decoded complete fragment record from a package manifest.

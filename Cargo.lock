@@ -1792,6 +1792,7 @@ dependencies = [
  "backend-flow",
  "backend-version",
  "blake3",
+ "bytemuck",
  "futures-executor",
  "loom",
  "memmap2",

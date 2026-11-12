@@ -515,9 +515,10 @@ impl RevalidatedNativeTsCapture {
     pub(super) fn program_image_evidence(
         &self,
         activated: &super::ActivatedProductSemantics,
-        headers: Option<(&backend_semantic::native_ts_headers::NativeTsHeaderAggregate, [u8; 32])>,
+        headers: Option<(&backend_semantic::native_ts_headers::NativeTsHeaderAggregateView<'_>, [u8; 32])>,
+        checkpoint: &mut impl FnMut(usize) -> Result<(), String>,
     ) -> Result<Vec<backend_engine::builtin::NativeSourceEvidence>, String> {
-        self.capture.program_image_evidence(activated, headers)
+        self.capture.program_image_evidence(activated, headers, checkpoint)
     }
 }
 
@@ -551,16 +552,10 @@ impl NativeTsCapture {
     pub(super) fn program_image_evidence(
         &self,
         activated: &super::ActivatedProductSemantics,
-        headers: Option<(&backend_semantic::native_ts_headers::NativeTsHeaderAggregate, [u8; 32])>,
+        headers: Option<(&backend_semantic::native_ts_headers::NativeTsHeaderAggregateView<'_>, [u8; 32])>,
+        checkpoint: &mut impl FnMut(usize) -> Result<(), String>,
     ) -> Result<Vec<backend_engine::builtin::NativeSourceEvidence>, String> {
-        let mut header_claims = BTreeMap::new();
-        if let Some((aggregate, _)) = headers {
-            for header in &aggregate.files {
-                if header_claims.insert(header.path.as_str(), header).is_some() {
-                    return Err("duplicate native header source".into());
-                }
-            }
-        }
+        let mut consumed_headers = 0usize;
         let program = activated.native_program_sources.as_ref()
             .ok_or("native TypeScript program is unavailable")?;
         let captured: BTreeMap<_, _> = self.sources.iter()
@@ -597,7 +592,9 @@ impl NativeTsCapture {
             {
                 return Err("native image is not an exact program member".into());
             }
-            if let Some(header) = header_claims.remove(path) {
+            let header = match headers { Some((aggregate, _)) => aggregate.find_file_checkpointed(path, checkpoint)?, None => None };
+            if let Some(header) = header {
+                consumed_headers += 1;
                 if header.source != source || header.producer_recipe != super::native_ts_headers::producer_recipe() {
                     return Err("native header producer or source differs".into());
                 }
@@ -606,11 +603,11 @@ impl NativeTsCapture {
                     image_identity: header.image_identity, image_byte_len: header.image_byte_len,
                     producer_recipe: header.producer_recipe, aggregate_digest,
                 };
-                super::native_ts_headers::admit_image(&captured_source.evidence, &reference, header, &view, image.as_ref())?;
+                super::native_ts_headers::admit_image_borrowed(&captured_source.evidence, &reference, header, &view, image.as_ref(), checkpoint)?;
                 admitted_headers.insert(path.to_owned(), reference);
             }
         }
-        if !header_claims.is_empty() { return Err("native headers lack their selected image".into()); }
+        if headers.is_some_and(|(aggregate, _)| consumed_headers != aggregate.len()) { return Err("native headers lack their selected image".into()); }
         // A mapped program input is source evidence even when this profile
         // did not emit an image for it. Keep that weaker fact distinct from
         // an admitted image; consumers must not infer declarations from it.
@@ -2415,7 +2412,7 @@ fn producer_version(frontend: &SyntaxFrontend) -> [u8; 32] {
 pub(super) struct TestNativeProgramObservation {
     pub binding: [u8; 32],
     pub membership: [u8; 32],
-    pub sources: Vec<(String, [u8; 32], u32)>,
+    pub sources: Vec<(String, Option<String>, [u8; 32], u32)>,
 }
 #[cfg(test)]
 pub(super) static TEST_CAPTURE_NATIVE_PROGRAMS: AtomicBool = AtomicBool::new(false);
@@ -2429,7 +2426,7 @@ pub(super) fn test_observe_native_program(binding: [u8; 32], program: &backend_s
             binding,
             membership: program.membership_identity(),
             sources: program.sources().map(|row| (
-                row.program_path.to_owned(), *row.source.identity.as_ref(), row.source.byte_len,
+                row.program_path.to_owned(), row.package_path.map(str::to_owned), *row.source.identity.as_ref(), row.source.byte_len,
             )).collect(),
         };
         TEST_NATIVE_PROGRAMS.lock().map_err(|_| "test native Program observation poisoned")?.push(observation);
@@ -6018,6 +6015,53 @@ pub(super) fn dialect(language: SourceLanguage, extension: &str) -> Option<Langu
 mod tests {
     use super::*;
     use backend_engine::CanonicalRelation;
+
+    #[cfg(unix)]
+    #[test]
+    fn selected_line_map_host_check_refuses_symlinks_and_stops() {
+        use backend_semantic::{ir::SourceIdentity, native_source_lines::{NativeSourceLineAggregate, NativeSourceLineAggregateView, NativeSourceLineFile}};
+        use backend_engine::builtin::{NativeSourceEvidence, NativeSourceEvidenceKind};
+        use backend_extension_turso::SelectedNativeHeaderBudget;
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("root");
+        let root = temp.path().canonicalize().expect("canonical root");
+        let bytes = b"export const x = 1;\r\n";
+        std::fs::write(root.join("a.ts"), bytes).expect("source");
+        let source = SourceIdentity::from_bytes(bytes).expect("source identity");
+        let evidence = NativeSourceEvidence {
+            project: [1; 32], profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+            path: "a.ts".into(), input_digest: typed_of::<InputContentSchema>(bytes.as_slice()).to_bytes(),
+            source_digest: *source.identity.as_ref(), byte_length: bytes.len() as u32,
+            kind: NativeSourceEvidenceKind::Image, line_starts: None, headers: None,
+        };
+        let aggregate = NativeSourceLineAggregate { files: vec![NativeSourceLineFile {
+            path: "a.ts".into(), source, line_starts: vec![0, bytes.len() as u32],
+        }] };
+        let size = aggregate.encoded_len_checkpointed(&mut |_| Ok::<(), ()>(())).expect("wire size");
+        let mut wire = vec![0; size];
+        aggregate.encode_into(&mut wire, &mut |_| Ok::<(), ()>(())).expect("wire");
+        let view = NativeSourceLineAggregateView::parse(&wire, &mut |_| Ok::<(), ()>(())).expect("view");
+        let file = view.find_file("a.ts", &mut |_| Ok::<(), ()>(())).expect("lookup").expect("file");
+        let check = |root: &Path, evidence: &NativeSourceEvidence, memory, stopped: &dyn Fn() -> bool| {
+            let mut budget = SelectedNativeHeaderBudget::new(memory, 1_000_000);
+            native_line_map_matches_host(root, evidence, source, file, &mut budget, stopped)
+        };
+        assert_eq!(check(&root, &evidence, bytes.len(), &|| false), Ok(true));
+        assert!(check(&root, &evidence, bytes.len() - 1, &|| false).is_err());
+        assert!(check(&root, &evidence, 0, &|| true).is_err());
+        let mut changed = bytes.to_vec();
+        changed[0] ^= 1;
+        std::fs::write(root.join("a.ts"), &changed).expect("same-length source change");
+        assert_eq!(check(&root, &evidence, bytes.len(), &|| false), Ok(false));
+        std::fs::write(root.join("a.ts"), bytes).expect("restore source");
+        let root_link = root.join("root-link");
+        symlink(&root, &root_link).expect("root link");
+        assert_eq!(check(&root_link, &evidence, bytes.len(), &|| false), Ok(false));
+        std::fs::remove_file(root.join("a.ts")).expect("remove source");
+        symlink(root.join("root-link").join("a.ts"), root.join("a.ts")).expect("file link");
+        assert_eq!(check(&root, &evidence, bytes.len(), &|| false), Ok(false));
+    }
 
     #[test]
     fn structural_readiness_preserves_baseline_until_a_manifest_is_observed() {
@@ -12658,3 +12702,103 @@ mod vue_stylo_region_tests {
         assert_eq!(site.source(), vue.host().source());
     }
 }
+
+/// Revalidates a selected line claim against confined exact host bytes.
+/// The source buffer is charged to the caller's operation ledger and does not escape.
+#[cfg(unix)]
+pub(super) fn native_line_map_matches_host(
+    root: &Path,
+    evidence: &backend_engine::builtin::NativeSourceEvidence,
+    source: backend_semantic::ir::SourceIdentity,
+    lines: backend_semantic::native_source_lines::NativeSourceLineFileView<'_>,
+    budget: &mut backend_extension_turso::SelectedNativeHeaderBudget,
+    stopped: &dyn Fn() -> bool,
+) -> Result<bool, String> {
+    use backend_version::Schema as _;
+    use rustix::fs::{Mode, OFlags, open, openat};
+    use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
+    if evidence.validate().is_err() || !evidence.admits_image() || evidence.path != lines.path
+        || source != lines.source || evidence.byte_length != source.byte_len
+        || evidence.source_digest.as_slice() != source.identity.as_ref() { return Ok(false); }
+    let expected = source.byte_len as usize;
+    SourceAdmissionPolicy::from_environment().map_err(|e| format!("native line source policy: {e}"))?
+        .admit_actual_file(expected).map_err(|e| format!("native line source bound: {e:?}"))?;
+    budget.checkpoint(1, stopped).map_err(|e| format!("native line source stopped: {e:?}"))?;
+    if !root.is_absolute() { return Ok(false); }
+    let root_name = std::ffi::CStr::from_bytes_with_nul(b"/\0").map_err(|_| "invalid native line root")?;
+    let mut directory = match open(root_name, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map(fs::File::from) {
+        Ok(directory) => directory, Err(_) => return Ok(false),
+    };
+    for part in root.components() {
+        budget.checkpoint(1, stopped).map_err(|e| format!("native line source stopped: {e:?}"))?;
+        let name = match part { std::path::Component::RootDir => continue, std::path::Component::Normal(name) => name, _ => return Ok(false) };
+        let component = name.as_bytes();
+        if component.is_empty() || component.len() > 4096 || component.contains(&0) { return Ok(false); }
+        let mut name_buffer = [0u8; 4097];
+        name_buffer[..component.len()].copy_from_slice(component);
+        let name = std::ffi::CStr::from_bytes_with_nul(&name_buffer[..=component.len()]).map_err(|_| "invalid native line root")?;
+        directory = match openat(&directory, name, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map(fs::File::from) {
+            Ok(directory) => directory, Err(_) => return Ok(false),
+        };
+    }
+    let mut components = Path::new(&evidence.path).components().peekable();
+    let mut file = loop {
+        budget.checkpoint(1, stopped).map_err(|e| format!("native line source stopped: {e:?}"))?;
+        let Some(std::path::Component::Normal(name)) = components.next() else { return Ok(false) };
+        let component = name.as_bytes();
+        if component.is_empty() || component.len() > 4096 || component.contains(&0) { return Ok(false); }
+        let mut name_buffer = [0u8; 4097];
+        name_buffer[..component.len()].copy_from_slice(component);
+        let name = std::ffi::CStr::from_bytes_with_nul(&name_buffer[..=component.len()]).map_err(|_| "invalid native line path")?;
+        let last = components.peek().is_none();
+        let flags = if last { OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC }
+            else { OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC };
+        let opened = match openat(&directory, name, flags, Mode::empty()).map(fs::File::from) { Ok(file) => file, Err(_) => return Ok(false) };
+        if last { break opened; }
+        directory = opened;
+    };
+    let metadata = match file.metadata() { Ok(value) => value, Err(_) => return Ok(false) };
+    if !metadata.is_file() || metadata.len() != expected as u64 { return Ok(false); }
+    budget.reserve_retained(expected).map_err(|e| format!("native line source budget: {e:?}"))?;
+    let mut bytes = backend_store::try_allocate_exact_zeroed_bytes(expected).map_err(|e| format!("native line source allocation: {e:?}"))?;
+    let schema = backend_version::SchemaIdentity::new(backend_compile::InputContentSchema::DOMAIN, backend_compile::InputContentSchema::TYPE, backend_compile::InputContentSchema::VERSION);
+    let encoded_len = expected.checked_add(8).ok_or("native input length overflow")?;
+    let mut input = backend_version::ObjectVersionHasher::new(schema, encoded_len).map_err(|e| format!("native input hash: {e:?}"))?;
+    input.update(&(expected as u64).to_be_bytes()).map_err(|e| format!("native input hash: {e:?}"))?;
+    let mut at = 0usize;
+    while at < expected {
+        budget.checkpoint(1, stopped).map_err(|e| format!("native line source stopped: {e:?}"))?;
+        let end = at.saturating_add(64 * 1024).min(expected);
+        match file.read(&mut bytes[at..end]) {
+            Ok(0) => return Ok(false),
+            Ok(n) => { input.update(&bytes[at..at + n]).map_err(|e| format!("native input hash: {e:?}"))?; at += n; },
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return Ok(false),
+        }
+    }
+    budget.checkpoint(1, stopped).map_err(|e| format!("native line source stopped: {e:?}"))?;
+    let mut extra = [0u8; 1];
+    loop {
+        match file.read(&mut extra) {
+            Ok(0) => break,
+            Ok(_) => return Ok(false),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => { budget.checkpoint(1, stopped).map_err(|e| format!("native line source stopped: {e:?}"))?; },
+            Err(_) => return Ok(false),
+        }
+    }
+    let after = match file.metadata() { Ok(value) => value, Err(_) => return Ok(false) };
+    if metadata.dev() != after.dev() || metadata.ino() != after.ino() || metadata.len() != after.len()
+        || metadata.mtime() != after.mtime() || metadata.mtime_nsec() != after.mtime_nsec()
+        || metadata.ctime() != after.ctime() || metadata.ctime_nsec() != after.ctime_nsec() { return Ok(false); }
+    if input.finish().map_err(|e| format!("native input hash: {e:?}"))? != evidence.input_digest { return Ok(false); }
+    lines.matches_source(&bytes, &mut |_| budget.checkpoint(1, stopped).map_err(|e| format!("native line verification stopped: {e:?}")))
+}
+
+#[cfg(not(unix))]
+pub(super) fn native_line_map_matches_host(
+    _root: &Path, _evidence: &backend_engine::builtin::NativeSourceEvidence,
+    _source: backend_semantic::ir::SourceIdentity,
+    _lines: backend_semantic::native_source_lines::NativeSourceLineFileView<'_>,
+    _budget: &mut backend_extension_turso::SelectedNativeHeaderBudget,
+    _stopped: &dyn Fn() -> bool,
+) -> Result<bool, String> { Ok(false) }
