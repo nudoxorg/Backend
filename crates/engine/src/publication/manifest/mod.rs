@@ -16,8 +16,9 @@ pub use build::{
     PublicationFragmentError, SemanticImageRegion,
 };
 pub use validate::{
-    CompilationManifestEntries, CompilationManifestError, CompilationManifestFacts,
-    CompilationManifestFormat, CompilationManifestView, StoredFragmentFacts,
+    CheckpointedManifestError, CompilationManifestEntries, CompilationManifestError,
+    CompilationManifestFacts, CompilationManifestFormat, CompilationManifestView,
+    StoredFragmentFacts, validate_manifest_facts_checkpointed,
 };
 
 pub(crate) use build::{CanonicalCompilation, CanonicalSemanticCompilation};

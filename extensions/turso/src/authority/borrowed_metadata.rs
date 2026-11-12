@@ -17,6 +17,9 @@ pub(super) struct BorrowedCompilerMetadata<'a> {
     pub(super) native_program_sources: Option<CompilerProgramSourceMember>,
     pub(super) native_headers: Option<CompilerNativeHeadersMember>,
     pub(super) native_lines: Option<CompilerNativeLinesMember>,
+    pub(super) manifest_bytes: &'a [u8],
+    pub(super) binding_bytes: &'a [u8],
+    pub(super) fragment_count: u32,
     image_rows: &'a [u8],
     versioned: Option<BorrowedVersionedMetadata<'a>>,
 }
@@ -102,8 +105,8 @@ impl<'a> BorrowedCompilerMetadata<'a> {
         let mut hasher=backend_version::ArtifactHasher::<IrManifestEncoding, IrManifestDomain>::new();
         for chunk in manifest.chunks(64*1024) { checkpoint(chunk.len()).map_err(BorrowedMetadataError::Stopped)?; hasher.write_chunk(chunk); }
         let manifest_identity: AuthorityHash = *hasher.finalize().as_ref();
-        let binding=d.array::<COMPILATION_BINDING_BYTES>()?;
-        let binding_identity=validate_binding(&binding, &manifest_identity)?;
+        let binding: &[u8; COMPILATION_BINDING_BYTES]=d.take(COMPILATION_BINDING_BYTES)?.try_into().map_err(|_| CompilerEnvelopeError::Binding)?;
+        let binding_identity=validate_binding(binding, &manifest_identity)?;
         let pinned: AuthorityHash=binding[12..44].try_into().map_err(|_| CompilerEnvelopeError::Binding)?;
         let dependencies: AuthorityHash=binding[44..76].try_into().map_err(|_| CompilerEnvelopeError::Binding)?;
         GenerationId::try_from(pinned).map_err(|_| CompilerEnvelopeError::Binding)?;
@@ -195,7 +198,7 @@ impl<'a> BorrowedCompilerMetadata<'a> {
         }
         if unique!=member_count {return Err(CompilerEnvelopeError::MetadataMismatch.into());}
         let _ = format;
-        Ok(Self { binding_identity, semantic_catalog_root: versioned.as_ref().map(|v|*v.catalog_root().as_bytes()), native_program_sources: program, native_headers: headers, native_lines: lines, image_rows, versioned })
+        Ok(Self { binding_identity, semantic_catalog_root: versioned.as_ref().map(|v|*v.catalog_root().as_bytes()), native_program_sources: program, native_headers: headers, native_lines: lines, manifest_bytes: manifest, binding_bytes: binding, fragment_count: count as u32, image_rows, versioned })
     }
     pub(super) fn image_count(&self) -> usize { self.image_rows.len()/72 }
     /// Iterates fixed-size claims only; caller checkpoints before each `next`.

@@ -8,6 +8,9 @@ use super::*;
 /// Borrowed claims from one already-selected immutable compiler closure.
 /// Program/image bytes still need their respective canonical semantic decoders.
 pub enum SelectedPublicationWire<'a> {
+    /// Authenticated metadata wire claims; consumers must validate their
+    /// complete manifest and binding grammar before constructing a claim.
+    Metadata { manifest_bytes: &'a [u8], binding_bytes: &'a [u8], declared_fragment_count: u32 },
     Program { member: CompilerProgramSourceMember, schema: SchemaIdentity, bytes: &'a [u8] },
     Image { member: CompilerImageMember, bytes: &'a [u8] },
     Headers { member: CompilerNativeHeadersMember, bytes: &'a [u8] },
@@ -73,6 +76,7 @@ where F: for<'a> FnMut(SelectedPublicationWire<'a>, &mut SelectedNativeHeaderBud
     if payload_total>max_payload_bytes{return Err("selected payload exceeds residence limit".into());}
     for id in envelope.members(){if header_member_bounded(store,&pin,closure,id,budget,cancelled)?!=count{return Err("selected closure count changed".into());}}
     let frame_charge=frame_before.checked_sub(budget.memory).ok_or("selected frame charge underflow")?;
+    visit(SelectedPublicationWire::Metadata { manifest_bytes: metadata.manifest_bytes, binding_bytes: metadata.binding_bytes, declared_fragment_count: metadata.fragment_count },budget)?;
     if let Some(member)=metadata.native_program_sources {
         let before=budget.memory;
         let (wire,schema,key)=header_object_bounded(store,&pin,*member.object_id(),&[NATIVE_PROGRAM_SOURCE_MANIFEST_SCHEMA,NATIVE_PROGRAM_FOREST_SCHEMA],member.byte_length() as usize,budget,cancelled)?;
