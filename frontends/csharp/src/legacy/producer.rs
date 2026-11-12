@@ -19,11 +19,14 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
-        Arc,
     },
     time::Instant,
 };
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 #[cfg(test)]
 use std::{thread, time::Duration};
@@ -35,6 +38,976 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::legacy::{CSharpImage, ImageError};
+
+// Snapshot bytes are charged conservatively even when a write later replaces
+// the same private path. These limits cover copied logical file content; OS
+// allocation metadata and transient read buffers have separate bounds.
+const MAX_EXECUTION_SNAPSHOT_BYTES: usize = 512 * 1024 * 1024;
+const MAX_RETAINED_EXECUTION_BYTES: usize = 1024 * 1024 * 1024;
+const MAX_EXECUTION_SNAPSHOT_NODES: usize = 32_768;
+const MAX_RETAINED_EXECUTION_NODES: usize = 65_536;
+
+// This process-wide budget is separate from the engine's staged-output queue:
+// direct producer callers bypass that queue, and snapshot leases can outlive
+// the staged package. Each reservation stays with the snapshot's final Arc.
+const MAX_SHARED_EXECUTION_BYTES: usize = 2 * 1024 * 1024 * 1024;
+const MAX_SHARED_EXECUTION_NODES: usize = 131_072;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct SnapshotUsage {
+    bytes: usize,
+    nodes: usize,
+}
+
+#[derive(Debug)]
+struct SnapshotBudget {
+    maximum: SnapshotUsage,
+    used: Mutex<SnapshotUsage>,
+}
+
+impl SnapshotBudget {
+    fn reserve(self: &Arc<Self>) -> Result<SnapshotReservation, CSharpAuthorityError> {
+        let mut used = self
+            .used
+            .lock()
+            .map_err(|_| CSharpAuthorityError::ExecutionSnapshotCapacity)?;
+        let bytes = used
+            .bytes
+            .checked_add(MAX_EXECUTION_SNAPSHOT_BYTES)
+            .filter(|n| *n <= self.maximum.bytes)
+            .ok_or(CSharpAuthorityError::ExecutionSnapshotCapacity)?;
+        let nodes = used
+            .nodes
+            .checked_add(MAX_EXECUTION_SNAPSHOT_NODES)
+            .filter(|n| *n <= self.maximum.nodes)
+            .ok_or(CSharpAuthorityError::ExecutionSnapshotCapacity)?;
+        *used = SnapshotUsage { bytes, nodes };
+        Ok(SnapshotReservation {
+            budget: Arc::clone(self),
+            held: SnapshotUsage {
+                bytes: MAX_EXECUTION_SNAPSHOT_BYTES,
+                nodes: MAX_EXECUTION_SNAPSHOT_NODES,
+            },
+            retain_on_drop: false,
+        })
+    }
+}
+
+fn shared_snapshot_budget() -> &'static Arc<SnapshotBudget> {
+    static BUDGET: OnceLock<Arc<SnapshotBudget>> = OnceLock::new();
+    BUDGET.get_or_init(|| {
+        Arc::new(SnapshotBudget {
+            maximum: SnapshotUsage {
+                bytes: MAX_SHARED_EXECUTION_BYTES,
+                nodes: MAX_SHARED_EXECUTION_NODES,
+            },
+            used: Mutex::new(SnapshotUsage::default()),
+        })
+    })
+}
+
+#[derive(Debug)]
+struct SnapshotReservation {
+    budget: Arc<SnapshotBudget>,
+    held: SnapshotUsage,
+    retain_on_drop: bool,
+}
+
+impl SnapshotReservation {
+    // Shrink only after copying and revalidation complete. No other owner can
+    // release these credits; an invalid measurement leaves the worst case held.
+    fn shrink(&mut self, actual: SnapshotUsage) -> Result<(), CSharpAuthorityError> {
+        let bytes = self
+            .held
+            .bytes
+            .checked_sub(actual.bytes)
+            .ok_or(CSharpAuthorityError::ExecutionSnapshotCapacity)?;
+        let nodes = self
+            .held
+            .nodes
+            .checked_sub(actual.nodes)
+            .ok_or(CSharpAuthorityError::ExecutionSnapshotCapacity)?;
+        let mut used = self
+            .budget
+            .used
+            .lock()
+            .map_err(|_| CSharpAuthorityError::ExecutionSnapshotCapacity)?;
+        let remaining_bytes = used
+            .bytes
+            .checked_sub(bytes)
+            .ok_or(CSharpAuthorityError::ExecutionSnapshotCapacity)?;
+        let remaining_nodes = used
+            .nodes
+            .checked_sub(nodes)
+            .ok_or(CSharpAuthorityError::ExecutionSnapshotCapacity)?;
+        *used = SnapshotUsage {
+            bytes: remaining_bytes,
+            nodes: remaining_nodes,
+        };
+        self.held = actual;
+        Ok(())
+    }
+}
+
+impl Drop for SnapshotReservation {
+    fn drop(&mut self) {
+        if self.retain_on_drop {
+            return;
+        }
+        let mut used = self
+            .budget
+            .used
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let (Some(bytes), Some(nodes)) = (
+            used.bytes.checked_sub(self.held.bytes),
+            used.nodes.checked_sub(self.held.nodes),
+        ) {
+            *used = SnapshotUsage { bytes, nodes };
+        } else {
+            // Corrupt accounting never grants new capacity.
+            *used = self.budget.maximum;
+        }
+    }
+}
+
+// Always attempt private-directory cleanup before releasing the credits. If
+// cleanup fails, keep the process-local reservation charged rather than
+// pretending the leftover files ceased consuming the bounded resource.
+#[derive(Debug)]
+struct ReservedSnapshotDirectory {
+    directory: Option<tempfile::TempDir>,
+    reservation: SnapshotReservation,
+}
+
+impl ReservedSnapshotDirectory {
+    fn new(reservation: SnapshotReservation) -> Result<Self, CSharpAuthorityError> {
+        let directory = tempfile::tempdir().map_err(|_| CSharpAuthorityError::Configuration)?;
+        Ok(Self {
+            directory: Some(directory),
+            reservation,
+        })
+    }
+
+    fn path(&self) -> &Path {
+        self.directory
+            .as_ref()
+            .expect("live snapshot directory")
+            .path()
+    }
+}
+
+impl Drop for ReservedSnapshotDirectory {
+    fn drop(&mut self) {
+        if self
+            .directory
+            .take()
+            .is_some_and(|directory| directory.close().is_err())
+        {
+            self.reservation.retain_on_drop = true;
+        }
+    }
+}
+
+/// Immutable custody for the executable files that participate in one Roslyn
+/// invocation.  The bytes are captured before spawning the helper and checked
+/// again immediately before use; a changed host/runtime fails closed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CSharpExecutionClosure {
+    files: Box<[(PathBuf, [u8; 32], u64)]>,
+    digest: [u8; 32],
+}
+
+#[derive(Debug)]
+struct CSharpExecutionSnapshot {
+    _directory: ReservedSnapshotDirectory,
+    toolchain: PathBuf,
+    oracle: PathBuf,
+    digest: [u8; 32],
+    copied_bytes: usize,
+    output_nodes: usize,
+}
+
+/// Owner-held custody for the exact private runtime/helper snapshot used by a
+/// producer attempt. The constructor is private; callers can only obtain this
+/// lease from a completed [`CSharpAuthorityImage`].
+#[derive(Clone, Debug)]
+pub struct CSharpExecutionLease(Arc<CSharpExecutionSnapshot>);
+
+impl CSharpExecutionLease {
+    /// Digest of this snapshot's captured file manifest. A digest alone is
+    /// not the identity of the owner-held execution snapshot.
+    #[must_use]
+    pub fn digest(&self) -> [u8; 32] {
+        self.0.digest
+    }
+
+    /// Conservatively counted logical bytes written into the snapshot.
+    #[must_use]
+    pub fn copied_bytes(&self) -> usize {
+        self.0.copied_bytes
+    }
+
+    /// Conservative count of files and directory path components written.
+    #[must_use]
+    pub fn output_nodes(&self) -> usize {
+        self.0.output_nodes
+    }
+
+    /// Whether both leases hold the exact same private snapshot owner.
+    #[must_use]
+    pub fn same_snapshot(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// One source's owner-held execution snapshot. A digest does not substitute
+/// for this exact lease; equal bytes may have separate snapshot owners.
+#[derive(Clone, Debug)]
+pub struct CSharpSourceExecutionLease {
+    path: Box<str>,
+    source_sha256: [u8; 32],
+    execution: CSharpExecutionLease,
+}
+
+impl CSharpSourceExecutionLease {
+    /// Captured package-relative source path.
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+    /// Digest of the exact source bytes supplied to the invocation.
+    #[must_use]
+    pub const fn source_sha256(&self) -> [u8; 32] {
+        self.source_sha256
+    }
+    /// The exact private snapshot owner for that source invocation.
+    #[must_use]
+    pub const fn execution(&self) -> &CSharpExecutionLease {
+        &self.execution
+    }
+}
+
+/// Bounded retention of each staged source's actual execution owner. This is
+/// custody only, not a completeness or publication authority capability.
+#[derive(Default, Debug)]
+pub struct CSharpSourceExecutionLeases {
+    entries: Vec<CSharpSourceExecutionLease>,
+    paths: std::collections::BTreeMap<Box<str>, usize>,
+    charged_bytes: usize,
+    retained_snapshot_bytes: usize,
+    retained_snapshot_nodes: usize,
+}
+
+impl CSharpSourceExecutionLeases {
+    /// Refuse before spawning when the worst-case next private snapshot
+    /// would exceed the aggregate copied-content budget. The single-source
+    /// snapshot constructor independently enforces that worst-case bound.
+    pub fn ensure_capacity_for_next(&self) -> Result<(), CSharpAuthorityError> {
+        if self.entries.len() >= 16_384 {
+            return Err(CSharpAuthorityError::Configuration);
+        }
+        self.retained_snapshot_bytes
+            .checked_add(MAX_EXECUTION_SNAPSHOT_BYTES)
+            .filter(|n| *n <= MAX_RETAINED_EXECUTION_BYTES)
+            .ok_or(CSharpAuthorityError::Configuration)?;
+        self.retained_snapshot_nodes
+            .checked_add(MAX_EXECUTION_SNAPSHOT_NODES)
+            .filter(|n| *n <= MAX_RETAINED_EXECUTION_NODES)
+            .map(|_| ())
+            .ok_or(CSharpAuthorityError::Configuration)
+    }
+
+    /// Conservatively charged logical bytes of all retained snapshots.
+    #[must_use]
+    pub const fn retained_snapshot_bytes(&self) -> usize {
+        self.retained_snapshot_bytes
+    }
+
+    /// Conservative number of charged snapshot output nodes.
+    #[must_use]
+    pub const fn retained_snapshot_nodes(&self) -> usize {
+        self.retained_snapshot_nodes
+    }
+
+    /// Retain one exact source/owner pair; duplicate paths fail closed.
+    pub fn retain(
+        &mut self,
+        path: &str,
+        source_sha256: [u8; 32],
+        execution: &CSharpExecutionLease,
+    ) -> Result<(), CSharpAuthorityError> {
+        let parsed = Path::new(path);
+        if path.is_empty()
+            || path.as_bytes().contains(&0)
+            || path
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+            || path.len() > 4096
+            || parsed.is_absolute()
+            || parsed
+                .components()
+                .any(|c| !matches!(c, std::path::Component::Normal(_)))
+            || self.entries.len() >= 16_384
+            || self.paths.contains_key(path)
+        {
+            return Err(CSharpAuthorityError::Configuration);
+        }
+        let charge = path
+            .len()
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(std::mem::size_of::<CSharpSourceExecutionLease>() + 96))
+            .and_then(|n| self.charged_bytes.checked_add(n))
+            .filter(|n| *n <= 32 * 1024 * 1024)
+            .ok_or(CSharpAuthorityError::Configuration)?;
+        let retained_snapshot_bytes = self
+            .retained_snapshot_bytes
+            .checked_add(execution.copied_bytes())
+            .filter(|n| *n <= MAX_RETAINED_EXECUTION_BYTES)
+            .ok_or(CSharpAuthorityError::Configuration)?;
+        let retained_snapshot_nodes = self
+            .retained_snapshot_nodes
+            .checked_add(execution.output_nodes())
+            .filter(|n| *n <= MAX_RETAINED_EXECUTION_NODES)
+            .ok_or(CSharpAuthorityError::Configuration)?;
+        self.entries
+            .try_reserve(1)
+            .map_err(|_| CSharpAuthorityError::Configuration)?;
+        self.paths.insert(path.into(), self.entries.len());
+        self.entries.push(CSharpSourceExecutionLease {
+            path: path.into(),
+            source_sha256,
+            execution: execution.clone(),
+        });
+        self.charged_bytes = charge;
+        self.retained_snapshot_bytes = retained_snapshot_bytes;
+        self.retained_snapshot_nodes = retained_snapshot_nodes;
+        Ok(())
+    }
+
+    /// Exact retained entries, in successful source-staging order.
+    #[must_use]
+    pub fn entries(&self) -> &[CSharpSourceExecutionLease] {
+        &self.entries
+    }
+
+    /// Return the exact owner for this source only when both path and source
+    /// bytes match the captured pair.
+    #[must_use]
+    pub fn get(&self, path: &str, source_sha256: [u8; 32]) -> Option<&CSharpExecutionLease> {
+        let entry = self.entries.get(*self.paths.get(path)?)?;
+        (entry.source_sha256 == source_sha256).then_some(&entry.execution)
+    }
+}
+
+type SnapshotManifest = Vec<(PathBuf, [u8; 32], usize)>;
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, Eq, PartialEq)]
+struct ElfRuntimeRequirements {
+    needed: Box<[Box<str>]>,
+    runpaths: Box<[Box<str>]>,
+}
+
+#[cfg(target_os = "linux")]
+fn elf_runtime_requirements(bytes: &[u8]) -> Result<ElfRuntimeRequirements, CSharpAuthorityError> {
+    if bytes.len() > 64 * 1024 * 1024 {
+        return Err(CSharpAuthorityError::Configuration);
+    }
+    let parsed = object::File::parse(bytes).map_err(|_| CSharpAuthorityError::Configuration)?;
+    let object::File::Elf64(file) = parsed else {
+        return Err(CSharpAuthorityError::Configuration);
+    };
+    use object::read::elf::{Dyn as _, ProgramHeader as _};
+
+    let endian = file.endian();
+    let headers = file.elf_program_headers();
+    if headers.len() > 128 {
+        return Err(CSharpAuthorityError::Configuration);
+    }
+    let mut dynamic = None;
+    for header in headers {
+        if header.p_type(endian) == object::elf::PT_DYNAMIC && header.p_filesz(endian) % 16 != 0 {
+            return Err(CSharpAuthorityError::Configuration);
+        }
+        if let Some(entries) = header
+            .dynamic(endian, file.data())
+            .map_err(|_| CSharpAuthorityError::Configuration)?
+        {
+            if dynamic.replace(entries).is_some() || entries.len() > 8192 {
+                return Err(CSharpAuthorityError::Configuration);
+            }
+        }
+    }
+    let mut needed = Vec::new();
+    let mut runpaths = Vec::new();
+    if let Some(entries) = dynamic {
+        let mut strtab = None;
+        let mut strsz = None;
+        let mut end = None;
+        for (index, entry) in entries.iter().enumerate() {
+            match entry.tag32(endian) {
+                Some(object::elf::DT_NULL) => {
+                    end = Some(index);
+                    break;
+                }
+                Some(object::elf::DT_STRTAB) => {
+                    if strtab.replace(entry.d_val(endian)).is_some() {
+                        return Err(CSharpAuthorityError::Configuration);
+                    }
+                }
+                Some(object::elf::DT_STRSZ) => {
+                    if strsz.replace(entry.d_val(endian)).is_some() {
+                        return Err(CSharpAuthorityError::Configuration);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let end = end.ok_or(CSharpAuthorityError::Configuration)?;
+        let strings_needed = entries[..end].iter().any(|entry| {
+            matches!(
+                entry.tag32(endian),
+                Some(object::elf::DT_NEEDED | object::elf::DT_RPATH | object::elf::DT_RUNPATH)
+            )
+        });
+        if strings_needed {
+            let address = strtab.ok_or(CSharpAuthorityError::Configuration)?;
+            let size = strsz.ok_or(CSharpAuthorityError::Configuration)?;
+            if size == 0 || size > 16 * 1024 * 1024 || address.checked_add(size).is_none() {
+                return Err(CSharpAuthorityError::Configuration);
+            }
+            let mut strings = None;
+            for header in headers {
+                if header.p_type(endian) != object::elf::PT_LOAD {
+                    continue;
+                }
+                if let Some(data) = header
+                    .data_range(endian, file.data(), address, size)
+                    .map_err(|_| CSharpAuthorityError::Configuration)?
+                {
+                    if strings.replace(data).is_some() {
+                        return Err(CSharpAuthorityError::Configuration);
+                    }
+                }
+            }
+            let strings = strings.ok_or(CSharpAuthorityError::Configuration)?;
+            for entry in &entries[..end] {
+                let is_needed = entry.tag32(endian) == Some(object::elf::DT_NEEDED);
+                let is_runpath = matches!(
+                    entry.tag32(endian),
+                    Some(object::elf::DT_RUNPATH | object::elf::DT_RPATH)
+                );
+                if !is_needed && !is_runpath {
+                    continue;
+                }
+                let offset = usize::try_from(entry.d_val(endian))
+                    .map_err(|_| CSharpAuthorityError::Configuration)?;
+                let tail = strings
+                    .get(offset..)
+                    .ok_or(CSharpAuthorityError::Configuration)?;
+                let length = tail
+                    .iter()
+                    .take(4097)
+                    .position(|byte| *byte == 0)
+                    .ok_or(CSharpAuthorityError::Configuration)?;
+                if length == 0 || length > 4096 {
+                    return Err(CSharpAuthorityError::Configuration);
+                }
+                let value = std::str::from_utf8(&tail[..length])
+                    .map_err(|_| CSharpAuthorityError::Configuration)?;
+                if is_needed {
+                    needed.push(value.into());
+                } else {
+                    for path in value.split(':') {
+                        if path.is_empty() || path.len() > 4096 {
+                            return Err(CSharpAuthorityError::Configuration);
+                        }
+                        runpaths.push(path.into());
+                    }
+                }
+                if needed.len() + runpaths.len() > 8192 {
+                    return Err(CSharpAuthorityError::Configuration);
+                }
+            }
+        }
+    }
+    Ok(ElfRuntimeRequirements {
+        needed: needed.into_boxed_slice(),
+        runpaths: runpaths.into_boxed_slice(),
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn require_relocatable_elf_host(bytes: &[u8]) -> Result<(), CSharpAuthorityError> {
+    // The private snapshot cannot make an ELF interpreter at an absolute
+    // `/nix/store` (or system) path immutable. Refuse such hosts until their
+    // interpreter and DT_NEEDED native closure are copied and verified too.
+    if bytes.get(..4) != Some(b"\x7fELF") || bytes.get(4) != Some(&2) {
+        return Err(CSharpAuthorityError::Configuration);
+    }
+    if bytes.get(5) != Some(&1) {
+        return Err(CSharpAuthorityError::Configuration);
+    }
+    // Let the native object reader validate the complete ELF container before
+    // inspecting bounded program-header fields below.
+    let requirements = elf_runtime_requirements(bytes)?;
+    if requirements.needed.len() > 8192 || requirements.runpaths.len() > 8192 {
+        return Err(CSharpAuthorityError::Configuration);
+    }
+    let read_u16 = |at: usize| {
+        bytes
+            .get(at..at + 2)
+            .map(|part| u16::from_le_bytes([part[0], part[1]]))
+    };
+    let read_u64 = |at: usize| {
+        bytes
+            .get(at..at + 8)
+            .map(|part| u64::from_le_bytes(part.try_into().expect("slice length")))
+    };
+    let phoff = read_u64(32).ok_or(CSharpAuthorityError::Configuration)? as usize;
+    let phentsize = usize::from(read_u16(54).ok_or(CSharpAuthorityError::Configuration)?);
+    let phnum = usize::from(read_u16(56).ok_or(CSharpAuthorityError::Configuration)?);
+    if phentsize < 56 || phnum > 128 {
+        return Err(CSharpAuthorityError::Configuration);
+    }
+    for ordinal in 0..phnum {
+        let base = phoff
+            .checked_add(
+                ordinal
+                    .checked_mul(phentsize)
+                    .ok_or(CSharpAuthorityError::Configuration)?,
+            )
+            .ok_or(CSharpAuthorityError::Configuration)?;
+        let kind = read_u32(bytes, base).ok_or(CSharpAuthorityError::Configuration)?;
+        if kind != 3 {
+            continue;
+        }
+        let offset = read_u64(base + 8).ok_or(CSharpAuthorityError::Configuration)? as usize;
+        let length = read_u64(base + 32).ok_or(CSharpAuthorityError::Configuration)? as usize;
+        let end = offset
+            .checked_add(length)
+            .ok_or(CSharpAuthorityError::Configuration)?;
+        let interpreter = bytes
+            .get(offset..end)
+            .ok_or(CSharpAuthorityError::Configuration)?;
+        if interpreter.first() == Some(&b'/')
+            || interpreter.iter().position(|byte| *byte == 0).is_none()
+        {
+            return Err(CSharpAuthorityError::Configuration);
+        }
+        return Ok(());
+    }
+    Err(CSharpAuthorityError::Configuration)
+}
+
+#[cfg(target_os = "linux")]
+fn read_u32(bytes: &[u8], at: usize) -> Option<u32> {
+    bytes
+        .get(at..at + 4)
+        .map(|part| u32::from_le_bytes(part.try_into().expect("slice length")))
+}
+
+fn copy_tree_bounded(
+    source: &Path,
+    target: &Path,
+    files: &mut usize,
+    bytes: &mut usize,
+    manifest: &mut SnapshotManifest,
+    depth: usize,
+    entries: &mut usize,
+    path_bytes: &mut usize,
+    control: CSharpAuthorityControl<'_>,
+) -> Result<(), CSharpAuthorityError> {
+    checkpoint(control, CSharpAuthorityPhase::Spawn)?;
+    if depth > 32 {
+        return Err(CSharpAuthorityError::Configuration);
+    }
+    *entries = entries
+        .checked_add(1)
+        .filter(|count| *count <= 16_384)
+        .ok_or(CSharpAuthorityError::Configuration)?;
+    *path_bytes = path_bytes
+        .checked_add(source.as_os_str().as_encoded_bytes().len())
+        .filter(|size| *size <= 2 * 1024 * 1024)
+        .ok_or(CSharpAuthorityError::Configuration)?;
+    let metadata = fs::symlink_metadata(source).map_err(|_| CSharpAuthorityError::Configuration)?;
+    if metadata.file_type().is_symlink() {
+        return Err(CSharpAuthorityError::Configuration);
+    }
+    if metadata.is_dir() {
+        fs::create_dir_all(target).map_err(|_| CSharpAuthorityError::Configuration)?;
+        for entry in fs::read_dir(source).map_err(|_| CSharpAuthorityError::Configuration)? {
+            let entry = entry.map_err(|_| CSharpAuthorityError::Configuration)?;
+            copy_tree_bounded(
+                &entry.path(),
+                &target.join(entry.file_name()),
+                files,
+                bytes,
+                manifest,
+                depth + 1,
+                entries,
+                path_bytes,
+                control,
+            )?;
+        }
+    } else if metadata.is_file() {
+        *files = files
+            .checked_add(1)
+            .filter(|count| *count <= 8192)
+            .ok_or(CSharpAuthorityError::Configuration)?;
+        let content =
+            backend_platform::durable::read_regular_bounded_stable(source, 256 * 1024 * 1024)
+                .map_err(|_| CSharpAuthorityError::Configuration)?;
+        let digest: [u8; 32] = Sha256::digest(&content).into();
+        manifest.push((source.to_path_buf(), digest, content.len()));
+        *bytes = bytes
+            .checked_add(content.len())
+            .filter(|size| *size <= MAX_EXECUTION_SNAPSHOT_BYTES)
+            .ok_or(CSharpAuthorityError::Configuration)?;
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|_| CSharpAuthorityError::Configuration)?;
+        }
+        fs::write(target, content).map_err(|_| CSharpAuthorityError::Configuration)?;
+    } else {
+        return Err(CSharpAuthorityError::Configuration);
+    }
+    Ok(())
+}
+
+fn snapshot_execution(
+    toolchain: &Path,
+    oracle: &Path,
+    control: CSharpAuthorityControl<'_>,
+) -> Result<CSharpExecutionSnapshot, CSharpAuthorityError> {
+    let root = toolchain
+        .parent()
+        .ok_or(CSharpAuthorityError::Configuration)?;
+    checkpoint(control, CSharpAuthorityPhase::Spawn)?;
+    // Reserve before creating a private tree or reading/copying source bytes.
+    // The directory owner keeps this credit until cleanup and the final lease.
+    let reservation = shared_snapshot_budget().reserve()?;
+    let mut directory = ReservedSnapshotDirectory::new(reservation)?;
+    let copied_root = directory.path().join("dotnet");
+    let mut files = 0;
+    let mut bytes: usize = 0;
+    let mut manifest = SnapshotManifest::new();
+    // Root, dotnet directory, host executable, helper and two companions.
+    // Repeated paths are deliberately charged more than once.
+    let mut entries = 6;
+    let mut path_bytes = 0;
+    // `dotnet exec` only needs the hostfxr and shared runtime trees. SDK packs,
+    // templates, and workload caches are excluded from this execution closure.
+    let tool_name = toolchain
+        .file_name()
+        .ok_or(CSharpAuthorityError::Configuration)?;
+    let copied_tool = copied_root.join(tool_name);
+    let tool_bytes =
+        backend_platform::durable::read_regular_bounded_stable(toolchain, 64 * 1024 * 1024)
+            .map_err(|_| CSharpAuthorityError::Configuration)?;
+    #[cfg(target_os = "linux")]
+    require_relocatable_elf_host(&tool_bytes)?;
+    manifest.push((
+        toolchain.to_path_buf(),
+        Sha256::digest(&tool_bytes).into(),
+        tool_bytes.len(),
+    ));
+    bytes = bytes
+        .checked_add(tool_bytes.len())
+        .filter(|size| *size <= MAX_EXECUTION_SNAPSHOT_BYTES)
+        .ok_or(CSharpAuthorityError::Configuration)?;
+    fs::create_dir_all(&copied_root).map_err(|_| CSharpAuthorityError::Configuration)?;
+    fs::write(&copied_tool, tool_bytes).map_err(|_| CSharpAuthorityError::Configuration)?;
+    // `fs::write` creates a non-executable file regardless of the source
+    // mode. Require an executable source, then use a private owner-only mode
+    // for the copied host; no source write/special bits enter the snapshot.
+    #[cfg(unix)]
+    {
+        let mode = fs::metadata(toolchain)
+            .map_err(|_| CSharpAuthorityError::Configuration)?
+            .permissions()
+            .mode();
+        if mode & 0o111 == 0 {
+            return Err(CSharpAuthorityError::Configuration);
+        }
+        fs::set_permissions(&copied_tool, fs::Permissions::from_mode(0o500))
+            .map_err(|_| CSharpAuthorityError::Configuration)?;
+    }
+    for directory_name in ["host", "shared"] {
+        copy_tree_bounded(
+            &root.join(directory_name),
+            &copied_root.join(directory_name),
+            &mut files,
+            &mut bytes,
+            &mut manifest,
+            0,
+            &mut entries,
+            &mut path_bytes,
+            control,
+        )?;
+    }
+    checkpoint(control, CSharpAuthorityPhase::Spawn)?;
+    let oracle_name = oracle
+        .file_name()
+        .ok_or(CSharpAuthorityError::Configuration)?;
+    let copied_oracle = directory.path().join(oracle_name);
+    let oracle_bytes =
+        backend_platform::durable::read_regular_bounded_stable(oracle, 64 * 1024 * 1024)
+            .map_err(|_| CSharpAuthorityError::Configuration)?;
+    manifest.push((
+        oracle.to_path_buf(),
+        Sha256::digest(&oracle_bytes).into(),
+        oracle_bytes.len(),
+    ));
+    checkpoint(control, CSharpAuthorityPhase::Spawn)?;
+    bytes = bytes
+        .checked_add(oracle_bytes.len())
+        .filter(|size| *size <= MAX_EXECUTION_SNAPSHOT_BYTES)
+        .ok_or(CSharpAuthorityError::Configuration)?;
+    fs::write(&copied_oracle, oracle_bytes).map_err(|_| CSharpAuthorityError::Configuration)?;
+    let oracle_stem = oracle
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .ok_or(CSharpAuthorityError::Configuration)?;
+    let oracle_parent = oracle.parent().ok_or(CSharpAuthorityError::Configuration)?;
+    for suffix in [".deps.json", ".runtimeconfig.json"] {
+        let companion = oracle_parent.join(format!("{oracle_stem}{suffix}"));
+        let companion_bytes =
+            backend_platform::durable::read_regular_bounded_stable(&companion, 16 * 1024 * 1024)
+                .map_err(|_| CSharpAuthorityError::Configuration)?;
+        manifest.push((
+            companion.clone(),
+            Sha256::digest(&companion_bytes).into(),
+            companion_bytes.len(),
+        ));
+        bytes = bytes
+            .checked_add(companion_bytes.len())
+            .filter(|size| *size <= MAX_EXECUTION_SNAPSHOT_BYTES)
+            .ok_or(CSharpAuthorityError::Configuration)?;
+        fs::write(
+            directory.path().join(format!("{oracle_stem}{suffix}")),
+            companion_bytes,
+        )
+        .map_err(|_| CSharpAuthorityError::Configuration)?;
+    }
+    // Copy exactly the helper runtime files declared by deps.json. Sibling
+    // DLLs outside this declared closure are not silently admitted.
+    let deps_path = oracle_parent.join(format!("{oracle_stem}.deps.json"));
+    let deps_bytes =
+        backend_platform::durable::read_regular_bounded_stable(&deps_path, 16 * 1024 * 1024)
+            .map_err(|_| CSharpAuthorityError::Configuration)?;
+    manifest.push((
+        deps_path.clone(),
+        Sha256::digest(&deps_bytes).into(),
+        deps_bytes.len(),
+    ));
+    let deps: serde_json::Value =
+        serde_json::from_slice(&deps_bytes).map_err(|_| CSharpAuthorityError::Configuration)?;
+    let targets = deps
+        .get("targets")
+        .and_then(serde_json::Value::as_object)
+        .ok_or(CSharpAuthorityError::Configuration)?;
+    // A helper publish must have one selected target. Choosing the first JSON
+    // object would make resolver authority depend on map order when a stale
+    // or multi-framework deps file is supplied.
+    if targets.len() != 1 {
+        return Err(CSharpAuthorityError::Configuration);
+    }
+    let target = targets
+        .values()
+        .next()
+        .and_then(serde_json::Value::as_object)
+        .ok_or(CSharpAuthorityError::Configuration)?;
+    let mut declared = std::collections::BTreeSet::new();
+    for library in target.values() {
+        // `runtimeTargets` carries RID-specific managed/native assets which
+        // are omitted from `runtime`; both are part of the loader closure.
+        for field in ["runtime", "runtimeTargets", "native"] {
+            let Some(runtime) = library.get(field).and_then(serde_json::Value::as_object) else {
+                continue;
+            };
+            for relative in runtime.keys() {
+                let relative_path = Path::new(relative);
+                if relative.len() > 4096 || declared.len() >= 8192 {
+                    return Err(CSharpAuthorityError::Configuration);
+                }
+                if relative_path.is_absolute()
+                    || relative_path
+                        .components()
+                        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+                {
+                    return Err(CSharpAuthorityError::Configuration);
+                }
+                declared.insert(relative_path.to_owned());
+            }
+        }
+    }
+    declared.insert(PathBuf::from(format!("{oracle_stem}.dll")));
+    let mut flattened_names = std::collections::BTreeMap::<std::ffi::OsString, PathBuf>::new();
+    for relative in declared {
+        // Count all path components as potentially new nodes. Shared parents
+        // and duplicate helper writes are intentionally over-counted.
+        let depth = relative.components().count();
+        if depth == 0 || depth > 32 {
+            return Err(CSharpAuthorityError::Configuration);
+        }
+        entries = entries
+            .checked_add(depth)
+            .filter(|count| *count <= MAX_EXECUTION_SNAPSHOT_NODES)
+            .ok_or(CSharpAuthorityError::Configuration)?;
+        // A published helper's deps file records the package-relative asset
+        // (`lib/net8.0/Foo.dll`), while `dotnet publish` may flatten that
+        // asset beside the apphost.  Prefer the recorded path; only accept a
+        // flattened basename when it is an unambiguous regular file in the
+        // same confined publish directory.  Never search outside that root or
+        // choose among multiple candidates.
+        let name = relative
+            .file_name()
+            .ok_or(CSharpAuthorityError::Configuration)?;
+        if let Some(previous) = flattened_names.insert(name.to_owned(), relative.clone()) {
+            if previous != relative {
+                // Distinct package-relative assets with one basename cannot
+                // safely share a flattened publish location.
+                return Err(CSharpAuthorityError::Configuration);
+            }
+        }
+        let source = {
+            let recorded = oracle_parent.join(&relative);
+            if recorded.is_file() {
+                recorded
+            } else {
+                let flattened = oracle_parent.join(name);
+                if !flattened.is_file() {
+                    return Err(CSharpAuthorityError::Configuration);
+                }
+                flattened
+            }
+        };
+        let content =
+            backend_platform::durable::read_regular_bounded_stable(&source, 64 * 1024 * 1024)
+                .map_err(|_| CSharpAuthorityError::Configuration)?;
+        manifest.push((
+            source.clone(),
+            Sha256::digest(&content).into(),
+            content.len(),
+        ));
+        bytes = bytes
+            .checked_add(content.len())
+            .filter(|size| *size <= MAX_EXECUTION_SNAPSHOT_BYTES)
+            .ok_or(CSharpAuthorityError::Configuration)?;
+        let destination = directory.path().join(&relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).map_err(|_| CSharpAuthorityError::Configuration)?;
+        }
+        fs::write(destination, content).map_err(|_| CSharpAuthorityError::Configuration)?;
+    }
+    // A stable read protects each file, but not a coherent multi-file
+    // runtime/helper closure. Re-read every source member after the complete
+    // copy and refuse if any member changed during capture.
+    checkpoint(control, CSharpAuthorityPhase::Spawn)?;
+    for (source, expected, length) in &manifest {
+        let current =
+            backend_platform::durable::read_regular_bounded_stable(source, 256 * 1024 * 1024)
+                .map_err(|_| CSharpAuthorityError::Configuration)?;
+        if current.len() != *length || Sha256::digest(&current).as_slice() != expected {
+            return Err(CSharpAuthorityError::Configuration);
+        }
+        checkpoint(control, CSharpAuthorityPhase::Spawn)?;
+    }
+    manifest.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut digest = Sha256::new();
+    digest.update(b"nudox.csharp.execution-snapshot.v1\0");
+    for (source, expected, length) in &manifest {
+        let path = source.as_os_str().as_encoded_bytes();
+        digest.update((path.len() as u64).to_le_bytes());
+        digest.update(path);
+        digest.update((*length as u64).to_le_bytes());
+        digest.update(expected);
+    }
+    if !copied_tool.is_file() {
+        return Err(CSharpAuthorityError::Configuration);
+    }
+    directory.reservation.shrink(SnapshotUsage {
+        bytes,
+        nodes: entries,
+    })?;
+    Ok(CSharpExecutionSnapshot {
+        _directory: directory,
+        toolchain: copied_tool,
+        oracle: copied_oracle,
+        digest: digest.finalize().into(),
+        copied_bytes: bytes,
+        output_nodes: entries,
+    })
+}
+
+impl CSharpExecutionClosure {
+    /// Captures a bounded set of regular executable/helper files.
+    pub fn capture(paths: &[&Path]) -> Result<Self, CSharpAuthorityError> {
+        if paths.is_empty() || paths.len() > 16 {
+            return Err(CSharpAuthorityError::Configuration);
+        }
+        let mut files = Vec::with_capacity(paths.len());
+        let mut total = 0usize;
+        let mut hash = Sha256::new();
+        hash.update(b"nudox.csharp.execution-closure.v1\0");
+        for path in paths {
+            let canonical =
+                fs::canonicalize(path).map_err(|_| CSharpAuthorityError::Configuration)?;
+            let bytes = backend_platform::durable::read_regular_bounded_stable(
+                &canonical,
+                256 * 1024 * 1024,
+            )
+            .map_err(|_| CSharpAuthorityError::Configuration)?;
+            if bytes.is_empty() {
+                return Err(CSharpAuthorityError::Configuration);
+            }
+            total = total
+                .checked_add(bytes.len())
+                .filter(|size| *size <= 256 * 1024 * 1024)
+                .ok_or(CSharpAuthorityError::Configuration)?;
+            let digest: [u8; 32] = Sha256::digest(&bytes).into();
+            let name = canonical.as_os_str().as_encoded_bytes();
+            hash.update((name.len() as u64).to_le_bytes());
+            hash.update(name);
+            hash.update((bytes.len() as u64).to_le_bytes());
+            hash.update(digest);
+            files.push((canonical, digest, bytes.len() as u64));
+        }
+        Ok(Self {
+            files: files.into_boxed_slice(),
+            digest: hash.finalize().into(),
+        })
+    }
+
+    /// Revalidates every executable and the closure digest before invocation.
+    pub fn validate(&self) -> bool {
+        let mut hash = Sha256::new();
+        hash.update(b"nudox.csharp.execution-closure.v1\0");
+        for (path, expected, length) in &self.files {
+            let Ok(bytes) =
+                backend_platform::durable::read_regular_bounded_stable(path, 256 * 1024 * 1024)
+            else {
+                return false;
+            };
+            if bytes.len() as u64 != *length || Sha256::digest(&bytes).as_slice() != expected {
+                return false;
+            }
+            let name = path.as_os_str().as_encoded_bytes();
+            hash.update((name.len() as u64).to_le_bytes());
+            hash.update(name);
+            hash.update(length.to_le_bytes());
+            hash.update(expected);
+        }
+        hash.finalize().as_slice() == self.digest
+    }
+
+    /// Stable digest for same-attempt receipts.
+    #[must_use]
+    pub const fn digest(&self) -> [u8; 32] {
+        self.digest
+    }
+}
 
 /// The default maximum bytes accepted from either child stream.
 pub const DEFAULT_OUTPUT_LIMIT: usize = 32 * 1024 * 1024;
@@ -144,6 +1117,9 @@ pub struct CSharpAuthorityRequest<'request, 'config, 'cancel> {
     pub captured_config: Option<&'request [CSharpCapturedConfig<'request>]>,
     /// Exact bounded project graph. Nodes compile into separate assemblies.
     pub captured_project_graph: Option<&'request CSharpCapturedProjectGraph<'request>>,
+    /// Immutable executable/helper custody for this invocation, when the
+    /// owner has admitted a native execution closure.
+    pub execution_closure: Option<&'request CSharpExecutionClosure>,
     /// Closed C# language version selected for Roslyn parsing.
     pub profile: CSharpVersion,
     /// Native tool family already selected by the enclosing compiler request.
@@ -262,6 +1238,8 @@ pub struct CSharpAuthorityImage {
     evidence: Option<Box<[u8]>>,
     resolver_receipt: Option<crate::legacy::sdk::CSharpResolverReceipt>,
     resolved_reference_snapshot: Option<Arc<crate::legacy::sdk::CSharpResolvedReferenceSnapshot>>,
+    execution_digest: [u8; 32],
+    execution: Arc<CSharpExecutionSnapshot>,
 }
 
 impl CSharpAuthorityImage {
@@ -285,6 +1263,20 @@ impl CSharpAuthorityImage {
         &self,
     ) -> Option<&Arc<crate::legacy::sdk::CSharpResolvedReferenceSnapshot>> {
         self.resolved_reference_snapshot.as_ref()
+    }
+
+    /// Digest of the complete private helper/runtime snapshot used for this
+    /// image. Owners must carry this into their selected-attempt receipt.
+    #[must_use]
+    pub const fn execution_digest(&self) -> [u8; 32] {
+        self.execution_digest
+    }
+
+    /// Retains the immutable runtime/helper snapshot for selected-attempt
+    /// publication and cold replay custody.
+    #[must_use]
+    pub fn execution_lease(&self) -> CSharpExecutionLease {
+        CSharpExecutionLease(Arc::clone(&self.execution))
     }
 
     /// Borrows the exact validated image bytes for the next compiler boundary.
@@ -388,13 +1380,21 @@ impl CSharpOracle {
         request: CSharpAuthorityRequest<'request, 'config, 'cancel>,
     ) -> Result<Vec<u8>, CSharpAuthorityError> {
         self.authority_image_with_evidence(request)
-            .map(|(image, _)| image)
+            .map(|(image, _, _, _)| image)
     }
 
     fn authority_image_with_evidence<'request, 'config, 'cancel>(
         &self,
         request: CSharpAuthorityRequest<'request, 'config, 'cancel>,
-    ) -> Result<(Vec<u8>, Option<Box<[u8]>>), CSharpAuthorityError> {
+    ) -> Result<
+        (
+            Vec<u8>,
+            Option<Box<[u8]>>,
+            [u8; 32],
+            Arc<CSharpExecutionSnapshot>,
+        ),
+        CSharpAuthorityError,
+    > {
         checkpoint(request.control, CSharpAuthorityPhase::Admission)?;
         if request.configuration.exact_nullable.is_some()
             != request.configuration.exact_unsafe.is_some()
@@ -415,6 +1415,11 @@ impl CSharpOracle {
                     .additional_reference_directories
                     .is_empty()
             {
+                return Err(CSharpAuthorityError::Configuration);
+            }
+        }
+        if let Some(closure) = request.execution_closure {
+            if !closure.validate() {
                 return Err(CSharpAuthorityError::Configuration);
             }
         }
@@ -589,11 +1594,17 @@ impl CSharpOracle {
             })
             .transpose()?;
         checkpoint(request.control, CSharpAuthorityPhase::Spawn)?;
-        let mut command = Command::new(request.toolchain);
+        let execution = Arc::new(snapshot_execution(
+            request.toolchain,
+            &self.oracle,
+            request.control,
+        )?);
+        let execution_digest = execution.digest;
+        let mut command = Command::new(&execution.toolchain);
         isolate_authority_environment(&mut command);
         command
             .arg("exec")
-            .arg(&self.oracle)
+            .arg(&execution.oracle)
             .args(["--mode", "source", "--root"])
             .arg(&package_root)
             .args(["--authority-image", "--source-binding"])
@@ -711,16 +1722,13 @@ impl CSharpOracle {
                 .map(|(key, value)| (key.to_os_string(), value.map(|value| value.to_os_string())))
                 .collect(),
         };
-        let result = backend_platform::child_output::capture(
+        let result = capture_authority_command(
             &spec,
-            backend_platform::child_output::CaptureLimits {
-                deadline: request.control.deadline,
-                stdout_bytes: self.output_limit,
-                stderr_bytes: self.output_limit,
-            },
-            request.control.cancelled,
-        )
-        .map_err(|cause| capture_error(cause, request.toolchain, &self.oracle))?;
+            request.control,
+            self.output_limit,
+            request.toolchain,
+            &self.oracle,
+        )?;
         ensure_executable_unchanged(&self.oracle, "helper", helper_digest)?;
         ensure_executable_unchanged(request.toolchain, "dotnet", toolchain_digest)?;
         if !result.status.success() {
@@ -776,7 +1784,7 @@ impl CSharpOracle {
         };
         drop(manifest_directory);
         checkpoint(request.control, CSharpAuthorityPhase::Return)?;
-        Ok((stdout, evidence))
+        Ok((stdout, evidence, execution_digest, execution))
     }
 
     /// Runs [`Self::authority_image`] and retains its bytes in an owned image.
@@ -790,13 +1798,16 @@ impl CSharpOracle {
         let resolver_receipt = request
             .resolved_reference_snapshot
             .map(|snapshot| snapshot.receipt().clone());
-        self.authority_image_with_evidence(request)
-            .map(|(bytes, evidence)| CSharpAuthorityImage {
+        self.authority_image_with_evidence(request).map(
+            |(bytes, evidence, execution_digest, execution)| CSharpAuthorityImage {
                 bytes: bytes.into_boxed_slice(),
                 evidence,
                 resolver_receipt,
                 resolved_reference_snapshot: None,
-            })
+                execution_digest,
+                execution,
+            },
+        )
     }
 
     /// Produces an image while retaining the independently owned selected
@@ -1058,6 +2069,9 @@ pub enum CSharpAuthorityError {
     /// Exact compiler options are incomplete or inconsistent.
     #[error("C# captured compiler configuration is incomplete")]
     Configuration,
+    /// Process-wide execution snapshot credits are unavailable.
+    #[error("C# execution snapshot capacity is exhausted or unavailable")]
+    ExecutionSnapshotCapacity,
     /// Captured input set is too large, malformed, or omits the binding.
     #[error("C# captured input manifest is invalid or exceeds its bound")]
     Manifest,
@@ -1225,6 +2239,25 @@ pub enum CSharpAuthorityError {
         expected: [u8; 32],
         observed: [u8; 32],
     },
+}
+
+fn capture_authority_command(
+    spec: &backend_platform::child_output::CaptureCommand,
+    control: CSharpAuthorityControl<'_>,
+    output_limit: usize,
+    toolchain: &Path,
+    oracle: &Path,
+) -> Result<backend_platform::child_output::CapturedOutput, CSharpAuthorityError> {
+    backend_platform::child_output::capture(
+        spec,
+        backend_platform::child_output::CaptureLimits {
+            deadline: control.deadline,
+            stdout_bytes: output_limit,
+            stderr_bytes: output_limit,
+        },
+        control.cancelled,
+    )
+    .map_err(|cause| capture_error(cause, toolchain, oracle))
 }
 
 fn capture_error(
@@ -1460,6 +2493,292 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_credit_lives_until_last_owner_and_cleanup() {
+        let budget = Arc::new(SnapshotBudget {
+            maximum: SnapshotUsage {
+                bytes: MAX_EXECUTION_SNAPSHOT_BYTES,
+                nodes: MAX_EXECUTION_SNAPSHOT_NODES,
+            },
+            used: Mutex::new(SnapshotUsage::default()),
+        });
+        let mut directory = ReservedSnapshotDirectory::new(budget.reserve().expect("credit"))
+            .expect("private snapshot");
+        directory
+            .reservation
+            .shrink(SnapshotUsage {
+                bytes: 17,
+                nodes: 3,
+            })
+            .unwrap();
+        let root = directory.path().to_owned();
+        let lease = CSharpExecutionLease(Arc::new(CSharpExecutionSnapshot {
+            toolchain: root.join("dotnet"),
+            oracle: root.join("oracle.dll"),
+            _directory: directory,
+            digest: [4; 32],
+            copied_bytes: 17,
+            output_nodes: 3,
+        }));
+        let second = lease.clone();
+        drop(lease);
+        assert!(root.is_dir());
+        assert_eq!(
+            *budget.used.lock().unwrap(),
+            SnapshotUsage {
+                bytes: 17,
+                nodes: 3
+            }
+        );
+        // Even one held owner prevents another worst-case reservation here.
+        assert!(budget.reserve().is_err());
+        drop(second);
+        assert!(!root.exists());
+        assert_eq!(*budget.used.lock().unwrap(), SnapshotUsage::default());
+        assert!(budget.reserve().is_ok());
+    }
+
+    #[test]
+    fn concurrent_snapshot_reservations_refuse_before_copy() {
+        use std::sync::Barrier;
+        let budget = Arc::new(SnapshotBudget {
+            maximum: SnapshotUsage {
+                bytes: MAX_EXECUTION_SNAPSHOT_BYTES,
+                nodes: MAX_EXECUTION_SNAPSHOT_NODES,
+            },
+            used: Mutex::new(SnapshotUsage::default()),
+        });
+        let start = Arc::new(Barrier::new(3));
+        let finish = Arc::new(Barrier::new(3));
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                let budget = Arc::clone(&budget);
+                let start = Arc::clone(&start);
+                let finish = Arc::clone(&finish);
+                thread::spawn(move || {
+                    start.wait();
+                    let credit = budget.reserve().ok();
+                    finish.wait();
+                    credit
+                })
+            })
+            .collect();
+        start.wait();
+        finish.wait();
+        let credits: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(credits.iter().filter(|credit| credit.is_some()).count(), 1);
+        assert_eq!(
+            *budget.used.lock().unwrap(),
+            SnapshotUsage {
+                bytes: MAX_EXECUTION_SNAPSHOT_BYTES,
+                nodes: MAX_EXECUTION_SNAPSHOT_NODES
+            }
+        );
+        drop(credits);
+        assert_eq!(*budget.used.lock().unwrap(), SnapshotUsage::default());
+    }
+
+    #[test]
+    fn staged_sources_retain_each_exact_execution_owner_even_with_equal_digests() {
+        fn fixture(
+            digest: [u8; 32],
+            copied_bytes: usize,
+            output_nodes: usize,
+        ) -> (CSharpExecutionLease, PathBuf) {
+            let budget = Arc::new(SnapshotBudget {
+                maximum: SnapshotUsage {
+                    bytes: MAX_EXECUTION_SNAPSHOT_BYTES,
+                    nodes: MAX_EXECUTION_SNAPSHOT_NODES,
+                },
+                used: Mutex::new(SnapshotUsage::default()),
+            });
+            let mut directory = ReservedSnapshotDirectory::new(budget.reserve().expect("credit"))
+                .expect("private execution snapshot");
+            directory
+                .reservation
+                .shrink(SnapshotUsage {
+                    bytes: copied_bytes,
+                    nodes: output_nodes,
+                })
+                .expect("fixture charge");
+            let root = directory.path().to_owned();
+            let snapshot = CSharpExecutionSnapshot {
+                toolchain: root.join("dotnet"),
+                oracle: root.join("oracle.dll"),
+                _directory: directory,
+                digest,
+                copied_bytes,
+                output_nodes,
+            };
+            (CSharpExecutionLease(Arc::new(snapshot)), root)
+        }
+        let (first, first_root) = fixture([7; 32], 123, 5);
+        let (second, second_root) = fixture([7; 32], 123, 5);
+        assert_eq!(first.digest(), second.digest());
+        assert!(!first.same_snapshot(&second));
+        assert!(first.same_snapshot(&first.clone()));
+        let mut retained = CSharpSourceExecutionLeases::default();
+        retained
+            .retain("A.cs", [1; 32], &first)
+            .expect("first source");
+        retained
+            .retain("B.cs", [2; 32], &second)
+            .expect("second source");
+        assert!(retained.get("A.cs", [1; 32]).unwrap().same_snapshot(&first));
+        assert!(
+            retained
+                .get("B.cs", [2; 32])
+                .unwrap()
+                .same_snapshot(&second)
+        );
+        assert!(
+            !retained
+                .get("A.cs", [1; 32])
+                .unwrap()
+                .same_snapshot(&second)
+        );
+        assert!(retained.get("A.cs", [2; 32]).is_none());
+        assert!(retained.get("missing.cs", [1; 32]).is_none());
+        assert!(retained.retain("A.cs", [3; 32], &second).is_err());
+        assert!(retained.retain("../outside.cs", [3; 32], &second).is_err());
+        assert!(
+            retained
+                .retain("nested//file.cs", [3; 32], &second)
+                .is_err()
+        );
+        assert_eq!(retained.entries().len(), 2);
+        // Equal digests are charged independently because they own distinct
+        // directories; duplicate-path failures must not change the charge.
+        assert_eq!(retained.retained_snapshot_bytes(), 246);
+        assert_eq!(retained.retained_snapshot_nodes(), 10);
+        drop(first);
+        drop(second);
+        assert!(first_root.is_dir());
+        assert!(second_root.is_dir());
+        drop(retained);
+        assert!(!first_root.exists());
+        assert!(!second_root.exists());
+
+        let (large_a, _) = fixture([9; 32], 400 * 1024 * 1024, 1);
+        let (large_b, _) = fixture([9; 32], 200 * 1024 * 1024, 1);
+        let (would_overflow, _) = fixture([9; 32], MAX_EXECUTION_SNAPSHOT_BYTES, 1);
+        let mut quota = CSharpSourceExecutionLeases::default();
+        assert!(quota.ensure_capacity_for_next().is_ok());
+        quota.retain("a.cs", [1; 32], &large_a).unwrap();
+        assert!(quota.ensure_capacity_for_next().is_ok());
+        quota.retain("b.cs", [2; 32], &large_b).unwrap();
+        assert_eq!(quota.retained_snapshot_bytes(), 600 * 1024 * 1024);
+        assert!(quota.ensure_capacity_for_next().is_err());
+        assert!(quota.retain("c.cs", [3; 32], &would_overflow).is_err());
+        assert_eq!(quota.retained_snapshot_bytes(), 600 * 1024 * 1024);
+        assert_eq!(quota.entries().len(), 2);
+
+        // Empty-file snapshots still consume a separately bounded number of
+        // output nodes. Reserve the worst case before beginning another one.
+        let (nodes_a, _) = fixture([8; 32], 0, 24_000);
+        let (nodes_b, _) = fixture([8; 32], 0, 12_000);
+        let (nodes_overflow, _) = fixture([8; 32], 0, 30_000);
+        let mut node_quota = CSharpSourceExecutionLeases::default();
+        node_quota.retain("a.cs", [1; 32], &nodes_a).unwrap();
+        assert!(node_quota.ensure_capacity_for_next().is_ok());
+        node_quota.retain("b.cs", [2; 32], &nodes_b).unwrap();
+        assert_eq!(node_quota.retained_snapshot_nodes(), 36_000);
+        assert!(node_quota.ensure_capacity_for_next().is_err());
+        assert!(node_quota.retain("c.cs", [3; 32], &nodes_overflow).is_err());
+        assert_eq!(node_quota.retained_snapshot_nodes(), 36_000);
+        assert_eq!(node_quota.entries().len(), 2);
+    }
+
+    #[test]
+    fn execution_closure_rejects_changed_helper_bytes() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let dotnet = directory.path().join("dotnet");
+        let helper = directory.path().join("oracle.dll");
+        std::fs::write(&dotnet, b"dotnet-bytes").expect("dotnet");
+        std::fs::write(&helper, b"helper-bytes").expect("helper");
+        let closure = CSharpExecutionClosure::capture(&[dotnet.as_path(), helper.as_path()])
+            .expect("capture execution closure");
+        assert!(closure.validate());
+        std::fs::write(&helper, b"changed-helper").expect("mutate helper");
+        assert!(!closure.validate());
+    }
+
+    #[cfg(target_os = "linux")]
+    fn sectionless_elf_fixture() -> Vec<u8> {
+        let mut bytes = vec![0u8; 384];
+        bytes[..6].copy_from_slice(b"\x7fELF\x02\x01");
+        bytes[6] = 1;
+        bytes[16..18].copy_from_slice(&3u16.to_le_bytes());
+        bytes[18..20].copy_from_slice(&62u16.to_le_bytes());
+        bytes[20..24].copy_from_slice(&1u32.to_le_bytes());
+        bytes[32..40].copy_from_slice(&64u64.to_le_bytes());
+        bytes[52..54].copy_from_slice(&64u16.to_le_bytes());
+        bytes[54..56].copy_from_slice(&56u16.to_le_bytes());
+        bytes[56..58].copy_from_slice(&3u16.to_le_bytes());
+        // One PT_LOAD maps the whole file; PT_DYNAMIC and PT_INTERP are
+        // independent program headers. No section table is present.
+        bytes[64..68].copy_from_slice(&1u32.to_le_bytes());
+        bytes[80..88].copy_from_slice(&0x1000u64.to_le_bytes());
+        bytes[96..104].copy_from_slice(&384u64.to_le_bytes());
+        bytes[104..112].copy_from_slice(&384u64.to_le_bytes());
+        bytes[120..124].copy_from_slice(&2u32.to_le_bytes());
+        bytes[128..136].copy_from_slice(&256u64.to_le_bytes());
+        bytes[152..160].copy_from_slice(&80u64.to_le_bytes());
+        bytes[176..180].copy_from_slice(&3u32.to_le_bytes());
+        bytes[184..192].copy_from_slice(&240u64.to_le_bytes());
+        bytes[208..216].copy_from_slice(&8u64.to_le_bytes());
+        bytes[240..248].copy_from_slice(b"/ld.so\0\0");
+        // Exact PT_INTERP length includes a single NUL terminator.
+        bytes[208..216].copy_from_slice(&7u64.to_le_bytes());
+        let entries: [(u64, u64); 5] = [(5, 0x1000 + 336), (10, 21), (1, 1), (29, 11), (0, 0)];
+        for (index, (tag, value)) in entries.into_iter().enumerate() {
+            let offset = 256 + index * 16;
+            bytes[offset..offset + 8].copy_from_slice(&tag.to_le_bytes());
+            bytes[offset + 8..offset + 16].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[336..357].copy_from_slice(b"\0libfoo.so\0$ORIGIN/x\0");
+        bytes
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dynamic_program_headers_work_without_sections() {
+        let bytes = sectionless_elf_fixture();
+        let requirements = elf_runtime_requirements(&bytes).expect("sectionless dynamic ELF");
+        assert_eq!(&*requirements.needed, &[Box::<str>::from("libfoo.so")]);
+        assert_eq!(&*requirements.runpaths, &[Box::<str>::from("$ORIGIN/x")]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dynamic_program_headers_reject_invalid_tables() {
+        let mut bytes = sectionless_elf_fixture();
+        bytes[320..328].copy_from_slice(&1u64.to_le_bytes());
+        assert!(elf_runtime_requirements(&bytes).is_err()); // missing DT_NULL
+        let mut bytes = sectionless_elf_fixture();
+        bytes[264..272].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(elf_runtime_requirements(&bytes).is_err()); // unmapped DT_STRTAB
+        let mut bytes = sectionless_elf_fixture();
+        bytes[296..304].copy_from_slice(&21u64.to_le_bytes());
+        assert!(elf_runtime_requirements(&bytes).is_err()); // string offset out of bounds
+        let mut bytes = sectionless_elf_fixture();
+        bytes[356] = b'x';
+        assert!(elf_runtime_requirements(&bytes).is_err()); // unterminated runpath
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn elf_runtime_requirements_reject_truncated_and_non_elf_inputs() {
+        assert!(elf_runtime_requirements(b"\x7fELF").is_err());
+        assert!(elf_runtime_requirements(&[0u8; 64]).is_err());
+        let mut oversized = vec![0u8; 64 * 1024 * 1024 + 1];
+        oversized[..4].copy_from_slice(b"\x7fELF");
+        assert!(elf_runtime_requirements(&oversized).is_err());
+    }
+
+    #[test]
     fn captured_graph_protocol_keeps_project_edges_and_buffers_separate() {
         let sources = [CSharpCapturedSource {
             path: "Api/Api.cs",
@@ -1558,6 +2877,7 @@ mod tests {
             captured_sources: None,
             captured_config: None,
             captured_project_graph: None,
+            execution_closure: None,
             profile: CSharpVersion::CSharp14,
             native_tool: NativeTool::CSharpCompiler,
             toolchain: Path::new("/dotnet"),
@@ -1591,6 +2911,7 @@ mod tests {
             captured_sources: None,
             captured_config: None,
             captured_project_graph: None,
+            execution_closure: None,
             profile: CSharpVersion::CSharp14,
             native_tool: NativeTool::CSharpCompiler,
             toolchain: Path::new("/dotnet"),
@@ -1609,39 +2930,50 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn producer_deadline_includes_descendant_holding_output_pipes() {
-        use std::os::unix::fs::PermissionsExt;
+        use backend_platform::child_output::{CaptureCommand, CaptureEnvironment};
+
         let directory = tempfile::tempdir().expect("private fixture");
-        let source_path = directory.path().join("A.cs");
-        let tool = directory.path().join("fake-dotnet");
-        fs::write(&source_path, b"class A {}").expect("source fixture");
-        fs::write(&tool, b"#!/bin/sh\nsleep 10 & exit 0\n").expect("tool fixture");
-        fs::set_permissions(&tool, fs::Permissions::from_mode(0o700)).expect("tool permissions");
-        let helper = directory.path().join("oracle.dll");
-        let oracle = CSharpOracle::new(helper);
+        let marker = directory.path().join("descendant-started");
+        let shell = Path::new("/bin/sh");
+        // The descendant records its startup, then retains both inherited pipes.
+        // The leader waits for that record and exits without waiting for it.
+        let script = r#"( printf ready > "$1"; exec /bin/sleep 10 ) &
+while [ ! -f "$1" ]; do :; done
+exit 0"#;
+        let spec = CaptureCommand {
+            program: shell.as_os_str().to_owned(),
+            args: vec![
+                "-c".into(),
+                script.into(),
+                "deadline-fixture".into(),
+                marker.as_os_str().to_owned(),
+            ],
+            cwd: Some(directory.path().to_path_buf()),
+            environment: CaptureEnvironment::Clear,
+            overrides: Vec::new(),
+        };
         let cancelled = AtomicBool::new(false);
         let start = Instant::now();
-        let result = oracle.authority_image(CSharpAuthorityRequest {
-            resolved_reference_snapshot: None,
-            package_root: directory.path(),
-            source_path: &source_path,
-            project_file: None,
-            source: b"class A {}",
-            captured_sources: None,
-            captured_config: None,
-            captured_project_graph: None,
-            profile: CSharpVersion::CSharp14,
-            native_tool: NativeTool::CSharpCompiler,
-            toolchain: &tool,
-            control: CSharpAuthorityControl {
+        let result = capture_authority_command(
+            &spec,
+            CSharpAuthorityControl {
                 deadline: start + Duration::from_millis(300),
                 cancelled: &cancelled,
             },
-            configuration: CSharpAuthorityConfiguration::DEFAULT,
-        });
+            1024,
+            shell,
+            Path::new("/oracle.dll"),
+        );
         assert!(
-            matches!(result, Err(CSharpAuthorityError::Deadline { .. })),
+            matches!(
+                result,
+                Err(CSharpAuthorityError::Deadline {
+                    phase: CSharpAuthorityPhase::Process
+                })
+            ),
             "{result:?}"
         );
+        assert_eq!(fs::read(&marker).expect("descendant ran"), b"ready");
         assert!(start.elapsed() < Duration::from_secs(3));
     }
 

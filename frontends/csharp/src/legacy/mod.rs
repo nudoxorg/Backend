@@ -30,8 +30,9 @@ pub use self::producer::{
     CSharpAuthorityConfiguration, CSharpAuthorityControl, CSharpAuthorityError,
     CSharpAuthorityImage, CSharpAuthorityPhase, CSharpAuthorityProducer, CSharpAuthorityRequest,
     CSharpCapturedConfig, CSharpCapturedProjectGraph, CSharpCapturedProjectNode,
-    CSharpCapturedSource, CSharpOracle, DEFAULT_IMAGE_LIMIT, DEFAULT_OUTPUT_LIMIT,
-    DEFAULT_SOURCE_LIMIT,
+    CSharpCapturedSource, CSharpExecutionClosure, CSharpExecutionLease, CSharpOracle,
+    CSharpSourceExecutionLease, CSharpSourceExecutionLeases, DEFAULT_IMAGE_LIMIT,
+    DEFAULT_OUTPUT_LIMIT, DEFAULT_SOURCE_LIMIT,
 };
 
 pub use self::restore::{

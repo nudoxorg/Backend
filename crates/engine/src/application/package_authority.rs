@@ -20,7 +20,8 @@ use crate::driver::{
 use backend_frontend_clang::ClangAuthorityEnvironment;
 use backend_frontend_csharp::legacy::{
     CSharpAuthorityConfiguration, CSharpAuthorityControl, CSharpAuthorityError,
-    CSharpAuthorityRequest, CSharpCapturedConfig, CSharpCapturedSource, CSharpOracle,
+    CSharpAuthorityRequest, CSharpCapturedConfig, CSharpCapturedSource, CSharpExecutionLease,
+    CSharpOracle,
 };
 use backend_frontend_go::legacy::oracle::{
     GoPackageAuthorityWitness, GoPackageAuthorityWitnessError,
@@ -262,6 +263,8 @@ pub enum PackageAuthorityOwner<'workspace> {
         /// Independently owned selected references for cold replay custody.
         resolver_snapshot:
             Option<Arc<backend_frontend_csharp::legacy::CSharpResolvedReferenceSnapshot>>,
+        /// Immutable private dotnet/helper/runtime custody for this attempt.
+        execution: CSharpExecutionLease,
     },
     /// Java authority image and its doclet session retained until lowering.
     Java {
@@ -1093,6 +1096,12 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                         });
                     }
                 };
+                let execution_closure =
+                    backend_frontend_csharp::legacy::CSharpExecutionClosure::capture(&[
+                        resolved.as_ref(),
+                        configuration.producer.oracle_path(),
+                    ])
+                    .map_err(PackageAuthorityError::CSharp)?;
                 let csharp_request = CSharpAuthorityRequest {
                     resolved_reference_snapshot: None,
                     package_root: request.package_root,
@@ -1102,6 +1111,7 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                     captured_sources: request.csharp_sources,
                     captured_config: request.csharp_config,
                     captured_project_graph: None,
+                    execution_closure: Some(&execution_closure),
                     profile,
                     native_tool: resolved.tool,
                     toolchain: resolved.as_ref(),
@@ -1124,6 +1134,7 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                 }
                 .map_err(PackageAuthorityError::CSharp)?;
                 let resolver_snapshot = image.resolved_reference_snapshot().cloned();
+                let execution = image.execution_lease();
                 let (image, evidence, resolver_receipt) = image.into_parts_with_resolver_receipt();
                 let image = retain_image(
                     image.into_vec(),
@@ -1142,6 +1153,7 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                     evidence,
                     resolver_receipt,
                     resolver_snapshot,
+                    execution,
                 }
             }
         };

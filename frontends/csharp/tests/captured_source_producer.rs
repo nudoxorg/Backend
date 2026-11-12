@@ -32,6 +32,7 @@ fn request<'a>(
         captured_sources: Some(members),
         captured_config: None,
         captured_project_graph: None,
+        execution_closure: None,
         profile: CSharpVersion::CSharp14,
         native_tool: NativeTool::CSharpCompiler,
         toolchain: dotnet,

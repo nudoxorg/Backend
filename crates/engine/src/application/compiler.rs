@@ -1788,6 +1788,25 @@ impl StagedSemanticPackage {
         self.staged.csharp_resolver_snapshot.as_ref()
     }
 
+    /// Exact source-bound helper/runtime owners retained by this staged attempt.
+    /// These leases alone are not publication or read-completeness authority.
+    #[must_use]
+    pub fn csharp_execution_leases(
+        &self,
+    ) -> &[backend_frontend_csharp::legacy::CSharpSourceExecutionLease] {
+        self.staged.csharp_execution.entries()
+    }
+
+    /// The execution lease only when exactly one source owner was retained.
+    /// Multi-source callers must inspect [`Self::csharp_execution_leases`].
+    #[must_use]
+    pub fn csharp_execution_lease(
+        &self,
+    ) -> Option<&backend_frontend_csharp::legacy::CSharpExecutionLease> {
+        let [only] = self.staged.csharp_execution.entries() else { return None; };
+        Some(only.execution())
+    }
+
     /// Builds a bounded claim-only C# evidence aggregate tied to these staged
     /// image bytes and this exact input. Publication selection is still required.
     pub fn csharp_invocation_evidence_object(&self, input: [u8; 32]) -> Option<Vec<u8>> {
@@ -3565,6 +3584,7 @@ pub(crate) struct StagedPackageCompilation {
         Option<backend_frontend_csharp::legacy::CSharpResolverReceipt>,
     csharp_resolver_snapshot:
         Option<std::sync::Arc<backend_frontend_csharp::legacy::CSharpResolvedReferenceSnapshot>>,
+    csharp_execution: backend_frontend_csharp::legacy::CSharpSourceExecutionLeases,
     csharp_config: Box<[StagedCSharpConfigProbe]>,
     csharp_unit: Option<Box<str>>,
     package_identity: [u8; 32],
@@ -3615,6 +3635,7 @@ pub struct StagedCSharpInvocationEvidence {
     input_content: [u8; 32],
     source_sha256: [u8; 32],
     evidence: Box<[u8]>,
+    execution: backend_frontend_csharp::legacy::CSharpExecutionLease,
 }
 impl StagedCSharpInvocationEvidence {
     /// Captured package-relative source binding.
@@ -3632,6 +3653,9 @@ impl StagedCSharpInvocationEvidence {
     /// Checked helper sidecar; selected authority requires a separate owner join.
     #[must_use]
     pub fn evidence(&self) -> &[u8] { &self.evidence }
+    /// The exact execution owner of the invocation that produced this evidence.
+    #[must_use]
+    pub fn execution_lease(&self) -> &backend_frontend_csharp::legacy::CSharpExecutionLease { &self.execution }
 }
 
 struct StagedPythonProjectWitness {
@@ -5098,6 +5122,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         let mut csharp_evidence = Vec::new();
         let mut csharp_resolver_receipt = None;
         let mut csharp_resolver_snapshot = None;
+        let mut csharp_execution = backend_frontend_csharp::legacy::CSharpSourceExecutionLeases::default();
         let csharp_config = package.csharp_config.map_or_else(Vec::new, |probes| {
             probes.iter().map(|probe| StagedCSharpConfigProbe {
                 path: probe.path.into(), text: probe.text.map(Into::into),
@@ -5716,6 +5741,12 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 },
                 None => None,
             };
+            // Reserve the maximum possible next C# snapshot before invoking
+            // its producer. Previously staged owners remain held throughout.
+            if matches!(target.profile, LanguageProfile::CSharp(_)) {
+                csharp_execution.ensure_capacity_for_next()
+                    .map_err(|_| PackageSemanticError::Capacity { lane: "C# execution snapshot budget" })?;
+            }
             let transient_authority = if go_owner.is_some() {
                 go_owner
             } else if rust_workspace_authority.is_none()
@@ -5971,6 +6002,19 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     continue;
                 }
             };
+            // Each C# source creates its own private execution snapshot. Keep
+            // the exact owner that produced this source's image; equal manifest
+            // digests cannot substitute for the actual owner-held lease.
+            if matches!(target.profile, LanguageProfile::CSharp(_)) {
+                let execution = match transient_authority.as_ref() {
+                    Some(super::package_authority::PackageAuthorityOwner::CSharp { execution, .. }) => execution,
+                    _ => return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# execution owner unavailable" }),
+                };
+                use sha2::{Digest, Sha256};
+                let source_sha256 = Sha256::digest(source.source.as_bytes()).into();
+                csharp_execution.retain(source.relative_path, source_sha256, execution)
+                    .map_err(|_| PackageSemanticError::Capacity { lane: "C# source execution custody" })?;
+            }
             if let Some(snapshot) = resolver_owner.as_ref() {
                 let receipt = match transient_authority.as_ref() {
                     Some(super::package_authority::PackageAuthorityOwner::CSharp {
@@ -6024,7 +6068,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             // Retain same-invocation claims for both caller-supplied and
             // SDK-observed references. The aggregate is not closure authority.
             if let Some(super::package_authority::PackageAuthorityOwner::CSharp {
-                evidence: Some(evidence), ..
+                evidence: Some(evidence), execution, ..
             }) = transient_authority.as_ref() {
                 csharp_evidence_bytes = csharp_evidence_bytes
                     .checked_add(evidence.len())
@@ -6046,12 +6090,20 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     return Err(PackageSemanticError::Capacity { lane: "C# invocation source identity" });
                 }
                 use sha2::{Digest, Sha256};
+                let source_sha256 = Sha256::digest(source.source.as_bytes()).into();
+                if !csharp_execution.get(source.relative_path, source_sha256)
+                    .is_some_and(|retained| retained.same_snapshot(execution)) {
+                    return Err(PackageSemanticError::CSharpSdkUnavailable {
+                        reason: "C# evidence execution owner mismatch",
+                    });
+                }
                 csharp_evidence.push(StagedCSharpInvocationEvidence {
                     path: source.relative_path.into(),
                     source: source_identity,
                     input_content: verified.content().to_bytes(),
-                    source_sha256: Sha256::digest(source.source.as_bytes()).into(),
+                    source_sha256,
                     evidence: copy.into_boxed_slice(),
+                    execution: execution.clone(),
                 });
             }
             if let (Some(budget), Some(crate::application::typescript_program::TypeScriptForestSourceMembership::Selected { program, program_path })) =
@@ -6559,6 +6611,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             csharp_evidence: csharp_evidence.into_boxed_slice(),
             csharp_resolver_receipt,
             csharp_resolver_snapshot,
+            csharp_execution,
             csharp_config: csharp_config.into_boxed_slice(),
             csharp_unit: match package.package_target.unit_key() {
                 CompilationUnitKeyV2::CSharpProject { project_path } if package.csharp_config.is_some() => Some(project_path.clone()),
