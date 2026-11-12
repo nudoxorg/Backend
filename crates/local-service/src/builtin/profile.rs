@@ -2959,11 +2959,6 @@ impl<'a> IntentDecoder<'a> {
         {
             return Err(BuiltinModelError("Stylo intent exceeds byte budget".into()));
         }
-        let mut resident = count.checked_mul(std::mem::size_of::<NativeEvidenceChange>())
-            .ok_or_else(|| BuiltinModelError("native evidence resident overflow".into()))?;
-        if resident > backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES {
-            return Err(BuiltinModelError("native evidence resident budget exceeded".into()));
-        }
         let mut changes = Vec::with_capacity(count);
         let start = self.at;
         for _ in 0..count {
@@ -3062,6 +3057,11 @@ impl<'a> IntentDecoder<'a> {
             return Err(BuiltinModelError(
                 "invalid native evidence delta bounds".into(),
             ));
+        }
+        let mut resident = count.checked_mul(std::mem::size_of::<NativeEvidenceChange>())
+            .ok_or_else(|| BuiltinModelError("native evidence resident overflow".into()))?;
+        if resident > backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES {
+            return Err(BuiltinModelError("native evidence resident budget exceeded".into()));
         }
         let mut changes = Vec::with_capacity(count);
         let start = self.at;
