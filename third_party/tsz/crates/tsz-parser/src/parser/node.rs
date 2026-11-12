@@ -295,6 +295,7 @@ pub struct FunctionData {
     pub modifiers: Option<NodeList>,
     pub is_async: bool,       // Async function
     /// Start of the parser-consumed `async` token for a function declaration.
+    #[serde(default)]
     pub async_start: Option<u32>,
     pub asterisk_token: bool, // Generator function
     pub name: NodeIndex,

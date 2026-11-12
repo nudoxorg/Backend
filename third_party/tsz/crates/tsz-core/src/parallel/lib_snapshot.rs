@@ -7,7 +7,7 @@
 //!
 //! # Format
 //!
-//! `[8-byte magic "TSZSNAP\x0a"][bincode payload]`. Bumping the trailing
+//! `[8-byte magic "TSZSNAP\x0b"][bincode payload]`. Bumping the trailing
 //! byte invalidates older snapshots — necessary when the
 //! `BinderState`/`NodeArena` layout shifts in a way that breaks
 //! positional binary decoding.
@@ -57,7 +57,7 @@ use tsz_parser::parser::node::NodeArena;
 
 /// Magic header. Trailing byte is the format version. Bump on layout
 /// changes that break round-trip.
-const SNAPSHOT_MAGIC: &[u8; 8] = b"TSZSNAP\x0a";
+const SNAPSHOT_MAGIC: &[u8; 8] = b"TSZSNAP\x0b";
 
 /// Environment variable that controls the lib snapshot cache.
 const ENV_VAR: &str = "TSZ_LIB_CACHE";
@@ -509,7 +509,7 @@ mod tests {
         let path = snapshot_path(dir.path(), hash);
         // A previous-format header must miss before reading any old positional
         // payload. The sentinel deliberately cannot decode as the new layout.
-        let old = b"TSZSNAP\x09old positional binder payload";
+        let old = b"TSZSNAP\x0aold positional binder payload";
         fs::write(&path, old).expect("old disk entry");
         assert_eq!(
             decode_snapshot(old).err().unwrap().to_string(),
@@ -534,7 +534,7 @@ mod tests {
         let root = lib.root_index;
         drop(lib);
         let bytes = fs::read(&path).expect("new disk bytes");
-        assert_eq!(&bytes[..8], b"TSZSNAP\x0a");
+        assert_eq!(&bytes[..8], b"TSZSNAP\x0b");
         let cold = try_load_in_dir(dir.path(), name, source).expect("fresh bincode disk reopen");
         assert_eq!(cold.root_index, root);
         assert_eq!(
