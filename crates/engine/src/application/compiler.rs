@@ -4348,10 +4348,16 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 Ok(ToolchainSelection::ResolvedNative(toolchain)) => toolchain.external().map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK host unavailable" })?,
                 _ => return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK host unavailable" }),
             };
-            let mut properties = options.properties.clone();
+            // Restore reports effective references, including SDK implicit
+            // frameworks. The captured project grammar rejects explicit
+            // FrameworkReference items; do not turn restore observations into
+            // declarations. Refuse any framework not implicit for this SDK.
             if let Some(references) = restored_csharp_references.as_ref() {
-                properties.framework_references.clone_from(&references.framework_references);
+                if !super::csharp_sdk_options::restored_frameworks_are_implicit(options.kind, &references.framework_references) {
+                    return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# restored framework reference provenance unavailable" });
+                }
             }
+            let properties = options.properties.clone();
             let observed = backend_frontend_csharp::legacy::observe_csharp_sdk_with(
                 toolchain.executable(), project_path, probes, options.kind, &options.target_framework,
                 options.implicit_usings, &properties, control.deadline, cancelled,
@@ -4413,7 +4419,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 &observed.nullable,
                 &observed.language_version,
                 &observed.output_type,
-                restored_csharp_references.as_ref().map_or(&[][..], |references| references.framework_references.as_slice()),
+                &[],
                 &candidates,
                 restored_csharp_references.as_ref().map_or(&[][..], |references| references.files.as_slice()),
                 restored_csharp_references.as_ref().map(|references| references.assets_bytes()),
