@@ -4573,7 +4573,7 @@ mod tests {
         let mut visitor_budget = SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000);
         visit_selected_publication_wire(&store, &selected, &mut visitor_budget, &|| false, 8 * 1024 * 1024, 1, |wire, budget| {
             match wire {
-                SelectedPublicationWire::Metadata { manifest_bytes, binding_bytes, declared_fragment_count } => { assert!(!manifest_bytes.is_empty()); assert!(!binding_bytes.is_empty()); assert_eq!(declared_fragment_count, 1); }
+                SelectedPublicationWire::Metadata { manifest_bytes, binding_bytes, declared_fragment_count, closure_member_count } => { assert!(!manifest_bytes.is_empty()); assert!(!binding_bytes.is_empty()); assert_eq!(declared_fragment_count, 1); assert!(closure_member_count > 0); }
                 SelectedPublicationWire::Program { bytes, .. } => { assert!(!bytes.is_empty()); delivered.0 += 1; }
                 SelectedPublicationWire::Image { bytes, .. } => { assert!(!bytes.is_empty()); delivered.1 += 1; }
                 SelectedPublicationWire::Lines { bytes, .. } => { assert!(!bytes.is_empty()); delivered.2 += 1; }

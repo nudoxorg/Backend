@@ -10,7 +10,7 @@ use super::*;
 pub enum SelectedPublicationWire<'a> {
     /// Authenticated metadata wire claims; consumers must validate their
     /// complete manifest and binding grammar before constructing a claim.
-    Metadata { manifest_bytes: &'a [u8], binding_bytes: &'a [u8], declared_fragment_count: u32 },
+    Metadata { manifest_bytes: &'a [u8], binding_bytes: &'a [u8], declared_fragment_count: u32, closure_member_count: u64 },
     Program { member: CompilerProgramSourceMember, schema: SchemaIdentity, bytes: &'a [u8] },
     Image { member: CompilerImageMember, bytes: &'a [u8] },
     Headers { member: CompilerNativeHeadersMember, bytes: &'a [u8] },
@@ -78,7 +78,7 @@ where F: for<'a> FnMut(SelectedPublicationWire<'a>, &mut SelectedNativeHeaderBud
     let generations_len = if metadata.versioned().is_some() { metadata.image_count().checked_mul(32).ok_or("generation index overflow")? } else { 0 };
     let mut generations = backend_store::try_allocate_exact_zeroed_bytes_budgeted(generations_len, &mut budget.memory).map_err(|e|format!("allocate generation index: {e:?}"))?;
     let frame_charge=frame_before.checked_sub(budget.memory).ok_or("selected frame charge underflow")?;
-    visit(SelectedPublicationWire::Metadata { manifest_bytes: metadata.manifest_bytes, binding_bytes: metadata.binding_bytes, declared_fragment_count: metadata.fragment_count },budget)?;
+    visit(SelectedPublicationWire::Metadata { manifest_bytes: metadata.manifest_bytes, binding_bytes: metadata.binding_bytes, declared_fragment_count: metadata.fragment_count, closure_member_count: count },budget)?;
     if let Some(member)=metadata.native_program_sources {
         let before=budget.memory;
         let (wire,schema,key)=header_object_bounded(store,&pin,*member.object_id(),&[NATIVE_PROGRAM_SOURCE_MANIFEST_SCHEMA,NATIVE_PROGRAM_FOREST_SCHEMA],member.byte_length() as usize,budget,cancelled)?;
