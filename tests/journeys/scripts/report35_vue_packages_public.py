@@ -67,6 +67,20 @@ class StrictJourney(Journey):
             time.sleep(.05)
         raise RuntimeError(f'owned process group {proc.pid} survived cleanup')
 
+    def rpc(self, method, params, allow_error=False, timeout=300):
+        number = self.seq + 1
+        path = self.out / f'{self.label}-mcp-{self.counter}-rpc-{number}.json'
+        observation = {'method': method, 'params': params}
+        try:
+            result = super().rpc(method, params, allow_error=allow_error, timeout=timeout)
+            observation['result'] = result
+            return result
+        except Exception as error:
+            observation['error'] = repr(error)
+            raise
+        finally:
+            path.write_text(json.dumps(observation, ensure_ascii=False, indent=2))
+
     def cli(self, label, args, project=None, timeout=900):
         project = project or self.project
         cmd = [str(self.bin / 'backend-cli'), '--format', 'json', '--project', str(project),
