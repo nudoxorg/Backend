@@ -5,6 +5,9 @@
 //! startup reconciles that projection to the exact product claims before any
 //! query can reopen a semantic image.
 
+#[path = "bounded_replay.rs"]
+mod bounded_replay;
+
 use super::s3_publication::{
     PublicationFence, RemoteClosureSelection, S3ClosurePublisher, SelectedClosurePublisher,
 };
@@ -1154,130 +1157,35 @@ pub(super) fn admit_replayed_native_evidence(
     // Recovery runs under the workspace owner lease; it does not select a head.
     let authority = futures_executor::block_on(TursoAuthority::open(&authority_path))
         .map_err(|error| BuiltinModelError(format!("open native replay history: {error}")))?;
-    let metadata_store = FileStore::open(&cas_path, 8 * 1024 * 1024)
-        .map_err(|error| BuiltinModelError(format!("open bounded native replay metadata CAS: {error:?}")))?;
     let store = FileStore::open(cas_path, 128 * 1024 * 1024)
         .map_err(|error| BuiltinModelError(format!("open native replay compiler CAS: {error:?}")))?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(900);
     let stopped = || std::time::Instant::now() >= deadline;
     let mut header_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(super::MAX_REBUILD_BYTES, NATIVE_HEADER_WORK_UNITS);
     for capture in captures {
-        let matching = rows.iter().copied().filter(|row| {
-            row.project == capture.key.package_key().to_bytes() && row.profile == capture.key.profile()
-        }).collect::<Vec<_>>();
-        let removed = retirements.iter().copied().filter(|row| {
-            row.project == capture.key.package_key().to_bytes() && row.profile == capture.key.profile()
-        }).collect::<Vec<_>>();
-        if matching.is_empty() && removed.is_empty() { continue; }
-        if matching.is_empty() {
-            return Err(BuiltinModelError("native replay retirement requires a nonempty selected Program".into()));
+        let project = capture.key.package_key().to_bytes();
+        let mut has_matching = false;
+        let mut has_retirement = false;
+        for row in rows {
+            header_budget.checkpoint(1, &stopped).map_err(|e| BuiltinModelError(format!("native replay stopped: {e:?}")))?;
+            has_matching |= row.project == project && row.profile == capture.key.profile();
         }
-        let backend_engine::builtin::ProductSemanticCaptureOutcome::Published { coverage, claim } = capture.outcome else {
+        for row in retirements {
+            header_budget.checkpoint(1, &stopped).map_err(|e| BuiltinModelError(format!("native replay stopped: {e:?}")))?;
+            has_retirement |= row.project == project && row.profile == capture.key.profile();
+        }
+        if !has_matching && !has_retirement { continue; }
+        if !has_matching { return Err(BuiltinModelError("native replay retirement requires a nonempty selected Program".into())); }
+        let backend_engine::builtin::ProductSemanticCaptureOutcome::Published { claim, .. } = capture.outcome else {
             return Err(BuiltinModelError("native replay capture is not published".into()));
         };
         let namespace = SemanticAuthority::namespace(capture.key.package(), capture.key.coordinate(), capture.key.profile())?;
-        let expected = ProductSemanticPublicationRecord::Published { coverage, claim };
         let binding = *claim.binding().identity.as_ref();
         let selected = futures_executor::block_on(authority.selected_generation_for_binding(
             &namespace, &binding, capture.capture.input_digest(),
         )).map_err(|error| BuiltinModelError(format!("read native replay history: {error}")))?
             .ok_or_else(|| BuiltinModelError("native replay compiler generation is absent".into()))?;
-        let closure = metadata_store.open_closure_claim(ArtifactClosureClaim::from_bytes(*selected.closure_id()))
-            .map_err(|error| BuiltinModelError(format!("open native replay metadata closure: {error:?}")))?;
-        if closure.entry_count().is_none_or(|count| count > 8192) {
-            return Err(BuiltinModelError("native replay metadata closure exceeds admission limit".into()));
-        }
-        let (actual_claim, record) = reopen_record(&metadata_store, &selected)?;
-        if actual_claim != claim || record != expected || selected.input_digest() != capture.capture.input_digest() {
-            return Err(BuiltinModelError("native replay compiler history differs from capture".into()));
-        }
-        let loaded = load_selected_images(&store, generation_residence::SelectedSemanticImageSelection::Admitted(selected.clone()), 128 * 1024 * 1024, 4096)?;
-        let program = loaded.native_program_sources.as_ref().ok_or_else(|| BuiltinModelError("native replay Program is unavailable".into()))?;
-        let mut remaining = std::collections::BTreeMap::new();
-        for row in matching {
-            if remaining.insert(row.path.as_str(), row).is_some() {
-                return Err(BuiltinModelError("duplicate native replay source path".into()));
-            }
-        }
-        let mut removed_paths = std::collections::BTreeSet::new();
-        for row in removed {
-            if remaining.contains_key(row.path.as_str()) || !removed_paths.insert(row.path.as_str()) {
-                return Err(BuiltinModelError("duplicate native replay retirement path".into()));
-            }
-        }
-        let mut members = std::collections::BTreeMap::new();
-        for entry in program.sources() {
-            let Some(path) = entry.package_path else { continue };
-            if removed_paths.contains(path) {
-                return Err(BuiltinModelError("native replay retired path remains in Program".into()));
-            }
-            let Some(row) = remaining.get(path) else { continue };
-            if entry.source.byte_len != row.byte_length
-                || entry.source.identity.as_ref() != row.source_digest.as_slice()
-                || members.insert(path, entry.source).is_some() {
-                return Err(BuiltinModelError("native replay Program source differs from evidence".into()));
-            }
-        }
-        let witness = backend_extension_turso::reopen_selected_native_headers_budgeted(&store, &selected, &mut header_budget, &stopped)
-            .map_err(|error| BuiltinModelError(format!("open replay native headers: {error}")))?;
-        let mut checkpoint = |bytes| charge_native_header_work(&header_budget, &stopped, bytes);
-        let header_aggregate = witness.as_ref().map(|witness| {
-            backend_semantic::native_ts_headers::NativeTsHeaderAggregateView::parse_canonical_checkpointed(witness.as_bytes(), &mut checkpoint)
-                .map(|view| (view, *witness.object_id()))
-                .map_err(|error| BuiltinModelError(format!("decode replay native headers: {error:?}")))
-        }).transpose()?;
-        let mut header_paths = std::collections::BTreeSet::new();
-        let mut witnessed = std::collections::BTreeSet::new();
-        for image in &loaded.images {
-            let view = image.reopen().map_err(|error| BuiltinModelError(format!("open native replay image: {error}")))?;
-            let ImageProvenance::Captured { source, recipe, scope, .. } = view.image_facts().provenance else { continue };
-            let Some(path) = view.atom(scope.path).and_then(|bytes| std::str::from_utf8(bytes).ok()) else { continue };
-            if witnessed.contains(path) {
-                return Err(BuiltinModelError("duplicate native replay image path".into()));
-            }
-            let Some(row) = remaining.remove(path) else { continue };
-            witnessed.insert(path.to_owned());
-            if !row.admits_image() {
-                return Err(BuiltinModelError("native replay Program member unexpectedly has an image".into()));
-            }
-            capture.key.admit_image(&view).map_err(|error| BuiltinModelError(format!("bind native replay image: {error}")))?;
-            if members.remove(path) != Some(source) || recipe.profile != row.profile
-                || recipe.tool != backend_semantic::vocabulary::NativeTool::TypeScriptCompiler
-                || recipe.toolchain != program.toolchain()
-                || !program.image_matches(path, backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(image.as_ref()).as_ref()) {
-                return Err(BuiltinModelError("native replay image differs from Program or evidence".into()));
-            }
-            if let Some(headers) = &row.headers {
-                let (aggregate, digest) = header_aggregate.as_ref().ok_or_else(|| BuiltinModelError("native replay header witness absent".into()))?;
-                let file = super::native_ts_headers::witnessed_file_borrowed(row, aggregate, *digest, &mut checkpoint)
-                    .map_err(|error| BuiltinModelError(format!("native replay header: {error}")))?;
-                super::native_ts_headers::admit_image_borrowed(row, headers, file, &view, image.as_ref(), &mut checkpoint)
-                    .map_err(|error| BuiltinModelError(format!("native replay header: {error}")))?;
-                header_paths.insert(path.to_owned());
-            } else if let Some((aggregate, _)) = header_aggregate.as_ref() {
-                if aggregate.find_file_checkpointed(path, &mut checkpoint).map_err(BuiltinModelError)?.is_some() {
-                    return Err(BuiltinModelError("native replay lost compiler header reference".into()));
-                }
-            }
-        }
-        if let Some((aggregate, _)) = header_aggregate.as_ref() {
-            let mut files = aggregate.files();
-            while files.len() != 0 {
-                checkpoint(4210).map_err(BuiltinModelError)?;
-                let file = files.next().ok_or_else(|| BuiltinModelError("native replay header iteration ended early".into()))?;
-                if !header_paths.contains(file.path) { return Err(BuiltinModelError("native replay did not consume compiler header files".into())); }
-            }
-        }
-        for (path, row) in remaining {
-            // Non-emitted inputs still bind the exact Program, but cannot
-            // authorize an image or source projection.
-            if row.admits_image() || members.remove(path).is_none() {
-                return Err(BuiltinModelError("native replay source lacks its claimed Program evidence".into()));
-            }
-        }
-        if !members.is_empty() {
-            return Err(BuiltinModelError("native replay Program evidence was not consumed".into()));
-        }
+        bounded_replay::admit(&store, &selected, capture, rows, retirements, &mut header_budget, &stopped)?;
     }
     Ok(())
 }
