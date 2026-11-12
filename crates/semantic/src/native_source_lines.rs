@@ -119,6 +119,7 @@ impl NativeSourceLineFileView<'_> {
     /// Joins against exact UTF-8 host bytes and every newline position. The
     /// selected closure/source ownership must be independently revalidated.
     pub fn matches_source<E>(&self,bytes:&[u8],checkpoint:&mut impl FnMut(usize)->Result<(),E>)->Result<bool,E>{
+        checkpoint(0)?;
         if usize::try_from(self.source.byte_len).ok()!=Some(bytes.len()) {return Ok(false);}
         let mut hash=backend_version::ContentPayloadHasher::<SourceFactDomain>::new(bytes.len() as u64);
         for chunk in bytes.chunks(64*1024) {checkpoint(chunk.len())?; if hash.push_chunk(chunk).is_err(){return Ok(false);}}
@@ -143,6 +144,7 @@ impl NativeSourceLineFileView<'_> {
                 if *byte==b'\n' {let Some(expected)=u32::try_from(at+1).ok() else{return Ok(false);}; if self.line_start(index)!=Some(expected){return Ok(false);} index+=1;}
             }
         }
+        checkpoint(0)?;
         Ok(index==self.line_count())
     }
 }
@@ -300,6 +302,24 @@ mod tests {
         let mut calls=0;let stopped=NativeSourceLineAggregateView::parse(&wire,&mut |_|{calls+=1;if calls==3{Err(())}else{Ok(())}});
         assert!(matches!(stopped,Err(BorrowedSourceLinesError::Stopped(()))));
         let mut short=vec![0u8;expected.len()-1];assert!(value.encode_into(&mut short,&mut |_|Ok::<(),()>(())).is_err());
+    }
+
+    #[test]
+    fn borrowed_line_matching_refuses_unsupported_terminators_and_checks_empty_stop() {
+        for text in ["a\rb", "a\u{2028}b", "a\u{2029}b", ""] {
+            let source = SourceIdentity::from_bytes(text.as_bytes()).unwrap();
+            let value = NativeSourceLineAggregate { files: vec![NativeSourceLineFile { path: "a.ts".into(), source, line_starts: vec![0] }] };
+            let mut budget = 4096;
+            let wire = value.encode_budgeted(&mut budget).unwrap();
+            let view = NativeSourceLineAggregateView::parse(&wire, &mut |_| Ok::<(), ()>(())).unwrap();
+            let file = view.find_file("a.ts", &mut |_| Ok::<(), ()>(())).unwrap().unwrap();
+            assert_eq!(file.matches_source(text.as_bytes(), &mut |_| Ok::<(), ()>(())).unwrap(), text.is_empty());
+            if text.is_empty() {
+                assert!(file.matches_source(text.as_bytes(), &mut |_| Err::<(), ()>(())).is_err());
+                let mut calls = 0;
+                assert!(file.matches_source(text.as_bytes(), &mut |_| { calls += 1; if calls == 2 { Err(()) } else { Ok(()) } }).is_err());
+            }
+        }
     }
 
     #[test]

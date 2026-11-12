@@ -192,6 +192,11 @@ mod tests {
         assert_eq!(file.line_starts.len(), 1_000_000);
         assert_eq!(file.line_starts.last().copied(), Some(text.len() as u32));
         assert!(super::capture_source_lines(&text, "src/main.ts", identity, &Check(true), &mut budget).is_err());
+        for unsupported in ["a\rb", "a\u{2028}b", "a\u{2029}b"] {
+            let source = backend_semantic::ir::SourceIdentity::from_bytes(unsupported.as_bytes()).unwrap();
+            let mut credit = 4096;
+            assert!(super::capture_source_lines(unsupported, "src/main.ts", source, &Check(false), &mut credit).unwrap().is_none());
+        }
         let mut empty = 0;
         assert!(super::capture_source_lines(&text, "src/main.ts", identity, &Check(false), &mut empty).unwrap().is_none());
     }
