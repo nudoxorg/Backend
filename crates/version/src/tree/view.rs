@@ -54,6 +54,7 @@ impl<'a> Reader<'a> {
 /// A borrowed, runtime-schema checked canonical node view.
 pub struct CanonicalNodeView<'a> {
     body: &'a [u8],
+    encoded_len: usize,
     level: u16,
     kind: u8,
     schema: SchemaIdentity,
@@ -136,6 +137,7 @@ impl<'a> CanonicalNodeView<'a> {
         }
         Ok(Self {
             body,
+            encoded_len: bytes.len(),
             level,
             kind,
             schema,
@@ -153,6 +155,9 @@ impl<'a> CanonicalNodeView<'a> {
     pub const fn level(&self) -> u16 {
         self.level
     }
+    /// Returns the authenticated node wire length for allocation precharge.
+    #[must_use]
+    pub const fn encoded_len(&self) -> usize { self.encoded_len }
     /// Returns whether this view is a leaf.
     #[must_use]
     pub const fn is_leaf(&self) -> bool {

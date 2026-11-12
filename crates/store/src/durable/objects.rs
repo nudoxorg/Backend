@@ -585,9 +585,23 @@ impl FileStore {
         F: for<'a> FnOnce(VerifiedObjectView<'a>) -> Result<T, StoreError>,
     {
         let id = ObjectId::from_bytes(*claim.as_bytes());
-        let file = super::artifact_fs::open_object(self, id)?.ok_or(StoreError::Corrupt)?;
+        let mut file = super::artifact_fs::open_object(self, id)?.ok_or(StoreError::Corrupt)?;
         let maximum = self.object_envelope_limit()?.min(super::relation_object_limit()?);
-        self.with_verified_object_file_before(file, claim, maximum, preflight, visit)
+        const MAX_RELATION_ENVELOPE: usize = backend_version::DEFAULT_CUT_POLICY.max_encoded_bytes()
+            + OBJECT_MAGIC.len() + 32 + 1 + 2 + 1 + 32 + 32 + 8;
+        let length = usize::try_from(file.metadata().map_err(|error| io_error(&error))?.len())
+            .map_err(|_| StoreError::Bounds)?;
+        if length > maximum || length > MAX_RELATION_ENVELOPE { return Err(StoreError::Bounds); }
+        // A fixed stack buffer avoids Vec growth before the caller's raw-node
+        // preflight. The workspace wrapper reserves it before opening a node.
+        let mut envelope = [0u8; MAX_RELATION_ENVELOPE];
+        file.read_exact(&mut envelope[..length]).map_err(|error| io_error(&error))?;
+        let mut trailing = [0u8; 1];
+        if file.read(&mut trailing).map_err(|error| io_error(&error))? != 0 { return Err(StoreError::Corrupt); }
+        let object = verify_object_envelope(&envelope[..length], maximum, Some(claim))?;
+        preflight(object)?;
+        admit_object_view(object, &self.relation_registry)?;
+        visit(object)
     }
 
     /// Admits one object from an already-open immutable object descriptor.

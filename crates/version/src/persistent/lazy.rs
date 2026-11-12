@@ -618,6 +618,9 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
         &self, key: &R::Key, max_depth: usize,
     ) -> Result<Option<R::Value>, LazyTreeError<L::Error>> {
         let mut node = self.root.clone();
+        if usize::from(node.node().level()) >= max_depth {
+            return Err(LazyTreeError::Node(NodeError::OversizedNode));
+        }
         for _ in 0..max_depth {
             if node.node().level() == 0 {
                 let entries = node.leaf_entries().map_err(LazyTreeError::Node)?;
@@ -644,6 +647,9 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
         &self, key: &R::Key, max_depth: usize,
     ) -> Result<Option<R::Value>, LazyTreeError<L::Error>> {
         let mut node = self.root.clone();
+        if usize::from(node.node().level()) >= max_depth {
+            return Err(LazyTreeError::Node(NodeError::OversizedNode));
+        }
         for _ in 0..max_depth {
             if node.node().level() == 0 {
                 for entry in node.leaf_iter().map_err(LazyTreeError::Node)? {

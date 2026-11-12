@@ -1000,5 +1000,18 @@ mod preflight_tests {
         assert!(matches!(error, Err(WorkspaceRelationError::Store(StoreError::Bounds))));
         assert!(branch_seen.get());
         assert_eq!(VALUE_DECODES.load(Ordering::Relaxed), 0);
+        // A branch root with depth credit one must not load or decode a leaf.
+        let leaf_seen = std::cell::Cell::new(false);
+        let mut depth_gate = |node: &backend_version::CanonicalNodeView<'_>, _: &mut usize| {
+            if node.is_leaf() { leaf_seen.set(true); }
+            Ok(())
+        };
+        let mut budget = 16 * 1024 * 1024;
+        assert!(handle.lookup(&rows[0].0, 1, &mut budget, &mut depth_gate).is_err());
+        assert!(!leaf_seen.get());
+        assert_eq!(VALUE_DECODES.load(Ordering::Relaxed), 0);
+        let mut budget = 16 * 1024 * 1024;
+        assert_eq!(handle.lookup(&rows[0].0, 2, &mut budget, &mut depth_gate).unwrap(), Some(rows[0].1.clone()));
+        assert!(leaf_seen.get());
     }
 }
