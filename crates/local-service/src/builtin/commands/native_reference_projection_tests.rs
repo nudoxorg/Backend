@@ -61,9 +61,12 @@ fn native_ts_cross_file_calls_reach_reference_projection() -> Result<(), Box<dyn
         GenerateTarget { correlation: CorrelationId(415), profile, stage: Stage::LowerIr },
         PackageUrl::parse("pkg:npm/ts-call-fixture@1.0.0".to_owned()).map_err(|e| format!("package: {e:?}"))?,
     ).map_err(|e| format!("request: {e:?}"))?;
-    let sources = [("src/csv.ts", csv), ("src/scheduler.ts", scheduler), ("src/route.ts", route)]
+    let sources = [("src/csv.ts", csv), ("src/route.ts", route), ("src/scheduler.ts", scheduler)]
         .into_iter().map(|(path, text)| OwnedPackageSource::new(path, text)).collect::<Result<Vec<_>, _>>()?;
-    let compiled = client.compile_package_sources(OwnedPackageSourceSet::new(request, package, sources.into_boxed_slice())?)?;
+    let source_set = OwnedPackageSourceSet::new(request, package, sources.into_boxed_slice())
+        .map_err(|error| format!("native call fixture source set: {error:?}"))?;
+    let compiled = client.compile_package_sources(source_set)
+        .map_err(|error| format!("native call fixture compile: {error:?}"))?;
     let images = compiled.images.iter().map(|image| image.reopen()).collect::<Result<Vec<_>, _>>()?;
     let key = publication_key(profile, "pkg:npm/ts-call-fixture@1.0.0")?;
     let view = projected_view(key.package_key(), &images)?;
