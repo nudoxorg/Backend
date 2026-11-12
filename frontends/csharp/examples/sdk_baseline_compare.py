@@ -31,6 +31,34 @@ p.add_argument('--frameworks', default='', help='explicit project framework refe
 p.add_argument('--inherited-frameworks', default='', help='component-only inherited project context, comma separated')
 p.add_argument('--exclude-project-output', help='exact project output path excluded from this component-only comparison')
 a = p.parse_args()
+
+def run_checked(label, args, cwd, env):
+    # Files avoid retaining unbounded subprocess output in Python memory.
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        try:
+            completed = subprocess.run(args, cwd=cwd, env=env, stdout=stdout,
+                                       stderr=stderr, timeout=120, check=False)
+        except subprocess.TimeoutExpired as error:
+            for name, stream in [('stdout', stdout), ('stderr', stderr)]:
+                stream.seek(0, os.SEEK_END)
+                size = stream.tell()
+                stream.seek(max(0, size - 16384))
+                print(f'{label} {name} tail:', stream.read().decode('utf-8', errors='replace'), flush=True)
+            raise SystemExit(f'{label} timed out after {error.timeout}s') from error
+        if completed.returncode:
+            print(f'{label} exited with status {completed.returncode}; '
+                  f'LD_LIBRARY_PATH is {"set" if env.get("LD_LIBRARY_PATH") else "absent"}', flush=True)
+            for name, stream in [('stdout', stdout), ('stderr', stderr)]:
+                stream.seek(0, os.SEEK_END)
+                size = stream.tell()
+                stream.seek(max(0, size - 16384))
+                print(f'{label} {name} tail:', stream.read().decode('utf-8', errors='replace'), flush=True)
+            raise SystemExit(f'{label} failed')
+        stdout.seek(0, os.SEEK_END)
+        if stdout.tell() > 4 * 1024 * 1024:
+            raise SystemExit(f'{label} stdout exceeds bound')
+        stdout.seek(0)
+        return stdout.read().decode('utf-8')
 pack = a.pack_list.split(os.pathsep)
 packages = a.package_list.split(os.pathsep) if a.package_list else []
 inherited = list(filter(None, a.inherited_frameworks.split(',')))
@@ -118,7 +146,7 @@ with tempfile.TemporaryDirectory(prefix='csharp-baseline-') as scratch:
             for prefix in ('ImportByWildcard', 'ImportUserLocationsByWildcard'):
                 args.append(f'-p:{prefix}{when}{stem}=false')
     args += ['-p:ImportDirectoryBuildProps=false', '-p:ImportDirectoryBuildTargets=false', '-p:ImportDirectoryPackagesProps=false']
-    observed = json.loads(subprocess.run(args, cwd=root, env=env, check=True, capture_output=True, text=True, timeout=120).stdout)
+    observed = json.loads(run_checked('official SDK baseline', args, root, env))
     if Path(observed['Properties']['MSBuildSDKsPath']).resolve() != Path(a.sdk_dir).resolve():
         raise SystemExit('baseline invoked a different SDK')
     baseline = []
@@ -137,8 +165,8 @@ with tempfile.TemporaryDirectory(prefix='csharp-baseline-') as scratch:
     fixture_args = [a.fixture, a.dotnet, a.sdk_dir, a.target, a.pack_list, a.assets]
     if a.global_json:
         fixture_args.append(a.global_json)
-    result = subprocess.run(fixture_args, cwd=root, env=env, check=True, capture_output=True, text=True, timeout=120)
-    selected = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
+    result = run_checked('Rust SDK resolver fixture', fixture_args, root, env)
+    selected = [json.loads(line) for line in result.splitlines() if line.startswith('{')]
     def identities(rows):
         return sorted((row['name'], row['fusion_name'], row['length'], row['sha256']) for row in rows)
     for row in baseline:
