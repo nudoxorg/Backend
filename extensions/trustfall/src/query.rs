@@ -878,7 +878,7 @@ fn admit_fact_envelope(
         SemanticQueryEvidence::StructuralFallback(_) => charge_bytes(98, limits, admitted_bytes),
         SemanticQueryEvidence::SqlNative(value) => {
             admit_text(&value.identity_preimage, limits, admitted_bytes)?;
-            charge_bytes(228, limits, admitted_bytes)
+            charge_bytes(292, limits, admitted_bytes)
         }
     }
 }
