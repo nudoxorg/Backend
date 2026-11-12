@@ -3468,15 +3468,26 @@ impl SemanticAuthority {
         Ok(current.as_ref() == Some(expected))
     }
 
+    #[cfg(test)]
     pub(crate) fn publish_staged(
+        &mut self, key: &ProductSemanticPublicationKey, attempt: CandidateAttempt,
+        staged: &backend_engine::application::StagedSemanticPackage,
+        admit_before_select: impl FnOnce(&backend_extension_turso::CandidateGeneration) -> Result<(), BuiltinModelError>,
+    ) -> Result<(SemanticPublicationClaim, SelectedGeneration), BuiltinModelError> {
+        self.publish_staged_with_stop(key, attempt, staged, &|| false, admit_before_select)
+    }
+
+    pub(crate) fn publish_staged_with_stop(
         &mut self,
         key: &ProductSemanticPublicationKey,
         attempt: CandidateAttempt,
         staged: &backend_engine::application::StagedSemanticPackage,
+        stopped: &dyn Fn() -> bool,
         admit_before_select: impl FnOnce(
             &backend_extension_turso::CandidateGeneration,
         ) -> Result<(), BuiltinModelError>,
     ) -> Result<(SemanticPublicationClaim, SelectedGeneration), BuiltinModelError> {
+        if stopped() { return Err(BuiltinModelError("compiler publication cancelled".into())); }
         let namespace = Self::namespace(key.package(), key.coordinate(), key.profile())?;
         if attempt.namespace() != &namespace {
             return Err(BuiltinModelError(
@@ -3794,7 +3805,7 @@ impl SemanticAuthority {
         let deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
         let work = std::cell::Cell::new(128usize * 1024 * 1024);
         let check = || -> Result<(), backend_extension_turso::CompilerEnvelopeError> {
-            if std::time::Instant::now() >= deadline { return Err(backend_extension_turso::CompilerEnvelopeError::Stopped); }
+            if stopped() || std::time::Instant::now() >= deadline { return Err(backend_extension_turso::CompilerEnvelopeError::Stopped); }
             work.set(work.get().checked_sub(1).ok_or(backend_extension_turso::CompilerEnvelopeError::Stopped)?);
             Ok(())
         };

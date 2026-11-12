@@ -136,6 +136,7 @@ impl ProfileWork {
             &mut self.job,
             self.profile.take().expect("single-use compiler profile"),
             compiled,
+            &self.cancelled,
         );
         if let Some(observation) = &self.observation {
             observation.phase("deferred-profile-admission-returned");

@@ -3110,6 +3110,7 @@ pub(super) fn finish_deferred_profile(
     job: &mut DeferredIndex,
     profile: DeferredProfileTicket,
     compiled: Result<StagedSemanticPackage, PackageSemanticRuntimeError>,
+    cancellation: &AtomicBool,
 ) -> Result<(), DeferredProfileFailure> {
     finish_deferred_profile_for_snapshot(
         &daemon.engine().daemon().owner().snapshot(),
@@ -3117,6 +3118,7 @@ pub(super) fn finish_deferred_profile(
         job,
         profile,
         compiled,
+        cancellation,
     )
 }
 
@@ -3126,6 +3128,7 @@ pub(super) fn finish_deferred_profile_for_snapshot(
     job: &mut DeferredIndex,
     profile: DeferredProfileTicket,
     compiled: Result<StagedSemanticPackage, PackageSemanticRuntimeError>,
+    cancellation: &AtomicBool,
 ) -> Result<(), DeferredProfileFailure> {
     if job.completed_profiles >= job.expected_profiles {
         return Err(BuiltinModelError(
@@ -3181,6 +3184,7 @@ pub(super) fn finish_deferred_profile_for_snapshot(
         profile.attempt.clone(),
         &staged,
         &job.revision_fence,
+        cancellation,
     ) {
         Ok(selected) => selected,
         Err(error) => {
@@ -5033,6 +5037,7 @@ fn compile_semantic_publications_for_snapshot(
                     local_attempt,
                     &staged,
                     revision_fence,
+                    context.cancellation,
                 )?;
                 context.compiler.remember_python_snapshot(
                     context.source_root,
@@ -5380,6 +5385,7 @@ fn publish_local_compile(
     attempt: backend_extension_turso::CandidateAttempt,
     staged: &StagedSemanticPackage,
     revision_fence: &ingest::CompilerRevisionFence,
+    cancellation: &AtomicBool,
 ) -> Result<
     (
         SemanticPublicationClaim,
@@ -5393,7 +5399,7 @@ fn publish_local_compile(
                 .to_owned(),
         ));
     }
-    semantic_authority.publish_staged(key, attempt, staged, |_| {
+    semantic_authority.publish_staged_with_stop(key, attempt, staged, &|| cancellation.load(Ordering::Acquire), |_| {
         let source_is_current =
             ingest::compiler_revision_is_current(revision_fence).map_err(BuiltinModelError)?;
         if source_is_current {
