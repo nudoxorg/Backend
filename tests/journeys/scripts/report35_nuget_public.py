@@ -202,8 +202,8 @@ class Journey:
     def start_owner(self,offline=False):
         if self.endpoint.exists():self.endpoint.unlink()
         self.owner_count+=1;log=(self.out/f'owner-{self.owner_count:03d}.log').open('wb')
-        cmd=[str(self.bins['backend-locald']),'--endpoint',str(self.endpoint),'--workspace',str(self.workspace),'--authority-secret-file',str(self.secret),'--registry-offline','--advisory-offline','--forge-offline','--registry-discovery-source','nuget='+self.fixture.base+'/v3/catalog0/index.json']
-        if offline:cmd.append('--registry-discovery-offline')
+        cmd=[str(self.bins['backend-locald']),'--endpoint',str(self.endpoint),'--workspace',str(self.workspace),'--authority-secret-file',str(self.secret),'--registry-endpoint',self.fixture.base+'/v3/catalog0/index.json','--registry-ecosystem','nuget','--advisory-offline','--forge-offline','--registry-discovery-source','nuget='+self.fixture.base+'/v3/catalog0/index.json']
+        if offline:cmd.extend(['--registry-offline','--registry-discovery-offline'])
         self.owner=subprocess.Popen(cmd,cwd=self.project,env=self.env,stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT,start_new_session=True);log.close()
         self.case['processes'].append({'kind':'owner','pid':self.owner.pid,'retired':False})
         end=time.monotonic()+self.timeout
@@ -363,7 +363,7 @@ def main():
     if args.self_check:self_check();return
     check(all((args.source,args.expected_source,args.expected_tree,args.expected_lock_sha256,args.bin_dir,args.build_receipt,args.output_parent)),'source/tree/lock/binaries/receipt/output required')
     check(1<=args.timeout<=300,'timeout must be 1..300 seconds')
-    network={'registry':'offline','discovery':'explicit private loopback source only','advisory':'offline','forge':'offline'}
+    network={'nuget_registry':'explicit private loopback ecosystem override','discovery':'explicit private loopback source only','advisory':'offline','forge':'offline'}
     source=args.source.resolve(strict=True)
     def git(*argv):return subprocess.check_output(['git','-C',str(source),*argv],text=True).strip()
     commit=git('rev-parse','HEAD');tree=git('rev-parse','HEAD^{tree}');check(commit==args.expected_source and tree==args.expected_tree,'source HEAD/tree mismatch');check(not git('status','--porcelain'),'source tree must be clean')
