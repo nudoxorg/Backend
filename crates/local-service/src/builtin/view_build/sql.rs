@@ -334,4 +334,16 @@ mod tests {
         ).unwrap();
         assert!(measured + display.capacity() <= bound, "presentation quota {bound}, measured {measured}");
     }
+
+    #[test]
+    fn row_buffer_exact_growth_requests_precharged_layout() {
+        let (initial, _) = super::super::super::initial_view().unwrap();
+        let mut rows = Vec::with_capacity(1);
+        rows.push(Row::new(RowId::Symbol(backend_engine::symbol_key("row")), initial.basis(), "row"));
+        let needed = rows.len() + 7;
+        let measured = allocation_counter::measure(|| rows.try_reserve_exact(7).unwrap());
+        assert!(rows.capacity() >= needed);
+        assert_eq!(measured.count_total, 1);
+        assert_eq!(measured.bytes_total, (needed * std::mem::size_of::<Row>()) as u64);
+    }
 }
