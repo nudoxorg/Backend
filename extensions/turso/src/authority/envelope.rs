@@ -1809,6 +1809,8 @@ impl SelectedNativeHeaderBudget {
     pub fn new(memory_bytes: usize, work_units: u64) -> Self { Self { memory: memory_bytes, work: std::cell::Cell::new(work_units) } }
     pub const fn remaining_memory(&self) -> usize { self.memory }
     pub fn remaining_work(&self) -> u64 { self.work.get() }
+    /// Restricts the shared memory credit after another operation consumes it.
+    pub fn restrict_memory(&mut self, remaining: usize) { self.memory = self.memory.min(remaining); }
     /// Debits bounded consumer operations against the same selected-admission ledger.
     /// The callback must represent the live operation's cancellation or deadline.
     pub fn checkpoint(&self, units: u64, cancelled: &dyn Fn() -> bool) -> Result<(), backend_store::StoreError> {
