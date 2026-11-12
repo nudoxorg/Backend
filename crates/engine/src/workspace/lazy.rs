@@ -471,6 +471,11 @@ impl<R: CanonicalRelation> WorkspaceRelationHandle<R> {
         self.root.root()
     }
 
+    /// Returns the admitted root node level without cloning its encoded bytes.
+    pub fn root_level(&self) -> u16 {
+        self.root.evidence().node().level()
+    }
+
     /// Returns an O(1) cloneable handoff of the authenticated root evidence.
     #[must_use]
     pub fn root_handle(&self) -> PersistedTreeRoot<R> {

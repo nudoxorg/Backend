@@ -4766,7 +4766,7 @@ fn native_evidence_update_budget(
     rows: &[([u8; 32], backend_engine::builtin::NativeSourceEvidence)],
     changes: &[NativeEvidenceChange], available: usize,
 ) -> Result<backend_version::LazyTreeUpdateBudget, BuiltinModelError> {
-    let shape = native_evidence_shape(rows, changes, usize::from(relation.root_handle().evidence().node().level()))?;
+    let shape = native_evidence_shape(rows, changes, usize::from(relation.root_level()))?;
     let scratch = backend_engine::builtin::NATIVE_EVIDENCE_READ_SCRATCH;
     let remaining = available.checked_sub(scratch).ok_or_else(|| BuiltinModelError("native update scratch budget exceeded".into()))?;
     let metadata = scratch.checked_add(remaining / 2).ok_or_else(|| BuiltinModelError("native update budget overflow".into()))?;
