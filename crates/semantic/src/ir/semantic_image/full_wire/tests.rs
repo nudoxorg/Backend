@@ -1953,6 +1953,8 @@ fn clang_image(
         visibility: Visibility::Public,
         authority: EntityAuthorityFacts {
             language_extension: FactAvailability::Captured,
+            source: FactAvailability::Captured,
+            source_file: FactAvailability::Captured,
             ..authority()
         },
         parent: None,
