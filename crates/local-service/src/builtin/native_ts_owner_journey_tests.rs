@@ -1348,8 +1348,16 @@ fn native_ts_last_file_deletion_retires_selected_evidence() -> Result<(), Box<dy
 /// it has not exercised the member-only case.
 #[test]
 fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> {
+    omitted_program_member_cold_replay(false)
+}
+#[test]
+fn native_ts_mixed_profile_program_member_cold_replay() -> Result<(), Box<dyn Error>> {
+    omitted_program_member_cold_replay(true)
+}
+fn omitted_program_member_cold_replay(mixed: bool) -> Result<(), Box<dyn Error>> {
+    let test_name = if mixed { "native_ts_mixed_profile_program_member_cold_replay" } else { "native_ts_omitted_program_member_cold_replay" };
     if crate::test_support::run_test_in_child(
-        module_path!(), "native_ts_omitted_program_member_cold_replay",
+        module_path!(), test_name,
     )? {
         return Ok(());
     }
@@ -1406,15 +1414,17 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
     fs::create_dir_all(project.join("src/types"))?;
     // A parser-valid tuple over the native lowering width limit produces a
     // source-local gap without inventing a Program member or compiler fact.
-    fs::write(project.join("tsconfig.json"), r#"{"compilerOptions":{"noLib":true,"types":[],"module":"ESNext","moduleResolution":"bundler","jsx":"preserve"},"files":["src/app/layout.tsx","src/app/page.tsx","src/components/NavBar.tsx","src/types/react-node.tsx","src/types/shared.ts"]}"#)?;
+    let config = if mixed { r#"{"compilerOptions":{"noLib":true,"types":[],"module":"ESNext","moduleResolution":"bundler","jsx":"preserve"},"files":["src/app/layout.tsx","src/app/page.tsx","src/components/NavBar.tsx","src/types/react-node.tsx","src/types/shared.ts"]}"# } else { r#"{"compilerOptions":{"noLib":true,"types":[],"module":"ESNext","moduleResolution":"bundler","jsx":"preserve"},"files":["src/app/layout.tsx","src/app/page.tsx","src/components/NavBar.tsx","src/types/react-node.tsx"]}"# };
+    fs::write(project.join("tsconfig.json"), config)?;
     let member = format!("export declare const wide: [{}];\n", std::iter::repeat_n("unknown", 256).collect::<Vec<_>>().join(", "));
     let image = "export function NavBar() { return \"nav\"; }\n";
     let changed_member = member.replacen("unknown", "unknowm", 1);
     let changed_image = "export function NavBar() { return \"nax\"; }\n";
     fs::write(project.join("src/types/react-node.tsx"), "export type ReactNode = { readonly children?: ReactNode };\n")?;
     let shared = format!("export declare const shared: [{}];\n", std::iter::repeat_n("unknown", 256).collect::<Vec<_>>().join(", "));
-    fs::write(project.join("src/types/shared.ts"), &shared)?;
-    fs::write(project.join("src/app/page.tsx"), "import { NavBar } from \"../components/NavBar\";\nimport type { shared } from \"../types/shared\";\nexport function Page() { return NavBar(); }\n")?;
+    if mixed { fs::write(project.join("src/types/shared.ts"), &shared)?; }
+    let page = if mixed { "import { NavBar } from \"../components/NavBar\";\nimport type { shared } from \"../types/shared\";\nexport function Page() { return NavBar(); }\n" } else { "import { NavBar } from \"../components/NavBar\";\nexport function Page() { return NavBar(); }\n" };
+    fs::write(project.join("src/app/page.tsx"), page)?;
     assert_eq!(member.len(), changed_member.len());
     assert_eq!(image.len(), changed_image.len());
     fs::write(project.join("src/app/layout.tsx"), &member)?;
@@ -1492,7 +1502,7 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
         use backend_semantic::ir::{SourceCoverageGapCause, SourceCoverageRow};
         let observed = selected_authority.selected_source_coverage(selected_key, claim)?
             .ok_or("selected compiler coverage absent")?;
-        assert_eq!((observed.source_count(), observed.completed()), (5, 3));
+        assert_eq!((observed.source_count(), observed.completed()), (if mixed { 5 } else { 4 }, 3));
         let catalog = observed.catalog().ok_or("selected compiler gap catalog absent")?;
         assert_eq!(catalog.rows().iter().filter(|row| matches!(row,
             SourceCoverageRow::Gap { path, source, byte_len, cause, .. }
@@ -1513,17 +1523,18 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
         .filter(|row| row.project == project_key && row.profile == ts).collect::<Vec<_>>();
     assert!(rows.iter().any(|row| row == &member_row));
     assert!(rows.iter().any(|row| row == &image_row));
-    let shared_row = relation.lookup(&native_source_evidence_key(project_key, LanguageProfile::TypeScript(TypeScriptSource::TypeScript), "src/types/shared.ts")?)?.ok_or("missing cross-profile TS ProgramMember")?;
-    assert_eq!(shared_row.kind, NativeSourceEvidenceKind::ProgramMember);
     let mut refs = rows.iter().collect::<Vec<_>>();
-    refs.push(&shared_row);
+    let shared_row = if mixed { Some(relation.lookup(&native_source_evidence_key(project_key, LanguageProfile::TypeScript(TypeScriptSource::TypeScript), "src/types/shared.ts")?)?.ok_or("missing cross-profile TS ProgramMember")?) } else { None };
+    if let Some(row) = &shared_row { assert_eq!(row.kind, NativeSourceEvidenceKind::ProgramMember); refs.push(row); }
     super::semantic_authority::admit_replayed_native_evidence(&store, std::slice::from_ref(&change), &refs, &[])?;
-    let mut wrong_shared = shared_row.clone();
-    wrong_shared.source_digest[0] ^= 1;
-    let mut altered_refs = rows.iter().collect::<Vec<_>>();
-    altered_refs.push(&wrong_shared);
-    let error = super::semantic_authority::admit_replayed_native_evidence(&store, std::slice::from_ref(&change), &altered_refs, &[]).err().ok_or("altered cross-profile source unexpectedly admitted")?;
-    assert_eq!(error.0, "native replay Program source differs from evidence");
+    if let Some(row) = &shared_row {
+        let mut wrong_shared = row.clone();
+        wrong_shared.source_digest[0] ^= 1;
+        let mut altered_refs = rows.iter().collect::<Vec<_>>();
+        altered_refs.push(&wrong_shared);
+        let error = super::semantic_authority::admit_replayed_native_evidence(&store, std::slice::from_ref(&change), &altered_refs, &[]).err().ok_or("altered cross-profile source unexpectedly admitted")?;
+        assert_eq!(error.0, "native replay Program source differs from evidence");
+    }
     for (path, kind_only, expected) in [
         ("src/app/layout.tsx", false, "native replay Program source differs from evidence"),
         ("src/components/NavBar.tsx", false, "native replay Program source differs from evidence"),
