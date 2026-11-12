@@ -418,36 +418,118 @@ fn elf_runtime_requirements(bytes: &[u8]) -> Result<ElfRuntimeRequirements, CSha
     let object::File::Elf64(file) = parsed else {
         return Err(CSharpAuthorityError::Configuration);
     };
-    let dynamic = file
-        .elf_dynamic_table()
-        .map_err(|_| CSharpAuthorityError::Configuration)?;
-    let mut needed = Vec::new();
-    let mut runpaths = Vec::new();
-    for entry in dynamic.iter() {
-        let is_needed = entry.tag == object::elf::DT_NEEDED;
-        let is_runpath = entry.tag == object::elf::DT_RUNPATH || entry.tag == object::elf::DT_RPATH;
-        if !is_needed && !is_runpath {
-            continue;
-        }
-        let value = dynamic
-            .string(entry)
-            .map_err(|_| CSharpAuthorityError::Configuration)?;
-        let value = std::str::from_utf8(value).map_err(|_| CSharpAuthorityError::Configuration)?;
-        if value.is_empty() || value.len() > 4096 || value.as_bytes().contains(&0) {
+    use object::read::elf::{Dyn as _, ProgramHeader as _};
+
+    let endian = file.endian();
+    let headers = file.elf_program_headers();
+    if headers.len() > 128 {
+        return Err(CSharpAuthorityError::Configuration);
+    }
+    let mut dynamic = None;
+    for header in headers {
+        if header.p_type(endian) == object::elf::PT_DYNAMIC && header.p_filesz(endian) % 16 != 0 {
             return Err(CSharpAuthorityError::Configuration);
         }
-        if is_needed {
-            needed.push(value.into());
-        } else {
-            for path in value.split(':') {
-                if path.is_empty() || path.len() > 4096 {
-                    return Err(CSharpAuthorityError::Configuration);
-                }
-                runpaths.push(path.into());
+        if let Some(entries) = header
+            .dynamic(endian, file.data())
+            .map_err(|_| CSharpAuthorityError::Configuration)?
+        {
+            if dynamic.replace(entries).is_some() || entries.len() > 8192 {
+                return Err(CSharpAuthorityError::Configuration);
             }
         }
-        if needed.len() + runpaths.len() > 8192 {
-            return Err(CSharpAuthorityError::Configuration);
+    }
+    let mut needed = Vec::new();
+    let mut runpaths = Vec::new();
+    if let Some(entries) = dynamic {
+        let mut strtab = None;
+        let mut strsz = None;
+        let mut end = None;
+        for (index, entry) in entries.iter().enumerate() {
+            match entry.tag32(endian) {
+                Some(object::elf::DT_NULL) => {
+                    end = Some(index);
+                    break;
+                }
+                Some(object::elf::DT_STRTAB) => {
+                    if strtab.replace(entry.d_val(endian)).is_some() {
+                        return Err(CSharpAuthorityError::Configuration);
+                    }
+                }
+                Some(object::elf::DT_STRSZ) => {
+                    if strsz.replace(entry.d_val(endian)).is_some() {
+                        return Err(CSharpAuthorityError::Configuration);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let end = end.ok_or(CSharpAuthorityError::Configuration)?;
+        let strings_needed = entries[..end].iter().any(|entry| {
+            matches!(
+                entry.tag32(endian),
+                Some(object::elf::DT_NEEDED | object::elf::DT_RPATH | object::elf::DT_RUNPATH)
+            )
+        });
+        if strings_needed {
+            let address = strtab.ok_or(CSharpAuthorityError::Configuration)?;
+            let size = strsz.ok_or(CSharpAuthorityError::Configuration)?;
+            if size == 0 || size > 16 * 1024 * 1024 || address.checked_add(size).is_none() {
+                return Err(CSharpAuthorityError::Configuration);
+            }
+            let mut strings = None;
+            for header in headers {
+                if header.p_type(endian) != object::elf::PT_LOAD {
+                    continue;
+                }
+                if let Some(data) = header
+                    .data_range(endian, file.data(), address, size)
+                    .map_err(|_| CSharpAuthorityError::Configuration)?
+                {
+                    if strings.replace(data).is_some() {
+                        return Err(CSharpAuthorityError::Configuration);
+                    }
+                }
+            }
+            let strings = strings.ok_or(CSharpAuthorityError::Configuration)?;
+            for entry in &entries[..end] {
+                let is_needed = entry.tag32(endian) == Some(object::elf::DT_NEEDED);
+                let is_runpath = matches!(
+                    entry.tag32(endian),
+                    Some(object::elf::DT_RUNPATH | object::elf::DT_RPATH)
+                );
+                if !is_needed && !is_runpath {
+                    continue;
+                }
+                let offset = usize::try_from(entry.d_val(endian))
+                    .map_err(|_| CSharpAuthorityError::Configuration)?;
+                let tail = strings
+                    .get(offset..)
+                    .ok_or(CSharpAuthorityError::Configuration)?;
+                let length = tail
+                    .iter()
+                    .take(4097)
+                    .position(|byte| *byte == 0)
+                    .ok_or(CSharpAuthorityError::Configuration)?;
+                if length == 0 || length > 4096 {
+                    return Err(CSharpAuthorityError::Configuration);
+                }
+                let value = std::str::from_utf8(&tail[..length])
+                    .map_err(|_| CSharpAuthorityError::Configuration)?;
+                if is_needed {
+                    needed.push(value.into());
+                } else {
+                    for path in value.split(':') {
+                        if path.is_empty() || path.len() > 4096 {
+                            return Err(CSharpAuthorityError::Configuration);
+                        }
+                        runpaths.push(path.into());
+                    }
+                }
+                if needed.len() + runpaths.len() > 8192 {
+                    return Err(CSharpAuthorityError::Configuration);
+                }
+            }
         }
     }
     Ok(ElfRuntimeRequirements {
@@ -2410,6 +2492,69 @@ mod tests {
         assert!(closure.validate());
         std::fs::write(&helper, b"changed-helper").expect("mutate helper");
         assert!(!closure.validate());
+    }
+
+    #[cfg(target_os = "linux")]
+    fn sectionless_elf_fixture() -> Vec<u8> {
+        let mut bytes = vec![0u8; 384];
+        bytes[..6].copy_from_slice(b"\x7fELF\x02\x01");
+        bytes[6] = 1;
+        bytes[16..18].copy_from_slice(&3u16.to_le_bytes());
+        bytes[18..20].copy_from_slice(&62u16.to_le_bytes());
+        bytes[20..24].copy_from_slice(&1u32.to_le_bytes());
+        bytes[32..40].copy_from_slice(&64u64.to_le_bytes());
+        bytes[52..54].copy_from_slice(&64u16.to_le_bytes());
+        bytes[54..56].copy_from_slice(&56u16.to_le_bytes());
+        bytes[56..58].copy_from_slice(&3u16.to_le_bytes());
+        // One PT_LOAD maps the whole file; PT_DYNAMIC and PT_INTERP are
+        // independent program headers. No section table is present.
+        bytes[64..68].copy_from_slice(&1u32.to_le_bytes());
+        bytes[80..88].copy_from_slice(&0x1000u64.to_le_bytes());
+        bytes[96..104].copy_from_slice(&384u64.to_le_bytes());
+        bytes[104..112].copy_from_slice(&384u64.to_le_bytes());
+        bytes[120..124].copy_from_slice(&2u32.to_le_bytes());
+        bytes[128..136].copy_from_slice(&256u64.to_le_bytes());
+        bytes[152..160].copy_from_slice(&80u64.to_le_bytes());
+        bytes[176..180].copy_from_slice(&3u32.to_le_bytes());
+        bytes[184..192].copy_from_slice(&240u64.to_le_bytes());
+        bytes[208..216].copy_from_slice(&8u64.to_le_bytes());
+        bytes[240..248].copy_from_slice(b"/ld.so\0\0");
+        // Exact PT_INTERP length includes a single NUL terminator.
+        bytes[208..216].copy_from_slice(&7u64.to_le_bytes());
+        let entries = [(5u64, 0x1000 + 336), (10, 21), (1, 1), (29, 11), (0, 0)];
+        for (index, (tag, value)) in entries.into_iter().enumerate() {
+            let offset = 256 + index * 16;
+            bytes[offset..offset + 8].copy_from_slice(&tag.to_le_bytes());
+            bytes[offset + 8..offset + 16].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[336..357].copy_from_slice(b"\0libfoo.so\0$ORIGIN/x\0");
+        bytes
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dynamic_program_headers_work_without_sections() {
+        let bytes = sectionless_elf_fixture();
+        let requirements = elf_runtime_requirements(&bytes).expect("sectionless dynamic ELF");
+        assert_eq!(&*requirements.needed, &[Box::<str>::from("libfoo.so")]);
+        assert_eq!(&*requirements.runpaths, &[Box::<str>::from("$ORIGIN/x")]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dynamic_program_headers_reject_invalid_tables() {
+        let mut bytes = sectionless_elf_fixture();
+        bytes[320..328].copy_from_slice(&1u64.to_le_bytes());
+        assert!(elf_runtime_requirements(&bytes).is_err()); // missing DT_NULL
+        let mut bytes = sectionless_elf_fixture();
+        bytes[264..272].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(elf_runtime_requirements(&bytes).is_err()); // unmapped DT_STRTAB
+        let mut bytes = sectionless_elf_fixture();
+        bytes[296..304].copy_from_slice(&21u64.to_le_bytes());
+        assert!(elf_runtime_requirements(&bytes).is_err()); // string offset out of bounds
+        let mut bytes = sectionless_elf_fixture();
+        bytes[356] = b'x';
+        assert!(elf_runtime_requirements(&bytes).is_err()); // unterminated runpath
     }
 
     #[cfg(target_os = "linux")]
