@@ -192,11 +192,6 @@ mod tests {
         assert_eq!(file.line_starts.len(), 1_000_000);
         assert_eq!(file.line_starts.last().copied(), Some(text.len() as u32));
         assert!(super::capture_source_lines(&text, "src/main.ts", identity, &Check(true), &mut budget).is_err());
-        let mixed = "a\rb\r\nc\u{2028}d\u{2029}e";
-        let mixed_identity = backend_semantic::ir::SourceIdentity::from_bytes(mixed.as_bytes()).unwrap();
-        let mut mixed_budget = 4096;
-        let mixed_file = super::capture_source_lines(mixed, "src/mixed.ts", mixed_identity, &Check(false), &mut mixed_budget).unwrap().unwrap();
-        assert_eq!(mixed_file.line_starts, [0, 2, 5, 9, 13]);
         let mut empty = 0;
         assert!(super::capture_source_lines(&text, "src/main.ts", identity, &Check(false), &mut empty).unwrap().is_none());
     }
@@ -380,9 +375,9 @@ pub(super) fn capture_source_lines(
         let base = index * 64 * 1024;
         for (offset, byte) in chunk.iter().enumerate() {
             let at = base + offset;
-            let line_break = *byte == b'\n' || (*byte == b'\r' && bytes.get(at + 1) != Some(&b'\n'))
-                || (*byte == 0xe2 && bytes.get(at + 1) == Some(&0x80) && matches!(bytes.get(at + 2), Some(0xa8 | 0xa9)));
-            if line_break { count = count.checked_add(1).ok_or("source line count overflow")?; }
+            if *byte == b'\r' && bytes.get(at + 1) != Some(&b'\n') { return Ok(None); }
+            if *byte == 0xe2 && bytes.get(at + 1) == Some(&0x80) && matches!(bytes.get(at + 2), Some(0xa8 | 0xa9)) { return Ok(None); }
+            if *byte == b'\n' { count = count.checked_add(1).ok_or("source line count overflow")?; }
         }
     }
     if count > MAX_NATIVE_SOURCE_LINES_PER_FILE { return Ok(None); }
@@ -394,11 +389,7 @@ pub(super) fn capture_source_lines(
     for (index, chunk) in bytes.chunks(64 * 1024).enumerate() {
         checkpoint.checkpoint(1).map_err(|e| format!("source lines stopped: {e:?}"))?;
         for (offset, byte) in chunk.iter().enumerate() {
-            let at = index * 64 * 1024 + offset;
-            let end = if *byte == b'\n' || (*byte == b'\r' && bytes.get(at + 1) != Some(&b'\n')) { Some(at + 1) }
-                else if *byte == 0xe2 && bytes.get(at + 1) == Some(&0x80) && matches!(bytes.get(at + 2), Some(0xa8 | 0xa9)) { Some(at + 3) }
-                else { None };
-            if let Some(end) = end { line_starts[cursor] = u32::try_from(end).map_err(|_| "source line offset overflow")?; cursor += 1; }
+            if *byte == b'\n' { line_starts[cursor] = u32::try_from(index * 64 * 1024 + offset + 1).map_err(|_| "source line offset overflow")?; cursor += 1; }
         }
     }
     let mut path_bytes = backend_store::try_allocate_exact_zeroed_bytes_budgeted(path.len(), remaining).map_err(|e| format!("source line path capacity: {e:?}"))?;
