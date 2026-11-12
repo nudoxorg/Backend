@@ -241,7 +241,7 @@ pub(super) fn refresh_native_ts_evidence_plan(
             .native_program_sources
             .as_ref()
             .ok_or_else(|| BuiltinModelError("native TypeScript program is unavailable".into()))?;
-        let mut header_budget = MAX_NATIVE_EVIDENCE_BYTES;
+        let mut header_budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
         let header_witness = semantic_authority.selected_native_header_aggregate(
             candidate.publication.key(), candidate.publication.claim(), &mut header_budget,
         )?;
@@ -923,7 +923,7 @@ pub(super) fn admit_native_ts_owner_candidate(
         &mut generations,
         &mut image_rows,
     )?;
-    let mut header_budget = MAX_NATIVE_EVIDENCE_BYTES;
+    let mut header_budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
     let header_witness = semantic_authority.selected_native_header_aggregate(
         publication.key(), publication.claim(), &mut header_budget,
     )?;

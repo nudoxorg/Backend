@@ -1094,7 +1094,7 @@ pub(super) fn admit_replayed_native_evidence(
         if actual_claim != claim || record != expected || selected.input_digest() != capture.capture.input_digest() {
             return Err(BuiltinModelError("native replay compiler history differs from capture".into()));
         }
-        let loaded = load_selected_images(&store, generation_residence::SelectedSemanticImageSelection::Admitted(selected), 128 * 1024 * 1024, 4096)?;
+        let loaded = load_selected_images(&store, generation_residence::SelectedSemanticImageSelection::Admitted(selected.clone()), 128 * 1024 * 1024, 4096)?;
         let program = loaded.native_program_sources.as_ref().ok_or_else(|| BuiltinModelError("native replay Program is unavailable".into()))?;
         let mut remaining = std::collections::BTreeMap::new();
         for row in matching {
