@@ -3108,6 +3108,25 @@ mod tests {
     }
 
     #[test]
+    fn dense_multiplane_decode_is_precharged_and_malformed_scan_allocates_nothing() {
+        let ir = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
+        let ext = SemanticPlaneKind::Ir(SemanticIrPlane::LanguageExtensions(LanguageProfile::Rust(RustEdition::Rust2024)));
+        let embed = SemanticPlaneKind::Embeddings(EmbeddingPlaneIdentity::new([20; 32], [21; 32], [24; 32], 768, EmbeddingNormalization::L2, [22; 32], [23; 32]).unwrap());
+        let mut planes = vec![plane(ir, (0..=255).map(|n| segment(ir, n, b"dense")).collect()),
+            plane(ext, vec![segment(ext, 1, b"extension")]), plane(embed, vec![segment(embed, 1, b"embedding")])];
+        planes.sort_unstable_by_key(|plane| plane.kind);
+        let bytes = manifest(build(1), input(1), planes).encode().unwrap();
+        let bound = SemanticPlaneManifest::decode_allocation_bound(&bytes).unwrap();
+        let mut decoded = None;
+        let peak = allocation_counter::measure(|| decoded = Some(SemanticPlaneManifest::decode(&bytes).unwrap()));
+        assert_eq!(decoded.unwrap().planes().len(), 3);
+        assert!(peak.bytes_max as usize <= bound, "dense decode peak {peak:?}, bound {bound}");
+        let malformed = &bytes[..bytes.len()-1];
+        let peak = allocation_counter::measure(|| assert!(SemanticPlaneManifest::decode_allocation_bound(malformed).is_err()));
+        assert_eq!(peak.bytes_max, 0, "borrowed malformed preflight allocated: {peak:?}");
+    }
+
+    #[test]
     fn coverage_wire_is_fixed_width_for_complete_and_partial_claims() {
         const EXPECTED_COVERAGE_BYTES: usize = 130;
 
