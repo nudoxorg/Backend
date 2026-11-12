@@ -157,6 +157,9 @@ fn exercise(fixture: &OwnerFixture) {
         std::thread::sleep(Duration::from_millis(2));
     }
     assert!(delivery.production_rows().is_some_and(|rows| rows > 0), "held value contains actual indexed rows");
+    // Keep the captured old reply held, but let a renewed attachment perform
+    // its own projection while we exercise the retirement sequence.
+    rig.cx.update(|_, cx| indexed_world::clear_test_production_delivery(cx));
 
     super::tab_to_graph_control(&mut rig, "Declarations");
     let resource_origin = rig.cx.update(|window, cx| {
