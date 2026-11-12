@@ -95,6 +95,9 @@ class StrictJourney(Journey):
                 timed_out = True
                 self._stop(proc)
                 out, err = proc.communicate()
+            except BaseException:
+                self._stop(proc)
+                raise
             else:
                 self._stop(proc)
             raw, stderr = out.decode('utf-8', 'replace'), err.decode('utf-8', 'replace')
@@ -118,9 +121,10 @@ class StrictJourney(Journey):
 
     def close(self, preserve_fixture):
         errors = []
-        for stop in (self.stop_mcp, self.stop_owner):
+        for attribute, stop in (('mcp', self.stop_mcp), ('owner', self.stop_owner)):
             try:
-                stop()
+                if getattr(self, attribute, None) is not None:
+                    stop()
             except Exception as error:
                 errors.append(repr(error))
         if not preserve_fixture and not errors:
@@ -155,7 +159,9 @@ def main():
         raise SystemExit('output must be outside the source checkout')
     output.mkdir(parents=True, exist_ok=False)
     checks = []
-    journey = StrictJourney(binary_dir, output, label='vue-packages')
+    journey = StrictJourney.__new__(StrictJourney)
+    driver_path = pathlib.Path(__file__).resolve(strict=True)
+    driver_before = digest(driver_path)
 
     def require(name, condition, detail=''):
         checks.append({'name': name, 'pass': bool(condition), 'detail': str(detail)[:500]})
@@ -224,6 +230,7 @@ def main():
         return observed
 
     try:
+        StrictJourney.__init__(journey, binary_dir, output, label='vue-packages')
         project = journey.root / 'project'
         project.mkdir()
         journey.project = project
@@ -261,7 +268,9 @@ def main():
         checks.append({'name': 'owned process cleanup', 'pass': not cleanup_errors, 'detail': str(cleanup_errors)})
         try:
             after = verify_runtime_build_receipt(args.build_receipt, repo)
-            unchanged = after['receipt_sha256'] == build['receipt_sha256'] and after['artifacts'] == build['artifacts']
+            unchanged = (after['receipt_sha256'] == build['receipt_sha256']
+                         and after['artifacts'] == build['artifacts']
+                         and digest(driver_path) == driver_before)
             checks.append({'name': 'build provenance unchanged', 'pass': unchanged, 'detail': ''})
         except Exception as error:
             checks.append({'name': 'build provenance unchanged', 'pass': False, 'detail': repr(error)})
@@ -270,7 +279,7 @@ def main():
                 shutil.rmtree(journey.root)
             except Exception as error:
                 checks.append({'name': 'fixture cleanup', 'pass': False, 'detail': repr(error)})
-    receipt = {'driver_path': str(pathlib.Path(__file__).resolve()), 'driver_sha256': digest(pathlib.Path(__file__).resolve()), 'source_commit': head, 'source_tree': tree, 'cargo_lock_sha256': digest(repo / 'Cargo.lock'), 'binary_sha256': {name: item['sha256'] for name, item in build['artifacts'].items()}, 'build_receipt': {'path': build['receipt_path'], 'sha256': build['receipt_sha256']}, 'records': journey.records, 'fixture_root_if_preserved': str(journey.root) if journey.root.exists() else None, 'mode': 'development assumed; authenticated account not exercised', 'account_gate_environment_set': 'NUDOX_ACCOUNT_GATE' in journey.env, 'fixture': 'synthetic; package code not executed', 'nuget_public_journey': 'not exercised', 'checks': checks}
+    receipt = {'driver_path': str(driver_path), 'driver_sha256': driver_before, 'source_commit': head, 'source_tree': tree, 'cargo_lock_sha256': digest(repo / 'Cargo.lock'), 'binary_sha256': {name: item['sha256'] for name, item in build['artifacts'].items()}, 'build_receipt': {'path': build['receipt_path'], 'sha256': build['receipt_sha256']}, 'records': getattr(journey, 'records', []), 'fixture_root_if_preserved': str(journey.root) if hasattr(journey, 'root') and journey.root.exists() else None, 'mode': 'development assumed; authenticated account not exercised', 'account_gate_environment_set': 'NUDOX_ACCOUNT_GATE' in getattr(journey, 'env', {}), 'fixture': 'synthetic; package code not executed', 'nuget_public_journey': 'not exercised', 'checks': checks}
     (output / 'receipt.json').write_text(json.dumps(receipt, indent=2))
     print(json.dumps(receipt, indent=2))
     return 0 if checks and all(check['pass'] for check in checks) else 1
