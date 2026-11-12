@@ -602,11 +602,14 @@ mod tests {
     #[test]
     fn borrowed_graph_matches_owned_and_stops_on_budget() {
         let toolchain = ContentId::from_canonical_bytes(b"compiler");
+        let app_image = *SemanticImageIdentity::from_encoded_bytes(b"app image").as_ref();
+        let vite_image = *SemanticImageIdentity::from_encoded_bytes(b"vite image").as_ref();
+        let other_image = *SemanticImageIdentity::from_encoded_bytes(b"other image").as_ref();
         let graph = NativeProgramSources::from_forest(toolchain, 1, nodes())
             .unwrap()
             .with_image_bindings(vec![
-                ("src/app.ts".to_owned(), [7; 32]),
-                ("vite.config.ts".to_owned(), [9; 32]),
+                ("src/app.ts".to_owned(), app_image),
+                ("vite.config.ts".to_owned(), vite_image),
             ])
             .unwrap();
         let shape = BorrowedProgramGraph::scratch(graph.as_bytes(), |_| Ok::<_, ()>(())).unwrap();
@@ -637,21 +640,21 @@ mod tests {
         owned.sort_by(|a, b| a.row.program_path.cmp(b.row.program_path));
         assert_eq!(borrowed, owned);
         assert!(
-            view.image_matches("src/app.ts", &[7; 32], |_| Ok::<_, ()>(()))
+            view.image_matches("src/app.ts", &app_image, |_| Ok::<_, ()>(()))
                 .unwrap()
         );
         assert!(
             !view
-                .image_matches("src/app.ts", &[8; 32], |_| Ok::<_, ()>(()))
+                .image_matches("src/app.ts", &other_image, |_| Ok::<_, ()>(()))
                 .unwrap()
         );
         assert!(
-            view.image_matches("vite.config.ts", &[9; 32], |_| Ok::<_, ()>(()))
+            view.image_matches("vite.config.ts", &vite_image, |_| Ok::<_, ()>(()))
                 .unwrap()
         );
         assert!(
             !view
-                .image_matches("missing.ts", &[9; 32], |_| Ok::<_, ()>(()))
+                .image_matches("missing.ts", &vite_image, |_| Ok::<_, ()>(()))
                 .unwrap()
         );
         assert!(matches!(
@@ -671,7 +674,7 @@ mod tests {
         assert_eq!(retained.membership_identity(), graph.membership_identity());
         assert!(
             retained
-                .image_matches("vite.config.ts", &[9; 32], |_| Ok::<_, ()>(()))
+                .image_matches("vite.config.ts", &vite_image, |_| Ok::<_, ()>(()))
                 .unwrap()
         );
         let mut corrupt = graph.as_bytes().to_vec();
