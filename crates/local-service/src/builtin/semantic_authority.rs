@@ -1146,6 +1146,19 @@ pub(super) fn admit_replayed_native_evidence(
     rows: &[&backend_engine::builtin::NativeSourceEvidence],
     retirements: &[&backend_engine::builtin::NativeSourceEvidence],
 ) -> Result<(), BuiltinModelError> {
+    admit_replayed_native_evidence_with_shutdown(workspace_store, captures, rows, retirements, None)
+}
+
+pub(super) fn admit_replayed_native_evidence_with_shutdown(
+    workspace_store: &FileStore,
+    captures: &[super::profile::BuiltinCaptureChange],
+    rows: &[&backend_engine::builtin::NativeSourceEvidence],
+    retirements: &[&backend_engine::builtin::NativeSourceEvidence],
+    shutdown: Option<&crate::listener::ListenerShutdown>,
+) -> Result<(), BuiltinModelError> {
+    if shutdown.is_some_and(crate::listener::ListenerShutdown::is_requested) {
+        return Err(BuiltinModelError("native replay stopped: owner shutdown".into()));
+    }
     if rows.is_empty() && retirements.is_empty() {
         return Ok(());
     }
@@ -1166,7 +1179,7 @@ pub(super) fn admit_replayed_native_evidence(
     let store = FileStore::open(cas_path, 128 * 1024 * 1024)
         .map_err(|error| BuiltinModelError(format!("open native replay compiler CAS: {error:?}")))?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(900);
-    let stopped = || std::time::Instant::now() >= deadline;
+    let stopped = || std::time::Instant::now() >= deadline || shutdown.is_some_and(crate::listener::ListenerShutdown::is_requested);
     let mut header_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(super::MAX_REBUILD_BYTES, NATIVE_HEADER_WORK_UNITS);
     let mut row_proofs = bounded_replay::proof_buffer(rows.len(), &mut header_budget, &stopped)?;
     let mut retirement_proofs = bounded_replay::proof_buffer(retirements.len(), &mut header_budget, &stopped)?;

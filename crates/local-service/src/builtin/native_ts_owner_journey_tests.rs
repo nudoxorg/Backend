@@ -1578,6 +1578,24 @@ fn omitted_program_member_cold_replay(mixed: bool) -> Result<(), Box<dyn Error>>
     drop(selected_authority);
     drop(daemon);
 
+    // A real pre-start lifecycle stop reaches durable native replay; after it
+    // refuses, a fresh capability must reopen the same selected state.
+    let mut stopped_config = ProcessConfig::parse([
+        "--endpoint".to_owned(), paths.endpoint().to_string_lossy().into_owned(),
+        "--workspace".to_owned(), paths.data().to_string_lossy().into_owned(),
+        "--registry-offline".to_owned(), "--registry-discovery-offline".to_owned(),
+        "--advisory-offline".to_owned(), "--forge-offline".to_owned(),
+    ])?;
+    stopped_config.profile = "builtin".to_owned();
+    stopped_config.worker_endpoint = None;
+    stopped_config.authority_secret = Some(paths.authority_secret().to_path_buf());
+    let shutdown = crate::listener::ListenerShutdown::new();
+    shutdown.request();
+    let error = match EmbeddedLocalService::start_with_shutdown(stopped_config, shutdown) {
+        Ok(owner) => { drop(owner); return Err("cancelled cold owner unexpectedly started".into()); }
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("native replay stopped: owner shutdown"), "unexpected cold refusal: {error}");
     let owner = start_owner(&paths)?;
     let mut session = Session::connect(owner.endpoint())?;
     let (cold_coordinate, cold) = select_native_document(&mut session, &authority, "NavBar", "src/components/NavBar.tsx")?;
