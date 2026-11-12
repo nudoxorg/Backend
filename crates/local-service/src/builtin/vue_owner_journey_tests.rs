@@ -19,6 +19,7 @@ fn index(session: &mut Session, project: &std::path::Path, byte: u8) -> Result<(
         .start_index_operation(key, package, CompileExecutionIntent::Interactive)
         .map_err(|e| std::io::Error::other(format!("start operation: {e}")))?;
     let deadline = Instant::now() + Duration::from_secs(600);
+    let mut reconnects = 0;
     loop {
         let IndexOperationObservation::Known(known) = status else {
             return Err("unknown index status".into());
@@ -32,9 +33,19 @@ fn index(session: &mut Session, project: &std::path::Path, byte: u8) -> Result<(
             return Err("Vue index deadline".into());
         }
         std::thread::sleep(Duration::from_millis(30));
-        status = session
-            .index_operation_status(key)
-            .map_err(|e| std::io::Error::other(format!("poll operation: {e}")))?;
+        status = match session.index_operation_status(key) {
+            Ok(status) => status,
+            Err(backend_client::ClientError::Disconnected(_)) if reconnects < 3 => {
+                reconnects += 1;
+                session.reconnect().map_err(|e| {
+                    std::io::Error::other(format!("reconnect exact operation status: {e}"))
+                })?;
+                session.index_operation_status(key).map_err(|e| {
+                    std::io::Error::other(format!("poll exact operation after reconnect: {e}"))
+                })?
+            }
+            Err(e) => return Err(std::io::Error::other(format!("poll operation: {e}")).into()),
+        };
     }
 }
 
