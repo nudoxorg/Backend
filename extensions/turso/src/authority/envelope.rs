@@ -5779,9 +5779,12 @@ mod tests {
             corrupt[last] ^= 1;
             std::fs::remove_file(&path).expect("remove sealed plane object");
             std::fs::write(&path, &corrupt).expect("replace with corrupted object");
-            assert!(visit_selected_publication_wire(&store, &selected, &mut SelectedNativeHeaderBudget::new(64 * 1024 * 1024, 1_000_000), &|| false, 8 * 1024 * 1024, 1, |_, _| Ok(())).is_err(), "corrupt physical plane object must be refused");
+            let mut saw_image = false;
+            assert!(visit_selected_publication_wire(&store, &selected, &mut SelectedNativeHeaderBudget::new(64 * 1024 * 1024, 1_000_000), &|| false, 8 * 1024 * 1024, 1, |wire, _| { if matches!(wire, SelectedPublicationWire::Image { .. }) { saw_image = true; } Ok(()) }).is_err(), "corrupt physical plane object must be refused");
+            assert!(saw_image, "corruption must be discovered after the image callback");
             std::fs::remove_file(&path).expect("remove corrupted object");
             std::fs::write(&path, &original).expect("restore plane object");
+            visit_selected_publication_wire(&store, &selected, &mut SelectedNativeHeaderBudget::new(64 * 1024 * 1024, 1_000_000), &|| false, 8 * 1024 * 1024, 1, |_, _| Ok(())).expect("same selected root reopens after restore");
         }
         drop(store);
         std::fs::remove_dir_all(directory).expect("remove valid plane store");
