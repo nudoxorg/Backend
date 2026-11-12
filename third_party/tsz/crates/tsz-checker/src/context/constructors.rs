@@ -118,6 +118,8 @@ pub(crate) struct ContextParts {
     /// `binder.symbols.len()`. Child contexts pass `Some(0)` because they
     /// replace the caches with parent snapshots immediately afterwards.
     pub(crate) symbol_cache_capacity: Option<usize>,
+    /// Preallocate per-arena caches for long-lived contexts.
+    pub(crate) preallocate_arena_caches: bool,
 }
 
 impl<'a> CheckerContext<'a> {
@@ -142,6 +144,7 @@ impl<'a> CheckerContext<'a> {
             cache_order,
             inherit_has_lib,
             symbol_cache_capacity,
+            preallocate_arena_caches,
         } = parts;
 
         // Note: for `PRE_RESOLVED`, `apply_strict_defaults()` is intentionally
@@ -177,6 +180,7 @@ impl<'a> CheckerContext<'a> {
             compiler_options,
             capabilities,
             symbol_cache_capacity,
+            preallocate_arena_caches,
         );
 
         let warm = match def_store {
@@ -233,6 +237,7 @@ impl<'a> CheckerContext<'a> {
         compiler_options: CheckerOptions,
         capabilities: crate::query_boundaries::capabilities::EnvironmentCapabilities,
         symbol_cache_capacity: usize,
+        preallocate_arena_caches: bool,
     ) -> Self {
         let flow_graph = Some(FlowGraph::new(&binder.flow_nodes));
 
@@ -283,7 +288,11 @@ impl<'a> CheckerContext<'a> {
             cross_file_type_params_cache: None,
             skip_lib_type_resolution: false,
             lib_heritage_in_progress: crate::context::CowCache::default(),
-            node_types: crate::context::NodeTypeCache::with_capacity(arena.nodes.len()),
+            node_types: crate::context::NodeTypeCache::with_capacity(if preallocate_arena_caches {
+                arena.nodes.len()
+            } else {
+                0
+            }),
             request_node_types: crate::context::CowCache::default(),
             object_literal_tracking: crate::context::ObjectLiteralTracking::default(),
             request_cache_counters: crate::context::RequestCacheCounters::default(),
@@ -298,7 +307,13 @@ impl<'a> CheckerContext<'a> {
             jsdoc_generic_typedef_resolving: RefCell::new(crate::context::CowCache::default()),
             flow_shared: crate::context::FlowSharedCaches::new(),
             narrowable_identifier_cache: RefCell::new(
-                crate::context::NarrowableIdentifierCache::with_capacity(arena.nodes.len()),
+                crate::context::NarrowableIdentifierCache::with_capacity(
+                    if preallocate_arena_caches {
+                        arena.nodes.len()
+                    } else {
+                        0
+                    },
+                ),
             ),
             symbol_flow_confirmed: RefCell::new(crate::context::CowCache::default()),
             daa_error_nodes: crate::context::CowCache::default(),
@@ -543,6 +558,7 @@ impl<'a> CheckerContext<'a> {
                 cache_order: CacheRestoreOrder::BeforeWarm,
                 inherit_has_lib: false,
                 symbol_cache_capacity: None,
+                preallocate_arena_caches: true,
             },
         )
     }
@@ -580,6 +596,7 @@ impl<'a> CheckerContext<'a> {
                 cache_order: CacheRestoreOrder::BeforeWarm,
                 inherit_has_lib: false,
                 symbol_cache_capacity: None,
+                preallocate_arena_caches: true,
             },
         )
     }
@@ -608,6 +625,7 @@ impl<'a> CheckerContext<'a> {
                 cache_order: CacheRestoreOrder::BeforeWarm,
                 inherit_has_lib: false,
                 symbol_cache_capacity: None,
+                preallocate_arena_caches: true,
             },
         )
     }
@@ -648,6 +666,7 @@ impl<'a> CheckerContext<'a> {
                 cache_order: CacheRestoreOrder::BeforeWarm,
                 inherit_has_lib: false,
                 symbol_cache_capacity: None,
+                preallocate_arena_caches: true,
             },
         )
     }
@@ -703,6 +722,7 @@ impl<'a> CheckerContext<'a> {
                 cache_order: CacheRestoreOrder::BeforeWarm,
                 inherit_has_lib: false,
                 symbol_cache_capacity: None,
+                preallocate_arena_caches: true,
             },
         )
     }
@@ -744,6 +764,7 @@ impl<'a> CheckerContext<'a> {
                 cache_order: CacheRestoreOrder::BeforeWarm,
                 inherit_has_lib: false,
                 symbol_cache_capacity: None,
+                preallocate_arena_caches: true,
             },
         )
     }
@@ -773,6 +794,7 @@ impl<'a> CheckerContext<'a> {
                 cache_order: CacheRestoreOrder::BeforeWarm,
                 inherit_has_lib: false,
                 symbol_cache_capacity: None,
+                preallocate_arena_caches: true,
             },
         )
     }
@@ -804,6 +826,7 @@ impl<'a> CheckerContext<'a> {
                 cache_order: CacheRestoreOrder::AfterWarm,
                 inherit_has_lib: false,
                 symbol_cache_capacity: None,
+                preallocate_arena_caches: true,
             },
         )
     }
@@ -850,6 +873,7 @@ impl<'a> CheckerContext<'a> {
                 // below; starting at zero avoids binder-sized preallocation
                 // per child.
                 symbol_cache_capacity: Some(0),
+                preallocate_arena_caches: false,
             },
         );
 
