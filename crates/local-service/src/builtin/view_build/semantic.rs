@@ -4764,7 +4764,22 @@ pub(in crate::builtin) fn native_evidence_lookup_budget_control(
             .ok_or_else(|| BuiltinModelError("fixture evidence absent".into()))?;
     }
     if exact != scratch { return Err(BuiltinModelError("lookup allocation charge changed".into())); }
-    let mut short = scratch.checked_add(charge - 1).ok_or_else(|| BuiltinModelError("fixture lookup budget overflow".into()))?;
+    // The final row's retained allocation is charged after its scratch is
+    // released. The peak is scratch plus the preceding rows' retained bytes,
+    // rather than scratch plus all rows' retained bytes.
+    let (last_path, last_source) = items.last().ok_or_else(|| BuiltinModelError("fixture has no lookup rows".into()))?;
+    let mut last_budget = usize::MAX;
+    lookup_native_evidence(relation, package, profile, last_path, *last_source, &mut last_budget)?
+        .ok_or_else(|| BuiltinModelError("fixture evidence absent".into()))?;
+    let last_charge = usize::MAX - last_budget;
+    let before_last = charge.checked_sub(last_charge).ok_or_else(|| BuiltinModelError("fixture lookup charge changed".into()))?;
+    if before_last == 0 { return Err(BuiltinModelError("fixture needs multiple retained rows".into())); }
+    let mut peak = scratch.checked_add(before_last).ok_or_else(|| BuiltinModelError("fixture lookup budget overflow".into()))?;
+    for (path, source) in items {
+        lookup_native_evidence(relation, package, profile, path, *source, &mut peak)?
+            .ok_or_else(|| BuiltinModelError("fixture evidence absent".into()))?;
+    }
+    let mut short = scratch.checked_add(before_last - 1).ok_or_else(|| BuiltinModelError("fixture lookup budget overflow".into()))?;
     let mut refused = false;
     for (path, source) in items {
         match lookup_native_evidence(relation, package, profile, path, *source, &mut short) {
