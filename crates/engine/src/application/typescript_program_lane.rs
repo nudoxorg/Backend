@@ -229,9 +229,16 @@ pub(super) fn capture_headers(
     {
         return Ok(None);
     }
-    let mut rows = backend_frontend_typescript::native_project::function_headers_from_arena(
+    let mut rows = match backend_frontend_typescript::native_project::function_headers_from_arena(
         arena, text, checkpoint,
-    )?;
+    ) {
+        Ok(rows) => rows,
+        Err(error) if matches!(error.as_str(), "native TSZ header limit exceeded" | "native TSZ export limit exceeded" | "native TSZ header source limit exceeded") => {
+            checkpoint.checkpoint(0).map_err(|e| format!("header capture stopped: {e:?}"))?;
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
     backend_frontend_typescript::native_project::index_function_headers_by_end(&mut rows, checkpoint)?;
     let session = super::DocumentationSession::new(&image);
     let mut slots = BTreeMap::new();
@@ -261,7 +268,8 @@ pub(super) fn capture_headers(
             continue;
         };
         if slots.len() >= 16384 {
-            return Err("native header entity limit exceeded".into());
+            checkpoint.checkpoint(0).map_err(|e| format!("header capture stopped: {e:?}"))?;
+            return Ok(None);
         }
         slots
             .entry((span.start(), span.end(), name))
