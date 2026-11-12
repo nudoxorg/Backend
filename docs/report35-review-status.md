@@ -19,12 +19,32 @@ native replay, signatures, shutdown, SQL admission and verification changes.
 The table records historical snapshots; its test results apply to those exact
 revisions rather than the current combined candidate.
 
-Report 36 cancellation preservation, TypeScript async call references and GBA
-coverage are under active implementation and verification. The pinned public GBA
+Report 36 cancellation preservation, TypeScript async call references and Angular application
+coverage are under active implementation and verification. The pinned public application
 source allows direct coverage checks. C# selected publication remains guarded.
 Combined CLI/MCP/worker/cold-reopen acceptance and exact-source CI checks remain
 required before closure. All five Report 35 reports and the remaining Report 36
 issues stay open.
+
+## Current follow-up evidence
+
+Native TypeScript parser and producer controls separately pass for exact async
+call coordinates. Projection and public reference acceptance remain pending.
+Named default-export headers and parser-cache format compatibility are implemented;
+their final combined owner/public checks remain open.
+
+The partial-coverage receipt now includes explicit compiler file counts and a
+per-file outcome route. Its typed JSON, text and Markdown component regression
+passes. The navigation/document changes passed a production compiler check and
+three presentation controls on their recorded source revision; certified alias
+wire and combined public acceptance remain required.
+
+Cancellation transaction isolation and selected C# publication are unfinished.
+Their experimental source stays outside this combined candidate until coherent
+integration; the existing publication guards remain. Source-owned CI preflight
+still identifies 30 existing external-prerequisite tests without completed
+execution/ownership closure. Private remote CI status is unverified. This review
+update does not close feedback reports or certify a release.
 
 ## Historical published changes
 
