@@ -1,6 +1,9 @@
 //! Canonical metadata linking storage-neutral semantic segment identities to
 //! the physical objects admitted in one compiler publication closure.
 
+#[path = "borrowed_versioned.rs"]
+pub(super) mod borrowed_versioned;
+
 use backend_semantic::ir::{
     GenerationId, SemanticManifestError, SemanticManifestRoot, SemanticPlaneCatalog,
     SemanticPlaneCatalogEntry, SemanticPlaneCatalogRoot, SemanticPlaneImageKey,
@@ -1037,6 +1040,33 @@ mod tests {
             ),
         ];
         (manifest_bytes, payloads)
+    }
+
+    #[test]
+    fn borrowed_versioned_metadata_matches_owned_and_rejects_corruption() {
+        let (manifest_bytes, payloads) = manifest_and_payloads();
+        let source = payloads.iter().map(|(id, bytes)| (*id, bytes.as_slice())).collect::<Vec<_>>();
+        let publication = VersionedPlanePublication::from_payloads(&manifest_bytes, source).unwrap();
+        let bytes = publication.metadata().canonical_bytes();
+        let mut bitmap = [0u8; 64];
+        let mut view = None;
+        let peak = allocation_counter::measure(|| {
+            view = Some(borrowed_versioned::BorrowedVersionedMetadata::parse(&bytes, &mut bitmap, &mut |_| Ok::<(), ()>(())).unwrap());
+        });
+        assert_eq!(peak.bytes_max, 0);
+        let view = view.unwrap();
+        assert_eq!(view.catalog_root(), publication.metadata().catalog_root());
+        assert_eq!(view.artifact_count(), 1);
+        assert_eq!(view.segment_count(), publication.metadata().segment_count());
+        let mut count = 0;
+        view.visit_physical(&mut |_| Ok::<(), ()>(()), &mut |_| { count += 1; Ok(()) }).unwrap();
+        assert_eq!(count, 1 + publication.metadata().segment_count());
+        assert!(borrowed_versioned::BorrowedVersionedMetadata::parse(&bytes[..bytes.len()-1], &mut bitmap, &mut |_| Ok::<(), ()>(())).is_err());
+        let mut bad = bytes.clone(); bad[10] ^= 1;
+        assert!(borrowed_versioned::BorrowedVersionedMetadata::parse(&bad, &mut bitmap, &mut |_| Ok::<(), ()>(())).is_err());
+        let mut calls = 0;
+        let stopped = borrowed_versioned::BorrowedVersionedMetadata::parse(&bytes, &mut bitmap, &mut |_| {calls += 1; if calls == 2 { Err(()) } else { Ok(()) }});
+        assert!(matches!(stopped, Err(borrowed_versioned::BorrowedVersionedError::Stopped(()))));
     }
 
     #[test]

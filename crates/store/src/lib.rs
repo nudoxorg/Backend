@@ -99,8 +99,8 @@ pub use durable::{
     RelationNodeChild, RelationNodeRead, RelationNodeWriteStats, SelectedHead,
     StorePublicationAuthority, WeakPublicationAuthority, StoredClosureReceipt, StreamingClosureBudget, WorkspaceHistoryError,
     StreamingClosureBuilder, TransactionId, TreeReadStats, TreeWriteStats, VerifiedClosureMember,
-    BoundedObjectReader, VerifiedObjectEnvelope, VerifiedObjectView, WorkspaceFileDurable, WorkspaceFilePrepared,
-    untrusted_object_id_for_encoded_value,
+    BoundedObjectReader, IdentityHashError, VerifiedObjectEnvelope, VerifiedObjectView, WorkspaceFileDurable, WorkspaceFilePrepared,
+    untrusted_object_id_for_encoded_value, untrusted_object_id_for_encoded_value_checkpointed, untrusted_object_id_for_encoded_parts_checkpointed,
     WorkspaceFilePublished, admit_object_envelope, write_object_envelope,
     write_streamed_object_envelope,
 };

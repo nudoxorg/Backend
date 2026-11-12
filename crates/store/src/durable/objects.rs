@@ -497,6 +497,46 @@ pub fn untrusted_object_id_for_encoded_value(schema: SchemaIdentity, bytes: &[u8
     Ok(UntrustedObjectId::from_bytes(id))
 }
 
+/// Failure while hashing an untrusted value or caller-directed work refusal.
+#[derive(Debug)]
+pub enum IdentityHashError<E> { Bounds, Stopped(E) }
+
+/// Computes a value-derived untrusted object identity in fixed-size chunks.
+/// This validates no value grammar and conveys no closure membership.
+pub fn untrusted_object_id_for_encoded_value_checkpointed<E>(
+    schema: SchemaIdentity, bytes: &[u8], checkpoint: &mut impl FnMut(usize) -> Result<(), E>,
+) -> Result<UntrustedObjectId, IdentityHashError<E>> {
+    untrusted_object_id_for_encoded_parts_checkpointed(schema, &[bytes], checkpoint)
+}
+
+/// Computes the same untrusted identity from ordered wire parts without
+/// concatenating them. Part boundaries have no identity significance.
+pub fn untrusted_object_id_for_encoded_parts_checkpointed<E>(
+    schema: SchemaIdentity, parts: &[&[u8]], checkpoint: &mut impl FnMut(usize) -> Result<(), E>,
+) -> Result<UntrustedObjectId, IdentityHashError<E>> {
+    let size = parts.iter().try_fold(0usize, |sum, p| sum.checked_add(p.len())).ok_or(IdentityHashError::Bounds)?;
+    let len = u64::try_from(size).map_err(|_| IdentityHashError::Bounds)?;
+    let mut key = backend_version::ObjectKeyHasher::new(schema, size).map_err(|_| IdentityHashError::Bounds)?;
+    let mut version = backend_version::ObjectVersionHasher::new(schema, size).map_err(|_| IdentityHashError::Bounds)?;
+    for part in parts { for chunk in part.chunks(64 * 1024) {
+        checkpoint(chunk.len().checked_mul(2).ok_or(IdentityHashError::Bounds)?).map_err(IdentityHashError::Stopped)?;
+        key.update(chunk).map_err(|_| IdentityHashError::Bounds)?;
+        version.update(chunk).map_err(|_| IdentityHashError::Bounds)?;
+    }}
+    let key = key.finish().map_err(|_| IdentityHashError::Bounds)?;
+    let version = version.finish().map_err(|_| IdentityHashError::Bounds)?;
+    let preimage = super::artifact::OBJECT_IDENTITY_FIXED_BYTES.checked_add(len).ok_or(IdentityHashError::Bounds)?;
+    let mut hash = blake3::Hasher::new();
+    hash.update(super::artifact::OBJECT_IDENTITY_DOMAIN); hash.update(&preimage.to_le_bytes());
+    hash.update(&[schema.domain()]); hash.update(&schema.ty().to_le_bytes()); hash.update(&[schema.version()]);
+    hash.update(&key); hash.update(&version); hash.update(&len.to_le_bytes());
+    for part in parts { for chunk in part.chunks(64 * 1024) {
+        checkpoint(chunk.len()).map_err(IdentityHashError::Stopped)?;
+        hash.update(chunk);
+    }}
+    Ok(UntrustedObjectId::from_bytes(*hash.finalize().as_bytes()))
+}
+
 impl FileStore {
     /// Reads and authenticates an immutable object, lending its payload only
     /// for the duration of `visit`.
@@ -1050,6 +1090,22 @@ mod tests {
         assert!(!visited.get());
         drop(pin);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn chunked_untrusted_identity_matches_owned_and_cancels() {
+        let object = bytes_object(vec![9; 150_000]);
+        let mut checkpoints = 0;
+        let actual = untrusted_object_id_for_encoded_value_checkpointed(object.schema(), object.bytes(), &mut |_| { checkpoints += 1; Ok::<(), ()>(()) }).unwrap();
+        assert_eq!(actual.as_bytes(), object.id().as_bytes());
+        let bytes = object.bytes();
+        let parts = [&bytes[..1], &bytes[1..70_000], &bytes[70_000..]];
+        let split = untrusted_object_id_for_encoded_parts_checkpointed(object.schema(), &parts, &mut |_| Ok::<(), ()>(())).unwrap();
+        assert_eq!(split.as_bytes(), object.id().as_bytes());
+        assert!(checkpoints >= 6);
+        let mut calls = 0;
+        let result = untrusted_object_id_for_encoded_value_checkpointed(object.schema(), object.bytes(), &mut |_| { calls += 1; if calls == 2 { Err(()) } else { Ok(()) } });
+        assert!(matches!(result, Err(IdentityHashError::Stopped(()))));
     }
 
     #[test]

@@ -65,7 +65,7 @@ pub use nodes::{
     TreeReadStats, TreeWriteStats,
 };
 pub use object_batch::{MAX_OBJECT_BATCH_OBJECTS, ObjectBatchWriteReceipt};
-pub use objects::{BoundedObjectReader, ObjectWriteReceipt, VerifiedObjectView, untrusted_object_id_for_encoded_value};
+pub use objects::{BoundedObjectReader, IdentityHashError, ObjectWriteReceipt, VerifiedObjectView, untrusted_object_id_for_encoded_value, untrusted_object_id_for_encoded_value_checkpointed, untrusted_object_id_for_encoded_parts_checkpointed};
 pub use publication::{
     CheckedWorkspacePublication, FileDurable, FilePrepared, FilePublished, WorkspaceFileDurable,
     WorkspaceFilePrepared, WorkspaceFilePublished,
