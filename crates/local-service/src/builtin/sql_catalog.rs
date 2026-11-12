@@ -652,6 +652,28 @@ fn selection_digest(
     hash.update(&scratch[..len]);
     Ok(*hash.finalize().as_bytes())
 }
+struct HostFactDigest {
+    hash: blake3::Hasher,
+    count: u32,
+}
+impl HostFactDigest {
+    fn new() -> Self {
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"nudox.sql.sqlite.host-facts.v1\0");
+        Self { hash, count: 0 }
+    }
+    fn push(&mut self, key: &[u8; 32], json: &[u8]) -> Result<(), &'static str> {
+        self.count = self.count.checked_add(1).ok_or("SQL fact count overflow")?;
+        self.hash.update(key);
+        self.hash.update(&(json.len() as u64).to_be_bytes());
+        self.hash.update(json);
+        Ok(())
+    }
+    fn finish(mut self) -> [u8; 32] {
+        self.hash.update(&self.count.to_be_bytes());
+        *self.hash.finalize().as_bytes()
+    }
+}
 struct FactDigestRow {
     project: usize,
     host: usize,
@@ -1260,8 +1282,7 @@ pub(super) fn load_projects_bounded<'a>(
                 return Err("SQL read cancelled".into());
             }
             let host = sql.hosts.get_mut(h).ok_or("missing SQL host slot")?;
-            let mut digest = blake3::Hasher::new();
-            digest.update(b"nudox.sql.sqlite.host-facts.v1\0");
+            let mut digest = HostFactDigest::new();
             for ordinal in 0..host.expected_facts {
                 if cancelled() {
                     return Err("SQL read cancelled".into());
@@ -1273,9 +1294,7 @@ pub(super) fn load_projects_bounded<'a>(
                 if (entry.project, entry.host, entry.ordinal) != (i, h, ordinal) {
                     return Err("SQL fact ordinal sequence mismatch".into());
                 }
-                digest.update(&entry.key);
-                digest.update(&(entry.json.len() as u64).to_be_bytes());
-                digest.update(&entry.json);
+                digest.push(&entry.key, &entry.json)?;
                 let refund = entry
                     .json
                     .len()
@@ -1285,8 +1304,7 @@ pub(super) fn load_projects_bounded<'a>(
                 remaining = remaining.checked_add(refund).ok_or("SQL budget overflow")?;
                 digest_index += 1;
             }
-            digest.update(&host.expected_facts.to_be_bytes());
-            if *digest.finalize().as_bytes() != host.fact_digest {
+            if digest.finish() != host.fact_digest {
                 return Err("SQL host fact digest mismatch".into());
             }
             if host.seen_facts != host.expected_facts {
@@ -1550,14 +1568,10 @@ mod bounded_catalog_tests {
         };
         let key = [5; 32];
         let len = encode_sql_json(&row, &mut scratch).unwrap();
-        let mut hash = blake3::Hasher::new();
-        hash.update(b"nudox.sql.sqlite.host-facts.v1\0");
-        hash.update(&key);
-        hash.update(&(len as u64).to_be_bytes());
-        hash.update(&scratch[..len]);
-        hash.update(&1u32.to_be_bytes());
+        let mut hash = HostFactDigest::new();
+        hash.push(&key, &scratch[..len]).unwrap();
         assert_eq!(
-            *hash.finalize().as_bytes(),
+            hash.finish(),
             backend_engine::builtin::sql_host_fact_digest(&[(key, &row)]).unwrap()
         );
     }
