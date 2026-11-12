@@ -117,7 +117,8 @@ fn admit_inner(
     let mut plan = Plan { claim: false, program: None, headers: None, lines: None, flags, scratch_credit: 0 };
     visit_selected_publication_wire(store, selected, budget, stopped, 128 * 1024 * 1024, 4096, |item, budget| {
         match item {
-            SelectedPublicationWire::Metadata { manifest_bytes, binding_bytes, declared_fragment_count } => {
+            SelectedPublicationWire::Metadata { manifest_bytes, binding_bytes, declared_fragment_count, closure_member_count } => {
+                if closure_member_count > 8192 { return Err("native replay metadata closure exceeds admission limit".into()); }
                 let facts = backend_engine::publication::manifest::validate_manifest_facts_checkpointed(manifest_bytes, |n| charge_native_header_work(budget, stopped, n)).map_err(|e| format!("native replay manifest: {e:?}"))?;
                 if facts.fragment_count != declared_fragment_count { return Err("native replay manifest count differs".into()); }
                 step(budget, stopped, 1)?;
@@ -205,7 +206,8 @@ fn admit_inner(
     let mut seen_program = false;
     visit_selected_publication_wire(store, selected, budget, stopped, 128 * 1024 * 1024, 4096, |item, budget| {
         match item {
-            SelectedPublicationWire::Metadata { manifest_bytes, binding_bytes, declared_fragment_count } => {
+            SelectedPublicationWire::Metadata { manifest_bytes, binding_bytes, declared_fragment_count, closure_member_count } => {
+                if closure_member_count > 8192 { return Err("native replay metadata closure exceeds admission limit".into()); }
                 let facts = backend_engine::publication::manifest::validate_manifest_facts_checkpointed(manifest_bytes, |n| charge_native_header_work(budget, stopped, n)).map_err(|e| format!("native replay manifest: {e:?}"))?;
                 let binding = backend_engine::publication::binding::CompilationBindingView::validate(binding_bytes).map_err(|e| format!("native replay binding: {e}"))?;
                 let observed = SemanticPublicationClaim::admit(facts, *binding).map_err(str::to_owned)?;
