@@ -38,7 +38,7 @@ fn swap_index(index: &mut [u8], a: usize, b: usize) {
     for offset in 0..4 { index.swap(a * 4 + offset, b * 4 + offset); }
 }
 fn build_index(
-    capture: &BuiltinCaptureChange, rows: &[&NativeSourceEvidence], project: &[u8; 32], duplicate_error: &'static str,
+    profile: backend_semantic::vocabulary::LanguageProfile, rows: &[&NativeSourceEvidence], project: &[u8; 32], duplicate_error: &'static str,
     budget: &mut SelectedNativeHeaderBudget, stopped: &dyn Fn() -> bool,
 ) -> Result<(Box<[u8]>, usize)> {
     let bytes = rows.len().checked_mul(4).ok_or("native replay index overflow")?;
@@ -46,7 +46,7 @@ fn build_index(
     let mut count = 0usize;
     for (ordinal, row) in rows.iter().enumerate() {
         step(budget, stopped, 1)?;
-        if applies(capture, row, project) {
+        if &row.project == project && row.profile == profile {
             let value = u32::try_from(ordinal).map_err(|_| "native replay row overflow")?;
             index[count * 4..count * 4 + 4].copy_from_slice(&value.to_le_bytes());
             count += 1;
@@ -138,10 +138,6 @@ struct Plan {
     scratch_credit: usize,
 }
 
-fn applies(capture: &BuiltinCaptureChange, row: &NativeSourceEvidence, project: &[u8; 32]) -> bool {
-    &row.project == project && row.profile == capture.key.profile()
-}
-
 /// Perform both passes entirely before returning; no staged result mutates the workspace.
 pub(super) fn admit(
     store: &FileStore, selected: &SelectedGeneration, capture: &BuiltinCaptureChange,
@@ -159,8 +155,8 @@ fn admit_inner(
     if selected.input_digest() != capture.capture.input_digest() { return Err("native replay selected input differs".into()); }
     let project = capture.key.package_key().to_bytes();
     let mut flags = allocate(rows.len(), budget, stopped)?;
-    let (source_index, count) = build_index(capture, rows, &project, "duplicate native replay source path", budget, stopped)?;
-    let (retired_index, retired_count) = build_index(capture, retirements, &project, "duplicate native replay retirement path", budget, stopped)?;
+    let (source_index, count) = build_index(capture.key.profile(), rows, &project, "duplicate native replay source path", budget, stopped)?;
+    let (retired_index, retired_count) = build_index(capture.key.profile(), retirements, &project, "duplicate native replay retirement path", budget, stopped)?;
     if count == 0 { return Err("native replay retirement requires a nonempty selected Program".into()); }
     for i in 0..count {
         let ordinal = index_at(&source_index, i);
@@ -337,4 +333,44 @@ fn admit_inner(
     }
     step(budget, stopped, 1)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use backend_engine::builtin::NativeSourceEvidenceKind;
+    use backend_semantic::vocabulary::{LanguageProfile, TypeScriptSource};
+
+    #[test]
+    fn evidence_index_bounds_memory_work_duplicates_and_stop() {
+        let project = [7; 32];
+        let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
+        let rows: Vec<_> = (0..4096).rev().map(|i| NativeSourceEvidence {
+            project, profile, path: format!("src/{i:04}.ts"), input_digest: [1; 32],
+            source_digest: [2; 32], byte_length: 1, kind: NativeSourceEvidenceKind::Image,
+            line_starts: None, headers: None,
+        }).collect();
+        let refs: Vec<_> = rows.iter().collect();
+        let bytes = refs.len() * 4;
+        let mut budget = SelectedNativeHeaderBudget::new(bytes, 2_000_000);
+        let (index, count) = build_index(profile, &refs, &project, "duplicate", &mut budget, &|| false).expect("bounded index");
+        assert_eq!(count, refs.len());
+        assert_eq!(budget.remaining_memory(), 0);
+        for value in [0, 1, 1024, 4095] {
+            let path = format!("src/{value:04}.ts");
+            let found = find_index(&refs, &index, count, path.as_bytes(), &budget, &|| false).expect("lookup").expect("present");
+            assert_eq!(refs[found].path, path);
+        }
+        assert!(find_index(&refs, &index, count, b"src/9999.ts", &budget, &|| false).unwrap().is_none());
+        let mut short = SelectedNativeHeaderBudget::new(bytes - 1, 2_000_000);
+        assert!(build_index(profile, &refs, &project, "duplicate", &mut short, &|| false).is_err());
+        let calls = Cell::new(0usize);
+        let stop = || { let next = calls.get() + 1; calls.set(next); next >= 10 };
+        let mut cancelled = SelectedNativeHeaderBudget::new(bytes, 2_000_000);
+        assert!(build_index(profile, &refs, &project, "duplicate", &mut cancelled, &stop).is_err());
+        assert_eq!(calls.get(), 10);
+        let duplicate = [&rows[0], &rows[0]];
+        let mut budget = SelectedNativeHeaderBudget::new(8, 100);
+        assert_eq!(build_index(profile, &duplicate, &project, "duplicate", &mut budget, &|| false).err().as_deref(), Some("duplicate"));
+    }
 }
