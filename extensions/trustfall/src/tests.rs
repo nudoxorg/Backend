@@ -1147,7 +1147,6 @@ fn sql_native_evidence_binds_projection_and_host_basis() {
     let package = backend_library::package_key("sql-project");
     let project = backend_library::RowId::Package(package).stable_key();
     let coordinate = "sql-project::db/schema.sql::books";
-    let preimage = format!("{coordinate}\0sql:4");
     let package_fact = SemanticQueryFact::new(
         SemanticQueryEvidence::Package(PackageScopeEvidence::new(package)),
         SemanticQueryPresentation {
@@ -1163,17 +1162,13 @@ fn sql_native_evidence_binds_projection_and_host_basis() {
             related: Box::new([]),
         },
     );
-    let fact = |producer, shown: &str| {
+    let fact = |basis: [[u8; 32]; 6], ordinal: u32, shown: &str| {
+        let preimage = format!("{coordinate}\0sql:{ordinal}");
         SemanticQueryFact::new(
             SemanticQueryEvidence::SqlNative(SqlNativeQueryEvidence::new(
                 package,
-                [1; 32],
-                [2; 32],
-                [3; 32],
-                producer,
-                [5; 32],
-                [6; 32],
-                4,
+                basis[0], basis[1], basis[2], basis[3], basis[4], basis[5],
+                ordinal,
                 preimage.clone(),
             )),
             SemanticQueryPresentation {
@@ -1191,17 +1186,24 @@ fn sql_native_evidence_binds_projection_and_host_basis() {
             },
         )
     };
+    let basis = [[1; 32], [2; 32], [3; 32], [4; 32], [5; 32], [6; 32]];
     let first = SemanticQueryCorpus::admit(
         workspace(),
-        vec![package_fact.clone(), fact([4; 32], coordinate)],
+        vec![package_fact.clone(), fact(basis, 4, coordinate)],
     )
     .expect("SQL evidence admitted");
+    for index in 0..basis.len() {
+        let mut changed = basis;
+        changed[index] = [7; 32];
+        let other = SemanticQueryCorpus::admit(
+            workspace(), vec![package_fact.clone(), fact(changed, 4, coordinate)],
+        ).expect("changed host basis admitted");
+        assert_ne!(first.evidence_digest(), other.evidence_digest(), "basis field {index}");
+    }
     let other = SemanticQueryCorpus::admit(
-        workspace(),
-        vec![package_fact.clone(), fact([7; 32], coordinate)],
-    )
-    .expect("different producer admitted");
+        workspace(), vec![package_fact.clone(), fact(basis, 5, coordinate)],
+    ).expect("different ordinal admitted");
     assert_ne!(first.evidence_digest(), other.evidence_digest());
-    let forged = fact([4; 32], "forged-coordinate");
+    let forged = fact(basis, 4, "forged-coordinate");
     assert!(SemanticQueryCorpus::admit(workspace(), vec![package_fact, forged]).is_err());
 }
