@@ -135,6 +135,13 @@ fn bounded_manifest_ref(dirs: &super::super::artifact_fs::BoundedReadDirectories
 impl FileStore {
     /// Maximum encoded node bytes in one bounded manifest work token.
     pub const BOUNDED_MANIFEST_WORK_NODE_BYTES: usize = backend_version::DEFAULT_CUT_POLICY.max_encoded_bytes();
+    /// Maximum physical object bytes, including its fixed envelope framing.
+    pub const BOUNDED_MANIFEST_WORK_OBJECT_BYTES: usize = Self::BOUNDED_MANIFEST_WORK_NODE_BYTES + super::super::OBJECT_MAGIC.len() + 32 + 1 + 2 + 1 + 32 + 32 + 8;
+    /// Fixed descriptor and reference buffers are each bounded to this size.
+    pub const BOUNDED_MANIFEST_WORK_FIXED_FRAME_BYTES: usize = 128;
+    /// Fixed-size relation-key, descriptor, and reference hashes are included
+    /// alongside the full-node hashes, with at most four per work token.
+    pub const BOUNDED_MANIFEST_WORK_FIXED_HASHES: usize = 4;
     /// Physical hash, preflight root hash, and two hashes in each of two
     /// typed admissions. Each hashes at most `BOUNDED_MANIFEST_WORK_NODE_BYTES`.
     pub const BOUNDED_MANIFEST_WORK_HASH_PASSES: usize = 6;

@@ -569,7 +569,8 @@ impl FileStore {
     /// authenticated data; header fields passed to preflight are not authority.
     /// The caller must retain the reservation until this method returns and
     /// separately account for any data retained by `visit`.
-    pub fn with_verified_nonrelation_object_bounded<T, O, P, F>(
+    #[cfg(test)]
+    fn with_verified_nonrelation_object_bounded<T, O, P, F>(
         &self, pin: &GcPinGuard, claim: UntrustedObjectId,
         accepted_schemas: &[SchemaIdentity], expected_key: Option<Hash>, max_payload: usize,
         budget: &mut usize, before_open: O, before_payload: P, visit: F,
