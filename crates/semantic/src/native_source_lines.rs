@@ -57,6 +57,8 @@ pub struct NativeSourceLineAggregateView<'a> { bytes: &'a [u8], count: usize }
 #[derive(Clone, Copy)]
 pub struct NativeSourceLineFileView<'a> { pub path: &'a str, pub source: SourceIdentity, offsets: &'a [u8] }
 pub struct NativeSourceLineFileIter<'a> { reader: Reader<'a>, remaining: usize }
+/// File offsets tied to the validated aggregate that created them.
+pub struct NativeSourceLineIndex<'a, 'view, 'slots> { view: &'view NativeSourceLineAggregateView<'a>, slots: &'slots [u32] }
 
 impl<'a> NativeSourceLineAggregateView<'a> {
     /// Validates complete framing, sorted paths and all line positions without
@@ -95,33 +97,35 @@ impl<'a> NativeSourceLineAggregateView<'a> {
     pub const fn is_empty(&self)->bool{self.count==0}
     pub fn files(&self)->NativeSourceLineFileIter<'a>{NativeSourceLineFileIter{reader:Reader{bytes:self.bytes,at:8},remaining:self.count}}
     /// Fills exact caller-owned slots with canonical file offsets in path order.
-    pub fn index_files<E>(&self, slots: &mut [u32], checkpoint: &mut impl FnMut(usize)->Result<(),E>) -> Result<(),BorrowedSourceLinesError<E>> {
+    pub fn index_files<'view, 'slots, E>(&'view self, slots: &'slots mut [u32], checkpoint: &mut impl FnMut(usize)->Result<(),E>) -> Result<NativeSourceLineIndex<'a, 'view, 'slots>,BorrowedSourceLinesError<E>> {
         if slots.len()!=self.count {return Err(BorrowedSourceLinesError::Invalid);}
         let mut files=self.files();
-        for slot in slots {
+        for slot in slots.iter_mut() {
             checkpoint(4096+42).map_err(BorrowedSourceLinesError::Stopped)?;
             *slot=u32::try_from(files.reader.at).map_err(|_|BorrowedSourceLinesError::Invalid)?;
             files.next().ok_or(BorrowedSourceLinesError::Invalid)?;
         }
-        Ok(())
-    }
-    /// Binary-searches an index produced by `index_files` for this validated view.
-    pub fn find_file_indexed<E>(&self, slots:&[u32], path:&str, checkpoint:&mut impl FnMut(usize)->Result<(),E>) -> Result<Option<NativeSourceLineFileView<'a>>,BorrowedSourceLinesError<E>> {
-        if slots.len()!=self.count {return Err(BorrowedSourceLinesError::Invalid);}
-        let (mut low,mut high)=(0,slots.len());
-        while low<high {
-            checkpoint(4096+42).map_err(BorrowedSourceLinesError::Stopped)?;
-            let mid=low+(high-low)/2;
-            let mut iter=NativeSourceLineFileIter{reader:Reader{bytes:self.bytes,at:slots[mid] as usize},remaining:1};
-            let file=iter.next().ok_or(BorrowedSourceLinesError::Invalid)?;
-            match file.path.cmp(path) {std::cmp::Ordering::Less=>low=mid+1,std::cmp::Ordering::Greater=>high=mid,std::cmp::Ordering::Equal=>return Ok(Some(file))}
-        }
-        Ok(None)
+        Ok(NativeSourceLineIndex { view: self, slots })
     }
     /// Debit the maximum path/header work before each file decode/compare.
     pub fn find_file<E>(&self,path:&str,checkpoint:&mut impl FnMut(usize)->Result<(),E>)->Result<Option<NativeSourceLineFileView<'a>>,E>{
         let mut files=self.files();
         while files.remaining!=0 {checkpoint(4096+42)?; let Some(file)=files.next() else {break;}; if file.path==path{return Ok(Some(file));} if file.path>path{break;} }
+        Ok(None)
+    }
+}
+impl<'a> NativeSourceLineIndex<'a, '_, '_> {
+    /// Binary-searches the validated aggregate without rescanning preceding files.
+    pub fn find_file<E>(&self, path:&str, checkpoint:&mut impl FnMut(usize)->Result<(),E>) -> Result<Option<NativeSourceLineFileView<'a>>,BorrowedSourceLinesError<E>> {
+        let slots=self.slots;
+        let (mut low,mut high)=(0,slots.len());
+        while low<high {
+            checkpoint(4096+42).map_err(BorrowedSourceLinesError::Stopped)?;
+            let mid=low+(high-low)/2;
+            let mut iter=NativeSourceLineFileIter{reader:Reader{bytes:self.view.bytes,at:slots[mid] as usize},remaining:1};
+            let file=iter.next().ok_or(BorrowedSourceLinesError::Invalid)?;
+            match file.path.cmp(path) {std::cmp::Ordering::Less=>low=mid+1,std::cmp::Ordering::Greater=>high=mid,std::cmp::Ordering::Equal=>return Ok(Some(file))}
+        }
         Ok(None)
     }
 }
@@ -300,15 +304,16 @@ mod tests {
         let view = NativeSourceLineAggregateView::parse(&bytes, &mut |_| Ok::<(), ()>(())).unwrap();
         let mut index = vec![0; view.len()];
         let mut work = 0usize;
-        view.index_files(&mut index, &mut |_| { work += 1; Ok::<(), ()>(()) }).unwrap();
+        let indexed = view.index_files(&mut index, &mut |_| { work += 1; Ok::<(), ()>(()) }).unwrap();
         assert_eq!(work, 5000);
         work = 0;
         for i in 0..5000 {
             let path = format!("src/{i:05}.ts");
-            assert_eq!(view.find_file_indexed(&index, &path, &mut |_| { work += 1; Ok::<(), ()>(()) }).unwrap().unwrap().path, path);
+            assert_eq!(indexed.find_file(&path, &mut |_| { work += 1; Ok::<(), ()>(()) }).unwrap().unwrap().path, path);
         }
         assert!(work < 70_000);
-        assert!(matches!(view.find_file_indexed(&index, "src/04999.ts", &mut |_| Err::<(), _>(())), Err(BorrowedSourceLinesError::Stopped(()))));
+        assert!(matches!(indexed.find_file("src/04999.ts", &mut |_| Err::<(), _>(())), Err(BorrowedSourceLinesError::Stopped(()))));
+        drop(indexed);
         assert!(matches!(view.index_files(&mut index[..4999], &mut |_| Ok::<(), ()>(())), Err(BorrowedSourceLinesError::Invalid)));
     }
 
