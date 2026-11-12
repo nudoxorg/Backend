@@ -5711,6 +5711,15 @@ mod tests {
                 &workspace_store, std::slice::from_ref(&capture), &[&row], &[],
             ).is_err(), "mutated header extent must not match the selected compiler closure");
         }
+        let mut foreign_input = input;
+        foreign_input[0] ^= 1;
+        let mut foreign_capture = capture.clone();
+        foreign_capture.capture = backend_engine::builtin::SemanticSourceCapture::new(
+            None, [21; 32], foreign_input, 1, 2,
+        ).expect("foreign input capture");
+        assert!(admit_replayed_native_evidence(
+            &workspace_store, std::slice::from_ref(&foreign_capture), &[&current], &[],
+        ).is_err(), "a different compiler input cannot reuse the same image/header receipt");
         let mut wrong_source = current.clone();
         wrong_source.source_digest[0] ^= 1;
         assert!(admit_replayed_native_evidence(
