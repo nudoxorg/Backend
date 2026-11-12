@@ -775,6 +775,41 @@ mod tests {
     }
 
     #[test]
+    fn borrowed_project_set_rejects_conflicting_source_with_rehashed_node() {
+        let toolchain = ContentId::from_canonical_bytes(b"compiler");
+        let mut projects = independent_nodes();
+        projects[0].program = Some(shared_leaf(Some("src/app.ts"), b"same"));
+        projects[1].program = Some(shared_leaf(None, b"same"));
+        let graph = NativeProgramSources::from_project_set(toolchain, 0, projects.clone()).unwrap();
+        let old_leaf = projects[1].program.as_ref().unwrap().as_bytes();
+        let replacement = shared_leaf(None, b"different");
+        assert_eq!(old_leaf.len(), replacement.as_bytes().len());
+        let mut wire = graph.as_bytes().to_vec();
+        let offset = wire
+            .windows(old_leaf.len())
+            .position(|cell| cell == old_leaf)
+            .unwrap();
+        wire[offset..offset + old_leaf.len()].copy_from_slice(replacement.as_bytes());
+        projects[1].program = Some(replacement);
+        wire[offset - 36..offset - 4].copy_from_slice(&node_identity(toolchain, &projects[1]));
+        assert!(NativeProgramSources::decode(&wire).is_err());
+        let shape = BorrowedProgramGraph::scratch(&wire, |_| Ok::<_, ()>(())).unwrap();
+        let mut nodes = vec![0; shape.node_bytes()];
+        let mut rows = vec![0; shape.row_bytes()];
+        let mut paths = vec![0; shape.leaf_paths];
+        assert!(
+            BorrowedProgramGraph::decode(
+                &wire,
+                &mut nodes,
+                &mut rows,
+                &mut paths,
+                |_| Ok::<_, ()>(())
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn borrowed_graph_rejects_invalid_typed_config_even_with_matching_node_hash() {
         let toolchain = ContentId::from_canonical_bytes(b"compiler");
         let source_nodes = nodes();
