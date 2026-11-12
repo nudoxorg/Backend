@@ -1395,6 +1395,41 @@ mod bounded_catalog_tests {
     }
 
     #[test]
+    fn staged_fact_bytes_and_slots_stay_within_precharged_peak() {
+        const N: usize = 512;
+        const BOOKKEEPING: usize = 64;
+        let initial = 8 * 1024 * 1024;
+        let mut budget = initial;
+        let mut spent = 0;
+        let payload = [b'x'; 255];
+        let measured = allocation_counter::measure(|| {
+            let mut rows = Slots::new(N, &mut budget, BOOKKEEPING, &|| false).unwrap();
+            for ordinal in (0..N).rev() {
+                let charge = payload.len() + BOOKKEEPING;
+                budget = budget.checked_sub(charge).unwrap();
+                let json = Box::<[u8]>::from(payload.as_slice());
+                rows.put(
+                    N - 1 - ordinal,
+                    FactDigestRow {
+                        project: 0,
+                        host: 0,
+                        ordinal: ordinal as u32,
+                        key: [1; 32],
+                        json,
+                    },
+                )
+                .unwrap();
+            }
+            rows.sort_by(|a, b| a.ordinal.cmp(&b.ordinal), &|| false)
+                .unwrap();
+            assert!(rows.iter().map(|row| row.ordinal).eq(0..N as u32));
+            spent = initial - budget;
+            std::hint::black_box(rows);
+        });
+        assert!(measured.bytes_max <= spent as u64, "{measured:?} / {spent}");
+    }
+
+    #[test]
     fn chunked_sort_checks_completeness_duplicates_and_cancellation() {
         let mut budget = 8 * 1024 * 1024;
         let mut slots = Slots::new(1025, &mut budget, 64, &|| false).unwrap();
