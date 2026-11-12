@@ -50,11 +50,11 @@ fn native_ts_cross_file_calls_reach_reference_projection() -> Result<(), Box<dyn
     fs::create_dir_all(package.join("src"))?;
     let csv = "export function loadSectionsCsv(): string { return 'csv'; }\n";
     let scheduler = "import { loadSectionsCsv } from './csv';\nexport async function generateSchedule(): Promise<string> { return loadSectionsCsv(); }\n";
-    let route = "import { generateSchedule } from './scheduler';\nexport async function POST(): Promise<string> { return generateSchedule(); }\n";
+    let route = "import { generateSchedule } from '@/scheduler';\nexport async function POST(): Promise<string> { return generateSchedule(); }\n";
     for (path, text) in [("src/csv.ts", csv), ("src/scheduler.ts", scheduler), ("src/route.ts", route)] {
         fs::write(package.join(path), text)?;
     }
-    fs::write(package.join("tsconfig.json"), r#"{"compilerOptions":{"noLib":true,"types":[],"module":"ESNext","moduleResolution":"bundler"},"files":["src/csv.ts","src/scheduler.ts","src/route.ts"]}"#)?;
+    fs::write(package.join("tsconfig.json"), r#"{"compilerOptions":{"noLib":true,"types":[],"module":"ESNext","moduleResolution":"bundler","baseUrl":".","paths":{"@/*":["src/*"]}},"files":["src/csv.ts","src/scheduler.ts","src/route.ts"]}"#)?;
     let client = LocalCompilerHost::new(Environment(root.0.join("data")), LocalHostDiscovery::ExplicitOnly).open()?;
     let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
     let request = PackageCompileRequest::new(
