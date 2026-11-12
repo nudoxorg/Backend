@@ -302,7 +302,7 @@ mod tests {
         let mut bytes = vec![0; size];
         aggregate.encode_into(&mut bytes, &mut |_| Ok::<(), ()>(())).unwrap();
         let view = NativeSourceLineAggregateView::parse(&bytes, &mut |_| Ok::<(), ()>(())).unwrap();
-        let mut index = vec![0; view.len()];
+        let mut index = vec![u32::MAX; view.len()];
         let mut work = 0usize;
         let indexed = view.index_files(&mut index, &mut |_| { work += 1; Ok::<(), ()>(()) }).unwrap();
         assert_eq!(work, 5000);
