@@ -3766,12 +3766,6 @@ impl SemanticAuthority {
                     count += 1;
                 }
             }
-            order[..count].sort_unstable_by(|a, b| {
-                let left = staged.native_typescript_line_at(*a as usize).map(|f| f.path.as_str()).unwrap_or("");
-                let right = staged.native_typescript_line_at(*b as usize).map(|f| f.path.as_str()).unwrap_or("");
-                left.cmp(right)
-            });
-            let files = || order[..count].iter().filter_map(|ordinal| staged.native_typescript_line_at(*ordinal as usize));
             let deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
             let work = std::cell::Cell::new(128usize * 1024 * 1024);
             let check = || -> Result<(), backend_extension_turso::CompilerEnvelopeError> {
@@ -3779,6 +3773,15 @@ impl SemanticAuthority {
                 work.set(work.get().checked_sub(1).ok_or(backend_extension_turso::CompilerEnvelopeError::Stopped)?);
                 Ok(())
             };
+            let sort_stopped = std::cell::Cell::new(false);
+            order[..count].sort_unstable_by(|a, b| {
+                if check().is_err() { sort_stopped.set(true); return std::cmp::Ordering::Equal; }
+                let left = staged.native_typescript_line_at(*a as usize).map(|f| f.path.as_str()).unwrap_or("");
+                let right = staged.native_typescript_line_at(*b as usize).map(|f| f.path.as_str()).unwrap_or("");
+                left.cmp(right)
+            });
+            if sort_stopped.get() { return Err(BuiltinModelError("native line sorting stopped".into())); }
+            let files = || order[..count].iter().filter_map(|ordinal| staged.native_typescript_line_at(*ordinal as usize));
             let mut checkpoint = |_: usize| check();
             let (length, observed_count) = backend_semantic::native_source_lines::encoded_len_files(files(), &mut checkpoint)
                 .map_err(|e| BuiltinModelError(format!("plan native source lines: {e:?}")))?;
