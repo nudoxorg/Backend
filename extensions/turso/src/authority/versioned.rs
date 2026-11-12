@@ -1070,6 +1070,47 @@ mod tests {
     }
 
     #[test]
+    fn borrowed_two_artifacts_share_physical_refs_and_reject_mutations() {
+        let (manifest_bytes, payloads) = manifest_and_payloads();
+        let source = payloads.iter().map(|(id, bytes)| (*id, bytes.as_slice())).collect::<Vec<_>>();
+        let publication = VersionedPlanePublication::from_payloads(&manifest_bytes, source).unwrap();
+        let first = publication.metadata().artifacts()[0].clone();
+        let second = VersionedPlaneArtifactMetadata::new(1, first.manifest_bytes(), first.members().to_vec()).unwrap();
+        let metadata = VersionedPlaneMetadata::from_artifacts(vec![first, second]).unwrap();
+        let wire = metadata.canonical_bytes();
+        let mut bitmap = [0u8; 64];
+        let view = borrowed_versioned::BorrowedVersionedMetadata::parse(&wire, &mut bitmap, &mut |_| Ok::<(), ()>(())).unwrap();
+        assert_eq!(view.artifact_count(), 2);
+        assert_eq!(view.segment_count(), metadata.segment_count());
+        assert_eq!(view.catalog_root(), metadata.catalog_root());
+        let mut ids = Vec::new();
+        view.visit_physical(&mut |_| Ok::<(), ()>(()), &mut |id| { ids.push(id); Ok(()) }).unwrap();
+        let mut unique = ids.clone(); unique.sort_unstable(); unique.dedup();
+        assert!(unique.len() < ids.len(), "fixture must exercise shared physical IDs");
+        assert_eq!(unique, metadata.object_ids());
+        // Mutate catalog root, per-artifact root, logical segment ID and
+        // segment extent in the real canonical wire; all must fail closed.
+        let first_artifact = MAGIC.len() + 2 + 32 + 4;
+        let manifest_len_at = first_artifact + 4 + 32 * 3;
+        let manifest_len = u32::from_le_bytes(wire[manifest_len_at..manifest_len_at+4].try_into().unwrap()) as usize;
+        let member_count_at = manifest_len_at + 4 + manifest_len;
+        let first_member = member_count_at + 4;
+        assert_eq!(u32::from_le_bytes(wire[member_count_at..member_count_at+4].try_into().unwrap()), 2);
+        for at in [MAGIC.len()+2, first_artifact+4+32, first_member, first_member+64] {
+            let mut bad = wire.clone(); bad[at] ^= 0x80;
+            assert!(borrowed_versioned::BorrowedVersionedMetadata::parse(&bad, &mut bitmap, &mut |_| Ok::<(), ()>(())).is_err());
+            assert!(VersionedPlaneMetadata::decode(&bad).is_err());
+        }
+        let mut duplicate = wire.clone();
+        let first_id: [u8;32] = duplicate[first_member..first_member+32].try_into().unwrap();
+        duplicate[first_member+MEMBER_BYTES..first_member+MEMBER_BYTES+32].copy_from_slice(&first_id);
+        assert!(borrowed_versioned::BorrowedVersionedMetadata::parse(&duplicate, &mut bitmap, &mut |_| Ok::<(), ()>(())).is_err());
+        assert!(VersionedPlaneMetadata::decode(&duplicate).is_err());
+        let mut short_bitmap = [];
+        assert!(borrowed_versioned::BorrowedVersionedMetadata::parse(&wire, &mut short_bitmap, &mut |_| Ok::<(), ()>(())).is_err());
+    }
+
+    #[test]
     fn publication_keeps_embedding_independent_and_reopens_exact_refs() {
         let (manifest_bytes, payloads) = manifest_and_payloads();
         let borrowed = payloads
