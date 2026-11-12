@@ -100,6 +100,24 @@ impl<R: CanonicalRelation> RelationNodeRead<R> {
     }
 }
 
+pub(super) fn read_relation_reference(reader: &mut impl std::io::Read) -> Result<[u8; 128], StoreError> {
+    let mut bytes = [0u8; 128];
+    let expected_len = wire::relation_ref_encoded_len();
+    if expected_len > bytes.len() { return Err(StoreError::Bounds); }
+    reader.read_exact(&mut bytes[..expected_len]).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::UnexpectedEof { StoreError::Corrupt } else { io_error(&error) }
+    })?;
+    let mut trailing = [0u8; 1];
+    loop {
+        match reader.read(&mut trailing) {
+            Ok(0) => return Ok(bytes),
+            Ok(_) => return Err(StoreError::Corrupt),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(io_error(&error)),
+        }
+    }
+}
+
 impl FileStore {
     /// Installs or checks the schema/version reference for an object already
     /// streamed into the immutable object CAS.
@@ -698,20 +716,7 @@ impl FileStore {
         {
             return Err(StoreError::Corrupt);
         }
-        let mut bytes = [0u8; 128];
-        if expected_len > bytes.len() { return Err(StoreError::Bounds); }
-        file.read_exact(&mut bytes[..expected_len]).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::UnexpectedEof { StoreError::Corrupt } else { io_error(&error) }
-        })?;
-        let mut trailing = [0u8; 1];
-        loop {
-            match file.read(&mut trailing) {
-                Ok(0) => break,
-                Ok(_) => return Err(StoreError::Corrupt),
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(error) => return Err(io_error(&error)),
-            }
-        }
+        let bytes = read_relation_reference(&mut file)?;
         wire::decode_relation_ref(&bytes[..expected_len], schema, version).map(Some)
     }
 }
@@ -820,6 +825,19 @@ mod tests {
         assert!(corrupt.is_err());
         assert!(!called.get(), "unauthenticated bytes must not reach preflight");
         let _ = remove_store_fixture(root);
+    }
+
+    #[test]
+    fn relation_reference_reader_rejects_growth_without_buffering_it() {
+        let bytes = vec![0u8; wire::relation_ref_encoded_len() + 1024 * 1024];
+        let mut reader = std::io::Cursor::new(bytes.as_slice());
+        let allocation = allocation_counter::measure(|| {
+            assert!(matches!(read_relation_reference(&mut reader), Err(StoreError::Corrupt)));
+        });
+        assert_eq!(reader.position(), (wire::relation_ref_encoded_len() + 1) as u64);
+        assert_eq!(allocation.bytes_max, 0);
+        let mut short = std::io::Cursor::new(&bytes[..wire::relation_ref_encoded_len() - 1]);
+        assert!(matches!(read_relation_reference(&mut short), Err(StoreError::Corrupt)));
     }
 
     #[test]

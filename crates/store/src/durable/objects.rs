@@ -486,8 +486,10 @@ impl FileStore {
 
     /// Authenticates a non-relation object with a caller-controlled reservation.
     ///
-    /// `before_open` must reserve filesystem/path scratch and work, and may
-    /// reject or cancel before any object is opened. `before_payload` receives
+    /// The Unix implementation reserves its fixed locator stack and payload
+    /// bytes from `budget` before opening and allocating respectively. Other
+    /// platforms fail closed. `before_open` must reserve any additional work
+    /// and may reject or cancel before any object is opened. `before_payload` receives
     /// untrusted header fields and must reserve the payload, typed admission,
     /// visitor allocations and work before any payload allocation or read.
     /// Both callbacks must fail closed on exhausted credit. The same immutable
@@ -506,10 +508,17 @@ impl FileStore {
         P: FnOnce(SchemaIdentity, &Hash, usize, &mut usize) -> Result<(), StoreError>,
         F: for<'a> FnOnce(VerifiedObjectView<'a>, &mut usize) -> Result<T, StoreError>,
     {
-        if *budget == 0 { return Err(StoreError::Bounds); }
+        // Stack storage for the root C string, object locator, and envelope
+        // header is reserved before opening the descriptor.
+        const OPEN_STACK: usize = 4096 + 80 + OBJECT_MAGIC.len() + 32 + 1 + 2 + 1 + 32 + 32 + 8;
+        if cfg!(not(unix)) { return Err(StoreError::Bounds); }
+        *budget = budget.checked_sub(OPEN_STACK).ok_or(StoreError::Bounds)?;
         before_open(budget)?;
         if !pin.covers_identity(self.gc_identity) { return Err(StoreError::Corrupt); }
         let id = ObjectId::from_bytes(*claim.as_bytes());
+        #[cfg(unix)]
+        let mut file = super::artifact_fs::BoundedReadDirectories::open(self)?.object(id)?;
+        #[cfg(not(unix))]
         let mut file = super::artifact_fs::open_object(self, id)?.ok_or(StoreError::Corrupt)?;
         const HEADER: usize = OBJECT_MAGIC.len() + 32 + 1 + 2 + 1 + 32 + 32 + 8;
         let file_len = usize::try_from(file.metadata().map_err(|error| io_error(&error))?.len()).map_err(|_| StoreError::Bounds)?;
@@ -585,7 +594,15 @@ impl FileStore {
         F: for<'a> FnOnce(VerifiedObjectView<'a>) -> Result<T, StoreError>,
     {
         let id = ObjectId::from_bytes(*claim.as_bytes());
-        let mut file = super::artifact_fs::open_object(self, id)?.ok_or(StoreError::Corrupt)?;
+        let file = super::artifact_fs::open_object(self, id)?.ok_or(StoreError::Corrupt)?;
+        self.with_relation_object_preflight_file(file, claim, preflight, visit)
+    }
+
+    pub(in crate::durable) fn with_relation_object_preflight_file<T, P, F>(
+        &self, mut file: File, claim: UntrustedObjectId, preflight: P, visit: F,
+    ) -> Result<T, StoreError>
+    where P: for<'a> FnOnce(VerifiedObjectView<'a>) -> Result<(), StoreError>,
+          F: for<'a> FnOnce(VerifiedObjectView<'a>) -> Result<T, StoreError> {
         let maximum = self.object_envelope_limit()?.min(super::relation_object_limit()?);
         const MAX_RELATION_ENVELOPE: usize = backend_version::DEFAULT_CUT_POLICY.max_encoded_bytes()
             + OBJECT_MAGIC.len() + 32 + 1 + 2 + 1 + 32 + 32 + 8;
@@ -817,7 +834,8 @@ mod tests {
         store.write_object(&object).expect("write");
         let pin = store.pin_garbage_collection().expect("pin");
         let claim = UntrustedObjectId::from_bytes(*object.id().as_bytes());
-        let mut credit = LENGTH;
+        let open_stack = 4096 + 80 + OBJECT_MAGIC.len() + 32 + 1 + 2 + 1 + 32 + 32 + 8;
+        let mut credit = LENGTH + open_stack;
         let measurement = allocation_counter::measure(|| {
             store.with_verified_nonrelation_object_bounded(&pin, claim, &[object.schema()], Some(*object.key()), LENGTH, &mut credit,
                 |_| Ok(()), |_,_,len,_| { assert_eq!(len, LENGTH); Ok(()) },
@@ -847,11 +865,12 @@ mod tests {
         assert!(matches!(store.with_verified_nonrelation_object_bounded(&pin, claim, &[schema], Some(*object.key()), object.bytes().len(), &mut budget,
             |_| { opened.set(true); Ok(()) }, |_,_,_,_| { payload_gate.set(true); Ok(()) }, |_,_| { visited.set(true); Ok(()) }), Err(StoreError::Bounds)));
         assert!(!opened.get() && !payload_gate.get() && !visited.get());
-        budget = object.bytes().len() - 1;
+        let open_stack = 4096 + 80 + OBJECT_MAGIC.len() + 32 + 1 + 2 + 1 + 32 + 32 + 8;
+        budget = object.bytes().len() + open_stack - 1;
         assert!(matches!(store.with_verified_nonrelation_object_bounded(&pin, claim, &[schema], Some(*object.key()), object.bytes().len(), &mut budget,
             |_| Ok(()), |_,_,_,_| { payload_gate.set(true); Ok(()) }, |_,_| { visited.set(true); Ok(()) }), Err(StoreError::Bounds)));
         assert!(!payload_gate.get() && !visited.get());
-        budget = object.bytes().len();
+        budget = object.bytes().len() + open_stack;
         let measured = allocation_counter::measure(|| {
             store.with_verified_nonrelation_object_bounded(&pin, claim, &[schema], Some(*object.key()), object.bytes().len(), &mut budget,
                 |_| Ok(()), |_,_,len,_| { assert_eq!(len, object.bytes().len()); Ok(()) },
@@ -862,7 +881,7 @@ mod tests {
         let mut bytes = fs::read(&path).expect("read envelope");
         *bytes.last_mut().expect("payload") ^= 1;
         replace_fixture(&path, &bytes);
-        budget = object.bytes().len();
+        budget = object.bytes().len() + open_stack;
         assert!(store.with_verified_nonrelation_object_bounded(&pin, claim, &[schema], None, object.bytes().len(), &mut budget,
             |_| Ok(()), |_,_,_,_| Ok(()), |_,_| { visited.set(true); Ok(()) }).is_err());
         assert!(!visited.get());
