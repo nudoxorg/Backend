@@ -1623,6 +1623,8 @@ fn omitted_program_member_cold_replay(mixed: bool) -> Result<(), Box<dyn Error>>
     let reached = super::semantic_authority::TEST_COLD_REPLAY_REACHED.load(Ordering::Acquire);
     if reached {
         rustix::process::kill_process(rustix::process::getpid(), rustix::process::Signal::TERM)?;
+    } else {
+        super::semantic_authority::TEST_COLD_REPLAY_PAUSE.store(false, Ordering::Release);
     }
     // The real handler requests the shared lifecycle. The test-only pause
     // waits for that request, not for a fabricated cancellation result.
