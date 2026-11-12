@@ -598,10 +598,8 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
         loop {
             if node.node().level() == 0 {
                 let entries = node.leaf_entries().map_err(LazyTreeError::Node)?;
-                return Ok(entries
-                    .binary_search_by(|(candidate, _)| candidate.borrow().cmp(key))
-                    .ok()
-                    .map(|index| entries[index].1.clone()));
+                let index = entries.binary_search_by(|(candidate, _)| candidate.borrow().cmp(key)).ok();
+                return Ok(index.and_then(|i| entries.into_iter().nth(i).map(|(_, value)| value)));
             }
             let summaries = node.child_summaries().map_err(LazyTreeError::Node)?;
             if summaries.is_empty() {
@@ -623,7 +621,8 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
         for _ in 0..max_depth {
             if node.node().level() == 0 {
                 let entries = node.leaf_entries().map_err(LazyTreeError::Node)?;
-                return Ok(entries.binary_search_by(|(candidate, _)| candidate.cmp(key)).ok().map(|i| entries[i].1.clone()));
+                let index = entries.binary_search_by(|(candidate, _)| candidate.cmp(key)).ok();
+                return Ok(index.and_then(|i| entries.into_iter().nth(i).map(|(_, value)| value)));
             }
             let summaries = node.child_summaries().map_err(LazyTreeError::Node)?;
             if summaries.is_empty() { return Err(LazyTreeError::Node(NodeError::InvalidBranch)); }
@@ -637,6 +636,106 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
             node = child;
         }
         Err(LazyTreeError::Node(NodeError::OversizedNode))
+    }
+
+    /// Searches admitted nodes without materializing sibling-value vectors.
+    /// The loader must authenticate and preflight each node before admission.
+    pub fn lookup_streaming_with_depth_limit(
+        &self, key: &R::Key, max_depth: usize,
+    ) -> Result<Option<R::Value>, LazyTreeError<L::Error>> {
+        let mut node = self.root.clone();
+        for _ in 0..max_depth {
+            if node.node().level() == 0 {
+                for entry in node.leaf_iter().map_err(LazyTreeError::Node)? {
+                    let (candidate, value) = entry.map_err(LazyTreeError::Node)?;
+                    match candidate.cmp(key) {
+                        std::cmp::Ordering::Less => continue,
+                        std::cmp::Ordering::Equal => return Ok(Some(value)),
+                        std::cmp::Ordering::Greater => return Ok(None),
+                    }
+                }
+                return Ok(None);
+            }
+            let summary = {
+                let mut selected = None;
+                for child in node.child_iter().map_err(LazyTreeError::Node)? {
+                    let child = child.map_err(LazyTreeError::Node)?;
+                    if selected.is_some() && &child.first_key > key { break; }
+                    selected = Some(child);
+                }
+                selected.ok_or(LazyTreeError::Node(NodeError::InvalidBranch))?
+            };
+            let child = self.load(child_claim(&summary).map_err(LazyTreeError::Node)?)?;
+            if child.node().level() != summary.level || child.row_count() != summary.row_count
+                || child.node().first_key() != Some(&summary.first_key) {
+                return Err(LazyTreeError::Node(NodeError::AnchorMismatch));
+            }
+            node = child;
+        }
+        Err(LazyTreeError::Node(NodeError::OversizedNode))
+    }
+
+    /// Visits up to `limit` rows without allocating sibling or result vectors.
+    /// A returned cursor is the last delivered key; a subsequent empty visit
+    /// proves the end. The loader must preflight every node and the visitor
+    /// must charge any retained row before storing it.
+    pub fn visit_streaming_with_depth_limit(
+        &self, after: Option<&R::Key>, limit: usize, max_depth: usize,
+        mut visit: impl FnMut(&R::Key, R::Value) -> Result<(), L::Error>,
+    ) -> Result<Option<R::Key>, LazyTreeError<L::Error>> {
+        if limit == 0 || max_depth == 0 || max_depth > 32 {
+            return Err(LazyTreeError::Node(NodeError::OversizedNode));
+        }
+        let mut pending = arrayvec::ArrayVec::<CommittedChild<R>, 32>::new();
+        let mut node = self.root.clone();
+        let mut start = after;
+        let mut delivered = 0usize;
+        let mut last = None;
+        loop {
+            if node.node().level() == 0 {
+                for entry in node.leaf_iter().map_err(LazyTreeError::Node)? {
+                    let (key, value) = entry.map_err(LazyTreeError::Node)?;
+                    if start.is_some_and(|after| &key <= after) { continue; }
+                    visit(&key, value).map_err(LazyTreeError::Load)?;
+                    last = Some(key);
+                    delivered += 1;
+                    if delivered == limit { return Ok(last); }
+                }
+                if delivered != 0 { return Ok(last); }
+                let Some(summary) = pending.pop() else { return Ok(None); };
+                let child = self.load(child_claim(&summary).map_err(LazyTreeError::Node)?)?;
+                if child.node().level() != summary.level || child.row_count() != summary.row_count
+                    || child.node().first_key() != Some(&summary.first_key) {
+                    return Err(LazyTreeError::Node(NodeError::AnchorMismatch));
+                }
+                node = child;
+                start = None;
+                continue;
+            }
+            if usize::from(node.node().level()) >= max_depth {
+                return Err(LazyTreeError::Node(NodeError::OversizedNode));
+            }
+            let (summary, next) = {
+                let mut chosen = None;
+                let mut next = None;
+                for item in node.child_iter().map_err(LazyTreeError::Node)? {
+                    let child = item.map_err(LazyTreeError::Node)?;
+                    if chosen.is_none() || start.is_some_and(|after| &child.first_key <= after) {
+                        chosen = Some(child);
+                    } else { next = Some(child); break; }
+                }
+                (chosen.ok_or(LazyTreeError::Node(NodeError::InvalidBranch))?, next)
+            };
+            if let Some(next) = next {
+                pending.try_push(next).map_err(|_| LazyTreeError::Node(NodeError::OversizedNode))?;
+            }
+            let child = self.load(child_claim(&summary).map_err(LazyTreeError::Node)?)?;
+            if child.node().level() != summary.level || child.row_count() != summary.row_count
+                || child.node().first_key() != Some(&summary.first_key) {
+                return Err(LazyTreeError::Node(NodeError::AnchorMismatch));
+            }
+            node = child;
+        }
     }
 
     /// Looks up strictly increasing keys while loading each shared tree path
@@ -821,12 +920,20 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
     pub fn page_one_with_depth_limit(
         &self, after: Option<&R::Key>, max_depth: usize,
     ) -> Result<LazyTreePage<R>, LazyTreeError<L::Error>> {
+        self.page_with_depth_limit(after, 1, max_depth)
+    }
+
+    /// Reads a page while bounding recursive depth and pending-node work.
+    /// The caller must precharge the requested output and node allocations.
+    pub fn page_with_depth_limit(
+        &self, after: Option<&R::Key>, limit: usize, max_depth: usize,
+    ) -> Result<LazyTreePage<R>, LazyTreeError<L::Error>> {
         if max_depth == 0 { return Err(LazyTreeError::Node(NodeError::OversizedNode)); }
-        let mut entries = Vec::with_capacity(1);
+        let mut entries = Vec::with_capacity(limit.min(256));
         let mut pending = Vec::new();
         let start = after.map_or(PageStart::Beginning, PageStart::After);
-        self.take_page(&self.root, start, 1, &mut entries, &mut pending, max_depth)?;
-        self.finish_page(1, &mut entries, &mut pending, max_depth)
+        self.take_page(&self.root, start, limit, &mut entries, &mut pending, max_depth)?;
+        self.finish_page(limit, &mut entries, &mut pending, max_depth)
     }
 
     fn finish_page(
@@ -892,7 +999,7 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
                 if entries.len() == limit {
                     return Ok(());
                 }
-                entries.push((key.clone(), value.clone()));
+                entries.push((key, value));
             }
             return Ok(());
         }

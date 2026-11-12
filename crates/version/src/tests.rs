@@ -312,6 +312,41 @@ fn sorted_owned_relation_state_moves_payloads_instead_of_cloning_them()
 #[derive(Debug, Eq, PartialEq)]
 struct VariableRelation;
 
+#[test]
+fn streaming_value_comparison_preserves_exact_canonical_admission() {
+    struct StreamingRelation;
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    impl Relation for StreamingRelation {
+        const DOMAIN: u8 = 0xf5;
+        const TYPE: u16 = 0x5105;
+        type Key = u8;
+        type Value = u8;
+        fn encode_key(v: &u8, out: &mut Vec<u8>) { out.push(*v); }
+        fn encode_value(v: &u8, out: &mut Vec<u8>) { out.push(*v); }
+    }
+    impl CanonicalRelation for StreamingRelation {
+        fn decode_key(bytes: &[u8]) -> Result<u8, RelationDecodeError> {
+            if bytes.len() != 1 { return Err(RelationDecodeError::Malformed); }
+            Ok(bytes[0])
+        }
+        fn decode_value(bytes: &[u8]) -> Result<u8, RelationDecodeError> {
+            if bytes.len() != 1 || !bytes[0].is_ascii_alphabetic() { return Err(RelationDecodeError::Malformed); }
+            Ok(bytes[0].to_ascii_lowercase())
+        }
+        fn canonical_value_matches(value: &u8, bytes: &[u8]) -> bool {
+            CALLS.fetch_add(1, AtomicOrdering::Relaxed);
+            bytes == [*value]
+        }
+    }
+    let node = canonical_leaf::<StreamingRelation>(&[(1, b'a')]).expect("canonical fixture");
+    CALLS.store(0, AtomicOrdering::Relaxed);
+    assert!(admit_canonical_root::<StreamingRelation>(node.as_bytes()).is_ok());
+    assert!(CALLS.load(AtomicOrdering::Relaxed) > 0);
+    let mut alternate = node.as_bytes().to_vec();
+    *alternate.last_mut().unwrap() = b'A';
+    assert!(matches!(admit_canonical_root::<StreamingRelation>(&alternate), Err(NodeError::NonCanonicalEncoding)));
+}
+
 impl Relation for VariableRelation {
     const DOMAIN: u8 = 11;
     const TYPE: u16 = 7;

@@ -544,6 +544,20 @@ mod tests {
         assert_eq!(got,rows[0].1);
         assert!(calls.get()>=2, "root and child must each be preflighted");
         assert!(budget<16*1024*1024);
+        let mut visited = Vec::new();
+        let mut cursor = None;
+        let mut visitor = |key: &[u8; 32], row: NativeSourceEvidence, budget: &mut usize| {
+            let retained = row.checked_heap_bytes().and_then(|n| n.checked_add(std::mem::size_of::<NativeSourceEvidence>() + 128)).ok_or(StoreError::Bounds)?;
+            *budget = budget.checked_sub(retained).ok_or(StoreError::Bounds)?;
+            visited.push((*key, row));
+            Ok(())
+        };
+        loop {
+            cursor = handle.visit(cursor.as_ref(), 64, 32, &mut budget, &mut gate, &mut visitor).unwrap();
+            if cursor.is_none() { break; }
+        }
+        drop(visitor);
+        assert_eq!(visited, rows);
     }
 
     #[test]

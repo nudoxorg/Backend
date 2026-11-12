@@ -14,7 +14,7 @@ mod cut;
 mod node;
 mod view;
 
-pub use admission::{CanonicalChildIter, admit_canonical_root, admit_canonical_root_claim};
+pub use admission::{CanonicalChildIter, CanonicalLeafIter, admit_canonical_root, admit_canonical_root_claim};
 pub use build::{
     canonical_branch, canonical_branch_from_commitments, canonical_empty, canonical_leaf,
     canonical_root,

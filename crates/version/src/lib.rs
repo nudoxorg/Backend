@@ -83,7 +83,7 @@ pub use persistent::{
     TreeZipper, WeakTreeNodeHandle,
 };
 pub use tree::{
-    CanonicalChildIter, CanonicalChildWireIter, CanonicalChildWireRef, CanonicalLeafField, CanonicalLeafFieldIter,
+    CanonicalChildIter, CanonicalChildWireIter, CanonicalChildWireRef, CanonicalLeafField, CanonicalLeafFieldIter, CanonicalLeafIter,
     CanonicalNode, CanonicalNodeView, CanonicalRootAdmissionError, CheckedCanonicalRoot, Child,
     ChildCommitment, CommittedChild, CutError, CutPolicy, DEFAULT_CUT_POLICY, NodeError,
     admit_canonical_root, admit_canonical_root_claim, anchored_cut_points, canonical_branch,
