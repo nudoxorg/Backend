@@ -1196,7 +1196,7 @@ impl<'work> ParserStateCore<'work> {
 
     /// Look ahead to see if we have "async function"
     pub(crate) fn look_ahead_is_async_function(&mut self) -> bool {
-        look_ahead_is(&mut self.scanner, self.current_token, |token| {
+        look_ahead_is_on_same_line(&mut self.scanner, self.current_token, |token| {
             token == SyntaxKind::FunctionKeyword
         })
     }

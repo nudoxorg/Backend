@@ -1319,7 +1319,12 @@ mod tests {
             ("export async function run() {}", true),
             ("export async /* comment */ function run() {}", true),
             ("export default async function run() {}", true),
+            ("// λ\nexport async function* run() {}", true),
             ("async\nfunction run() {}", false),
+            ("async\r\nfunction run() {}", false),
+            ("async /*\n*/ function run() {}", false),
+            ("async\u{2028}function run() {}", false),
+            ("async\u{2029}function run() {}", false),
             ("function run() {}", false),
         ] {
             let mut parser = MeteredParserState::new("src/modifiers.ts".to_owned(), source.to_owned());
