@@ -3615,6 +3615,7 @@ mod tests {
         let v9 = v7.clone().with_native_headers(headers).unwrap();
         for (expected_version, value) in [(4, base), (5, v5), (6, v6), (7, v7), (8, v8), (9, v9)] {
             let bytes = value.canonical_bytes();
+            assert_eq!(metadata_member_ids_checked(&value).unwrap(), metadata_member_ids(&value));
             assert_eq!(u16::from_le_bytes(bytes[METADATA_MAGIC.len()..METADATA_MAGIC.len()+2].try_into().unwrap()), expected_version);
             let bound = compiler_metadata_decode_bound(&bytes).unwrap();
             let mut reopened = None;
