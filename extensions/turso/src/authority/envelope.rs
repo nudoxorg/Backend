@@ -3991,6 +3991,30 @@ mod tests {
     }
 
     #[test]
+    fn selected_member_bitmap_preserves_deduplicated_set_and_stops() {
+        let (image, _) = compiler_image();
+        let shared = *image.object_id();
+        let metadata = metadata(image)
+            .with_native_program_sources(CompilerProgramSourceMember { object_id: shared, program: [1; 32], byte_length: 1 }).unwrap()
+            .with_native_headers(CompilerNativeHeadersMember { object_id: shared, byte_length: 1 }).unwrap();
+        let metadata_id = [0x91; 32];
+        let ids = metadata_member_ids_with_id(&metadata, metadata_id);
+        let wire = ids.iter().flat_map(|id| id.iter().copied()).collect::<Vec<_>>();
+        let envelope = BorrowedSelectedEnvelope { metadata_id, logical_generation: metadata.binding_identity, semantic_root: metadata.semantic_manifest_root().copied(), member_wire: &wire };
+        let mut budget = SelectedNativeHeaderBudget::new(1024, 10_000);
+        assert!(verify_metadata_member_bitmap(&envelope, &metadata, metadata_id, &mut budget, &|| false).is_ok());
+        assert_eq!(budget.remaining_memory(), 1024);
+        assert!(verify_metadata_member_bitmap(&envelope, &metadata, metadata_id, &mut SelectedNativeHeaderBudget::new(0, 10_000), &|| false).is_err());
+        assert!(verify_metadata_member_bitmap(&envelope, &metadata, metadata_id, &mut SelectedNativeHeaderBudget::new(1024, 10_000), &|| true).is_err());
+        let mut altered = metadata.clone(); altered.native_headers.as_mut().unwrap().object_id = [0x92; 32];
+        assert!(verify_metadata_member_bitmap(&envelope, &altered, metadata_id, &mut SelectedNativeHeaderBudget::new(1024, 10_000), &|| false).is_err());
+        let mut extra = ids.clone(); extra.push([0xff; 32]); extra.sort_unstable(); extra.dedup();
+        let extra_wire = extra.iter().flat_map(|id| id.iter().copied()).collect::<Vec<_>>();
+        let extra_envelope = BorrowedSelectedEnvelope { member_wire: &extra_wire, ..envelope };
+        assert!(verify_metadata_member_bitmap(&extra_envelope, &metadata, metadata_id, &mut SelectedNativeHeaderBudget::new(1024, 10_000), &|| false).is_err());
+    }
+
+    #[test]
     fn large_envelope_decode_obeys_shape_bound() {
         let record = metadata(compiler_image().0);
         let mut envelope = CompilerPublicationEnvelope::new(&attempt(), &record).unwrap();
