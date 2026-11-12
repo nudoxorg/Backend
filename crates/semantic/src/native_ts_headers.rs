@@ -165,6 +165,7 @@ impl<'a> NativeTsHeaderAggregateView<'a> {
     /// Builds an allocation-free index in caller-provided, precharged slots.
     /// Every file visit consumes a checkpoint; cancellation yields no index.
     pub fn index_files_checkpointed<'slots, E>(&self, slots: &'slots mut [u32], checkpoint: &mut impl FnMut(usize) -> Result<(), E>) -> Result<NativeTsHeaderFileIndex<'a, 'slots>, BorrowedNativeHeadersError<E>> {
+        checkpoint(0).map_err(BorrowedNativeHeadersError::Stopped)?;
         if slots.len() < self.count { return Err(BorrowedNativeHeadersError::Invalid); }
         let mut files=self.files();
         for slot in &mut slots[..self.count] {
@@ -172,10 +173,12 @@ impl<'a> NativeTsHeaderAggregateView<'a> {
             *slot=u32::try_from(files.reader.at).map_err(|_| BorrowedNativeHeadersError::Invalid)?;
             files.next().ok_or(BorrowedNativeHeadersError::Invalid)?;
         }
+        checkpoint(0).map_err(BorrowedNativeHeadersError::Stopped)?;
         Ok(NativeTsHeaderFileIndex { bytes:self.bytes, offsets:&slots[..self.count] })
     }
     /// Scans file headers with a work/cancellation checkpoint per file.
     pub fn find_file_checkpointed<E>(&self, path: &str, checkpoint: &mut impl FnMut(usize) -> Result<(), E>) -> Result<Option<NativeTsHeaderFileView<'a>>, E> {
+        checkpoint(0)?;
         let mut files = self.files();
         while files.remaining != 0 {
             // Path validation permits at most 4096 bytes; debit its worst case
@@ -205,9 +208,10 @@ impl<'a> NativeTsHeaderFileIndex<'a, '_> {
             match file.path.cmp(path) {
                 std::cmp::Ordering::Less=>low=mid+1,
                 std::cmp::Ordering::Greater=>high=mid,
-                std::cmp::Ordering::Equal=>return Ok(Some(file)),
+                std::cmp::Ordering::Equal=>{ checkpoint(0)?; return Ok(Some(file)); },
             }
         }
+        checkpoint(0)?;
         Ok(None)
     }
 }
@@ -330,12 +334,12 @@ mod tests {
         let mut visits=0usize;
         let measured=allocation_counter::measure(|| {
             let index=view.index_files_checkpointed(&mut slots,&mut |_| {visits+=1; Ok::<(), ()>(())}).unwrap();
-            assert_eq!(visits,4096);
+            assert_eq!(visits,4098);
             let mut probes=0usize;
             let found=index.find_file_checkpointed("src/4095.ts",&mut |_| {probes+=1; Ok::<(), ()>(())}).unwrap().unwrap();
             assert_eq!(found.path,"src/4095.ts");
             assert_eq!(found.entry(0).as_ref(),aggregate.files[4095].entries.first());
-            assert!(probes<=13);
+            assert!(probes<=15);
             assert!(index.find_file_checkpointed("src/missing.ts",&mut |_| Ok::<(), ()>(())).unwrap().is_none());
             assert!(index.find_file_checkpointed("src/0000.ts",&mut |_| Err::<(), _>("cancel")).is_err());
         });
@@ -343,6 +347,11 @@ mod tests {
         assert!(matches!(view.index_files_checkpointed(&mut slots[..4095], &mut |_| Ok::<(), ()>(())), Err(BorrowedNativeHeadersError::Invalid)));
         let mut calls=0;
         assert!(matches!(view.index_files_checkpointed(&mut slots, &mut |_| {calls+=1; if calls==3 {Err("cancel")} else {Ok(())}}), Err(BorrowedNativeHeadersError::Stopped("cancel"))));
+        let empty=NativeTsHeaderAggregate { files:Vec::new() }.encode_checked().unwrap();
+        let empty_view=NativeTsHeaderAggregateView::parse_canonical(&empty).unwrap();
+        assert!(matches!(empty_view.index_files_checkpointed(&mut [], &mut |_| Err::<(), _>("cancel")), Err(BorrowedNativeHeadersError::Stopped("cancel"))));
+        let empty_index=empty_view.index_files_checkpointed(&mut [], &mut |_| Ok::<(), ()>(())).unwrap();
+        assert!(empty_index.find_file_checkpointed("missing", &mut |_| Err::<(), _>("cancel")).is_err());
     }
     #[test]
     fn borrowed_aggregate_matches_owned_without_allocating() {
