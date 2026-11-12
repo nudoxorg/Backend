@@ -87,6 +87,7 @@ fn vue_index_rotates_small_frame_budget() -> Result<(), Box<dyn Error>> {
     paths.initialize()?;
     let owner = super::native_ts_owner_journey_tests::start_owner(&paths)?;
     let mut session = Session::connect(owner.endpoint())?;
+    assert_eq!(session.connection_frames_remaining(), Some(1));
     index(&mut session, &project, 0x83)?;
     drop(session);
     assert_eq!(owner.close()?.failures, 0);
