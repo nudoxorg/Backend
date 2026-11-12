@@ -1863,14 +1863,15 @@ impl Session {
                 return Err(ClientError::Protocol("related center document changed shape".to_owned()));
             };
             let selection = document.selection.as_ref().ok_or_else(|| ClientError::Protocol("related center has no selected document witness".to_owned()))?;
-            if selection.symbol() != document.symbol || Some(selection.source()) != document.source_basis() {
+            if selection.symbol() != document.symbol || selection.coordinate() != coordinate
+                || Some(selection.source()) != document.source_basis() {
                 return Err(ClientError::Protocol("related center selection changed source".to_owned()));
             }
             let id = backend_library::SelectedSymbolId::new(document.symbol.to_bytes()).ok_or_else(|| ClientError::Protocol("invalid selected center".to_owned()))?;
-            Some((DeclarationSelector::Selected(id), selection.source().root))
+            Some((DeclarationSelector::Selected(id), selection.source()))
         } else { None };
         let revision = self.revision()?;
-        if selected.as_ref().is_some_and(|(_, root)| *root != revision.root) { return Err(ClientError::StaleCursor); }
+        if selected.as_ref().is_some_and(|(_, source)| source.root != revision.root) { return Err(ClientError::StaleCursor); }
         let selector = selected.as_ref().map_or(selector, |(selector, _)| selector);
         let symbol = selector.address();
         let scope = backend_library::RelatedPageScope {
@@ -1882,9 +1883,18 @@ impl Session {
             return Err(ClientError::StaleCursor);
         }
         let certificate = declaration_certificate(revision.certificate, selector);
-        self.send_success(Command::RelatedEdgePage {
+        let reply = self.send_success(Command::RelatedEdgePage {
             symbol, request: backend_library::RelatedPageRequest { scope, cursor: continuation },
-        }, Some(certificate))
+        }, Some(certificate))?;
+        if let Some((_, source)) = selected.as_ref() {
+            let CommandReply::RelatedEdgePage(page) = &reply.reply else {
+                return Err(ClientError::Protocol("related edge page changed shape".to_owned()));
+            };
+            if page.snapshot.root.basis() != *source {
+                return Err(ClientError::StaleCursor);
+            }
+        }
+        Ok(reply)
     }
 
     /// Reads captured source for one declaration coordinate.
