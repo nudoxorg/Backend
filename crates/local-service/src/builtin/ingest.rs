@@ -12646,15 +12646,23 @@ pub(super) fn native_line_map_matches_host(
     SourceAdmissionPolicy::from_environment().map_err(|e| format!("native line source policy: {e}"))?
         .admit_actual_file(expected).map_err(|e| format!("native line source bound: {e:?}"))?;
     budget.checkpoint(1, stopped).map_err(|e| format!("native line source stopped: {e:?}"))?;
-    if !root.is_absolute() || root.components().any(|part| !matches!(part, std::path::Component::RootDir | std::path::Component::Normal(_))) { return Ok(false); }
-    let root_bytes = root.as_os_str().as_bytes();
-    if root_bytes.is_empty() || root_bytes.len() > 4096 || root_bytes.contains(&0) { return Ok(false); }
-    let mut root_name = [0u8; 4097];
-    root_name[..root_bytes.len()].copy_from_slice(root_bytes);
-    let root_name = std::ffi::CStr::from_bytes_with_nul(&root_name[..=root_bytes.len()]).map_err(|_| "invalid native line root")?;
+    if !root.is_absolute() { return Ok(false); }
+    let root_name = std::ffi::CStr::from_bytes_with_nul(b"/\0").map_err(|_| "invalid native line root")?;
     let mut directory = match open(root_name, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map(fs::File::from) {
         Ok(directory) => directory, Err(_) => return Ok(false),
     };
+    for part in root.components() {
+        budget.checkpoint(1, stopped).map_err(|e| format!("native line source stopped: {e:?}"))?;
+        let name = match part { std::path::Component::RootDir => continue, std::path::Component::Normal(name) => name, _ => return Ok(false) };
+        let component = name.as_bytes();
+        if component.is_empty() || component.len() > 4096 || component.contains(&0) { return Ok(false); }
+        let mut name_buffer = [0u8; 4097];
+        name_buffer[..component.len()].copy_from_slice(component);
+        let name = std::ffi::CStr::from_bytes_with_nul(&name_buffer[..=component.len()]).map_err(|_| "invalid native line root")?;
+        directory = match openat(&directory, name, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map(fs::File::from) {
+            Ok(directory) => directory, Err(_) => return Ok(false),
+        };
+    }
     let mut components = Path::new(&evidence.path).components().peekable();
     let mut file = loop {
         budget.checkpoint(1, stopped).map_err(|e| format!("native line source stopped: {e:?}"))?;

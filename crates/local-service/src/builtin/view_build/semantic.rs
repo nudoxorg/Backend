@@ -1985,6 +1985,9 @@ fn semantic_rows(
     let capture_relation = semantic_capture_relation(snapshot)
         .map_err(|error| BuiltinModelError(format!("open semantic capture relation: {error}")))?;
     let mut nse_image_budget = MAX_REBUILD_BYTES;
+    let mut nse_line_work = MAX_REBUILD_BYTES as u64;
+    let line_deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
+    let line_stopped = || std::time::Instant::now() >= line_deadline;
     let nse_evidence = backend_engine::builtin::native_source_evidence_relation_budgeted(snapshot, &mut nse_image_budget)
         .map_err(|error| BuiltinModelError(format!("open selected native evidence: {error}")))?;
     if nse_evidence.is_some() {
@@ -2153,6 +2156,21 @@ fn semantic_rows(
                     nse_frontiers.as_ref(), nse_structural_cache.get(&owner).expect("inserted index"),
                     &mut nse_program_work, &mut nse_image_budget)?.filter(|proof| proof.projection_safe)
             } else { None };
+            let mut line_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(nse_image_budget, nse_line_work);
+            let mut needs_lines = false;
+            if let Some(proof) = nse_positive.as_ref() {
+                for (claim, _) in proof.positive.values() {
+                    line_budget.checkpoint(1, &line_stopped).map_err(|e| BuiltinModelError(format!("native line inventory stopped: {e:?}")))?;
+                    if claim.admits_image() && claim.line_starts.is_none() { needs_lines = true; }
+                }
+            }
+            let line_witness = if needs_lines {
+                generations.selected_native_lines(key, *claim, &mut line_budget, &line_stopped)?
+            } else { None };
+            let line_view = line_witness.as_ref().map(|witness| {
+                backend_semantic::native_source_lines::NativeSourceLineAggregateView::parse(witness.as_bytes(), &mut |_| line_budget.checkpoint(1, &line_stopped))
+                    .map_err(|e| BuiltinModelError(format!("selected native line map: {e:?}")))
+            }).transpose()?;
             // Observed policy is a separate capability: it never becomes an
             // unqualified current program or a complete source inventory.
             let (selected, observed) = match nse_positive.as_ref() {
@@ -2482,6 +2500,19 @@ fn semantic_rows(
                         None
                     }
                 };
+                let native_ts_lines = if nse_current {
+                    if let (Some(view), Some((claim, source))) = (line_view.as_ref(), nse_positive.as_ref().and_then(|proof| proof.positive.get(&path))) {
+                        if claim.admits_image() && claim.line_starts.is_none() {
+                            let file = view.find_file(&path, &mut |_| line_budget.checkpoint(1, &line_stopped))
+                                .map_err(|e| BuiltinModelError(format!("native line lookup stopped: {e:?}")))?;
+                            if let Some(file) = file {
+                                if super::super::ingest::native_line_map_matches_host(std::path::Path::new(&project.label), claim, *source, file, &mut line_budget, &line_stopped).map_err(BuiltinModelError)? {
+                                    Some(NativeTsLineProjection { file, budget: &line_budget, stopped: &line_stopped })
+                                } else { None }
+                            } else { None }
+                        } else { None }
+                    } else { None }
+                } else { None };
                 for image_index in image_indices {
                     let image = &opened[image_index];
                     let mut sink = SemanticRowSink {
@@ -2499,6 +2530,7 @@ fn semantic_rows(
                         native_ts_evidence: nse_current.then(|| nse_positive.as_ref()
                             .and_then(|proof| proof.positive.get(&path))
                             .map(|(claim, _)| claim).filter(|claim| claim.admits_image())).flatten(),
+                        native_ts_lines,
                     };
                     match image {
                         super::image_rows::CompiledImage::Opened { view, .. } => {
@@ -2550,6 +2582,8 @@ fn semantic_rows(
                     }
                 }
             }
+            nse_image_budget = line_budget.remaining_memory();
+            nse_line_work = line_budget.remaining_work();
             if matches!(
                 coverage,
                 backend_engine::builtin::SemanticPublicationCoverage::Complete
@@ -2768,6 +2802,26 @@ pub(crate) fn compiled_source_path(
     compiled_source(image).map(|(path, _)| path)
 }
 
+/// A selected compiler line map independently matched to exact confined host bytes.
+#[derive(Clone, Copy)]
+pub(super) struct NativeTsLineProjection<'a> {
+    pub(super) file: backend_semantic::native_source_lines::NativeSourceLineFileView<'a>,
+    pub(super) budget: &'a backend_extension_turso::SelectedNativeHeaderBudget,
+    pub(super) stopped: &'a dyn Fn() -> bool,
+}
+impl NativeTsLineProjection<'_> {
+    fn line_at(&self, offset: u32) -> Result<Option<u32>, BuiltinModelError> {
+        if offset > self.file.source.byte_len { return Ok(None); }
+        let mut low = 0usize; let mut high = self.file.line_count();
+        while low < high {
+            self.budget.checkpoint(1, self.stopped).map_err(|e| BuiltinModelError(format!("native line lookup stopped: {e:?}")))?;
+            let mid = low + (high - low) / 2;
+            if self.file.line_start(mid).ok_or_else(|| BuiltinModelError("native line offset missing".into()))? <= offset { low = mid + 1; } else { high = mid; }
+        }
+        Ok(u32::try_from(low).ok())
+    }
+}
+
 pub(super) struct SemanticRowSink<'a> {
     pub(super) ownership_complete: &'a mut bool,
     pub(super) exact_sites: &'a mut super::exact_sites::ExactDeclarationSites,
@@ -2789,6 +2843,7 @@ pub(super) struct SemanticRowSink<'a> {
     pub(super) native_source: Option<&'a backend_engine::builtin::VerifiedNativeSource>,
     /// Selected image's capture-time, source-bound line offsets.
     pub(super) native_ts_evidence: Option<&'a backend_engine::builtin::NativeSourceEvidence>,
+    pub(super) native_ts_lines: Option<NativeTsLineProjection<'a>>,
 }
 
 impl SemanticRowSink<'_> {
@@ -3168,7 +3223,7 @@ pub(super) fn project_image_rows(
     native_csharp: Option<super::csharp_native_sites::NativeCSharpProjection<'_>>,
 ) -> Result<ProjectedImage, BuiltinModelError> {
     project_image_rows_with_native_ts(image, image_identity, project, profile, basis, stale,
-        path, site_declarations, native, native_csharp, None)
+        path, site_declarations, native, native_csharp, None, None)
 }
 
 pub(super) fn project_image_rows_with_native_ts(
@@ -3183,6 +3238,7 @@ pub(super) fn project_image_rows_with_native_ts(
     native: Option<super::native_sites::NativeProjection<'_>>,
     native_csharp: Option<super::csharp_native_sites::NativeCSharpProjection<'_>>,
     native_ts: Option<&backend_engine::builtin::NativeSourceEvidence>,
+    native_ts_lines: Option<NativeTsLineProjection<'_>>,
 ) -> Result<ProjectedImage, BuiltinModelError> {
     let session = DocumentationSession::new(image);
     let kinds = entity_kinds(profile, image, &session, site_declarations)?;
@@ -3354,18 +3410,22 @@ pub(super) fn project_image_rows_with_native_ts(
                     BuiltinModelError(format!("native C# semantic declaration source site: {error}"))
                 })?;
             row = row.with_source(location).with_excerpt(excerpt);
-        } else if let Some(location) = native_ts.filter(|_| !stale).and_then(|claim| {
+        } else if let Some(location) = (|| -> Result<Option<backend_compile::SourceLocation>, BuiltinModelError> {
             use backend_semantic::ir::{DeclarationPublicationRole, FactAvailability};
-            let span = entity.entity.source?;
+            let Some(claim) = native_ts.filter(|_| !stale) else { return Ok(None) };
+            let Some(span) = entity.entity.source else { return Ok(None) };
             if !claim.admits_image() || claim.path != path
                 || entity.entity.authority.publication != DeclarationPublicationRole::PrimaryOwned
                 || entity.entity.authority.source != FactAvailability::Captured
                 || entity.entity.authority.source_file != FactAvailability::Captured
                 || span.is_empty() || span.end() > claim.byte_length
                 || image.atom(span.file()) != Some(path.as_bytes())
-            { return None; }
-            backend_compile::SourceLocation::new(path, claim.line_at(span.start())?).ok()
-        }) {
+            { return Ok(None); }
+            let line = if claim.line_starts.is_some() { claim.line_at(span.start()) }
+                else if let Some(lines) = native_ts_lines { lines.line_at(span.start())? }
+                else { None };
+            Ok(line.and_then(|line| backend_compile::SourceLocation::new(path, line).ok()))
+        })()? {
             row = row.with_source(location);
         } else if let Some(site) = sites.get(&identity) {
             charges.push(Charge::Sub(site.source_excerpt().text().map_or(0, str::len)));

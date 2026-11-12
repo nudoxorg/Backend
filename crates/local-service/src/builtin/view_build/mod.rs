@@ -542,6 +542,7 @@ pub fn execute() {}
             site_declarations: &[],
             native_source: None,
             native_ts_evidence: None,
+            native_ts_lines: None,
         };
         super::append_image_rows(
             &view,
@@ -661,6 +662,7 @@ pub fn execute() {}
             site_declarations: &[],
             native_source: None,
             native_ts_evidence: None,
+            native_ts_lines: None,
         };
         super::append_image_rows(&view, &project, profile, &mut sink)
             .map_err(|error| error.to_string())?;
