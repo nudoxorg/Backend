@@ -166,6 +166,10 @@ fn exercise(fixture: &OwnerFixture) {
     let revision = renewal.revision().expect("actual service recertifies attachment renewal");
     let renewed_root = VersionedRoot::from_revision(1, revision.cursor(), 0);
     assert!(renewed_root.same_authority(fixture.root));
+    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("scene before renewal").entity_id(), graph.entity_id(),
+        "the retained scene must survive local interaction before renewal");
+    let renewal_key = rig.cx.update(|_, cx| indexed_world::key(renewed_root, old_key.preferred().cloned(), cx).expect("renewed serving key"));
+    assert_eq!(renewal_key, old_key, "the registered owner and preferred project must remain the same at renewal");
     gate.publish(OwnerState::Ready { key: renewed_root, mode: ServiceMode::Attached });
     rig.settle();
     assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("renewed same-generation scene").entity_id(), graph.entity_id());
