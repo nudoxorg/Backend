@@ -3892,6 +3892,28 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "large synthetic metadata allocation fixture; not a selected-owner proof"]
+    fn near_limit_synthetic_metadata_allocation_bound() {
+        let (image, _) = compiler_image();
+        let images = (0..MAX_MEMBER_IDS - 10).map(|i| {
+            let mut row = image;
+            row.object_id = [0; 32];
+            row.object_id[24..].copy_from_slice(&(i as u64 + 1).to_be_bytes());
+            row
+        }).collect::<Vec<_>>();
+        let value = metadata_with_images(images, None)
+            .with_native_program_sources(CompilerProgramSourceMember { object_id: [0x11; 32], program: [0x22; 32], byte_length: 8 }).unwrap()
+            .with_native_headers(CompilerNativeHeadersMember { object_id: [0x77; 32], byte_length: 8 }).unwrap();
+        let bytes = value.canonical_bytes();
+        assert!(bytes.len() > 48 * 1024 * 1024);
+        let bound = compiler_metadata_decode_bound(&bytes).unwrap();
+        let mut decoded = None;
+        let peak = allocation_counter::measure(|| decoded = Some(CompilerPublicationMetadata::decode(&bytes).unwrap()));
+        assert_eq!(decoded.unwrap(), value);
+        assert!(peak.bytes_max as usize <= bound, "near-limit metadata peak {peak:?}, bound {bound}");
+    }
+
+    #[test]
     fn truncated_maximum_inventories_refuse_before_count_sized_allocation() {
         use allocation_counter::measure;
         let record = metadata(compiler_image().0);
