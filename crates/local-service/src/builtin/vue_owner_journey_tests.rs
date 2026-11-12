@@ -140,7 +140,28 @@ fn verify(session: &mut Session, project: &std::path::Path) -> Result<(), Box<dy
         search.root.rows().iter().any(|row| row.id == selected),
         "ordinary lexical search retains the Vue declaration"
     );
-    let module = format!("{}::App.vue", project.display());
+    let CommandReply::Names(modules) = session
+        .names("App.vue", 100)
+        .map_err(|e| std::io::Error::other(format!("component names: {e}")))?
+        .reply
+    else {
+        return Err("component names reply".into());
+    };
+    let module = modules
+        .root
+        .rows()
+        .iter()
+        .find(|row| {
+            row.kind == Some(backend_compile::DeclarationKind::Module)
+                && row
+                    .source
+                    .captured()
+                    .is_some_and(|source| source.path() == "App.vue")
+        })
+        .ok_or("published Vue component module missing")?
+        .label
+        .clone();
+    assert_eq!(module, format!("{}::App.vue", project.display()));
     let CommandReply::Document(component) = session
         .source(&module)
         .map_err(|e| std::io::Error::other(format!("component source {module}: {e}")))?
