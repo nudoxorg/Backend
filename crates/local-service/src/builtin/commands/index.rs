@@ -5393,7 +5393,7 @@ fn publish_local_compile(
     ),
     BuiltinModelError,
 > {
-    if !ingest::compiler_revision_is_current(revision_fence).map_err(BuiltinModelError)? {
+    if !ingest::compiler_revision_is_current_with_cancellation(revision_fence, Some(cancellation)).map_err(BuiltinModelError)? {
         return Err(BuiltinModelError(
             "compiler source or configuration revision changed during semantic compilation; retry indexing"
                 .to_owned(),
@@ -5401,7 +5401,7 @@ fn publish_local_compile(
     }
     semantic_authority.publish_staged_with_stop(key, attempt, staged, &|| cancellation.load(Ordering::Acquire), |_| {
         let source_is_current =
-            ingest::compiler_revision_is_current(revision_fence).map_err(BuiltinModelError)?;
+            ingest::compiler_revision_is_current_with_cancellation(revision_fence, Some(cancellation)).map_err(BuiltinModelError)?;
         if source_is_current {
             Ok(())
         } else {
