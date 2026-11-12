@@ -2904,6 +2904,9 @@ mod projection;
 mod native_ts_react_owner_journey_tests;
 
 #[cfg(all(test, unix))]
+#[path = "builtin/nuget_owner_wire_tests.rs"]
+mod nuget_owner_wire_tests;
+#[cfg(all(test, unix))]
 #[path = "builtin/native_ts_owner_journey_tests.rs"]
 mod native_ts_owner_journey_tests;
 #[cfg(test)]

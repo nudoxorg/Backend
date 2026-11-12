@@ -1607,6 +1607,7 @@ dependencies = [
 name = "backend-local-service"
 version = "0.2.0"
 dependencies = [
+ "axum",
  "backend-client",
  "backend-compile",
  "backend-engine",
