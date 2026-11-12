@@ -736,13 +736,14 @@ mod tests {
         let mut wire = graph.as_bytes().to_vec();
         let node = &source_nodes[0];
         let config_offset = 48 + 4 + node.config_path.len();
-        wire[config_offset..config_offset + 32].fill(0);
+        let foreign = ContentId::<ToolchainDomain>::from_canonical_bytes(b"wrong config domain");
+        wire[config_offset..config_offset + 32].copy_from_slice(foreign.as_ref());
         let mut hash = blake3::Hasher::new();
         hash.update(b"typescript.program-node.v1\0");
         hash.update(toolchain.as_ref());
         hash.update(&(node.config_path.len() as u64).to_le_bytes());
         hash.update(node.config_path.as_bytes());
-        hash.update(&[0; 32]);
+        hash.update(foreign.as_ref());
         hash.update(&node.environment);
         hash.update(&0u64.to_le_bytes());
         hash.update(&[1]);
