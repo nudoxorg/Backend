@@ -1942,7 +1942,7 @@ pub fn reopen_selected_native_headers_budgeted(
     let envelope_max = MAGIC.len() + 2 + 5 * 4 + 4 * 4096 + MAX_PROFILE_BYTES + 1 + 16 + 8 + 32 * 6 + 1 + 4 + MAX_MEMBER_IDS * 32;
     let (envelope_wire, schema, key) = header_object_bounded(store, &pin, *selected.candidate_id(), &[COMPILER_PUBLICATION_ENVELOPE_SCHEMA], envelope_max, budget, cancelled)?;
     header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected envelope stopped: {e:?}"))?;
-    verified_payload_key(schema, &envelope_wire, &key)?;
+    verified_payload_key_checkpointed(schema, &envelope_wire, &key, budget, cancelled)?;
     let envelope = borrowed_selected_envelope(&envelope_wire, selected, selected.candidate_id(), &|| {
         header_checkpoint(&budget.work, cancelled).map_err(|_| CompilerEnvelopeError::Stopped)
     }).map_err(|e| e.to_string())?;
@@ -1954,7 +1954,7 @@ pub fn reopen_selected_native_headers_budgeted(
         COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA, COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA, COMPILER_NATIVE_HEADERS_METADATA_SCHEMA];
     let (wire, schema, key) = header_object_bounded(store, &pin, metadata_id, &schemas, metadata_max, budget, cancelled)?;
     header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected metadata stopped: {e:?}"))?;
-    verified_payload_key(schema, &wire, &key)?;
+    verified_payload_key_checkpointed(schema, &wire, &key, budget, cancelled)?;
     let member = selected_borrowed_metadata_member(&wire, schema, metadata_id, &envelope, budget, cancelled)?;
     for id in envelope.members() {
         if header_member_bounded(store, &pin, closure, id, budget, cancelled)? != count { return Err("selected closure count changed".into()); }
@@ -1965,7 +1965,7 @@ pub fn reopen_selected_native_headers_budgeted(
     let length = member.byte_length() as usize;
     let (wire, schema, key) = header_object_bounded(store, &pin, id, &[COMPILER_NATIVE_HEADERS_SCHEMA], length, budget, cancelled)?;
     if schema != COMPILER_NATIVE_HEADERS_SCHEMA || wire.len() != length { return Err("selected header extent differs".into()); }
-    verified_payload_key(schema, &wire, &key)?;
+    verified_payload_key_checkpointed(schema, &wire, &key, budget, cancelled)?;
     header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
     // Validate all canonical NHA1 framing without materializing decoded rows.
     let _view = backend_semantic::native_ts_headers::NativeTsHeaderAggregateView::parse_canonical_checkpointed(&wire, &mut |_| header_checkpoint(&budget.work, cancelled))
@@ -2018,7 +2018,7 @@ pub fn reopen_selected_native_headers_in_scratch<'a>(
     let envelope_max = MAGIC.len() + 2 + 5 * 4 + 4 * 4096 + MAX_PROFILE_BYTES + 1 + 16 + 8 + 32 * 6 + 1 + 4 + MAX_MEMBER_IDS * 32;
     let (envelope_wire, remaining_scratch, schema, key) = header_object_into_scratch(store, &pin, *selected.candidate_id(), &[COMPILER_PUBLICATION_ENVELOPE_SCHEMA], envelope_max, budget, cancelled, scratch)?;
     header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected envelope stopped: {e:?}"))?;
-    verified_payload_key(schema, &envelope_wire, &key)?;
+    verified_payload_key_checkpointed(schema, &envelope_wire, &key, budget, cancelled)?;
     let envelope = borrowed_selected_envelope(&envelope_wire, selected, selected.candidate_id(), &|| {
         header_checkpoint(&budget.work, cancelled).map_err(|_| CompilerEnvelopeError::Stopped)
     }).map_err(|e| e.to_string())?;
@@ -2030,7 +2030,7 @@ pub fn reopen_selected_native_headers_in_scratch<'a>(
         COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA, COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA, COMPILER_NATIVE_HEADERS_METADATA_SCHEMA];
     let (wire, _, schema, key) = header_object_into_scratch(store, &pin, metadata_id, &schemas, metadata_max, budget, cancelled, &mut *remaining_scratch)?;
     header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected metadata stopped: {e:?}"))?;
-    verified_payload_key(schema, &wire, &key)?;
+    verified_payload_key_checkpointed(schema, &wire, &key, budget, cancelled)?;
     let member = selected_borrowed_metadata_member(&wire, schema, metadata_id, &envelope, budget, cancelled)?;
     for id in envelope.members() {
         if header_member_bounded(store, &pin, closure, id, budget, cancelled)? != count { return Err("selected closure count changed".into()); }
@@ -2041,7 +2041,7 @@ pub fn reopen_selected_native_headers_in_scratch<'a>(
     let length = member.byte_length() as usize;
     let (wire, _, schema, key) = header_object_into_scratch(store, &pin, id, &[COMPILER_NATIVE_HEADERS_SCHEMA], length, budget, cancelled, &mut *remaining_scratch)?;
     if schema != COMPILER_NATIVE_HEADERS_SCHEMA || wire.len() != length { return Err("selected header extent differs".into()); }
-    verified_payload_key(schema, &wire, &key)?;
+    verified_payload_key_checkpointed(schema, &wire, &key, budget, cancelled)?;
     header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
     // Validate all canonical NHA1 framing without materializing decoded rows.
     let view = backend_semantic::native_ts_headers::NativeTsHeaderAggregateView::parse_canonical_checkpointed(wire, &mut |_| header_checkpoint(&budget.work, cancelled))
@@ -3140,6 +3140,18 @@ impl Schema for CompilerNativeHeadersBytesSchema {
 fn verified_payload_key(schema: SchemaIdentity, bytes: &[u8], expected: &AuthorityHash) -> Result<(), String> {
     let mut hash = backend_version::ObjectKeyHasher::new(schema, bytes.len()).map_err(|e| format!("compiler key: {e:?}"))?;
     hash.update(bytes).map_err(|e| format!("compiler key: {e:?}"))?;
+    if &hash.finish().map_err(|e| format!("compiler key: {e:?}"))? != expected { return Err("compiler typed object key differs from canonical bytes".into()); }
+    Ok(())
+}
+
+fn verified_payload_key_checkpointed(schema: SchemaIdentity, bytes: &[u8], expected: &AuthorityHash,
+    budget: &SelectedNativeHeaderBudget, cancelled: &dyn Fn() -> bool) -> Result<(), String> {
+    let mut hash = backend_version::ObjectKeyHasher::new(schema, bytes.len()).map_err(|e| format!("compiler key: {e:?}"))?;
+    for chunk in bytes.chunks(64 * 1024) {
+        header_checkpoint(&budget.work, cancelled).map_err(|e| format!("compiler key stopped: {e:?}"))?;
+        hash.update(chunk).map_err(|e| format!("compiler key: {e:?}"))?;
+    }
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("compiler key stopped: {e:?}"))?;
     if &hash.finish().map_err(|e| format!("compiler key: {e:?}"))? != expected { return Err("compiler typed object key differs from canonical bytes".into()); }
     Ok(())
 }
