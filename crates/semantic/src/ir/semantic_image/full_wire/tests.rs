@@ -2588,6 +2588,8 @@ fn bounded_reopen_charges_work_scratch_and_retained_backing() -> Result<(), crat
     assert_eq!(copy_cancelled.used.get(), 0);
     let zero = Meter::new(0, usize::MAX, u64::MAX);
     assert!(stopped(SemanticImageView::reopen_bounded(&bytes, &zero)));
+    assert!(matches!(super::semantic_image_admission_scratch(&bytes, &zero),
+        Err(FullSemanticImageError::Full(FullSemanticImageFault::AdmissionStopped))));
     let mut corrupt = bytes.clone();
     corrupt[0] ^= 1;
     assert!(matches!(SemanticImageView::reopen_bounded(&corrupt, &Meter::new(u64::MAX, usize::MAX, u64::MAX)),
