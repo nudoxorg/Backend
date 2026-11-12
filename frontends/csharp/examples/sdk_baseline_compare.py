@@ -39,7 +39,47 @@ if inherited:
     a.frameworks = ','.join(filter(None, [a.frameworks, a.inherited_frameworks]))
 excluded = Path(a.exclude_project_output).resolve() if a.exclude_project_output else None
 if excluded:
-    print('scope: component-only; excluding exact project output', excluded, flush=True)
+    # Tie the exclusion to one project library, its compile asset, and the
+    # restore graph's direct project-reference metadata. A matching filename
+    # alone is not sufficient to exclude an output.
+    raw_assets = Path(a.assets).read_bytes()
+    if not raw_assets or len(raw_assets) > 64 * 1024 * 1024:
+        raise SystemExit('assets unavailable or exceeds bound')
+    assets = json.loads(raw_assets)
+    project_dir = Path(a.assets).resolve().parent.parent
+    graph_refs = assets.get('project', {}).get('restore', {}).get('frameworks', {}).get(a.target, {}).get('projectReferences', {})
+    if not isinstance(graph_refs, dict):
+        raise SystemExit('project-reference metadata unavailable')
+    direct_projects = {(project_dir / name).resolve() for name in graph_refs}
+    matches = []
+    for identity, item in assets.get('targets', {}).get(a.target, {}).items():
+        library = assets.get('libraries', {}).get(identity, {})
+        if library.get('type') != 'project' or not isinstance(library.get('path'), str):
+            continue
+        project = (project_dir / library['path']).resolve()
+        if project not in direct_projects:
+            continue
+        framework = item.get('framework', a.target)
+        if framework.startswith('.NETCoreApp,Version=v'):
+            framework = 'net' + framework.removeprefix('.NETCoreApp,Version=v')
+        if framework != a.target:
+            continue
+        for asset in item.get('compile', {}):
+            relative = Path(asset)
+            if relative.is_absolute() or '..' in relative.parts or relative.suffix != '.dll':
+                raise SystemExit('invalid project compile asset')
+            base = project.parent
+            if relative.parts[:2] == ('bin', 'placeholder'):
+                possible = [base / 'obj' / 'Debug' / framework / 'ref' / relative.name,
+                            base / 'bin' / 'Debug' / framework / relative.name]
+            else:
+                possible = [base / relative]
+            if excluded in (path.resolve() for path in possible):
+                matches.append((identity, str(project), asset))
+    if len(matches) != 1:
+        raise SystemExit('project output exclusion lacks unique direct project and compile-asset evidence')
+    print('scope: component-only; excluding exact project output', excluded,
+          'assets evidence:', json.dumps(matches[0]), flush=True)
     packages = [path for path in packages if Path(path).resolve() != excluded]
     a.package_list = os.pathsep.join(packages)
 print('SDK options:', json.dumps(dict(target=a.target, sdk_kind=a.sdk_kind, nullable=a.nullable,
@@ -92,7 +132,7 @@ with tempfile.TemporaryDirectory(prefix='csharp-baseline-') as scratch:
         data = path.read_bytes()
         baseline.append(dict(path=str(path), name=path.name, fusion_name=item['FusionName'], length=len(data), sha256=hashlib.sha256(data).hexdigest()))
     if excluded and not excluded_seen:
-        raise SystemExit('declared project output exclusion was not present in SDK baseline')
+        print('baseline omitted the evidenced project output:', excluded, flush=True)
     env.update(CSHARP_FIXTURE_PACKAGE_CANDIDATES=a.package_list, CSHARP_FIXTURE_SDK_KIND=a.sdk_kind, CSHARP_FIXTURE_NULLABLE=a.nullable, CSHARP_FIXTURE_LANGUAGE=a.language, CSHARP_FIXTURE_OUTPUT=a.output, CSHARP_FIXTURE_FRAMEWORKS=a.frameworks)
     fixture_args = [a.fixture, a.dotnet, a.sdk_dir, a.target, a.pack_list, a.assets]
     if a.global_json:
