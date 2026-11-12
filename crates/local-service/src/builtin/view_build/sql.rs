@@ -209,6 +209,14 @@ pub(super) fn append_query(
         .checked_add(added_rows)
         .filter(|n| *n <= MAX_REBUILD_PACKAGES)
         .ok_or_else(|| BuiltinModelError("SQL query facts exceed row bound".into()))?;
+    let admission = backend_extension_trustfall::semantic_query_corpus_admission_overhead(
+        needed, SQL_ALLOCATION_QUOTA_PER_ALLOCATION,
+    ).map_err(|error| BuiltinModelError(error.to_string()))?;
+    let available = remaining_bytes.checked_sub(admission)
+        .ok_or_else(|| BuiltinModelError("SQL query admission quota exhausted".into()))?;
+    if projected_bytes > available {
+        return Err(BuiltinModelError("SQL query facts exceed byte bound".into()));
+    }
     if needed > facts.capacity() {
         // During reserve both old and new buffers can coexist; the previous
         // buffer was charged by the caller, so charge the entire new one.
@@ -220,7 +228,7 @@ pub(super) fn append_query(
             .ok_or_else(|| BuiltinModelError("SQL query allocation overflow".into()))?;
         projected_bytes = projected_bytes
             .checked_add(new_buffer)
-            .filter(|n| *n <= remaining_bytes)
+            .filter(|n| *n <= available)
             .ok_or_else(|| BuiltinModelError("SQL query facts exceed byte bound".into()))?;
         facts
             .try_reserve_exact(added_rows)
@@ -233,7 +241,7 @@ pub(super) fn append_query(
                 .ok_or_else(|| BuiltinModelError("SQL query allocation overflow".into()))?;
             projected_bytes = projected_bytes
                 .checked_add(extra)
-                .filter(|n| *n <= remaining_bytes)
+                .filter(|n| *n <= available)
                 .ok_or_else(|| BuiltinModelError("SQL query facts exceed byte bound".into()))?;
         }
     }
@@ -300,7 +308,7 @@ pub(super) fn append_query(
             let strings = [coordinate.len(), identity.len(), signature.len(), document.len(), name_plan.len(), kind_plan.len(), 71, 72];
             let payload = query_text_quota(&strings)
                 .ok_or_else(|| BuiltinModelError("SQL query quota overflow".into()))?;
-            projected_bytes = projected_bytes.checked_add(payload).filter(|n| *n <= remaining_bytes)
+            projected_bytes = projected_bytes.checked_add(payload).filter(|n| *n <= available)
                 .ok_or_else(|| BuiltinModelError("SQL query facts exceed byte bound".into()))?;
             let coordinate = coordinate.allocate(format_args!("{}::{}::{prefix}{coordinate_sep}{name}", indexed.label, host.path)).map_err(|e| BuiltinModelError(e.into()))?;
             let preimage = identity.allocate(format_args!("{}::{}::{prefix}{coordinate_sep}{name}\0sql:{ordinal}", indexed.label, host.path)).map_err(|e| BuiltinModelError(e.into()))?;

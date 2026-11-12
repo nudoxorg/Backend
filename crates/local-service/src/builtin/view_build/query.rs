@@ -113,7 +113,8 @@ pub(in crate::builtin) fn semantic_query_corpus_controlled(
         max_total_bytes: MAX_REBUILD_BYTES,
         ..backend_extension_trustfall::Limits::default()
     };
-    let prior_bytes = backend_extension_trustfall::measure_semantic_query_facts(&facts, facts.capacity(), limits)
+    let is_cancelled = || cancelled.is_some_and(|c| c.load(std::sync::atomic::Ordering::Acquire));
+    let prior_bytes = backend_extension_trustfall::measure_semantic_query_facts_controlled(&facts, facts.capacity(), limits, &is_cancelled)
         .map_err(|error| BuiltinModelError(error.to_string()))?;
     let remaining = MAX_REBUILD_BYTES.checked_sub(prior_bytes)
         .ok_or_else(|| BuiltinModelError("semantic query budget exhausted".into()))?;
@@ -124,10 +125,15 @@ pub(in crate::builtin) fn semantic_query_corpus_controlled(
             "workspace semantic query facts exceed their row bound".to_owned(),
         ));
     }
-    let corpus = backend_extension_trustfall::SemanticQueryCorpus::admit_with_limits(
+    let corpus = backend_extension_trustfall::SemanticQueryCorpus::admit_with_budget_controlled(
         snapshot.root(),
         facts,
         limits,
+        backend_extension_trustfall::SemanticQueryAdmissionBudget {
+            maximum_requested_bytes: MAX_REBUILD_BYTES,
+            allocation_quota_per_allocation: 64,
+        },
+        &is_cancelled,
     )
     .map_err(|error| BuiltinModelError(error.to_string()))?;
     check_search_preparation(cancelled, "corpus-complete")?;
