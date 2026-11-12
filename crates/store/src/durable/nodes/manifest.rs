@@ -124,6 +124,63 @@ fn account_manifest_node(
 }
 
 impl FileStore {
+    /// Tests membership in a selected closure without materializing members.
+    ///
+    /// The caller must reserve relation-envelope and path scratch before this
+    /// call, and `before_read` must charge work/open costs and check cancellation
+    /// before each descriptor or relation-node read. `preflight` must charge
+    /// typed node admission and retained node copies before each decode. The
+    /// supplied credit remains debited; temporary reservations may be refunded
+    /// by the caller only after this operation returns. This admits one exact
+    /// selected path, not every member or an exported closure.
+    pub fn contains_closure_member_bounded<B, P>(
+        &self, pin: &super::super::GcPinGuard, closure: ClosureId, member: ObjectId,
+        max_depth: usize, budget: &mut usize, mut before_read: B, preflight: P,
+    ) -> Result<(bool, u64), StoreError>
+    where
+        B: FnMut(&mut usize) -> Result<(), StoreError>,
+        P: for<'a> FnMut(&backend_version::CanonicalNodeView<'a>, &mut usize) -> Result<(), StoreError>,
+    {
+        use backend_version::{LazyTree, LazyTreeError, TreeNodeLoader};
+        use std::cell::RefCell;
+        use std::io::Read;
+        if *budget == 0 || max_depth == 0 || max_depth > 32 { return Err(StoreError::Bounds); }
+        if !pin.covers_identity(self.gc_identity) { return Err(StoreError::Corrupt); }
+        before_read(budget)?;
+        let mut file = super::super::artifact_fs::open_closure(self, closure)?;
+        let length = usize::try_from(file.metadata().map_err(|e| io_error(&e))?.len()).map_err(|_| StoreError::Bounds)?;
+        // Both supported fixed-size descriptor formats fit this stack buffer.
+        let mut bytes = [0u8; 128];
+        if length > bytes.len() { return Err(StoreError::Bounds); }
+        file.read_exact(&mut bytes[..length]).map_err(|e| io_error(&e))?;
+        let mut trailing = [0u8; 1];
+        if file.read(&mut trailing).map_err(|e| io_error(&e))? != 0 { return Err(StoreError::Corrupt); }
+        let descriptor = super::wire::decode_manifest_descriptor(&bytes[..length], closure)?;
+        if descriptor.count.is_some_and(|n| n > NODE_MAX_COUNT) { return Err(StoreError::Bounds); }
+        before_read(budget)?;
+        let schema = SchemaIdentity::of_relation::<ManifestRelation>();
+        if self.read_relation_ref(schema, closure.as_bytes())? != descriptor.root { return Err(StoreError::Corrupt); }
+        struct Loader<'a, B, P> { store: &'a FileStore, state: RefCell<(&'a mut usize, B, P)> }
+        impl<B, P> TreeNodeLoader<ManifestRelation> for Loader<'_, B, P>
+        where B: FnMut(&mut usize) -> Result<(), StoreError>,
+              P: for<'a> FnMut(&backend_version::CanonicalNodeView<'a>, &mut usize) -> Result<(), StoreError> {
+            type Error = StoreError;
+            fn load(&self, claim: UntrustedId<ManifestRelation>) -> Result<CheckedCanonicalRoot<ManifestRelation>, StoreError> {
+                let mut state = self.state.borrow_mut();
+                let (budget, before, gate) = &mut *state;
+                before(budget)?;
+                self.store.read_relation_node_claim_preflight(claim, |view| gate(view, budget))
+            }
+        }
+        let loader = Loader { store: self, state: RefCell::new((budget, before_read, preflight)) };
+        let claim = UntrustedId::<ManifestRelation>::from_wire(closure.as_bytes(), IdContext::relation::<ManifestRelation>()).map_err(|_| StoreError::Corrupt)?;
+        let map_error = |error| match error { LazyTreeError::Load(error) => error, _ => StoreError::Corrupt };
+        let tree = LazyTree::open(&loader, claim).map_err(map_error)?;
+        if descriptor.count.is_some_and(|count| u64::try_from(count).ok() != Some(tree.root().node().row_count())) { return Err(StoreError::Corrupt); }
+        let count = tree.root().node().row_count();
+        tree.lookup_streaming_with_depth_limit(member.as_bytes(), max_depth).map(|v| (v.is_some(), count)).map_err(map_error)
+    }
+
     /// Writes only the changed frontier of a persistent closure index when a
     /// manifest was produced by an exact-base path-copy update. The flat
     /// object export is not part of this physical publication path.

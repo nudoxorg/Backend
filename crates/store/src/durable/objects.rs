@@ -410,6 +410,18 @@ fn object_commitment_view(
     Ok(*hasher.finalize().as_bytes())
 }
 
+/// Computes an untrusted object identity for a value whose logical key and
+/// version are both derived from these bytes. This hashes borrowed bytes and
+/// does not validate their schema-specific canonical grammar or membership.
+pub fn untrusted_object_id_for_encoded_value(schema: SchemaIdentity, bytes: &[u8]) -> Result<UntrustedObjectId, StoreError> {
+    let mut key = backend_version::ObjectKeyHasher::new(schema, bytes.len()).map_err(|_| StoreError::Bounds)?;
+    key.update(bytes).map_err(|_| StoreError::Bounds)?;
+    let key = key.finish().map_err(|_| StoreError::Bounds)?;
+    let version = backend_version::object_version_digest(schema, bytes).map_err(|_| StoreError::Bounds)?;
+    let id = object_commitment_view(schema, &key, &version, bytes)?;
+    Ok(UntrustedObjectId::from_bytes(id))
+}
+
 impl FileStore {
     /// Reads and authenticates an immutable object, lending its payload only
     /// for the duration of `visit`.
@@ -749,6 +761,7 @@ mod tests {
         use std::cell::Cell;
         let (store, root) = test_store("bounded-nonrelation");
         let object = bytes_object(vec![9; 512 * 1024]);
+        assert_eq!(untrusted_object_id_for_encoded_value(object.schema(), object.bytes()).expect("hash").as_bytes(), object.id().as_bytes());
         store.write_object(&object).expect("write");
         let pin = store.pin_garbage_collection().expect("pin");
         let claim = UntrustedObjectId::from_bytes(*object.id().as_bytes());

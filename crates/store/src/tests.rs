@@ -418,6 +418,46 @@ fn weak_root_handle_expires_with_its_map_generation() {
 }
 
 #[test]
+fn bounded_closure_membership_preflights_path_and_denies_zero_credit() {
+    use std::cell::Cell;
+    let mut objects = (0u64..1024).map(|value| {
+        let key = backend_version::ObjectKey::<TestCoverageSchema>::from_value(&value);
+        TypedObject::from_value(&key, &value)
+    }).collect::<Vec<_>>();
+    let target = objects[500].id();
+    objects.sort_by_key(|object| (object.schema(), *object.key(), *object.version()));
+    let manifest = must(ClosureManifest::new(objects));
+    let path = std::env::temp_dir().join(format!("backend-store-bounded-manifest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&path);
+    let store = must(FileStore::open(&path, 16 * 1024 * 1024));
+    let id = must(store.write_closure(&manifest));
+    let pin = must(store.pin_garbage_collection());
+    let calls = Cell::new(0usize);
+    let mut credit = 0usize;
+    assert!(matches!(store.contains_closure_member_bounded(&pin, id, target, 32, &mut credit,
+        |_| { calls.set(calls.get()+1); Ok(()) }, |_,_| Ok(())), Err(StoreError::Bounds)));
+    assert_eq!(calls.get(), 0);
+    credit = 2 * 1024 * 1024;
+    let measured = allocation_counter::measure(|| {
+        assert_eq!(must(store.contains_closure_member_bounded(&pin, id, target, 32, &mut credit,
+            |budget| { *budget = budget.checked_sub(1).ok_or(StoreError::Bounds)?; Ok(()) },
+            |node, budget| { calls.set(calls.get()+1); *budget = budget.checked_sub(2 * node.encoded_len() + 512).ok_or(StoreError::Bounds)?; Ok(()) })), (true, 1024));
+    });
+    assert!(calls.get() >= 2, "fixture must traverse a child");
+    assert!(usize::try_from(measured.bytes_max).unwrap() <= (2 * 1024 * 1024 - credit) + 256 * 1024);
+    credit = 2 * 1024 * 1024;
+    assert_eq!(must(store.contains_closure_member_bounded(&pin, id, ObjectId::from_bytes([0xff;32]), 32, &mut credit,
+        |_| Ok(()), |_,_| Ok(()))), (false, 1024));
+    credit = 2 * 1024 * 1024;
+    let gates = Cell::new(0);
+    assert!(matches!(store.contains_closure_member_bounded(&pin, id, target, 32, &mut credit,
+        |_| Ok(()), |_,_| { gates.set(gates.get()+1); if gates.get() == 2 { Err(StoreError::Bounds) } else { Ok(()) } }), Err(StoreError::Bounds)));
+    assert_eq!(gates.get(), 2);
+    drop(pin);
+    let _ = std::fs::remove_dir_all(path);
+}
+
+#[test]
 fn lazy_closure_open_lookup_and_pages_are_bounded() {
     const OBJECT_COUNT: u64 = 1_024;
     let object_count = usize::try_from(OBJECT_COUNT).unwrap_or_default();
