@@ -378,6 +378,7 @@ mod imp {
             let root_path = std::ffi::CStr::from_bytes_with_nul(&root_buf[..=root.len()]).map_err(|_| StoreError::Corrupt)?;
             checkpoint()?;
             let root = File::from(open(root_path, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map_err(path_error)?);
+            if !store.root_directory.matches_open_directory(&root).map_err(|e| io_error(&e))? { return Err(StoreError::UnsafePath); }
             fn child(parent: &File, name: &'static [u8]) -> Result<File, StoreError> {
                 let name = std::ffi::CStr::from_bytes_with_nul(name).map_err(|_| StoreError::Corrupt)?;
                 openat(parent, name, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map(File::from).map_err(path_error)

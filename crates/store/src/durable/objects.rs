@@ -941,6 +941,28 @@ mod tests {
         replace_fixture(&path, &original);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn bounded_reader_rejects_root_replacement_after_pin() {
+        let (store, root) = test_store("root-replacement");
+        let object = bytes_object(vec![7; 32]);
+        store.write_object(&object).expect("write");
+        let mut credit = 4096;
+        let pin = store.pin_garbage_collection_bounded(&mut credit, |_| Ok(())).expect("pin");
+        let displaced = root.with_extension("displaced");
+        let _ = fs::remove_dir_all(&displaced);
+        fs::rename(&root, &displaced).expect("move original root");
+        let replacement = FileStore::open(&root, 1024 * 1024).expect("replacement store");
+        let claim = UntrustedObjectId::from_bytes(*object.id().as_bytes());
+        credit = 1024 * 1024;
+        assert!(matches!(store.open_bounded_nonrelation_object(&pin, claim, &[object.schema()], None, 32, &mut credit, |_| Ok(())), Err(StoreError::UnsafePath)));
+        credit = 1024 * 1024;
+        assert!(matches!(store.pin_garbage_collection_bounded(&mut credit, |_| Ok(())), Err(StoreError::UnsafePath)));
+        drop(replacement); drop(pin); drop(store);
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(displaced);
+    }
+
     #[test]
     fn bounded_nonrelation_large_payload_has_one_wire_allocation() {
         const LENGTH: usize = 64 * 1024 * 1024;

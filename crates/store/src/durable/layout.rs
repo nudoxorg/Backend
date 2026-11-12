@@ -575,6 +575,7 @@ impl FileStore {
             let path = std::ffi::CStr::from_bytes_with_nul(&root_buf[..=path.len()]).map_err(|_| super::StoreError::Corrupt)?;
             checkpoint(budget)?;
             let root = File::from(open(path, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map_err(|e| super::io_error(&std::io::Error::from(e)))?);
+            if !self.root_directory.matches_open_directory(&root).map_err(|e| super::io_error(&e))? { return Err(super::StoreError::UnsafePath); }
             let name = std::ffi::CStr::from_bytes_with_nul(b"GC-PINS.lock\0").map_err(|_| super::StoreError::Corrupt)?;
             checkpoint(budget)?;
             let file = File::from(openat(&root, name, OFlags::CREATE | OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::from_bits_truncate(0o600)).map_err(|e| super::io_error(&std::io::Error::from(e)))?);

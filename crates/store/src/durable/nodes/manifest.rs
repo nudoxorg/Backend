@@ -133,14 +133,35 @@ fn bounded_manifest_ref(dirs: &super::super::artifact_fs::BoundedReadDirectories
 }
 
 impl FileStore {
+    /// Maximum encoded node bytes in one bounded manifest work token.
+    pub const BOUNDED_MANIFEST_WORK_NODE_BYTES: usize = backend_version::DEFAULT_CUT_POLICY.max_encoded_bytes();
+    /// Physical hash, preflight root hash, and two hashes in each of two
+    /// typed admissions. Each hashes at most `BOUNDED_MANIFEST_WORK_NODE_BYTES`.
+    pub const BOUNDED_MANIFEST_WORK_HASH_PASSES: usize = 6;
+    /// Raw framing/order scan, two typed grammar scans, and streamed lookup.
+    pub const BOUNDED_MANIFEST_WORK_NODE_SCANS: usize = 4;
+    /// Upper bound per scan, including the rejected first over-limit entry.
+    pub const BOUNDED_MANIFEST_WORK_ENTRIES_PER_SCAN: usize = backend_version::DEFAULT_CUT_POLICY.max_entries as usize + 1;
+    /// Two typed admissions and the lookup root clone each copy at most one
+    /// node-sized wire payload.
+    pub const BOUNDED_MANIFEST_WORK_WIRE_COPIES: usize = 3;
+
     /// Tests membership in a selected closure without materializing members.
     ///
     /// The Unix implementation debits fixed locator/envelope stack before
     /// opening and node wire/key allocations before typed decode. Other
     /// platforms fail closed. `before_read` must charge work and check cancellation
     /// before each descriptor or relation-node read. `preflight` must charge
-    /// typed node admission and retained node copies before each decode. The
-    /// supplied credit remains debited; temporary reservations may be refunded
+    /// typed node admission and retained node copies before each decode. Each
+    /// `before_read` invocation must debit one worst-shape node-admission work
+    /// token (the named `BOUNDED_MANIFEST_WORK_*` bounds). A token covers the
+    /// indicated full-node hashes, scans, copies, and fixed-width key
+    /// roundtrip/order operations for each scan; malformed key bytes are
+    /// bounded by the node-byte limit. Every loaded node invokes this callback
+    /// before physical I/O and its authentication, so charging every callback
+    /// is deliberately conservative. Retry/open operations also consume one
+    /// token each. Work tokens bound operations, not CPU instructions or an
+    /// in-flight system call. The supplied credit remains debited; temporary reservations may be refunded
     /// by the caller only after this operation returns. This admits one exact
     /// selected path, not every member or an exported closure.
     pub fn contains_closure_member_bounded<B, P>(

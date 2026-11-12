@@ -464,11 +464,21 @@ fn bounded_closure_membership_preflights_path_and_denies_zero_credit() {
     assert_eq!(calls.get(), 3);
     calls.set(0);
     credit = 2 * 1024 * 1024;
+    let work_calls = Cell::new(0usize);
     let measured = allocation_counter::measure(|| {
         assert_eq!(must(store.contains_closure_member_bounded(&pin, id, target, 32, &mut credit,
-            |budget| { *budget = budget.checked_sub(1).ok_or(StoreError::Bounds)?; Ok(()) },
+            |budget| { work_calls.set(work_calls.get()+1); *budget = budget.checked_sub(1).ok_or(StoreError::Bounds)?; Ok(()) },
             |node, budget| { calls.set(calls.get()+1); *budget = budget.checked_sub(2 * node.encoded_len() + 512).ok_or(StoreError::Bounds)?; Ok(()) })), (true, 1024));
     });
+    let required_work = work_calls.get();
+    for (work, expect_ok) in [(required_work, true), (required_work - 1, false)] {
+        let mut remaining = work;
+        let mut credit = 2 * 1024 * 1024;
+        let result = store.contains_closure_member_bounded(&pin, id, target, 32, &mut credit,
+            |_| { remaining = remaining.checked_sub(1).ok_or(StoreError::Bounds)?; Ok(()) }, |_,_| Ok(()));
+        assert_eq!(result.is_ok(), expect_ok);
+        if !expect_ok { assert!(matches!(result, Err(StoreError::Bounds))); }
+    }
     assert!(calls.get() >= 2, "fixture must traverse a child");
     assert!(usize::try_from(measured.bytes_max).unwrap() <= (2 * 1024 * 1024 - credit) + 256 * 1024);
     credit = 2 * 1024 * 1024;
