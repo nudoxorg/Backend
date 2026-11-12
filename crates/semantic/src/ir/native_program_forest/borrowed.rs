@@ -7,9 +7,23 @@ use crate::ir::native_program_sources::{
 /// Exact upper bounds for caller-owned graph validation scratch.
 #[derive(Clone, Copy, Debug)]
 pub struct BorrowedProgramGraphScratch {
+    /// Number of graph nodes (each requires eight scratch bytes).
     pub nodes: usize,
+    /// Number of source rows (each requires twelve scratch bytes).
     pub rows: usize,
+    /// Scratch bytes required for the largest individual leaf.
     pub leaf_paths: usize,
+}
+
+impl BorrowedProgramGraphScratch {
+    /// Exact bytes needed for the node index.
+    pub const fn node_bytes(self) -> usize {
+        self.nodes * 8
+    }
+    /// Exact bytes needed for the source-row index.
+    pub const fn row_bytes(self) -> usize {
+        self.rows * 12
+    }
 }
 
 /// A graph verified against the same identities and topology as the owning decoder.

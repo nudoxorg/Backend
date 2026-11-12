@@ -663,6 +663,39 @@ mod tests {
             .is_err()
         );
     }
+
+    #[test]
+    fn borrowed_project_set_preserves_disconnected_leaf_membership() {
+        let graph = NativeProgramSources::from_project_set(
+            ContentId::from_canonical_bytes(b"compiler"),
+            0,
+            independent_nodes(),
+        )
+        .unwrap();
+        let shape = BorrowedProgramGraph::scratch(graph.as_bytes(), |_| Ok::<_, ()>(())).unwrap();
+        let mut nodes = vec![0; shape.nodes * 8];
+        let mut rows = vec![0; shape.rows * 12];
+        let mut paths = vec![0; shape.leaf_paths];
+        let view = BorrowedProgramGraph::decode(
+            graph.as_bytes(),
+            &mut nodes,
+            &mut rows,
+            &mut paths,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+        assert_eq!(view.membership_identity(), graph.membership_identity());
+        let mut count = 0;
+        view.visit_sources(
+            |_| Ok::<_, ()>(()),
+            |_| {
+                count += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(count, graph.sources().count());
+    }
     fn leaf(path: &str) -> NativeProgramSourceManifest {
         NativeProgramSourceManifest::from_sources(
             ContentId::from_canonical_bytes(b"compiler"),

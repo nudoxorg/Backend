@@ -580,6 +580,41 @@ mod tests {
             ))
         ));
     }
+
+    #[test]
+    fn borrowed_admission_rejects_duplicate_package_mapping() {
+        let owned = NativeProgramSourceManifest::from_sources(
+            ContentId::from_canonical_bytes(b"compiler"),
+            vec![
+                NativeProgramSource {
+                    program_path: "src/a.ts".into(),
+                    package_path: Some("pkg/a.ts".into()),
+                    source: SourceIdentity::from_bytes(b"a").unwrap(),
+                },
+                NativeProgramSource {
+                    program_path: "src/b.ts".into(),
+                    package_path: Some("pkg/b.ts".into()),
+                    source: SourceIdentity::from_bytes(b"b").unwrap(),
+                },
+            ],
+        )
+        .unwrap();
+        let mut bytes = owned.as_bytes().to_vec();
+        let position = bytes
+            .windows(8)
+            .position(|part| part == b"pkg/b.ts")
+            .unwrap();
+        bytes[position..position + 8].copy_from_slice(b"pkg/a.ts");
+        assert!(NativeProgramSourceManifest::decode(&bytes).is_err());
+        let mut scratch =
+            vec![0; BorrowedNativeProgramSourceManifest::scratch_bytes(&bytes).unwrap()];
+        assert!(matches!(
+            BorrowedNativeProgramSourceManifest::decode(&bytes, &mut scratch, |_| Ok::<_, ()>(())),
+            Err(BorrowedNativeProgramError::Manifest(
+                NativeProgramSourceManifestError::Encoding
+            ))
+        ));
+    }
     fn rows() -> Vec<NativeProgramSource> {
         [
             (
