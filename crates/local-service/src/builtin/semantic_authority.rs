@@ -5778,6 +5778,7 @@ mod tests {
             .expect("reopen selected legacy metadata");
         assert!(legacy_metadata.metadata().native_lines().is_none());
         assert!(legacy_metadata.metadata().native_program_sources().is_some());
+        assert!(legacy_metadata.metadata().native_headers().is_some());
         let attempt = authority.begin_candidate_attempt(&key, &observation)
             .expect("begin wrong-line attempt");
         TEST_FORGE_LINE_SOURCE.with(|forge| forge.set(true));
