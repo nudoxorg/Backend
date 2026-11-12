@@ -424,14 +424,34 @@ fn bounded_closure_membership_preflights_path_and_denies_zero_credit() {
         let key = backend_version::ObjectKey::<TestCoverageSchema>::from_value(&value);
         TypedObject::from_value(&key, &value)
     }).collect::<Vec<_>>();
-    let target = objects[500].id();
+    let target = UntrustedObjectId::from_bytes(*objects[500].id().as_bytes());
     objects.sort_by_key(|object| (object.schema(), *object.key(), *object.version()));
     let manifest = must(ClosureManifest::new(objects));
     let path = std::env::temp_dir().join(format!("backend-store-bounded-manifest-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&path);
     let store = must(FileStore::open(&path, 16 * 1024 * 1024));
     let id = must(store.write_closure(&manifest));
-    let pin = must(store.pin_garbage_collection());
+    let mut pin_credit = 0;
+    assert!(matches!(store.pin_garbage_collection_bounded(&mut pin_credit, |_| Ok(())), Err(StoreError::Bounds)));
+    pin_credit = 4096;
+    let pin_attempts = Cell::new(0);
+    assert!(must(store.try_with_gc_exclusive_lease(|| {
+        let result = store.pin_garbage_collection_bounded(&mut pin_credit, |_| {
+            pin_attempts.set(pin_attempts.get() + 1);
+            if pin_attempts.get() == 5 { Err(StoreError::Bounds) } else { Ok(()) }
+        });
+        assert!(matches!(result, Err(StoreError::Bounds)));
+        Ok(())
+    })).is_some());
+    assert_eq!(pin_attempts.get(), 5);
+    pin_credit = 4096;
+    let mut pin = None;
+    let pin_alloc = allocation_counter::measure(|| {
+        pin = Some(must(store.pin_garbage_collection_bounded(&mut pin_credit, |_| Ok(()))));
+    });
+    assert_eq!(pin_alloc.bytes_max, 0);
+    let pin = pin.expect("bounded pin");
+    assert!(must(store.try_with_gc_exclusive_lease(|| Ok(()))).is_none());
     let calls = Cell::new(0usize);
     let mut credit = 0usize;
     assert!(matches!(store.contains_closure_member_bounded(&pin, id, target, 32, &mut credit,
@@ -452,7 +472,7 @@ fn bounded_closure_membership_preflights_path_and_denies_zero_credit() {
     assert!(calls.get() >= 2, "fixture must traverse a child");
     assert!(usize::try_from(measured.bytes_max).unwrap() <= (2 * 1024 * 1024 - credit) + 256 * 1024);
     credit = 2 * 1024 * 1024;
-    assert_eq!(must(store.contains_closure_member_bounded(&pin, id, ObjectId::from_bytes([0xff;32]), 32, &mut credit,
+    assert_eq!(must(store.contains_closure_member_bounded(&pin, id, UntrustedObjectId::from_bytes([0xff;32]), 32, &mut credit,
         |_| Ok(()), |_,_| Ok(()))), (false, 1024));
     credit = 2 * 1024 * 1024;
     let gates = Cell::new(0);

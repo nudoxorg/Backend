@@ -128,7 +128,7 @@ fn bounded_manifest_ref(dirs: &super::super::artifact_fs::BoundedReadDirectories
     let mut file = dirs.relation_ref(schema, version, checkpoint)?;
     let len = super::wire::relation_ref_encoded_len();
     if usize::try_from(file.metadata().map_err(|e| io_error(&e))?.len()).map_err(|_| StoreError::Bounds)? != len { return Err(StoreError::Corrupt); }
-    let bytes = super::relation::read_relation_reference(&mut file)?;
+    let bytes = super::relation::read_relation_reference_checkpoint(&mut file, checkpoint)?;
     super::wire::decode_relation_ref(&bytes[..len], schema, version)
 }
 
@@ -144,7 +144,7 @@ impl FileStore {
     /// by the caller only after this operation returns. This admits one exact
     /// selected path, not every member or an exported closure.
     pub fn contains_closure_member_bounded<B, P>(
-        &self, pin: &super::super::GcPinGuard, closure: ClosureId, member: ObjectId,
+        &self, pin: &super::super::GcPinGuard, closure: ClosureId, member: crate::UntrustedObjectId,
         max_depth: usize, budget: &mut usize, mut before_read: B, preflight: P,
     ) -> Result<(bool, u64), StoreError>
     where
@@ -173,9 +173,26 @@ impl FileStore {
         // Both supported fixed-size descriptor formats fit this stack buffer.
         let mut bytes = [0u8; 128];
         if length > bytes.len() { return Err(StoreError::Bounds); }
-        file.read_exact(&mut bytes[..length]).map_err(|e| io_error(&e))?;
+        let mut at = 0;
+        while at < length {
+            before_read(budget)?;
+            match file.read(&mut bytes[at..length]) {
+                Ok(0) => return Err(StoreError::Corrupt),
+                Ok(n) => at += n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(io_error(&e)),
+            }
+        }
         let mut trailing = [0u8; 1];
-        if file.read(&mut trailing).map_err(|e| io_error(&e))? != 0 { return Err(StoreError::Corrupt); }
+        loop {
+            before_read(budget)?;
+            match file.read(&mut trailing) {
+                Ok(0) => break,
+                Ok(_) => return Err(StoreError::Corrupt),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(io_error(&e)),
+            }
+        }
         let descriptor = super::wire::decode_manifest_descriptor(&bytes[..length], closure)?;
         if descriptor.count.is_some_and(|n| n > NODE_MAX_COUNT) { return Err(StoreError::Bounds); }
         before_read(budget)?;
@@ -201,7 +218,9 @@ impl FileStore {
                     let schema = SchemaIdentity::of_relation::<ManifestRelation>();
                     let object = bounded_manifest_ref(self.dirs, schema, claim.as_bytes(), &mut || before(budget))?;
                     let file = self.dirs.object(object, &mut || before(budget))?;
-                    self.store.with_relation_object_preflight_file(file, crate::UntrustedObjectId::from_bytes(*object.as_bytes()),
+                    let callbacks = RefCell::new((budget, before, gate));
+                    self.store.with_relation_object_preflight_file_checkpoint(file, crate::UntrustedObjectId::from_bytes(*object.as_bytes()),
+                        &mut || { let mut state = callbacks.borrow_mut(); let (budget, before, _) = &mut *state; before(budget) },
                         |object| {
                             if object.schema() != schema || object.version() != claim.as_bytes() || object.key() != &crate::closure::relation_key(schema) { return Err(StoreError::Corrupt); }
                             backend_version::StateRoot::<ManifestRelation>::admit_canonical_bytes(claim, object.bytes()).map_err(|_| StoreError::Corrupt)?;
@@ -209,7 +228,9 @@ impl FileStore {
                             // Each admitted node has an exact-length wire copy;
                             // reserve two copies plus the single 32-byte key encoder.
                             let node_charge = view.encoded_len().checked_mul(2).and_then(|n| n.checked_add(32)).ok_or(StoreError::Bounds)?;
-                            **budget = budget.checked_sub(node_charge).ok_or(StoreError::Bounds)?;
+                            let mut state = callbacks.borrow_mut();
+                            let (budget, _, gate) = &mut *state;
+                            ***budget = (***budget).checked_sub(node_charge).ok_or(StoreError::Bounds)?;
                             gate(&view, budget)
                         },
                         |object| backend_version::admit_canonical_root_claim(claim, object.bytes()).map_err(|_| StoreError::Corrupt))

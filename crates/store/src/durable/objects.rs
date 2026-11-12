@@ -109,8 +109,16 @@ impl BoundedObjectReader<'_> {
         // Each bounded chunk is separately charged and cancellable before I/O
         // and before each of the two identity hash passes.
         for chunk in payload.chunks_mut(64 * 1024) {
-            checkpoint(budget, chunk.len())?;
-            self.file.read_exact(chunk).map_err(|error| if error.kind() == std::io::ErrorKind::UnexpectedEof { StoreError::Corrupt } else { io_error(&error) })?;
+            let mut at = 0;
+            while at < chunk.len() {
+                checkpoint(budget, chunk.len() - at)?;
+                match self.file.read(&mut chunk[at..]) {
+                    Ok(0) => return Err(StoreError::Corrupt),
+                    Ok(n) => at += n,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) => return Err(io_error(&error)),
+                }
+            }
         }
         checkpoint(budget, 0)?;
         let mut trailing = [0u8;1];
@@ -609,7 +617,16 @@ impl FileStore {
         let file_len = usize::try_from(file.metadata().map_err(|error| io_error(&error))?.len()).map_err(|_| StoreError::Bounds)?;
         if file_len < HEADER || file_len > self.object_envelope_limit()? { return Err(StoreError::Bounds); }
         let mut header = [0u8; HEADER];
-        file.read_exact(&mut header).map_err(|error| io_error(&error))?;
+        let mut at = 0;
+        while at < HEADER {
+            before_open(budget)?;
+            match file.read(&mut header[at..]) {
+                Ok(0) => return Err(StoreError::Corrupt),
+                Ok(n) => at += n,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(io_error(&error)),
+            }
+        }
         if !header.starts_with(OBJECT_MAGIC) { return Err(StoreError::Corrupt); }
         let mut at = OBJECT_MAGIC.len();
         let claimed = read_hash(&header, &mut at)?;
@@ -674,7 +691,15 @@ impl FileStore {
     }
 
     pub(in crate::durable) fn with_relation_object_preflight_file<T, P, F>(
-        &self, mut file: File, claim: UntrustedObjectId, preflight: P, visit: F,
+        &self, file: File, claim: UntrustedObjectId, preflight: P, visit: F,
+    ) -> Result<T, StoreError>
+    where P: for<'a> FnOnce(VerifiedObjectView<'a>) -> Result<(), StoreError>,
+          F: for<'a> FnOnce(VerifiedObjectView<'a>) -> Result<T, StoreError> {
+        self.with_relation_object_preflight_file_checkpoint(file, claim, &mut || Ok(()), preflight, visit)
+    }
+
+    pub(in crate::durable) fn with_relation_object_preflight_file_checkpoint<T, P, F>(
+        &self, mut file: File, claim: UntrustedObjectId, checkpoint: &mut dyn FnMut() -> Result<(), StoreError>, preflight: P, visit: F,
     ) -> Result<T, StoreError>
     where P: for<'a> FnOnce(VerifiedObjectView<'a>) -> Result<(), StoreError>,
           F: for<'a> FnOnce(VerifiedObjectView<'a>) -> Result<T, StoreError> {
@@ -687,9 +712,26 @@ impl FileStore {
         // A fixed stack buffer avoids Vec growth before the caller's raw-node
         // preflight. The workspace wrapper reserves it before opening a node.
         let mut envelope = [0u8; MAX_RELATION_ENVELOPE];
-        file.read_exact(&mut envelope[..length]).map_err(|error| io_error(&error))?;
+        let mut at = 0;
+        while at < length {
+            checkpoint()?;
+            match file.read(&mut envelope[at..length]) {
+                Ok(0) => return Err(StoreError::Corrupt),
+                Ok(n) => at += n,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(io_error(&error)),
+            }
+        }
         let mut trailing = [0u8; 1];
-        if file.read(&mut trailing).map_err(|error| io_error(&error))? != 0 { return Err(StoreError::Corrupt); }
+        loop {
+            checkpoint()?;
+            match file.read(&mut trailing) {
+                Ok(0) => break,
+                Ok(_) => return Err(StoreError::Corrupt),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(io_error(&error)),
+            }
+        }
         let object = verify_object_envelope(&envelope[..length], maximum, Some(claim))?;
         preflight(object)?;
         self.relation_registry.admit_relation_object_only(object.schema(), object.key(), object.version(), object.bytes())?;

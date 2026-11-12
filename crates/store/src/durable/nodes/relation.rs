@@ -100,14 +100,26 @@ impl<R: CanonicalRelation> RelationNodeRead<R> {
 }
 
 pub(super) fn read_relation_reference(reader: &mut impl std::io::Read) -> Result<[u8; 128], StoreError> {
+    read_relation_reference_checkpoint(reader, &mut || Ok(()))
+}
+
+pub(super) fn read_relation_reference_checkpoint(reader: &mut impl std::io::Read, checkpoint: &mut dyn FnMut() -> Result<(), StoreError>) -> Result<[u8; 128], StoreError> {
     let mut bytes = [0u8; 128];
     let expected_len = wire::relation_ref_encoded_len();
     if expected_len > bytes.len() { return Err(StoreError::Bounds); }
-    reader.read_exact(&mut bytes[..expected_len]).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::UnexpectedEof { StoreError::Corrupt } else { io_error(&error) }
-    })?;
+    let mut at = 0;
+    while at < expected_len {
+        checkpoint()?;
+        match reader.read(&mut bytes[at..expected_len]) {
+            Ok(0) => return Err(StoreError::Corrupt),
+            Ok(n) => at += n,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(io_error(&error)),
+        }
+    }
     let mut trailing = [0u8; 1];
     loop {
+        checkpoint()?;
         match reader.read(&mut trailing) {
             Ok(0) => return Ok(bytes),
             Ok(_) => return Err(StoreError::Corrupt),
