@@ -766,13 +766,9 @@ pub(super) fn view_coverage(
             let page = sql.page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
                 .map_err(|error| BuiltinModelError(error.to_string()))?;
             for (_, row) in page.entries() {
-                if let backend_engine::builtin::SqlAnalysisRecord::Selection { inventory, gaps, .. } = row {
-                    if !matches!(inventory, backend_engine::builtin::SqlInventory::Complete)
-                        || *gaps != Default::default() {
-                        if !coverage.contains(&ViewCoverage::Gapped { lane: Lane::Names }) {
-                            coverage.push(ViewCoverage::Gapped { lane: Lane::Names });
-                        }
-                    }
+                let sql_incomplete = sql_row_incomplete(row);
+                if sql_incomplete && !coverage.contains(&ViewCoverage::Gapped { lane: Lane::Names }) {
+                    coverage.push(ViewCoverage::Gapped { lane: Lane::Names });
                 }
             }
             let Some(next) = page.next().copied() else { break };
@@ -780,6 +776,17 @@ pub(super) fn view_coverage(
         }
     }
     Ok(coverage)
+}
+
+fn sql_row_incomplete(row: &backend_engine::builtin::SqlAnalysisRecord) -> bool {
+    match row {
+        backend_engine::builtin::SqlAnalysisRecord::Selection { inventory, gaps, .. } =>
+            !matches!(inventory, backend_engine::builtin::SqlInventory::Complete)
+                || *gaps != Default::default(),
+        backend_engine::builtin::SqlAnalysisRecord::Attempt { outcome, .. } =>
+            !matches!(outcome, backend_engine::builtin::SqlAttemptOutcome::Observed),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
