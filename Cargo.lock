@@ -1636,6 +1636,7 @@ dependencies = [
  "backend-version",
  "base64 0.22.1",
  "blake3",
+ "bytemuck",
  "flate2",
  "futures-executor",
  "futures-util",

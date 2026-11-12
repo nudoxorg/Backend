@@ -11,6 +11,7 @@ mod descriptor;
 mod model;
 mod page;
 mod proof;
+mod retained;
 mod root;
 mod transition;
 
