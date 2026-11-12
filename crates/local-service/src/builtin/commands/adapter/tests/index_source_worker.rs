@@ -1645,8 +1645,12 @@ fn mixed_native_ts_css_owner_uninstrumented_control() {
 }
 
 #[test]
-#[ignore = "mixed no-permit owner control; run alone with frontend failpoint"]
 fn mixed_native_ts_css_without_worker_reports_gap() {
+    if crate::test_support::run_test_in_child(
+        module_path!(), "mixed_native_ts_css_without_worker_reports_gap",
+    ).expect("isolated mixed no-worker test") {
+        return;
+    }
     use backend_library::stylo_query::{
         StyloAttemptState, StyloNameRole, StyloQueryRequest, StyloQueryTerminal,
         StyloWorkerCapability,
