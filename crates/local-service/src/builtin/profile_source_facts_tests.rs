@@ -1,6 +1,6 @@
 //! Real source-parser facts through the production commit preparation and store.
 //! These storage laws do not stand in for semantic compiler acceptance.
-use super::membership_tests::{TempWorkspace, open_daemon};
+use super::membership_tests::{TempWorkspace, open_daemon, try_open_daemon};
 use super::*;
 use crate::builtin::{read_package_sources, view_build};
 use crate::test_support::TestValue as _;
@@ -11,7 +11,7 @@ use backend_engine::builtin::{
 };
 use backend_engine::{PackageKey, ProductSourceRecord, SourceLanguage};
 use backend_version::{ContentId, SourceFactDomain};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[test]
 fn staged_semantic_and_capture_descriptors_leave_the_queue_but_replay_exactly() -> Result<(), String>
@@ -221,6 +221,277 @@ fn parsed_analysis_file(
     )
     .expect("complete parser-produced facts");
     (record, facts)
+}
+
+#[test]
+fn legacy_staged_state_refusal_preserves_store_and_fresh_workspace_reopens() -> Result<(), String> {
+    use backend_engine::QueueSized;
+    use std::collections::BTreeSet;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let current = TempWorkspace::new();
+    let label = "pkg:npm/legacy-staged-recovery@1.0.0";
+    let package = PackageKey::from_value(label);
+    let mut daemon = open_daemon(current.0.path());
+    let (left, left_facts) = parsed_file(package, "left.ts", 12_000);
+    let (right, right_facts) = parsed_file(package, "right.ts", 12_000);
+    let (inline, _) = prepare_files(
+        &daemon,
+        package,
+        label,
+        1,
+        &[(left, Some(left_facts)), (right, Some(right_facts))],
+    );
+    if inline.queue_bytes() <= 4 * 1024 * 1024 {
+        return Err("fixture did not cross the production staged-queue threshold".to_owned());
+    }
+    let before = daemon.engine().daemon().owner().snapshot();
+    let staged = super::super::staged_transport::stage(
+        inline,
+        &before,
+        None,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .map_err(|error| error.to_string())?;
+    let staged = staged.into_queue_carrier();
+    let pointer = staged
+        .staged()
+        .ok_or_else(|| "production staged writer did not retain its pointer".to_owned())?;
+    let pointer_bytes = pointer.encode();
+    if pointer_bytes.len() != 180 || !pointer_bytes.starts_with(b"BPS1") {
+        return Err("staged fixture is not the historical 180-byte BPS1 framing".to_owned());
+    }
+    super::super::commands::commit_builtin_intent(&mut daemon, 1, &staged)
+        .map_err(|error| format!("publish real staged fixture: {error}"))?;
+    let selected = daemon.engine().daemon().owner().snapshot();
+    let closure_id = selected.closure().membership_id();
+    let control_ids = selected
+        .closure()
+        .control_manifest()
+        .objects()
+        .iter()
+        .map(|object| object.id())
+        .collect::<BTreeSet<_>>();
+    drop(selected);
+    drop(before);
+    drop(daemon);
+
+    // This is a source-derived failure fixture, not the unavailable
+    // 2026-10-27 GBA artifact. The exact BPS1 pointer framing is present in
+    // the production writer at source commit 515f55801. Keep the compact
+    // selected closure intact and remove one staged-only CAS member in this
+    // private copy so startup reaches the same selected-membership reopen
+    // boundary without claiming that the reported artifact had this layout.
+    let legacy = TempWorkspace::new();
+    copy_fixture_tree(current.0.path(), legacy.0.path())
+        .map_err(|error| format!("copy private fixture: {error}"))?;
+    let registry = super::super::product_relation_registry().map_err(|error| error.to_string())?;
+    let store = backend_store::FileStore::open_with_registry(
+        legacy.0.path().join("objects"),
+        64 * 1024 * 1024,
+        registry,
+    )
+    .map_err(|error| format!("open private fixture store: {error:?}"))?;
+    let selected = store
+        .head()
+        .map_err(|error| format!("read private fixture HEAD: {error:?}"))?
+        .ok_or_else(|| "private fixture has no selected HEAD".to_owned())?;
+    if selected.descriptor().closure() != closure_id {
+        return Err("copied fixture changed its selected closure ID".to_owned());
+    }
+    let flat = store
+        .read_workspace_root_closure(closure_id)
+        .map_err(|error| format!("read selected closure for fixture: {error:?}"))?;
+    let intent_schema = backend_version::SchemaIdentity::new(
+        BuiltinIntentSchema::DOMAIN,
+        BuiltinIntentSchema::TYPE,
+        BuiltinIntentSchema::VERSION,
+    );
+    let pointer_objects = flat
+        .objects()
+        .iter()
+        .filter(|object| object.schema() == intent_schema)
+        .collect::<Vec<_>>();
+    if pointer_objects.len() != 1 || pointer_objects[0].bytes() != pointer_bytes.as_slice() {
+        return Err("selected closure does not retain the exact BPS1 writer pointer".to_owned());
+    }
+    let manifest_id = &pointer_bytes[4..36];
+    let missing_member = flat
+        .objects()
+        .iter()
+        .filter(|object| {
+            !control_ids.contains(&object.id())
+                && object.id().as_bytes() != manifest_id
+                && object.bytes().len() > 32 * 1024
+        })
+        .max_by_key(|object| object.bytes().len())
+        .ok_or_else(|| "staged fixture has no staged-only payload member".to_owned())?;
+    let missing_id = missing_member.id();
+    let hex = missing_id
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let member_path = store
+        .root()
+        .join("objects")
+        .join(format!("{hex}.object"));
+    if !member_path.is_file() {
+        return Err("selected staged-only object was absent before fixture mutation".to_owned());
+    }
+    let mut member_permissions = std::fs::metadata(&member_path)
+        .map_err(|error| error.to_string())?
+        .permissions();
+    if member_permissions.readonly() {
+        member_permissions.set_readonly(false);
+        std::fs::set_permissions(&member_path, member_permissions)
+            .map_err(|error| error.to_string())?;
+    }
+    std::fs::remove_file(&member_path).map_err(|error| error.to_string())?;
+    drop(store);
+
+    let preserved_objects = snapshot_fixture_tree(&legacy.0.path().join("objects"))
+        .map_err(|error| format!("snapshot damaged private fixture: {error}"))?;
+    let refusal = match try_open_daemon(legacy.0.path()) {
+        Ok(opened) => {
+            drop(opened);
+            return Err("owner unexpectedly admitted an incomplete staged membership".to_owned());
+        }
+        Err(cause) => cause.to_string(),
+    };
+    for expected in [
+        "persisted staged state",
+        "reopen selected staged membership: Corrupt",
+        "does not establish a format mismatch",
+        "No automatic migration or deletion was attempted",
+        "workspace was left in place",
+        "preserve a complete verified copy",
+        "nudox --workspace <new-empty-workspace> add <project> --wait",
+    ] {
+        if !refusal.contains(expected) {
+            return Err(format!("refusal omitted {expected:?}: {refusal}"));
+        }
+    }
+    let workspace_path = legacy.0.path().to_string_lossy();
+    if !refusal.contains(workspace_path.as_ref()) {
+        return Err(format!("refusal omitted the exact state path: {refusal}"));
+    }
+    let after_refusal = snapshot_fixture_tree(&legacy.0.path().join("objects"))
+        .map_err(|error| format!("resnapshot old-format state: {error}"))?;
+    if after_refusal != preserved_objects {
+        return Err("failed reopen changed the preserved store objects or journals".to_owned());
+    }
+    // The documented rebuild path uses a separate private workspace. A real
+    // owner commit followed by a cold reopen proves that preserved old bytes
+    // can remain available while fresh state becomes usable.
+    let fresh = TempWorkspace::new();
+    let mut recovered = open_daemon(fresh.0.path());
+    let fresh_label = "pkg:npm/legacy-staged-recovery-fresh@1.0.0";
+    let fresh_intent = BuiltinIntent::add(PackageKey::from_value(fresh_label), fresh_label)
+        .map_err(|error| error.to_string())?;
+    super::super::commands::commit_builtin_intent(&mut recovered, 2, &fresh_intent)
+        .map_err(|error| format!("publish fresh recovery state: {error}"))?;
+    let fresh_root = recovered.engine().daemon().owner().head().root();
+    drop(recovered);
+    let reopened = open_daemon(fresh.0.path());
+    if reopened.engine().daemon().owner().head().root() != fresh_root {
+        return Err("fresh state did not reopen at its selected root".to_owned());
+    }
+    if snapshot_fixture_tree(&legacy.0.path().join("objects"))
+        .map_err(|error| format!("verify preserved state after fresh reopen: {error}"))?
+        != preserved_objects
+    {
+        return Err("fresh-state recovery changed the preserved old store".to_owned());
+    }
+    Ok(())
+}
+
+#[test]
+fn staged_reopen_diagnostic_retains_temporary_io_cause() {
+    let state = Path::new("/private/workspace/objects");
+    let cause = super::BuiltinModelError(
+        "reopen selected staged membership: TemporaryIo(\"filesystem busy\")".to_owned(),
+    );
+    let message = super::staged_reopen_recovery_message(state, &cause).to_string();
+    assert!(message.contains("TemporaryIo(\"filesystem busy\")"));
+    assert!(message.contains("resolve it and retry first"));
+    assert!(message.contains("nudox --workspace <new-empty-workspace> add <project> --wait"));
+}
+
+fn copy_fixture_tree(source: &Path, target: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(target)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            copy_fixture_tree(&source_path, &target_path)?;
+        } else if kind.is_file() {
+            std::fs::copy(source_path, target_path)?;
+        } else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "private workspace fixture contains a non-file entry",
+            ));
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(source)?.permissions().mode();
+        std::fs::set_permissions(target, std::fs::Permissions::from_mode(mode))?;
+    }
+    Ok(())
+}
+
+fn snapshot_fixture_tree(
+    root: &Path,
+) -> Result<std::collections::BTreeMap<PathBuf, (Vec<u8>, u32)>, String> {
+    fn collect(
+        root: &Path,
+        directory: &Path,
+        output: &mut std::collections::BTreeMap<PathBuf, (Vec<u8>, u32)>,
+    ) -> Result<(), String> {
+        for entry in std::fs::read_dir(directory).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let path = entry.path();
+            let kind = entry.file_type().map_err(|error| error.to_string())?;
+            if kind.is_dir() {
+                collect(root, &path, output)?;
+            } else if kind.is_file() {
+                let relative = path
+                    .strip_prefix(root)
+                    .map_err(|error| error.to_string())?
+                    .to_owned();
+                let mode = {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt as _;
+                        std::fs::metadata(&path)
+                            .map_err(|error| error.to_string())?
+                            .permissions()
+                            .mode()
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        0
+                    }
+                };
+                output.insert(
+                    relative,
+                    (std::fs::read(path).map_err(|error| error.to_string())?, mode),
+                );
+            } else {
+                return Err("store fixture contains a non-file entry".to_owned());
+            }
+        }
+        Ok(())
+    }
+
+    let mut output = std::collections::BTreeMap::new();
+    collect(root, root, &mut output)?;
+    Ok(output)
 }
 
 fn prepare_files(

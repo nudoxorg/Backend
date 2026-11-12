@@ -5751,7 +5751,7 @@ fn admit_persisted_intent_with_store(
     let closure = persisted.membership_id().ok_or_else(|| {
         BuiltinModelError("staged pointer has no authenticated selected membership".to_owned())
     })?;
-    let staged = super::staged_transport::StagedIntent::decode(object.bytes(), store, closure)?;
+    let staged = reopen_staged_intent(object.bytes(), store, closure)?;
     let mut intent = staged.hydrate(None)?;
     if BuiltinModel.request_id(&intent) != persisted.request() {
         return Err(BuiltinModelError(
@@ -5765,6 +5765,25 @@ fn admit_persisted_intent_with_store(
         ));
     }
     Ok(intent)
+}
+
+fn reopen_staged_intent(
+    bytes: &[u8],
+    store: &backend_engine::FileStore,
+    closure: backend_store::ClosureId,
+) -> Result<Arc<super::staged_transport::StagedIntent>, BuiltinModelError> {
+    super::staged_transport::StagedIntent::decode(bytes, store, closure).map_err(|cause| {
+        staged_reopen_recovery_message(store.root().parent().unwrap_or(store.root()), &cause)
+    })
+}
+
+fn staged_reopen_recovery_message(
+    state: &std::path::Path,
+    cause: &BuiltinModelError,
+) -> BuiltinModelError {
+    BuiltinModelError(format!(
+        "persisted staged state at {state:?} could not be reopened: {cause}. This does not establish a format mismatch; missing or damaged staged data and filesystem I/O can produce the same failure. No automatic migration or deletion was attempted, and this workspace was left in place. If the cause indicates transient I/O, resolve it and retry first. Before rebuilding independently, preserve a complete verified copy of this directory and create a new empty workspace, then run `nudox --workspace <new-empty-workspace> add <project> --wait`."
+    ))
 }
 
 #[expect(

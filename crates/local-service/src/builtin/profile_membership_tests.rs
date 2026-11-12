@@ -349,7 +349,9 @@ pub(super) fn open_daemon(workspace: &Path) -> super::super::ProductDaemon {
     try_open_daemon(workspace).expect("open product daemon")
 }
 
-fn try_open_daemon(workspace: &Path) -> Result<super::super::ProductDaemon, crate::LocaldError> {
+pub(super) fn try_open_daemon(
+    workspace: &Path,
+) -> Result<super::super::ProductDaemon, crate::LocaldError> {
     let profile = profile_descriptor(BuiltinProfile::Product).expect("product profile");
     let dispatcher = super::super::builtin_dispatcher(
         Some(super::super::ECHO_AUTHORITY_SECRET),
