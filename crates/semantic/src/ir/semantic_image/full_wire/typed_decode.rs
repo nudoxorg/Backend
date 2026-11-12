@@ -814,17 +814,29 @@ impl GroupedEdges {
     }
 
     fn build(edges: &Edges<'_>) -> Result<Self, FullSemanticImageFault> {
-        let mut ordinals: Vec<(u64, u32)> = Vec::with_capacity(edges.count as usize);
+        let count = edges.count as usize;
+        let reserve = |elements, cause| FullSemanticImageFault::TypedEdgeIndexAllocation {
+            elements,
+            cause,
+        };
+        let mut ordinals: Vec<(u64, u32)> = Vec::new();
+        ordinals.try_reserve_exact(count).map_err(|e| reserve(count, e))?;
         for ordinal in 0..edges.count {
             let edge = edges.edge(ordinal)?;
             ordinals.push((Self::key(edge.role_tag, edge.role_index), ordinal));
         }
-        // A stable sort keeps each `(role, index)` group in stored edge
-        // order, preserving the linear scan's occurrence semantics.
-        ordinals.sort_by_key(|(key, _)| *key);
-        let mut keys = Vec::with_capacity(ordinals.len());
+        // The ordinal is a tie breaker, preserving emission order without the
+        // additional temporary allocation required by a stable sort.
+        ordinals.sort_unstable();
+        let mut keys = Vec::new();
+        keys.try_reserve_exact(count).map_err(|e| reserve(count, e))?;
         let mut starts = Vec::new();
-        let mut order = Vec::with_capacity(ordinals.len());
+        let starts_count = count.checked_add(1).ok_or(FullSemanticImageFault::LengthOverflow {
+            field: FullSemanticImageField::TypedEdges,
+        })?;
+        starts.try_reserve_exact(starts_count).map_err(|e| reserve(starts_count, e))?;
+        let mut order = Vec::new();
+        order.try_reserve_exact(count).map_err(|e| reserve(count, e))?;
         for (position, (key, ordinal)) in ordinals.into_iter().enumerate() {
             if keys.last().map_or(true, |previous| *previous != key) {
                 starts.push(u32::try_from(position).map_err(|_| {

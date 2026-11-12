@@ -320,6 +320,15 @@ pub enum FullSemanticImageFault {
         /// Scratch byte count requested by the validator.
         bytes: usize,
     },
+    #[error("cannot reserve {elements} elements for the typed-edge index")]
+    /// Temporary typed-edge index allocation failed.
+    TypedEdgeIndexAllocation {
+        /// Number of elements requested by the failed reservation.
+        elements: usize,
+        /// Allocation failure returned by the vector reservation.
+        #[source]
+        cause: alloc::collections::TryReserveError,
+    },
     #[error("cannot reserve {bytes} bytes for signature-carrier image {field:?}")]
     /// Reserving memory for signature-carrier cross-plane validation failed.
     SignatureCarrierBindingAllocation {
