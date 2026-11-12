@@ -202,6 +202,30 @@ fn candidate_digest(snapshots: &[CandidateSnapshot]) -> [u8; 32] {
     hash.finalize().into()
 }
 
+const MAX_PACK_SNAPSHOT_BYTES: usize = 256 * 1024 * 1024;
+
+fn account_pack_bytes(total: &mut usize, length: usize) -> Result<(), &'static str> {
+    *total = total.checked_add(length).ok_or("SDK pack snapshot limit")?;
+    if *total > MAX_PACK_SNAPSHOT_BYTES { return Err("SDK pack snapshot limit"); }
+    Ok(())
+}
+
+fn validate_candidate_sources(
+    snapshots: &[CandidateSnapshot], deadline: Instant, cancelled: &AtomicBool,
+) -> Result<(), &'static str> {
+    for snapshot in snapshots {
+        if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
+            return Err("SDK resolution cancelled");
+        }
+        let bytes = backend_platform::durable::read_regular_bounded_stable(
+            &snapshot.original, 32 * 1024 * 1024,
+        ).map_err(|_| "SDK candidate unavailable")?;
+        let digest: [u8; 32] = sha2::Sha256::digest(&bytes).into();
+        if digest != snapshot.digest { return Err("SDK candidate changed during resolution"); }
+    }
+    Ok(())
+}
+
 fn copy_pack_layout(
     snapshots: &[CandidateSnapshot],
     destination: &Path,
@@ -282,12 +306,7 @@ fn copy_pack_layout(
                 let bytes =
                     backend_platform::durable::read_regular_bounded_stable(&from, 32 * 1024 * 1024)
                         .map_err(|_| "SDK pack snapshot unavailable")?;
-                *total = total
-                    .checked_add(bytes.len())
-                    .ok_or("SDK pack snapshot limit")?;
-                if *total > 256 * 1024 * 1024 {
-                    return Err("SDK pack snapshot limit");
-                }
+                account_pack_bytes(total, bytes.len())?;
                 fs::write(&to, bytes).map_err(|_| "SDK pack snapshot unavailable")?;
             }
         }
@@ -313,8 +332,7 @@ fn copy_pack_layout(
         .collect::<std::collections::HashSet<_>>();
     // Account for the DLL bytes already retained in this same layout.
     for snapshot in &pack_snapshots {
-        total = total.checked_add(snapshot.length).ok_or("SDK pack snapshot limit")?;
-        if total > 256 * 1024 * 1024 { return Err("SDK pack snapshot limit"); }
+        account_pack_bytes(&mut total, snapshot.length)?;
     }
     let mut entries = 0;
     for version in versions {
@@ -713,20 +731,7 @@ pub fn resolve_references_with_sdk(
     // Revalidate every input, including candidates not selected by RAR: an
     // unselected conflict changing during the observation could change the
     // winner on a retry while leaving this receipt apparently valid.
-    for snapshot in &snapshots {
-        if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
-            return Err("SDK resolution cancelled");
-        }
-        let bytes = backend_platform::durable::read_regular_bounded_stable(
-            &snapshot.original,
-            32 * 1024 * 1024,
-        )
-        .map_err(|_| "SDK candidate unavailable")?;
-        let digest: [u8; 32] = sha2::Sha256::digest(&bytes).into();
-        if digest != snapshot.digest {
-            return Err("SDK candidate changed during resolution");
-        }
-    }
+    validate_candidate_sources(&snapshots, deadline, cancelled)?;
     let value: Value =
         serde_json::from_slice(&output.stdout).map_err(|_| "SDK resolution malformed")?;
     let invoked_sdk_directory = value
@@ -1536,6 +1541,52 @@ pub fn observe_csharp_sdk_with(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn candidate_source_revalidation_rejects_changed_bytes() {
+        let source = tempfile::tempdir().unwrap();
+        let path = source.path().join("A.dll");
+        fs::write(&path, b"admitted").unwrap();
+        let snapshot = CandidateSnapshot {
+            original: path.clone(), canonical: path.canonicalize().unwrap(), owned: path.clone(),
+            digest: sha2::Sha256::digest(b"admitted").into(), length: 8, name: "A.dll".into(),
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let cancelled = AtomicBool::new(false);
+        assert!(validate_candidate_sources(std::slice::from_ref(&snapshot), deadline, &cancelled).is_ok());
+        fs::write(&path, b"replaced").unwrap();
+        assert_eq!(validate_candidate_sources(&[snapshot], deadline, &cancelled),
+            Err("SDK candidate changed during resolution"));
+    }
+
+    #[test]
+    fn private_pack_rejects_multiple_roots() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let mut snapshots = Vec::new();
+        for root in [first.path(), second.path()] {
+            let path = root.join("packs/Example.Ref/1.0/ref/net10.0/A.dll");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, b"a").unwrap();
+            snapshots.push(CandidateSnapshot {
+                original: path.clone(), canonical: path.canonicalize().unwrap(), owned: path,
+                digest: sha2::Sha256::digest(b"a").into(), length: 1, name: "A.dll".into(),
+            });
+        }
+        assert_eq!(copy_pack_layout(&snapshots, scratch.path(), Instant::now() + Duration::from_secs(10),
+            &AtomicBool::new(false)), Err("SDK pack roots differ"));
+    }
+
+    #[test]
+    fn pack_byte_accounting_includes_exact_limit_and_rejects_overflow() {
+        let mut total = MAX_PACK_SNAPSHOT_BYTES - 1;
+        assert!(account_pack_bytes(&mut total, 1).is_ok());
+        assert_eq!(total, MAX_PACK_SNAPSHOT_BYTES);
+        assert_eq!(account_pack_bytes(&mut total, 1), Err("SDK pack snapshot limit"));
+        let mut overflow = usize::MAX;
+        assert_eq!(account_pack_bytes(&mut overflow, 1), Err("SDK pack snapshot limit"));
+    }
+
     #[test]
     fn pack_layout_retains_admitted_bytes_without_overwriting_them() {
         let source = tempfile::tempdir().unwrap();
