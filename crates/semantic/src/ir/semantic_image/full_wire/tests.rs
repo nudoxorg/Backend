@@ -2501,3 +2501,84 @@ fn grouped_decode_sweeps_ten_thousand_typed_rows_in_bounded_time()
     );
     Ok(())
 }
+
+#[test]
+fn bounded_reopen_charges_work_scratch_and_retained_backing() -> Result<(), crate::ir::BuildError> {
+    use core::cell::Cell;
+    use super::SemanticImageAdmissionMeter;
+
+    struct Meter {
+        work: Cell<u64>,
+        memory: Cell<usize>,
+        used: Cell<usize>,
+        peak: Cell<usize>,
+        calls: Cell<u64>,
+        stop_at: u64,
+    }
+    impl Meter {
+        fn new(work: u64, memory: usize, stop_at: u64) -> Self {
+            Self { work: Cell::new(work), memory: Cell::new(memory), used: Cell::new(0),
+                peak: Cell::new(0), calls: Cell::new(0), stop_at }
+        }
+    }
+    impl SemanticImageAdmissionMeter for Meter {
+        fn work(&self, units: u64) -> bool {
+            let calls = self.calls.get() + 1;
+            self.calls.set(calls);
+            if calls >= self.stop_at { return false; }
+            let Some(left) = self.work.get().checked_sub(units) else { return false; };
+            self.work.set(left);
+            true
+        }
+        fn reserve(&self, bytes: usize) -> bool {
+            let Some(left) = self.memory.get().checked_sub(bytes) else { return false; };
+            self.memory.set(left);
+            let used = self.used.get() + bytes;
+            self.used.set(used);
+            self.peak.set(self.peak.get().max(used));
+            true
+        }
+        fn release(&self, bytes: usize) {
+            self.memory.set(self.memory.get() + bytes);
+            self.used.set(self.used.get() - bytes);
+        }
+    }
+    fn stopped(result: Result<SemanticImageView<'_>, FullSemanticImageError>) -> bool {
+        matches!(result, Err(FullSemanticImageError::Full(FullSemanticImageFault::AdmissionStopped)))
+    }
+
+    let bytes = encoded(&signature_binding_image(false)?)?;
+    let unbounded = SemanticImageView::reopen(&bytes).expect("ordinary reopen");
+    let measure = Meter::new(u64::MAX, usize::MAX, u64::MAX);
+    let view = SemanticImageView::reopen_bounded(&bytes, &measure).expect("bounded reopen");
+    assert_eq!(view.as_ref(), bytes.as_slice());
+    assert_eq!(view.canonical_entities().map(|e| e.version.identity()).collect::<Vec<_>>(),
+        unbounded.canonical_entities().map(|e| e.version.identity()).collect::<Vec<_>>());
+    let work = u64::MAX - measure.work.get();
+    let scratch = measure.peak.get();
+    assert!(work > 1 && scratch > 0);
+    assert_eq!(measure.used.get(), 0);
+    assert!(SemanticImageView::reopen_bounded(&bytes, &Meter::new(work, scratch, u64::MAX)).is_ok());
+    assert!(stopped(SemanticImageView::reopen_bounded(&bytes, &Meter::new(work - 1, scratch, u64::MAX))));
+    assert!(stopped(SemanticImageView::reopen_bounded(&bytes, &Meter::new(work, scratch - 1, u64::MAX))));
+    let cancelled = Meter::new(u64::MAX, usize::MAX, 5);
+    assert!(stopped(SemanticImageView::reopen_bounded(&bytes, &cancelled)));
+    assert_eq!(cancelled.calls.get(), 5);
+    assert_eq!(cancelled.used.get(), 0);
+    let retained = Meter::new(u64::MAX, bytes.len() + scratch, u64::MAX);
+    {
+        let owner = SemanticImageProofOwner::copy_bounded(&bytes, &retained).expect("retained admission");
+        assert_eq!(owner.as_bytes(), bytes);
+        assert_eq!(retained.used.get(), bytes.len());
+        assert_eq!(owner.reopen().expect("cached proof").as_ref(), bytes);
+    }
+    assert_eq!(retained.used.get(), 0);
+    let short = Meter::new(u64::MAX, bytes.len() - 1, u64::MAX);
+    assert!(SemanticImageProofOwner::copy_bounded(&bytes, &short).is_err());
+    assert_eq!(short.used.get(), 0);
+    let mut corrupt = bytes.clone();
+    corrupt[0] ^= 1;
+    assert!(matches!(SemanticImageView::reopen_bounded(&corrupt, &Meter::new(u64::MAX, usize::MAX, u64::MAX)),
+        Err(FullSemanticImageError::Full(FullSemanticImageFault::Magic { .. }))));
+    Ok(())
+}

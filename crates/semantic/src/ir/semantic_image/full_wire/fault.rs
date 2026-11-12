@@ -323,6 +323,15 @@ pub enum FullSemanticImageFault {
         /// Scratch byte count requested by the validator.
         bytes: usize,
     },
+    #[error("cannot reserve {bytes} bytes for retained semantic image")]
+    /// Retaining the caller's exact image bytes failed to allocate.
+    ImageStorageAllocation {
+        /// Requested storage size.
+        bytes: usize,
+        /// Allocation failure.
+        #[source]
+        cause: alloc::collections::TryReserveError,
+    },
     #[error("cannot reserve {elements} elements for the typed-edge index")]
     /// Temporary typed-edge index allocation failed.
     TypedEdgeIndexAllocation {

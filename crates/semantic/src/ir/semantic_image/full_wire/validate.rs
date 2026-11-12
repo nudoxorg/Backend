@@ -92,16 +92,50 @@ pub trait SemanticImageAdmissionMeter {
     fn work(&self, units: u64) -> bool;
     /// Debits bytes before allocation.
     fn reserve(&self, bytes: usize) -> bool;
+    /// Releases previously reserved temporary memory.
+    fn release(&self, bytes: usize);
+}
+
+pub(super) struct Reservation<'a> {
+    meter: &'a dyn SemanticImageAdmissionMeter,
+    bytes: usize,
+}
+impl<'a> Reservation<'a> {
+    pub(super) fn new(meter: &'a dyn SemanticImageAdmissionMeter, bytes: usize) -> Result<Self, FullSemanticImageFault> {
+        if !meter.reserve(bytes) { return Err(FullSemanticImageFault::AdmissionStopped); }
+        Ok(Self { meter, bytes })
+    }
+}
+impl Drop for Reservation<'_> {
+    fn drop(&mut self) { if self.bytes != 0 { self.meter.release(self.bytes); } }
 }
 
 pub(super) fn work(meter: &dyn SemanticImageAdmissionMeter, units: u64) -> Result<(), FullSemanticImageFault> {
     if meter.work(units) { Ok(()) } else { Err(FullSemanticImageFault::AdmissionStopped) }
 }
 
+pub(super) fn compare_bytes(
+    meter: &dyn SemanticImageAdmissionMeter,
+    left: &[u8],
+    right: &[u8],
+) -> Result<Ordering, FullSemanticImageFault> {
+    let common = left.len().min(right.len());
+    let mut offset = 0_usize;
+    while offset < common {
+        work(meter, 1)?;
+        let end = common.min(offset.saturating_add(1024));
+        let order = left[offset..end].cmp(&right[offset..end]);
+        if order != Ordering::Equal { return Ok(order); }
+        offset = end;
+    }
+    Ok(left.len().cmp(&right.len()))
+}
+
 struct Unlimited;
 impl SemanticImageAdmissionMeter for Unlimited {
     fn work(&self, _: u64) -> bool { true }
     fn reserve(&self, _: usize) -> bool { true }
+    fn release(&self, _: usize) {}
 }
 
 pub(crate) fn reopen_full_semantic_image(
@@ -117,13 +151,13 @@ pub(crate) fn reopen_full_semantic_image_with_meter(
     work(meter, 1)?;
     let layout = header::directory(bytes)?;
     header::validate_lane_widths(layout)?;
-    header::validate_atoms(bytes, layout)?;
+    header::validate_atoms(bytes, layout, meter)?;
     let header_layout = header::image_layout(layout)?;
     let image = super::super::decode::decode_image_facts(bytes, header_layout)?;
     let typed = typed::validate_typed(bytes, layout, meter)?;
-    typed_decode::validate_semantic_nodes(bytes, layout, typed)?;
-    validate_entities(bytes, layout, typed)?;
-    validate_signature_carrier_roles(bytes, layout)?;
+    typed_decode::validate_semantic_nodes(bytes, layout, typed, meter)?;
+    validate_entities(bytes, layout, typed, meter)?;
+    validate_signature_carrier_roles(bytes, layout, meter)?;
     if layout.schema == SCHEMA_CARRIER_BINDINGS
         || (layout.schema >= SCHEMA_TYPED_NAMES
             && layout
@@ -131,12 +165,13 @@ pub(crate) fn reopen_full_semantic_image_with_meter(
                 .count
                 != 0)
     {
-        validate_signature_carrier_bindings(bytes, layout, typed)?;
+        validate_signature_carrier_bindings(bytes, layout, typed, meter)?;
     }
-    validate_terminal_lists(bytes, layout, typed)?;
+    validate_terminal_lists(bytes, layout, typed, meter)?;
     graph::validate_externals(bytes, layout, meter)?;
     graph::validate_graph(bytes, layout, meter)?;
-    extensions::validate_extensions(bytes, layout, typed, image.authority)?;
+    extensions::validate_extensions(bytes, layout, typed, image.authority, meter)?;
+    work(meter, 1)?;
     Ok(ValidatedFullImage {
         layout,
         image,
@@ -147,6 +182,7 @@ pub(crate) fn reopen_full_semantic_image_with_meter(
 fn validate_signature_carrier_roles(
     bytes: &[u8],
     layout: FullImageLayout,
+    meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<(), FullSemanticImageFault> {
     if !matches!(
         layout.schema,
@@ -162,6 +198,7 @@ fn validate_signature_carrier_roles(
     let roles = layout.entry(FullDirectoryKind::SignatureCarrierRoles);
     let entities = layout.entry(FullDirectoryKind::Entities);
     for row in 0..entities.count {
+        work(meter, 1)?;
         let byte_index =
             usize::try_from(row / 4).map_err(|_| FullSemanticImageFault::LengthOverflow {
                 field: FullSemanticImageField::SignatureCarrierRoles,
@@ -226,6 +263,7 @@ fn validate_signature_carrier_bindings(
     bytes: &[u8],
     layout: FullImageLayout,
     typed: TypedLayout,
+    meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<(), FullSemanticImageFault> {
     let owners = layout.entry(FullDirectoryKind::SignatureCarrierBindingRanges);
     let targets = layout.entry(FullDirectoryKind::SignatureCarrierBindingTargets);
@@ -236,15 +274,21 @@ fn validate_signature_carrier_bindings(
             field: FullSemanticImageField::SignatureCarrierRoles,
         })?
         .div_ceil(4);
+    let _role_reservation = Reservation::new(meter, role_bytes)?;
     let mut derived_roles = Vec::new();
     derived_roles.try_reserve_exact(role_bytes).map_err(|_| {
         FullSemanticImageFault::SignatureCarrierBindingScratch { bytes: role_bytes }
     })?;
-    derived_roles.resize(role_bytes, 0_u8);
+    while derived_roles.len() < role_bytes {
+        work(meter, 1)?;
+        let end = role_bytes.min(derived_roles.len().saturating_add(1024));
+        derived_roles.resize(end, 0_u8);
+    }
 
     let mut range_row = 0_u32;
     let mut target_cursor = 0_u32;
     for entity_row in 0..entities.count {
+        work(meter, 1)?;
         let entity = decode::entity(bytes, layout, entity_row)?;
         if entity.kind != crate::ir::ItemKind::Function {
             continue;
@@ -358,7 +402,7 @@ fn validate_signature_carrier_bindings(
                 parameters,
                 results,
                 ..
-            }) = typed_decode::ty(bytes, layout, typed, function_type)?
+            }) = typed_decode::ty_with_meter(bytes, layout, typed, function_type, Some(meter))?
             else {
                 return Err(FullSemanticImageFault::SignatureCarrierBindingRange {
                     row: range_row,
@@ -374,6 +418,7 @@ fn validate_signature_carrier_bindings(
                 typed,
                 targets_offset: targets.offset,
                 derived_roles: &mut derived_roles,
+                meter,
                 first_target_fault: None,
             };
             let parameter_cells = binding_validation.visit_slot(SignatureCarrierSlotRun {
@@ -464,6 +509,7 @@ fn validate_signature_carrier_bindings(
     }
 
     for entity in 0..entities.count {
+        work(meter, 1)?;
         let byte_index =
             usize::try_from(entity / 4).map_err(|_| FullSemanticImageFault::LengthOverflow {
                 field: FullSemanticImageField::SignatureCarrierRoles,
@@ -499,12 +545,13 @@ fn validate_signature_carrier_bindings(
     Ok(())
 }
 
-struct SignatureCarrierBindingValidation<'image, 'roles> {
+struct SignatureCarrierBindingValidation<'image, 'roles, 'meter> {
     bytes: &'image [u8],
     layout: FullImageLayout,
     typed: TypedLayout,
     targets_offset: usize,
     derived_roles: &'roles mut [u8],
+    meter: &'meter dyn SemanticImageAdmissionMeter,
     first_target_fault: Option<FullSemanticImageFault>,
 }
 
@@ -516,13 +563,14 @@ struct SignatureCarrierSlotRun {
     target_start: u32,
 }
 
-impl SignatureCarrierBindingValidation<'_, '_> {
+impl SignatureCarrierBindingValidation<'_, '_, '_> {
     fn visit_slot(&mut self, run: SignatureCarrierSlotRun) -> Result<u32, FullSemanticImageFault> {
         typed_decode::visit_tuple_elements(
             self.bytes,
             self.layout,
             self.typed,
             run.tuple_list,
+            self.meter,
             |position, element| {
                 if self.first_target_fault.is_some() || position >= run.expected_count {
                     return Ok(());
@@ -603,11 +651,13 @@ fn validate_entities(
     bytes: &[u8],
     layout: FullImageLayout,
     typed: TypedLayout,
+    meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<(), FullSemanticImageFault> {
     let entities = layout.entry(FullDirectoryKind::Entities);
     let atoms = layout.entry(FullDirectoryKind::Atoms).count;
     let mut previous: Option<crate::ir::DeclarationIdentity> = None;
     for row in 0..entities.count {
+        work(meter, 1)?;
         let entity = decode::entity(bytes, layout, row)?;
         validate_entity_reserved(bytes, layout, row)?;
         reference(
@@ -621,6 +671,8 @@ fn validate_entities(
                 return Err(FullSemanticImageFault::EntityNameTag { row, observed: 1 });
             }
             let bytes = atom_bytes(bytes, layout, anchor, row)?;
+            // The anchor grammar caps its total UTF-8 payload at 4096 bytes.
+            work(meter, 4)?;
             if !AnonymousCallableAnchorView::new(bytes).is_well_formed() {
                 return Err(FullSemanticImageFault::EntityNameTag { row, observed: 1 });
             }
@@ -669,7 +721,7 @@ fn validate_entities(
             })?,
             entity.attributes.raw,
         )?;
-        validate_parent_chain(bytes, layout, row, entity.parent)?;
+        validate_parent_chain(bytes, layout, row, entity.parent, meter)?;
         validate_entity_authority(bytes, layout, row, entity)?;
         if let Some(previous) = previous {
             match previous.cmp(&entity.version.identity()) {
@@ -823,10 +875,12 @@ fn validate_parent_chain(
     layout: FullImageLayout,
     entity: u32,
     mut parent: Option<crate::ir::EntityId>,
+    meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<(), FullSemanticImageFault> {
     let limit = layout.entry(FullDirectoryKind::Entities).count;
     let mut steps = 0_u32;
     while let Some(current) = parent {
+        work(meter, 1)?;
         if current.raw == entity || steps >= limit {
             return Err(FullSemanticImageFault::ParentCycle {
                 entity,
@@ -918,6 +972,7 @@ fn validate_terminal_lists(
     bytes: &[u8],
     layout: FullImageLayout,
     typed: TypedLayout,
+    meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<(), FullSemanticImageFault> {
     validate_ranges(
         bytes,
@@ -925,6 +980,7 @@ fn validate_terminal_lists(
         FullDirectoryKind::EntityLists,
         FullDirectoryKind::EntityListBytes,
         FullSemanticImageField::EntityLists,
+        meter,
     )?;
     validate_ranges(
         bytes,
@@ -932,11 +988,13 @@ fn validate_terminal_lists(
         FullDirectoryKind::Documentation,
         FullDirectoryKind::DocumentationBytes,
         FullSemanticImageField::Documentation,
+        meter,
     )?;
     let entities = layout.entry(FullDirectoryKind::Entities).count;
     let members = layout.entry(FullDirectoryKind::EntityLists);
     let member_bytes = layout.entry(FullDirectoryKind::EntityListBytes);
     for row in 0..members.count {
+        work(meter, 1)?;
         let value = range_value(
             bytes,
             members,
@@ -982,25 +1040,28 @@ fn validate_terminal_lists(
             });
         }
         for index in 0..length {
+            work(meter, 1)?;
             let at = 5 + index * 4;
             let id = u32::from_le_bytes([value[at], value[at + 1], value[at + 2], value[at + 3]]);
             reference(FullSemanticImageField::EntityLists, row, entities, id)?;
         }
     }
-    validate_docs(bytes, layout)?;
-    validate_entity_sparse_authority(bytes, layout, typed)
+    validate_docs(bytes, layout, meter)?;
+    validate_entity_sparse_authority(bytes, layout, typed, meter)
 }
 
 fn validate_entity_sparse_authority(
     bytes: &[u8],
     layout: FullImageLayout,
     typed: TypedLayout,
+    meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<(), FullSemanticImageFault> {
     let members = layout.entry(FullDirectoryKind::EntityLists);
     let member_bytes = layout.entry(FullDirectoryKind::EntityListBytes);
     let docs = layout.entry(FullDirectoryKind::Documentation);
     let doc_bytes = layout.entry(FullDirectoryKind::DocumentationBytes);
     for row in 0..layout.entry(FullDirectoryKind::Entities).count {
+        work(meter, 1)?;
         let entity = decode::entity(bytes, layout, row)?;
         let member_value = range_value(
             bytes,
@@ -1058,13 +1119,14 @@ fn sparse_availability(
     Ok(())
 }
 
-fn validate_docs(bytes: &[u8], layout: FullImageLayout) -> Result<(), FullSemanticImageFault> {
+fn validate_docs(bytes: &[u8], layout: FullImageLayout, meter: &dyn SemanticImageAdmissionMeter) -> Result<(), FullSemanticImageFault> {
     let docs = layout.entry(FullDirectoryKind::Documentation);
     let values = layout.entry(FullDirectoryKind::DocumentationBytes);
     let atoms = layout.entry(FullDirectoryKind::Atoms).count;
     let entities = layout.entry(FullDirectoryKind::Entities).count;
     let externals = layout.entry(FullDirectoryKind::Externals).count;
     for row in 0..docs.count {
+        work(meter, 1)?;
         let value = range_value(
             bytes,
             docs,
@@ -1093,6 +1155,7 @@ fn validate_docs(bytes: &[u8], layout: FullImageLayout) -> Result<(), FullSemant
         })?;
         let mut cursor = 5_usize;
         for _ in 0..count {
+            work(meter, 1)?;
             let tag = *value.get(cursor).ok_or(FullSemanticImageFault::Truncated {
                 field: FullSemanticImageField::Documentation,
                 offset: values.offset + cursor,
@@ -1193,11 +1256,13 @@ fn validate_ranges(
     range_kind: FullDirectoryKind,
     bytes_kind: FullDirectoryKind,
     field: FullSemanticImageField,
+    meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<(), FullSemanticImageFault> {
     let ranges = layout.entry(range_kind);
     let values = layout.entry(bytes_kind);
     let mut expected = 0_usize;
     for row in 0..ranges.count {
+        work(meter, 1)?;
         let offset = ranges.offset
             + usize::try_from(row).map_err(|_| FullSemanticImageFault::LengthOverflow { field })?
                 * RANGE_ROW_BYTES;

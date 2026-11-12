@@ -22,7 +22,7 @@ use crate::ir::{
 use super::{
     fault::{FullSemanticImageFault, FullSemanticImageField},
     typed::role_from_wire,
-    validate::TypedLayout,
+    validate::{TypedLayout, SemanticImageAdmissionMeter, Reservation, work},
     wire::{
         FullDirectoryKind, FullImageLayout, TYPED_EDGE_ROW_BYTES, TYPED_NODE_ROW_BYTES, get_u32,
     },
@@ -60,44 +60,49 @@ pub(crate) fn validate_semantic_nodes(
     bytes: &[u8],
     layout: FullImageLayout,
     typed: TypedLayout,
+    meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<(), FullSemanticImageFault> {
     for id in 0..count(typed, TYPE)? {
-        let _ = ty(bytes, layout, typed, TypeId::new(id))?;
+        let _ = ty_with_meter(bytes, layout, typed, TypeId::new(id), Some(meter))?;
     }
     for id in 0..count(typed, TYPE_LIST)? {
-        validate_type_list(bytes, layout, typed, TypeListId::new(id))?;
+        validate_type_list(bytes, layout, typed, TypeListId::new(id), meter)?;
     }
     for id in 0..count(typed, TUPLE_ELEMENTS)? {
-        validate_tuple_elements(bytes, layout, typed, TupleElementListId::new(id))?;
+        validate_tuple_elements(bytes, layout, typed, TupleElementListId::new(id), meter)?;
     }
     for id in 0..count(typed, OBJECT_MEMBERS)? {
-        validate_object_members(bytes, layout, typed, ObjectMemberListId::new(id))?;
+        validate_object_members(bytes, layout, typed, ObjectMemberListId::new(id), meter)?;
     }
     for id in 0..count(typed, TEMPLATE_PARTS)? {
-        validate_template_parts(bytes, layout, typed, TemplatePartListId::new(id))?;
+        validate_template_parts(bytes, layout, typed, TemplatePartListId::new(id), meter)?;
     }
     for id in 0..count(typed, ATOM_LIST)? {
-        validate_atom_list(bytes, layout, typed, AtomListId::new(id))?;
+        validate_atom_list(bytes, layout, typed, AtomListId::new(id), meter)?;
     }
     for id in 0..count(typed, TYPE_PARAMETERS)? {
-        validate_type_parameters(bytes, layout, typed, TypeParameterListId::new(id))?;
+        validate_type_parameters(bytes, layout, typed, TypeParameterListId::new(id), meter)?;
     }
     for id in 0..count(typed, TYPE_PARAMETER_BOUNDS)? {
-        validate_type_parameter_bounds(bytes, layout, typed, TypeParameterBoundListId::new(id))?;
+        validate_type_parameter_bounds(bytes, layout, typed, TypeParameterBoundListId::new(id), meter)?;
     }
     for id in 0..count(typed, FREE_PREDICATES)? {
-        validate_free_predicates(bytes, layout, typed, FreePredicateListId::new(id))?;
+        validate_free_predicates(bytes, layout, typed, FreePredicateListId::new(id), meter)?;
     }
     Ok(())
 }
 
 pub(crate) fn ty(
-    bytes: &[u8],
-    layout: FullImageLayout,
-    typed: TypedLayout,
-    id: TypeId,
+    bytes: &[u8], layout: FullImageLayout, typed: TypedLayout, id: TypeId,
 ) -> Result<TypeExpr, FullSemanticImageFault> {
-    let mut edges = Edges::for_node(bytes, layout, typed, TYPE, id.raw)?;
+    ty_with_meter(bytes, layout, typed, id, None)
+}
+
+pub(super) fn ty_with_meter(
+    bytes: &[u8], layout: FullImageLayout, typed: TypedLayout, id: TypeId,
+    meter: Option<&dyn SemanticImageAdmissionMeter>,
+) -> Result<TypeExpr, FullSemanticImageFault> {
+    let mut edges = Edges::for_node_with_meter(bytes, layout, typed, TYPE, id.raw, meter)?;
     let tag = edges.scalar(0, 0)?;
     let value = match tag {
         1 => TypeExpr::Concrete(ConcreteType::Builtin(builtin(
@@ -323,9 +328,10 @@ pub(crate) fn visit_tuple_elements(
     layout: FullImageLayout,
     typed: TypedLayout,
     id: TupleElementListId,
+    meter: &dyn SemanticImageAdmissionMeter,
     mut visit: impl FnMut(u32, TupleElement) -> Result<(), FullSemanticImageFault>,
 ) -> Result<u32, FullSemanticImageFault> {
-    let mut edges = Edges::for_node(bytes, layout, typed, TUPLE_ELEMENTS, id.raw)?;
+    let mut edges = Edges::for_node_with_meter(bytes, layout, typed, TUPLE_ELEMENTS, id.raw, Some(meter))?;
     let mut index = 0_u32;
     while edges.next < edges.count {
         let label = if boolean(edges.scalar(3, index)?, edges.node)? {
@@ -501,8 +507,9 @@ fn validate_type_list(
     layout: FullImageLayout,
     typed: TypedLayout,
     id: TypeListId,
+    meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<(), FullSemanticImageFault> {
-    let mut edges = Edges::for_node(bytes, layout, typed, TYPE_LIST, id.raw)?;
+    let mut edges = Edges::for_node_with_meter(bytes, layout, typed, TYPE_LIST, id.raw, Some(meter))?;
     let mut index = 0_u32;
     while edges.next < edges.count {
         let _ = edges.type_node(2, index)?;
@@ -519,8 +526,9 @@ fn validate_atom_list(
     layout: FullImageLayout,
     typed: TypedLayout,
     id: AtomListId,
+    meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<(), FullSemanticImageFault> {
-    let mut edges = Edges::for_node(bytes, layout, typed, ATOM_LIST, id.raw)?;
+    let mut edges = Edges::for_node_with_meter(bytes, layout, typed, ATOM_LIST, id.raw, Some(meter))?;
     let mut index = 0_u32;
     while edges.next < edges.count {
         let _ = edges.atom(2, index)?;
@@ -537,16 +545,18 @@ fn validate_tuple_elements(
     layout: FullImageLayout,
     typed: TypedLayout,
     id: TupleElementListId,
+    meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<(), FullSemanticImageFault> {
-    visit_tuple_elements(bytes, layout, typed, id, |_, _| Ok(())).map(|_| ())
+    visit_tuple_elements(bytes, layout, typed, id, meter, |_, _| Ok(())).map(|_| ())
 }
 fn validate_object_members(
     bytes: &[u8],
     layout: FullImageLayout,
     typed: TypedLayout,
     id: ObjectMemberListId,
+    meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<(), FullSemanticImageFault> {
-    let mut edges = Edges::for_node(bytes, layout, typed, OBJECT_MEMBERS, id.raw)?;
+    let mut edges = Edges::for_node_with_meter(bytes, layout, typed, OBJECT_MEMBERS, id.raw, Some(meter))?;
     let mut index = 0_u32;
     while edges.next < edges.count {
         match edges.scalar(6, index)? {
@@ -585,8 +595,9 @@ fn validate_template_parts(
     layout: FullImageLayout,
     typed: TypedLayout,
     id: TemplatePartListId,
+    meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<(), FullSemanticImageFault> {
-    let mut edges = Edges::for_node(bytes, layout, typed, TEMPLATE_PARTS, id.raw)?;
+    let mut edges = Edges::for_node_with_meter(bytes, layout, typed, TEMPLATE_PARTS, id.raw, Some(meter))?;
     let mut index = 0_u32;
     while edges.next < edges.count {
         match edges.scalar(13, index)? {
@@ -611,8 +622,9 @@ fn validate_type_parameters(
     layout: FullImageLayout,
     typed: TypedLayout,
     id: TypeParameterListId,
+    meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<(), FullSemanticImageFault> {
-    let mut edges = Edges::for_node(bytes, layout, typed, TYPE_PARAMETERS, id.raw)?;
+    let mut edges = Edges::for_node_with_meter(bytes, layout, typed, TYPE_PARAMETERS, id.raw, Some(meter))?;
     let mut index = 0_u32;
     while edges.next < edges.count {
         let _ = edges.atom(14, index)?;
@@ -653,8 +665,9 @@ fn validate_type_parameter_bounds(
     layout: FullImageLayout,
     typed: TypedLayout,
     id: TypeParameterBoundListId,
+    meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<(), FullSemanticImageFault> {
-    let mut edges = Edges::for_node(bytes, layout, typed, TYPE_PARAMETER_BOUNDS, id.raw)?;
+    let mut edges = Edges::for_node_with_meter(bytes, layout, typed, TYPE_PARAMETER_BOUNDS, id.raw, Some(meter))?;
     let mut index = 0_u32;
     while edges.next < edges.count {
         match edges.scalar(22, index)? {
@@ -691,8 +704,9 @@ fn validate_free_predicates(
     layout: FullImageLayout,
     typed: TypedLayout,
     id: FreePredicateListId,
+    meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<(), FullSemanticImageFault> {
-    let mut edges = Edges::for_node(bytes, layout, typed, FREE_PREDICATES, id.raw)?;
+    let mut edges = Edges::for_node_with_meter(bytes, layout, typed, FREE_PREDICATES, id.raw, Some(meter))?;
     let mut index = 0_u32;
     while edges.next < edges.count {
         let _ = edges.type_node(24, index)?;
@@ -795,26 +809,36 @@ pub(super) struct Edges<'a> {
     /// (`<= 16` bytes per edge row, one small vector triple per node), the
     /// decoded bytes stay immutable, and sequential `take` decoding never
     /// builds it at all.
-    grouped: Option<GroupedEdges>,
+    grouped: Option<GroupedEdges<'a>>,
+    meter: Option<&'a dyn SemanticImageAdmissionMeter>,
 }
 
 /// Sorted `(role, index)` groups over one node's edge run.  `order` holds the
 /// edge ordinals grouped by key with each group in stored (emission) order, so
 /// the k-th entry of a group is exactly the k-th match of the former linear
 /// scan.
-struct GroupedEdges {
+struct GroupedEdges<'a> {
     keys: Vec<u64>,
     starts: Vec<u32>,
     order: Vec<u32>,
+    _scratch: Option<Reservation<'a>>,
 }
 
-impl GroupedEdges {
+impl<'a> GroupedEdges<'a> {
     fn key(role_tag: u8, role_index: u32) -> u64 {
         (u64::from(role_tag) << 32) | u64::from(role_index)
     }
 
-    fn build(edges: &Edges<'_>) -> Result<Self, FullSemanticImageFault> {
+    fn build(edges: &Edges<'a>) -> Result<Self, FullSemanticImageFault> {
         let count = edges.count as usize;
+        let scratch = count.checked_mul(core::mem::size_of::<(u64, u32)>()
+            + core::mem::size_of::<u64>() + 2 * core::mem::size_of::<u32>())
+            .and_then(|bytes| bytes.checked_add(core::mem::size_of::<u32>()))
+            .ok_or(FullSemanticImageFault::LengthOverflow { field: FullSemanticImageField::TypedEdges })?;
+        let scratch_reservation = if let Some(meter) = edges.meter {
+            work(meter, 1)?;
+            Some(Reservation::new(meter, scratch)?)
+        } else { None };
         let reserve = |elements, cause| FullSemanticImageFault::TypedEdgeIndexAllocation {
             elements,
             cause,
@@ -829,7 +853,11 @@ impl GroupedEdges {
         }
         // The ordinal is a tie breaker, preserving emission order without the
         // additional temporary allocation required by a stable sort.
-        ordinals.sort_unstable();
+        if let Some(meter) = edges.meter {
+            metered_heap_sort(&mut ordinals, meter)?;
+        } else {
+            ordinals.sort_unstable();
+        }
         let mut keys = Vec::new();
         keys.try_reserve_exact(count)
             .map_err(|e| reserve(count, e))?;
@@ -847,6 +875,7 @@ impl GroupedEdges {
             .try_reserve_exact(count)
             .map_err(|e| reserve(count, e))?;
         for (position, (key, ordinal)) in ordinals.into_iter().enumerate() {
+            if let Some(meter) = edges.meter { work(meter, 1)?; }
             if keys.last().map_or(true, |previous| *previous != key) {
                 starts.push(u32::try_from(position).map_err(|_| {
                     FullSemanticImageFault::LengthOverflow {
@@ -866,6 +895,7 @@ impl GroupedEdges {
             keys,
             starts,
             order,
+            _scratch: scratch_reservation,
         })
     }
 
@@ -876,6 +906,33 @@ impl GroupedEdges {
         let end = *self.starts.get(group.checked_add(1)?)?;
         Some((start, end))
     }
+}
+
+// Sort by `(key, ordinal)` without hidden allocations, checking cancellation
+// and work on each heap step. The ordinal preserves stored edge order.
+fn metered_heap_sort(
+    values: &mut [(u64, u32)],
+    meter: &dyn SemanticImageAdmissionMeter,
+) -> Result<(), FullSemanticImageFault> {
+    fn sift(values: &mut [(u64, u32)], mut root: usize, end: usize, meter: &dyn SemanticImageAdmissionMeter) -> Result<(), FullSemanticImageFault> {
+        loop {
+            work(meter, 1)?;
+            let Some(mut child) = root.checked_mul(2).and_then(|n| n.checked_add(1)) else { return Ok(()); };
+            if child >= end { return Ok(()); }
+            if child + 1 < end && values[child] < values[child + 1] { child += 1; }
+            if values[root] >= values[child] { return Ok(()); }
+            values.swap(root, child);
+            root = child;
+        }
+    }
+    let len = values.len();
+    for root in (0..len / 2).rev() { sift(values, root, len, meter)?; }
+    for end in (1..len).rev() {
+        work(meter, 1)?;
+        values.swap(0, end);
+        sift(values, 0, end, meter)?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -896,6 +953,14 @@ impl<'a> Edges<'a> {
         domain: u8,
         coordinate: u32,
     ) -> Result<Self, FullSemanticImageFault> {
+        Self::for_node_with_meter(bytes, layout, typed, domain, coordinate, None)
+    }
+
+    fn for_node_with_meter(
+        bytes: &'a [u8], layout: FullImageLayout, typed: TypedLayout,
+        domain: u8, coordinate: u32, meter: Option<&'a dyn SemanticImageAdmissionMeter>,
+    ) -> Result<Self, FullSemanticImageFault> {
+        if let Some(meter) = meter { work(meter, 1)?; }
         let count = count(typed, domain)?;
         if coordinate >= count {
             return Err(reference(
@@ -930,10 +995,12 @@ impl<'a> Edges<'a> {
             count: get_u32(bytes, offset + 12, FullSemanticImageField::TypedNodes)?,
             next: 0,
             grouped: None,
+            meter,
         })
     }
 
     fn edge(&self, ordinal: u32) -> Result<Edge, FullSemanticImageFault> {
+        if let Some(meter) = self.meter { work(meter, 1)?; }
         if ordinal >= self.count {
             return Err(shape(self.node));
         }
