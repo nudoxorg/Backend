@@ -499,18 +499,6 @@ impl CompilerPublicationMetadata {
         {
             return Err(CompilerEnvelopeError::DuplicateMember);
         }
-        let mut ordinals = images
-            .iter()
-            .map(|image| image.artifact_ordinal)
-            .collect::<Vec<_>>();
-        ordinals.sort_unstable();
-        if ordinals
-            .iter()
-            .enumerate()
-            .any(|(expected, actual)| usize::try_from(*actual).ok() != Some(expected))
-        {
-            return Err(CompilerEnvelopeError::MemberOrder);
-        }
         if metadata_member_count(images.len(), versioned_planes.as_ref())? > MAX_MEMBER_IDS {
             return Err(CompilerEnvelopeError::MemberCount);
         }
@@ -2994,50 +2982,32 @@ fn verify_manifest_image_inventory(
     if usize::try_from(fragment_count).ok() != Some(images.len()) {
         return Err(CompilerEnvelopeError::ManifestFacts);
     }
-    let mut manifest_images = Vec::with_capacity(images.len());
+    // Validate every manifest fact before comparing rows, preserving the
+    // original error ordering without retaining an image-sized tuple vector.
     for ordinal in 0..images.len() {
         let entry_start = SEMANTIC_MANIFEST_HEADER_BYTES + ordinal * SEMANTIC_MANIFEST_ENTRY_BYTES;
         let image_start = entry_start + SEMANTIC_MANIFEST_IMAGE_IDENTITY_OFFSET;
-        let identity: AuthorityHash = manifest_bytes[image_start..image_start + 32]
-            .try_into()
-            .map_err(|_| CompilerEnvelopeError::ManifestFacts)?;
-        SemanticImageIdentity::try_from(identity)
-            .map_err(|_| CompilerEnvelopeError::ImageIdentity)?;
+        let identity: AuthorityHash = manifest_bytes[image_start..image_start + 32].try_into().map_err(|_| CompilerEnvelopeError::ManifestFacts)?;
+        SemanticImageIdentity::try_from(identity).map_err(|_| CompilerEnvelopeError::ImageIdentity)?;
         let length_start = entry_start + SEMANTIC_MANIFEST_IMAGE_LENGTH_OFFSET;
-        let length = u32::from_le_bytes(
-            manifest_bytes[length_start..length_start + 4]
-                .try_into()
-                .map_err(|_| CompilerEnvelopeError::ManifestFacts)?,
-        );
-        if length == 0 {
-            return Err(CompilerEnvelopeError::ImageLength);
-        }
-        manifest_images.push((identity, length));
+        let length = u32::from_le_bytes(manifest_bytes[length_start..length_start + 4].try_into().map_err(|_| CompilerEnvelopeError::ManifestFacts)?);
+        if length == 0 { return Err(CompilerEnvelopeError::ImageLength); }
     }
-    let mut metadata_images = vec![None; images.len()];
+    let bitmap_len = images.len().checked_add(7).ok_or(CompilerEnvelopeError::MemberCount)? / 8;
+    let mut seen = backend_store::try_allocate_exact_zeroed_bytes(bitmap_len).map_err(|_| CompilerEnvelopeError::MemberCount)?;
     for image in images {
-        let ordinal = usize::try_from(image.artifact_ordinal)
-            .map_err(|_| CompilerEnvelopeError::MemberOrder)?;
-        let slot = metadata_images
-            .get_mut(ordinal)
-            .ok_or(CompilerEnvelopeError::MemberOrder)?;
-        if slot
-            .replace((image.semantic_image_identity, image.byte_length))
-            .is_some()
-        {
-            return Err(CompilerEnvelopeError::MemberOrder);
+        let ordinal = usize::try_from(image.artifact_ordinal).map_err(|_| CompilerEnvelopeError::MemberOrder)?;
+        if ordinal >= images.len() { return Err(CompilerEnvelopeError::MemberOrder); }
+        let mask = 1u8 << (ordinal % 8);
+        if seen[ordinal / 8] & mask != 0 { return Err(CompilerEnvelopeError::MemberOrder); }
+        seen[ordinal / 8] |= mask;
+        let entry_start = SEMANTIC_MANIFEST_HEADER_BYTES + ordinal * SEMANTIC_MANIFEST_ENTRY_BYTES;
+        let image_start = entry_start + SEMANTIC_MANIFEST_IMAGE_IDENTITY_OFFSET;
+        let length_start = entry_start + SEMANTIC_MANIFEST_IMAGE_LENGTH_OFFSET;
+        let length = u32::from_le_bytes(manifest_bytes[length_start..length_start + 4].try_into().map_err(|_| CompilerEnvelopeError::ManifestFacts)?);
+        if manifest_bytes[image_start..image_start + 32] != image.semantic_image_identity || length != image.byte_length {
+            return Err(CompilerEnvelopeError::MetadataMismatch);
         }
-    }
-    if metadata_images.iter().any(Option::is_none) {
-        return Err(CompilerEnvelopeError::MemberOrder);
-    }
-    if manifest_images
-        .iter()
-        .copied()
-        .zip(metadata_images.into_iter().flatten())
-        .any(|(manifest, metadata)| manifest != metadata)
-    {
-        return Err(CompilerEnvelopeError::MetadataMismatch);
     }
     Ok(())
 }
