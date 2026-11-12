@@ -332,7 +332,7 @@ def write_build_manifest(output: Path, revision: str, tree: str, cargo_lock: str
     if companion_evidence is not None:
         manifest["companion"] = companion_evidence
     path = output / "Nudox" / "resources" / "build-manifest.json"
-    path.parent.mkdir(mode=0o700, parents=True)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n")
     return path
 
@@ -454,10 +454,19 @@ def main() -> int:
             worker_receipt_sha=worker_digest, worker_private_paths=private)
         if final_receipt_digest != companion_receipt_digest:
             fail("formal companion receipt changed during assembly")
+        observation_path = output / "Nudox/resources/sqlite-observation.json"
+        observation_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        observation_path.write_bytes(observed)
+        if sha256(observation_path) != hashlib.sha256(observed).hexdigest():
+            fail("formal SQLite observation changed while recording")
         evidence = {"owner_receipt_sha256": companion_receipt_digest,
                     "stylo_anchor": companion["worker_anchor"],
                     "sqlite_artifact_identity": companion["sqlite"]["artifact_identity"],
                     "sqlite_lock_sha256": companion["sqlite"]["sqlite_lock_sha256"],
+                    "sqlite_observation_path": "resources/sqlite-observation.json",
+                    "sqlite_observation_sha256": hashlib.sha256(observed).hexdigest(),
+                    "sqlite_observer_sha256": companion["sqlite"]["observer"]["sha256"],
+                    "stylo_observer_sha256": companion["observer"]["sha256"],
                     "dependency_sha256": companion["dependency"]["sha256"]}
     build_manifest_path = write_build_manifest(output, revision, tree, cargo_lock, executables, profile, evidence)
     normalize_modes(output / "Nudox")
@@ -483,7 +492,8 @@ def main() -> int:
     }
     (output / f"release-manifest-{PLATFORM}.json").write_text(json.dumps(release_manifest, sort_keys=True, indent=2) + "\n")
     (output / f"{ASSET}.sha256").write_text(f"{archive_sha}  {ASSET}\n")
-    print(f"linux-x64 candidate: {revision} glibc>={minimum_glibc} -> {archive}")
+    status = "candidate" if companion is not None else "unbound diagnostic (not releasable)"
+    print(f"linux-x64 {status}: {revision} glibc>={minimum_glibc} -> {archive}")
     return 0
 
 

@@ -249,6 +249,65 @@ def archive_evidence(archive, profile):
                        lambda name: bundle.getmember(name).isfile())
 
 
+def validate_linux_formal_companion(archive: Path, build: dict) -> None:
+    """Require packaged bytes and build-time observations for both bound companions."""
+    evidence = build.get("companion")
+    fields = {"owner_receipt_sha256", "stylo_anchor", "sqlite_artifact_identity",
+              "sqlite_lock_sha256", "sqlite_observation_sha256", "sqlite_observer_sha256",
+              "stylo_observer_sha256", "dependency_sha256", "sqlite_observation_path"}
+    if not isinstance(evidence, dict) or set(evidence) != fields:
+        raise ValueError("Linux formal package lacks complete companion observation evidence")
+    if evidence["sqlite_observation_path"] != "resources/sqlite-observation.json":
+        raise ValueError("Linux formal SQLite observation path is invalid")
+    if any(not isinstance(evidence[key], str) or not re.fullmatch(r"[a-f0-9]{64}", evidence[key]) or evidence[key] == "0" * 64 for key in fields - {"sqlite_observation_path"}):
+        raise ValueError("Linux formal companion identity is malformed")
+    executables = build.get("executables")
+    if not isinstance(executables, dict):
+        raise ValueError("Linux formal companion executable evidence is missing")
+    names = ("backend-desktop", "backend-locald", "backend-stylo-worker", "backend-sqlite-worker")
+    with tarfile.open(archive, "r:gz") as bundle:
+        for name in names:
+            record = executables.get(name)
+            if not isinstance(record, dict) or record.get("path") != f"bin/{name}":
+                raise ValueError(f"Linux formal companion {name} record is missing")
+            expected = record.get("sha256")
+            original = record.get("companion_artifact_sha256")
+            if any(not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value) or value == "0" * 64 for value in (expected, original)):
+                raise ValueError(f"Linux formal companion {name} identity is malformed")
+            if type(record.get("bytes")) is not int or not 0 < record["bytes"] <= 512 * 1024 * 1024 or type(record.get("companion_artifact_bytes")) is not int or not 0 < record["companion_artifact_bytes"] <= 512 * 1024 * 1024:
+                raise ValueError(f"Linux formal companion {name} extent is invalid")
+            if name.endswith("-worker") and (expected != original or record["bytes"] != record["companion_artifact_bytes"]):
+                raise ValueError(f"Linux formal companion {name} differs from its observed bytes")
+            _validate_formal_member(bundle, "Nudox/" + record["path"], expected, record["bytes"], 512 * 1024 * 1024)
+        _validate_formal_member(bundle, "Nudox/lib/libgcc_s.so.1", evidence["dependency_sha256"], None, 16 * 1024 * 1024)
+        observation_name = "Nudox/" + evidence["sqlite_observation_path"]
+        _validate_formal_member(bundle, observation_name, evidence["sqlite_observation_sha256"], None, 65536)
+        with bundle.extractfile(bundle.getmember(observation_name)) as stream:
+            observation = json.loads(stream.read(65537))
+        from sqlite_macos_development import validate_observation
+        identity, _basis = validate_observation(observation, evidence["sqlite_lock_sha256"])
+        if identity != evidence["sqlite_artifact_identity"]:
+            raise ValueError("Linux formal SQLite observation differs from bound identity")
+
+
+def _validate_formal_member(bundle: tarfile.TarFile, name: str, digest: str, size: int | None, maximum: int) -> None:
+    try:
+        member = bundle.getmember(name)
+    except KeyError as error:
+        raise ValueError(f"Linux formal companion member missing: {name}") from error
+    if not member.isfile() or not 0 < member.size <= maximum or (size is not None and member.size != size):
+        raise ValueError(f"Linux formal companion member has invalid size or type: {name}")
+    stream = bundle.extractfile(member)
+    if stream is None:
+        raise ValueError(f"Linux formal companion member is unreadable: {name}")
+    hasher = hashlib.sha256()
+    with stream:
+        while chunk := stream.read(1024 * 1024):
+            hasher.update(chunk)
+    if hasher.hexdigest() != digest:
+        raise ValueError(f"Linux formal companion member differs from observation: {name}")
+
+
 def validate(directory, source=None, platform=None, require_qa=True):
     directory = Path(directory)
     manifest = read_json(metadata_path(directory, "release-manifest", platform))
@@ -289,6 +348,8 @@ def validate(directory, source=None, platform=None, require_qa=True):
     build = json.loads(build_bytes)
     if hashlib.sha256(build_bytes).hexdigest() != manifest["build_manifest_sha256"] or any(build["source"].get(key) != manifest[field] for key, field in (("git_revision", "source_sha"), ("git_tree", "source_tree"), ("cargo_lock_sha256", "cargo_lock_sha256"))):
         raise ValueError("archive build evidence differs from release source")
+    if selected == "linux-x64":
+        validate_linux_formal_companion(archive, build)
     if info and (info.get("CFBundleShortVersionString") != manifest["version"] or info.get("LSMinimumSystemVersion") != manifest["minimum_os"]):
         raise ValueError("archive version/minimum OS differs from release metadata")
     checksum = directory / (manifest["asset"] + ".sha256")

@@ -4,6 +4,7 @@ The mocked relocation test verifies that build evidence records the final
 post-patchelf bytes. Real Linux ELF and shared-library closure validation still
 requires an actual Linux host and toolchain.
 """
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -275,6 +276,12 @@ class BuildManifestAndArchiveTests(unittest.TestCase):
                 "sqlite": {"dependency_source": dependency, "observer": identity(observer),
                            "worker": record_bytes(payloads["backend-sqlite-worker"]),
                            "sqlite_lock_sha256": "b" * 64, "artifact_identity": "c" * 64, "basis_json": "basis"}}
+            observation = {"state": "observed-build-helper", "artifact_identity": "c" * 64,
+                "basis": {"engine": "Syntaqlite4e4de76", "native_revision": sqlite_common.REVISION,
+                    "recipe": sqlite_common.RECIPE, "lock_sha256": list(bytes.fromhex("b" * 64)),
+                    "support_sha256": [1] * 32, "settings": {"Sqlite": {"version": 2147483647, "cflags": 0, "analyzer_dqs_fallback": True}}}}
+            observation_bytes = json.dumps(observation).encode()
+            companion["sqlite"]["basis_json"] = sqlite_common.validate_observation(observation, "b" * 64)[1]
             output = root / "candidate"
             def portabilize(_bin, names, out, *_args):
                 package = out / "Nudox"
@@ -287,7 +294,8 @@ class BuildManifestAndArchiveTests(unittest.TestCase):
                     path.write_bytes(payloads.get(name, name.encode()))
                     info = record_bytes(path.read_bytes())
                     records.append({"name": name, "packaged_path": "bin/" + name, **info,
-                        "t1_artifact_sha256": info["sha256"], "t1_artifact_bytes": info["bytes"]})
+                        "t1_artifact_sha256": info["sha256"], "t1_artifact_bytes": info["bytes"],
+                        "companion_input": name in {"backend-locald", "backend-desktop", "backend-stylo-worker", "backend-sqlite-worker"}})
                 return records, "2.17"
             admissions = []
             def admit(_path, **kwargs):
@@ -301,15 +309,47 @@ class BuildManifestAndArchiveTests(unittest.TestCase):
                   patch.object(release, "require_tool", side_effect=lambda path, _label: path),
                   patch.object(release, "portabilize", side_effect=portabilize),
                   patch.object(actor, "require_runpath"), patch.object(actor, "observe", return_value="a" * 64),
-                  patch.object(actor, "bounded_process", return_value=b"{}"),
-                  patch.object(sqlite_common, "validate_observation", return_value=("c" * 64, "basis")),
+                  patch.object(actor, "bounded_process", return_value=observation_bytes),
                   patch.object(sys, "argv", ["linux_formal_release.py", "--t1-artifact-dir", str(artifact),
                       "--source", str(source), "--output", str(output), "--patchelf", "patchelf", "--readelf", "readelf", "--ldd", "ldd",
                       "--companion-owner-receipt", str(owner_receipt), "--companion-cli-manifest", str(cli_manifest),
                       "--stylo-worker", str(raw_worker), "--stylo-worker-receipt", str(worker_receipt)])):
                 self.assertEqual(release.main(), 0)
             self.assertEqual(admissions, [raw_record, raw_record])
-            self.assertTrue((output / release.ASSET).is_file())
+            archive = output / release.ASSET
+            self.assertTrue(archive.is_file())
+            # Synthetic component fixture: validates the release gate, not a product journey.
+            release_contract.validate(output, source=source, platform="linux-x64", require_qa=False)
+            with tarfile.open(archive, "r:gz") as bundle:
+                build = json.load(bundle.extractfile("Nudox/resources/build-manifest.json"))
+            missing = copy.deepcopy(build)
+            del missing["companion"]
+            with self.assertRaisesRegex(ValueError, "companion observation"):
+                release_contract.validate_linux_formal_companion(archive, missing)
+            mismatch = copy.deepcopy(build)
+            mismatch["executables"]["backend-sqlite-worker"]["sha256"] = "f" * 64
+            with self.assertRaisesRegex(ValueError, "differs from its observed bytes"):
+                release_contract.validate_linux_formal_companion(archive, mismatch)
+            mismatch = copy.deepcopy(build)
+            mismatch["executables"]["backend-sqlite-worker"]["sha256"] = "f" * 64
+            mismatch["executables"]["backend-sqlite-worker"]["companion_artifact_sha256"] = "f" * 64
+            with self.assertRaisesRegex(ValueError, "differs from observation"):
+                release_contract.validate_linux_formal_companion(archive, mismatch)
+            missing_worker_archive = root / "missing-worker.tar.gz"
+            with tarfile.open(archive, "r:gz") as source_archive, tarfile.open(missing_worker_archive, "w:gz") as destination:
+                for member in source_archive:
+                    if member.name == "Nudox/bin/backend-sqlite-worker":
+                        continue
+                    data = source_archive.extractfile(member) if member.isfile() else None
+                    destination.addfile(member, data)
+                    if data is not None:
+                        data.close()
+            with self.assertRaisesRegex(ValueError, "member missing"):
+                release_contract.validate_linux_formal_companion(missing_worker_archive, build)
+            mismatch = copy.deepcopy(build)
+            mismatch["companion"]["dependency_sha256"] = "f" * 64
+            with self.assertRaisesRegex(ValueError, "differs from observation"):
+                release_contract.validate_linux_formal_companion(archive, mismatch)
 
     def test_build_manifest_records_mutated_post_relocation_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -366,7 +406,7 @@ class BuildManifestAndArchiveTests(unittest.TestCase):
             self.assertEqual(archived_build["executables"]["backend-cli"]["bytes"], len(archived_binary))
             self.assertEqual(json.loads(build_path.read_text()), archived_build)
 
-    def test_mocked_candidate_passes_the_real_release_contract(self):
+    def test_unbound_t1_candidate_is_rejected_by_release_contract(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "source"
@@ -388,9 +428,9 @@ class BuildManifestAndArchiveTests(unittest.TestCase):
             ):
                 self.assertEqual(release.main(), 0)
 
-            admitted = release_contract.validate(
-                output, source=source, platform="linux-x64", require_qa=False,
-            )
+            with self.assertRaisesRegex(ValueError, "companion observation"):
+                release_contract.validate(output, source=source, platform="linux-x64", require_qa=False)
+            admitted = json.loads((output / "release-manifest-linux-x64.json").read_text())
             self.assertEqual(admitted["source_sha"], revision)
             self.assertEqual(admitted["source_tree"], tree)
             self.assertEqual(admitted["cargo_lock_sha256"], cargo_lock)
@@ -406,7 +446,7 @@ class BuildManifestAndArchiveTests(unittest.TestCase):
                     self.assertEqual(record["t1_artifact_sha256"], t1_record["sha256"])
                     self.assertEqual(record["t1_artifact_bytes"], t1_record["bytes"])
 
-    def test_release_build_with_gui_libraries_passes_the_real_release_contract(self):
+    def test_unbound_release_build_is_rejected_by_release_contract(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "source"
@@ -437,7 +477,9 @@ class BuildManifestAndArchiveTests(unittest.TestCase):
                 self.assertEqual(release.main(), 0)
 
             self.assertFalse((output / "stage").exists(), "the stripped stage is not part of the candidate")
-            admitted = release_contract.validate(output, source=source, platform="linux-x64", require_qa=False)
+            with self.assertRaisesRegex(ValueError, "companion observation"):
+                release_contract.validate(output, source=source, platform="linux-x64", require_qa=False)
+            admitted = json.loads((output / "release-manifest-linux-x64.json").read_text())
             self.assertEqual((admitted["source_sha"], admitted["source_tree"]), (revision, tree))
             with tarfile.open(output / release.ASSET, "r:gz") as bundle:
                 names = set(bundle.getnames())
