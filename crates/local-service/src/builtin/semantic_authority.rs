@@ -3773,12 +3773,13 @@ impl SemanticAuthority {
             });
             let files = || order[..count].iter().filter_map(|ordinal| staged.native_typescript_line_at(*ordinal as usize));
             let deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
-            let mut work = 128usize * 1024 * 1024;
-            let mut checkpoint = |_: usize| -> Result<(), backend_extension_turso::CompilerEnvelopeError> {
+            let work = std::cell::Cell::new(128usize * 1024 * 1024);
+            let check = || -> Result<(), backend_extension_turso::CompilerEnvelopeError> {
                 if std::time::Instant::now() >= deadline { return Err(backend_extension_turso::CompilerEnvelopeError::Stopped); }
-                work = work.checked_sub(1).ok_or(backend_extension_turso::CompilerEnvelopeError::Stopped)?;
+                work.set(work.get().checked_sub(1).ok_or(backend_extension_turso::CompilerEnvelopeError::Stopped)?);
                 Ok(())
             };
+            let mut checkpoint = |_: usize| check();
             let (length, observed_count) = backend_semantic::native_source_lines::encoded_len_files(files(), &mut checkpoint)
                 .map_err(|e| BuiltinModelError(format!("plan native source lines: {e:?}")))?;
             if observed_count != count { return Err(BuiltinModelError("native line inventory changed".into())); }
@@ -3790,15 +3791,35 @@ impl SemanticAuthority {
                 || !u64::try_from(bytes.len()).is_ok_and(|len| streamed_payload_bytes.checked_add(len).is_some_and(|total| total <= MAX_PAYLOAD_BYTES)) {
                 return Err(BuiltinModelError("native source lines exceed compiler closure budget".into()));
             }
-            let object = backend_extension_turso::compiler_native_lines_object(&bytes, &mut budget, &mut checkpoint)
-                .map_err(|e| BuiltinModelError(format!("construct native source lines: {e}")))?;
-            let object_id = stream_typed_object(&mut builder, &object)?;
+            let schema = backend_extension_turso::COMPILER_NATIVE_LINES_SCHEMA;
+            let mut key = backend_version::ObjectKeyHasher::new(schema, bytes.len()).map_err(|e| BuiltinModelError(format!("native line key: {e:?}")))?;
+            let mut version = backend_version::ObjectVersionHasher::new(schema, bytes.len()).map_err(|e| BuiltinModelError(format!("native line version: {e:?}")))?;
+            for chunk in bytes.chunks(64 * 1024) {
+                checkpoint(chunk.len()).map_err(|e| BuiltinModelError(format!("native line hashing: {e}")))?;
+                key.update(chunk).map_err(|e| BuiltinModelError(format!("native line key: {e:?}")))?;
+                version.update(chunk).map_err(|e| BuiltinModelError(format!("native line version: {e:?}")))?;
+            }
+            let claim = ArtifactObjectClaim::new(schema,
+                key.finish().map_err(|e| BuiltinModelError(format!("native line key: {e:?}")))?,
+                version.finish().map_err(|e| BuiltinModelError(format!("native line version: {e:?}")))?, bytes.len() as u64);
+            let mut stream = builder.begin_object(claim).map_err(|e| BuiltinModelError(format!("begin native line object: {e:?}")))?;
+            for chunk in bytes.chunks(MAX_CHUNK_BYTES) {
+                checkpoint(chunk.len()).map_err(|e| BuiltinModelError(format!("native line write stopped: {e}")))?;
+                stream.write(chunk).map_err(|e| BuiltinModelError(format!("write native line object: {e:?}")))?;
+            }
+            let object_id = stream.finish().map_err(|e| BuiltinModelError(format!("finish native line object: {e:?}")))?;
             account_streamed_payload(&mut streamed_payload_bytes, &bytes);
             payload_ids.insert(object_id);
-            let verified = self.store.verify_object_claim(UntrustedObjectId::from_bytes(*object_id.as_bytes()))
+            let pin = self.store.pin_garbage_collection_bounded(&mut budget, |_| check().map_err(|_| backend_store::StoreError::Bounds))
+                .map_err(|e| BuiltinModelError(format!("pin native line object: {e:?}")))?;
+            let reader = self.store.open_bounded_nonrelation_object(&pin, UntrustedObjectId::from_bytes(*object_id.as_bytes()), &[schema], None, bytes.len(), &mut budget,
+                |_| check().map_err(|_| backend_store::StoreError::Bounds))
+                .map_err(|e| BuiltinModelError(format!("open native line object: {e:?}")))?;
+            let member = reader.read_into(&mut bytes, &mut budget,
+                |_, _| check().map_err(|_| backend_store::StoreError::Bounds),
+                |view, _| backend_extension_turso::CompilerNativeLinesMember::from_verified_view(view, &mut checkpoint).map_err(|_| backend_store::StoreError::Corrupt))
                 .map_err(|e| BuiltinModelError(format!("verify native source lines: {e:?}")))?;
-            Some(backend_extension_turso::CompilerNativeLinesMember::from_verified_object(verified, &bytes, &mut checkpoint)
-                .map_err(|e| BuiltinModelError(format!("admit native source lines: {e}")))?)
+            Some(member)
         } else { None };
 
         // A C# captured-input attempt must retain its complete checked
