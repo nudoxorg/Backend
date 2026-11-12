@@ -15,8 +15,9 @@ fn index(session: &mut Session, project: &std::path::Path, byte: u8) -> Result<(
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     let package = PackageReference::parse(project.to_string_lossy().into_owned())
         .map_err(|e| std::io::Error::other(e.to_string()))?;
-    let mut status =
-        session.start_index_operation(key, package, CompileExecutionIntent::Interactive)?;
+    let mut status = session
+        .start_index_operation(key, package, CompileExecutionIntent::Interactive)
+        .map_err(|e| std::io::Error::other(format!("start operation: {e}")))?;
     let deadline = Instant::now() + Duration::from_secs(600);
     loop {
         let IndexOperationObservation::Known(known) = status else {
@@ -31,7 +32,9 @@ fn index(session: &mut Session, project: &std::path::Path, byte: u8) -> Result<(
             return Err("Vue index deadline".into());
         }
         std::thread::sleep(Duration::from_millis(30));
-        status = session.index_operation_status(key)?;
+        status = session
+            .index_operation_status(key)
+            .map_err(|e| std::io::Error::other(format!("poll operation: {e}")))?;
     }
 }
 
