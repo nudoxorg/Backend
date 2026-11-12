@@ -3817,7 +3817,10 @@ impl SemanticAuthority {
                 .map_err(|e| BuiltinModelError(format!("open native line object: {e:?}")))?;
             let member = reader.read_into(&mut bytes, &mut budget,
                 |_, _| check().map_err(|_| backend_store::StoreError::Bounds),
-                |view, _| backend_extension_turso::CompilerNativeLinesMember::from_verified_view(view, &mut checkpoint).map_err(|_| backend_store::StoreError::Corrupt))
+                |view, _| backend_extension_turso::CompilerNativeLinesMember::from_verified_view(view, &mut checkpoint).map_err(|e| match e {
+                    backend_extension_turso::CompilerEnvelopeError::Stopped => backend_store::StoreError::Bounds,
+                    _ => backend_store::StoreError::Corrupt,
+                }))
                 .map_err(|e| BuiltinModelError(format!("verify native source lines: {e:?}")))?;
             Some(member)
         } else { None };
