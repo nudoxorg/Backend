@@ -225,6 +225,8 @@ def main():
                 'search_scope': reply.get('search_scope') if isinstance(reply, dict) else None,
                 'full_search': reply.get('full_search') if isinstance(reply, dict) else None,
                 'full_lexical': is_full_search(reply, query), 'observation_label': label})
+            if elapsed >= 600:
+                raise TimeoutError(f'{phase}: full lexical search exceeded the 600-second preparation bound')
             state = classify_search(reply, query)
             require(label + ' valid response', rc == 0 and state != 'invalid', raw)
             if state == 'full':
