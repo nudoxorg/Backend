@@ -1259,7 +1259,15 @@ impl Engine for Fake {
                         backend_library::CommandFailure::NotFound,
                     ));
                 }
-                CommandReply::Graph(snapshot(vec![declaration_row()]))
+                if self.document_matches_request && self.document_override.is_none() {
+                    let catalog = self.page_catalog.as_ref().ok_or_else(|| ClientError::Protocol("graph fixture needs its selected catalog".to_owned()))?;
+                    let graph = catalog.graph(backend_library::GraphNeighborhoodQuery::new(
+                        symbol_key(at), catalog.revision_root(),
+                    )).map_err(|error| ClientError::Protocol(error.to_string()))?;
+                    CommandReply::Graph(graph)
+                } else {
+                    CommandReply::Graph(snapshot(vec![declaration_row()]))
+                }
             }
             Probe::Search { .. } => match self.published_name_readiness {
                 Some(readiness) => {
@@ -2497,6 +2505,24 @@ fn related_pages_fit_mcp_budget_for_large_neighborhood() {
         } else { break; }
     }
     assert_eq!(count, 180);
+}
+
+#[test]
+fn searched_document_and_related_fixture_share_the_selected_catalog_basis() {
+    let coordinate = format!("{MODULE}:2::Session_000");
+    let mut fake = Fake { page_catalog: Some(paging_catalog(3)), document_matches_request: true, ..Fake::default() };
+    let document = fake.probe(Probe::Document(&coordinate)).expect("selected catalog document");
+    let CommandReply::Document(document) = document.reply else { panic!("document reply"); };
+    let graph = fake.probe(Probe::Related(&coordinate)).expect("selected catalog graph");
+    let CommandReply::Graph(graph) = graph.reply else { panic!("graph reply"); };
+    assert_eq!(Some(graph.root.basis()), document.source_basis());
+    assert_eq!(graph.root.basis().root, document.basis);
+    assert!(graph.root.rows().iter().any(|row| row.id == RowId::Symbol(document.symbol)));
+
+    fake.page_catalog = Some(paging_catalog(4));
+    let foreign = fake.probe(Probe::Related(&coordinate)).expect("new catalog graph");
+    let CommandReply::Graph(foreign) = foreign.reply else { panic!("foreign graph reply"); };
+    assert_ne!(Some(foreign.root.basis()), document.source_basis(), "a changed catalog must not reuse the prior document basis");
 }
 
 #[test]
