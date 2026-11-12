@@ -186,8 +186,10 @@ fn admit_inner(
     }).transpose()?;
     for (i, row) in rows.iter().enumerate() {
         if plan.flags[i] & 1 == 0 { continue; }
-        if let Some(expected) = &row.line_starts {
-            let aggregate = lines.as_ref().ok_or("native replay line map absent")?;
+        // Older selected metadata has no separate line aggregate; preserve
+        // the already-admitted inline evidence in that case. When v10 names
+        // an aggregate, an inline claim must match its exact selected file.
+        if let (Some(expected), Some(aggregate)) = (&row.line_starts, &lines) {
             let mut checkpoint = |n| charge_native_header_work(budget, stopped, n);
             let file = aggregate.find_file(&row.path, &mut checkpoint)?.ok_or("native replay line file absent")?;
             if file.source.byte_len != row.byte_length || file.source.identity.as_ref() != row.source_digest.as_slice() || file.line_count() != expected.len() {
