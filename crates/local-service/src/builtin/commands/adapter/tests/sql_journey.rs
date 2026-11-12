@@ -237,6 +237,35 @@ fn sqlite_project_indexes_publishes_queries_reindexes_and_survives_cold_reopen()
     let project = wire.source.parent().expect("project").to_owned();
     let mut session = Session::connect(&wire.endpoint).expect("listener");
 
+    // Ordinary name search must join selected SQL view rows with their own
+    // native query evidence rather than silently excluding them.
+    for (name, suffix) in [
+        (
+            "account_spend",
+            "db/migrations/0003_views.sql::account_spend",
+        ),
+        ("balance", "db/migrations/0001_init.sql::accounts::balance"),
+    ] {
+        let reply = session
+            .surface(backend_library::SurfaceCommand::IndexSearch {
+                query: backend_library::ProductText::new(name).expect("query"),
+                limit: 20,
+                cursor: None,
+            })
+            .expect("ordinary SQL name search");
+        let backend_library::SurfaceReply::IndexSearchPage(page) = reply else {
+            panic!("search page")
+        };
+        assert!(
+            page.hits.iter().any(|hit| matches!(hit,
+                backend_library::RegistrySearchHit::LocalDeclaration(record)
+                    if record.name.as_str() == name && record.coordinate.as_str().ends_with(suffix)
+            )),
+            "SQL declaration {name} missing from search: {:?}",
+            page.hits
+        );
+    }
+
     // Tables, columns, views, triggers, indexes: definitions across files.
     let tables = definitions(&mut session, &project, SqlObjectKind::Table, None);
     assert_eq!(tables, [("accounts".to_owned(), true), ("orders".to_owned(), true)]);

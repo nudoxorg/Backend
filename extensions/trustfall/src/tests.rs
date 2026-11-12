@@ -1141,3 +1141,67 @@ fn graph_arrangement_rejects_stale_plan_and_bounds_rebuild() {
         .expect("plan");
     assert!(matches!(outcome, RefreshOutcome::RebuildRequired(_)));
 }
+
+#[test]
+fn sql_native_evidence_binds_projection_and_host_basis() {
+    let package = backend_library::package_key("sql-project");
+    let project = backend_library::RowId::Package(package).stable_key();
+    let coordinate = "sql-project::db/schema.sql::books";
+    let preimage = format!("{coordinate}\0sql:4");
+    let package_fact = SemanticQueryFact::new(
+        SemanticQueryEvidence::Package(PackageScopeEvidence::new(package)),
+        SemanticQueryPresentation {
+            id: project.clone(),
+            kind: "project".into(),
+            coordinate: "sql-project".into(),
+            name: "sql-project".into(),
+            signature: None,
+            documentation: String::new(),
+            score: None,
+            project: None,
+            parent: None,
+            related: Box::new([]),
+        },
+    );
+    let fact = |producer, shown: &str| {
+        SemanticQueryFact::new(
+            SemanticQueryEvidence::SqlNative(SqlNativeQueryEvidence::new(
+                package,
+                [1; 32],
+                [2; 32],
+                [3; 32],
+                producer,
+                [5; 32],
+                [6; 32],
+                4,
+                preimage.clone(),
+            )),
+            SemanticQueryPresentation {
+                id: backend_library::RowId::Symbol(backend_library::symbol_key(&preimage))
+                    .stable_key(),
+                kind: "unknown".into(),
+                coordinate: shown.into(),
+                name: "books".into(),
+                signature: Some("SQL table books".into()),
+                documentation: String::new(),
+                score: None,
+                project: Some(project.clone()),
+                parent: None,
+                related: Box::new([]),
+            },
+        )
+    };
+    let first = SemanticQueryCorpus::admit(
+        workspace(),
+        vec![package_fact.clone(), fact([4; 32], coordinate)],
+    )
+    .expect("SQL evidence admitted");
+    let other = SemanticQueryCorpus::admit(
+        workspace(),
+        vec![package_fact.clone(), fact([7; 32], coordinate)],
+    )
+    .expect("different producer admitted");
+    assert_ne!(first.evidence_digest(), other.evidence_digest());
+    let forged = fact([4; 32], "forged-coordinate");
+    assert!(SemanticQueryCorpus::admit(workspace(), vec![package_fact, forged]).is_err());
+}

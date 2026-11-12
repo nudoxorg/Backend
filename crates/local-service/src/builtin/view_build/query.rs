@@ -106,6 +106,7 @@ pub(in crate::builtin) fn semantic_query_corpus_controlled(
         &mut facts,
         cancelled,
     )?;
+    super::sql::append_query(snapshot, sources, &mut facts, cancelled)?;
     check_search_preparation(cancelled, "corpus-admit")?;
     if facts.len() > MAX_REBUILD_PACKAGES {
         return Err(BuiltinModelError(

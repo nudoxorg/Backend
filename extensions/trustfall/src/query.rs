@@ -317,6 +317,53 @@ impl StructuralFallbackEvidence {
     }
 }
 
+/// A declaration projected from the selected SQL native relation. This is
+/// native outline evidence, not compiler-semantic or source-read authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SqlNativeQueryEvidence {
+    package: PackageKey,
+    host: [u8; 32],
+    input: [u8; 32],
+    source: [u8; 32],
+    producer: [u8; 32],
+    settings: [u8; 32],
+    fact_digest: [u8; 32],
+    ordinal: u32,
+    identity_preimage: String,
+}
+
+impl SqlNativeQueryEvidence {
+    /// Retains the exact selected host basis and its declaration identity.
+    #[must_use]
+    pub fn new(
+        package: PackageKey,
+        host: [u8; 32],
+        input: [u8; 32],
+        source: [u8; 32],
+        producer: [u8; 32],
+        settings: [u8; 32],
+        fact_digest: [u8; 32],
+        ordinal: u32,
+        identity_preimage: String,
+    ) -> Self {
+        Self {
+            package,
+            host,
+            input,
+            source,
+            producer,
+            settings,
+            fact_digest,
+            ordinal,
+            identity_preimage,
+        }
+    }
+    fn row_id(&self) -> String {
+        backend_library::RowId::Symbol(backend_library::symbol_key(&self.identity_preimage))
+            .stable_key()
+    }
+}
+
 /// Closed authority alternatives accepted by the graph extension.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SemanticQueryEvidence {
@@ -328,6 +375,8 @@ pub enum SemanticQueryEvidence {
     CompilerExternalTarget(CompilerExternalTargetEvidence),
     /// Explicitly non-semantic structural fallback facts.
     StructuralFallback(StructuralFallbackEvidence),
+    /// Selected SQL native declaration outline; no compiler claim.
+    SqlNative(SqlNativeQueryEvidence),
 }
 
 impl SemanticQueryEvidence {
@@ -337,6 +386,7 @@ impl SemanticQueryEvidence {
             Self::Compiler(value) => value.package(),
             Self::CompilerExternalTarget(value) => value.package(),
             Self::StructuralFallback(value) => value.package(),
+            Self::SqlNative(value) => value.package,
         }
     }
 
@@ -346,6 +396,7 @@ impl SemanticQueryEvidence {
             Self::Compiler(_) => "compiler_semantic",
             Self::CompilerExternalTarget(_) => "compiler_external_target",
             Self::StructuralFallback(_) => "structural_fallback",
+            Self::SqlNative(_) => "sql_native",
         }
     }
 
@@ -355,6 +406,7 @@ impl SemanticQueryEvidence {
             Self::Compiler(value) => Some(value.profile()),
             Self::CompilerExternalTarget(value) => Some(value.profile()),
             Self::StructuralFallback(value) => Some(value.profile()),
+            Self::SqlNative(_) => None,
         }
     }
 
@@ -362,7 +414,7 @@ impl SemanticQueryEvidence {
         match self {
             Self::Compiler(value) => Some(value.coordinate().as_str()),
             Self::CompilerExternalTarget(value) => Some(value.coordinate().as_str()),
-            Self::Package(_) | Self::StructuralFallback(_) => None,
+            Self::Package(_) | Self::StructuralFallback(_) | Self::SqlNative(_) => None,
         }
     }
 }
@@ -517,6 +569,18 @@ impl SemanticQueryCorpus {
                     }
                 }
                 SemanticQueryEvidence::StructuralFallback(_) => {}
+                SemanticQueryEvidence::SqlNative(value) => {
+                    if value.identity_preimage
+                        != format!("{}\0sql:{}", row.coordinate, value.ordinal)
+                        || row.id != value.row_id()
+                        || row.parent.is_some()
+                        || !row.related.is_empty()
+                    {
+                        return Err(QueryError::Evidence(
+                            "SQL native presentation differs from its typed identity".to_owned(),
+                        ));
+                    }
+                }
             }
         }
         for fact in &facts {
@@ -716,6 +780,10 @@ fn admit_fact_envelope(
             charge_bytes(252, limits, admitted_bytes)
         }
         SemanticQueryEvidence::StructuralFallback(_) => charge_bytes(98, limits, admitted_bytes),
+        SemanticQueryEvidence::SqlNative(value) => {
+            admit_text(&value.identity_preimage, limits, admitted_bytes)?;
+            charge_bytes(228, limits, admitted_bytes)
+        }
     }
 }
 
@@ -821,6 +889,18 @@ fn digest_corpus(workspace: WorkspaceRoot, facts: &[SemanticQueryFact]) -> [u8; 
                 hasher.update(&<[u8; 2]>::from(value.profile));
                 hasher.update(&value.content);
                 hasher.update(&value.producer);
+            }
+            SemanticQueryEvidence::SqlNative(value) => {
+                hasher.update(&[4]);
+                hasher.update(value.package.as_bytes());
+                hasher.update(&value.host);
+                hasher.update(&value.input);
+                hasher.update(&value.source);
+                hasher.update(&value.producer);
+                hasher.update(&value.settings);
+                hasher.update(&value.fact_digest);
+                hasher.update(&value.ordinal.to_le_bytes());
+                hash_unlabeled_bytes(&mut hasher, value.identity_preimage.as_bytes());
             }
         }
     }
@@ -1356,7 +1436,8 @@ impl SemanticGraph {
                     external_targets.push(index);
                 }
                 SemanticQueryEvidence::Compiler(_)
-                | SemanticQueryEvidence::StructuralFallback(_) => declarations.push(index),
+                | SemanticQueryEvidence::StructuralFallback(_)
+                | SemanticQueryEvidence::SqlNative(_) => declarations.push(index),
             }
             project_members
                 .entry(fact.evidence().package())
