@@ -547,7 +547,9 @@ mod tests {
         let key=rows[0].0; rows[0].1.input_digest[0]^=1;
         let changes=[TreeChange::<NativeSourceEvidenceRelation>{key,after:Some(rows[0].1.clone())}];
         let shape=LazyTreeMetadataShape::new(32,MAX_NATIVE_EVIDENCE_STORED_VALUE,3,3,5,4);
-        let charge=LazyTreeUpdateBudget::new(1,usize::MAX,shape).update_charge::<NativeSourceEvidenceRelation>(1).unwrap();
+        let baseline=relation.prepare_update_bounded(&changes,LazyTreeUpdateBudget::new(1,usize::MAX,shape)).unwrap();
+        let charge=baseline.work().peak_metadata_bytes;
+        assert!(charge > 0);
         assert!(relation.prepare_update_bounded(&changes,LazyTreeUpdateBudget::new(1,charge-1,shape)).is_err());
         let update=relation.prepare_update_bounded(&changes,LazyTreeUpdateBudget::new(1,charge,shape)).unwrap();
         let rebuilt=RelationState::<NativeSourceEvidenceRelation>::from_entries(rows,coverage).unwrap();
@@ -571,7 +573,9 @@ mod tests {
         let width=value.checked_encoded_len().unwrap();
         let changes=[TreeChange::<NativeSourceEvidenceRelation>{key,after:Some(value.clone())}];
         let shape=LazyTreeMetadataShape::new(32,width,2,2,3,3);
-        let charge=LazyTreeUpdateBudget::new(1,usize::MAX,shape).update_charge::<NativeSourceEvidenceRelation>(1).unwrap();
+        let baseline=relation.prepare_update_bounded(&changes,LazyTreeUpdateBudget::new(1,usize::MAX,shape)).unwrap();
+        let charge=baseline.work().peak_metadata_bytes;
+        assert!(charge > 0);
         assert!(relation.prepare_update_bounded(&changes,LazyTreeUpdateBudget::new(1,charge-1,shape)).is_err());
         let update=relation.prepare_update_bounded(&changes,LazyTreeUpdateBudget::new(1,charge,shape)).unwrap();
         let expected=RelationState::<NativeSourceEvidenceRelation>::from_entries([(key,value)],coverage).unwrap();
