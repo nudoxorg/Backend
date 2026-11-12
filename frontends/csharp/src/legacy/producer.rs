@@ -77,6 +77,9 @@ pub struct CSharpAuthorityConfiguration<'config> {
     pub exact_unsafe: Option<bool>,
     /// Captured SDK output type when observed.
     pub exact_output_type: Option<&'config str>,
+    /// Captured SDK kind and explicit project framework references.
+    pub exact_sdk_kind: Option<&'config str>,
+    pub exact_framework_references: Option<&'config [String]>,
     /// Additional global usings, in caller order.
     pub extra_usings: &'config [&'config str],
     /// Whether SDK-style implicit global usings are reconstructed.
@@ -99,6 +102,8 @@ impl CSharpAuthorityConfiguration<'static> {
         exact_nullable: None,
         exact_unsafe: None,
         exact_output_type: None,
+        exact_sdk_kind: None,
+        exact_framework_references: None,
         extra_usings: &[],
         implicit_usings: true,
         include_non_public: true,
@@ -403,8 +408,7 @@ impl CSharpOracle {
         }
         if let Some(snapshot) = request.resolved_reference_snapshot {
             if !snapshot.receipt_is_consistent()
-                || snapshot.receipt().target_framework
-                    != request.configuration.target_framework.unwrap_or("")
+                || !resolver_receipt_matches_options(snapshot.receipt(), request.profile, request.configuration)
                 || request.configuration.reference_directory.is_some()
                 || !request
                     .configuration
@@ -1259,6 +1263,27 @@ fn capture_error(
     }
 }
 
+fn resolver_receipt_matches_options(
+    receipt: &crate::legacy::sdk::CSharpResolverReceipt,
+    profile: CSharpVersion,
+    configuration: CSharpAuthorityConfiguration<'_>,
+) -> bool {
+    let language = match profile {
+        CSharpVersion::CSharp10 => "10.0",
+        CSharpVersion::CSharp11 => "11.0",
+        CSharpVersion::CSharp12 => "12.0",
+        CSharpVersion::CSharp13 => "13.0",
+        CSharpVersion::CSharp14 => "14.0",
+    };
+    let Some(frameworks) = configuration.exact_framework_references else { return false; };
+    configuration.target_framework == Some(receipt.target_framework.as_str())
+        && configuration.exact_nullable == Some(receipt.nullable.as_ref())
+        && configuration.exact_output_type == Some(receipt.output_type.as_ref())
+        && configuration.exact_sdk_kind == Some(receipt.sdk_kind.as_ref())
+        && receipt.language_version.as_ref() == language
+        && frameworks.iter().map(String::as_str).eq(receipt.framework_references.iter().map(|name| name.as_ref()))
+}
+
 fn profile_tag(profile: CSharpVersion) -> &'static str {
     match profile {
         CSharpVersion::CSharp10 => "csharp-10",
@@ -1378,6 +1403,37 @@ mod tests {
     use super::*;
     use backend_semantic::vocabulary::{NativeWorkerPanicClass, MAX_NATIVE_WORKER_PANIC_BYTES};
     use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn resolver_options_must_match_producer_configuration() {
+        let receipt = crate::legacy::sdk::CSharpResolverReceipt {
+            globalization_policy: crate::legacy::sdk::CSHARP_GLOBALIZATION_POLICY_ID.into(),
+            sdk_directory: PathBuf::from("/sdk/Sdks"), sdk_kind: "Microsoft.NET.Sdk".into(),
+            nullable: "warnings".into(), language_version: "12.0".into(), output_type: "Library".into(),
+            framework_references: Box::new([]), target_framework: "net10.0".into(),
+            global_json_digest: None, candidate_digest: [0; 32], selected_digest: [0; 32],
+            selected_names: Box::new([]), selected_fusion_names: Box::new([]),
+        };
+        let base = CSharpAuthorityConfiguration {
+            target_framework: Some("net10.0"), exact_nullable: Some("warnings"),
+            exact_output_type: Some("Library"), exact_sdk_kind: Some("Microsoft.NET.Sdk"),
+            exact_framework_references: Some(&[]), ..CSharpAuthorityConfiguration::DEFAULT
+        };
+        assert!(resolver_receipt_matches_options(&receipt, CSharpVersion::CSharp12, base));
+        assert!(!resolver_receipt_matches_options(&receipt, CSharpVersion::CSharp13, base));
+        for config in [
+            CSharpAuthorityConfiguration { target_framework: Some("net9.0"), ..base },
+            CSharpAuthorityConfiguration { exact_nullable: Some("enable"), ..base },
+            CSharpAuthorityConfiguration { exact_output_type: Some("Exe"), ..base },
+            CSharpAuthorityConfiguration { exact_sdk_kind: Some("Microsoft.NET.Sdk.Web"), ..base },
+            CSharpAuthorityConfiguration { exact_framework_references: None, ..base },
+        ] {
+            assert!(!resolver_receipt_matches_options(&receipt, CSharpVersion::CSharp12, config));
+        }
+        let frameworks = vec!["Microsoft.AspNetCore.App".to_owned()];
+        let changed = CSharpAuthorityConfiguration { exact_framework_references: Some(&frameworks), ..base };
+        assert!(!resolver_receipt_matches_options(&receipt, CSharpVersion::CSharp12, changed));
+    }
 
     #[test]
     fn captured_source_retains_unicode_path_and_text() {

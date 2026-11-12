@@ -5738,6 +5738,8 @@ fn run_worker_generation(
                 exact_nullable: None,
                 exact_unsafe: None,
                 exact_output_type: None,
+                exact_sdk_kind: None,
+                exact_framework_references: None,
                 extra_usings: csharp_using_storage.as_deref().unwrap_or_default(),
                 implicit_usings: csharp.implicit_usings,
                 include_non_public: csharp.include_non_public,

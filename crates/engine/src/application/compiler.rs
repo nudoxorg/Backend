@@ -4457,6 +4457,12 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             csharp.configuration.exact_nullable = sdk_observation.as_ref().map(|observation| observation.nullable.as_str());
             csharp.configuration.exact_unsafe = sdk_observation.as_ref().map(|observation| observation.allow_unsafe);
             csharp.configuration.exact_output_type = sdk_observation.as_ref().map(|observation| observation.output_type.as_str());
+            csharp.configuration.exact_sdk_kind = sdk_observation.as_ref().map(|observation| match observation.sdk_kind {
+                backend_frontend_csharp::legacy::CSharpSdkKind::Standard => "Microsoft.NET.Sdk",
+                backend_frontend_csharp::legacy::CSharpSdkKind::Web => "Microsoft.NET.Sdk.Web",
+            });
+            // The admitted project grammar excludes explicit FrameworkReference items.
+            csharp.configuration.exact_framework_references = Some(&[]);
             csharp.configuration.reference_directory = None;
             csharp.configuration.additional_reference_directories = &[];
             csharp.configuration.extra_usings = names;
