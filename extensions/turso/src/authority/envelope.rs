@@ -4015,6 +4015,14 @@ mod tests {
         let closure_id = store.write_closure(&ClosureManifest::new(objects).unwrap()).unwrap();
         let candidate = envelope.candidate(attempt.clone(), *closure_id.as_bytes()).unwrap();
         let selected = selected_generation(&attempt, &candidate, 1);
+        let envelope_wire = envelope.canonical_bytes();
+        let borrowed = borrowed_selected_envelope(&envelope_wire, &selected, selected.candidate_id(), &|| Ok(())).unwrap();
+        assert_eq!(borrowed.metadata_id, *envelope.metadata_id());
+        assert!(borrowed.members().eq(envelope.member_ids().iter().copied()));
+        assert!(matches!(borrowed_selected_envelope(&envelope_wire, &selected, selected.candidate_id(), &|| Err(CompilerEnvelopeError::Stopped)), Err(CompilerEnvelopeError::Stopped)));
+        let mut changed = envelope_wire.clone();
+        let end = changed.len(); changed[end - 1] ^= 1;
+        assert!(borrowed_selected_envelope(&changed, &selected, selected.candidate_id(), &|| Ok(())).is_err());
         let reader_credit = 2 * bytes.len() + decoded;
         // Measure payload work only after the metadata and closure are already open.
         let closure = store.open_closure(closure_id).unwrap();
