@@ -829,7 +829,8 @@ fn plan_projects<'a>(
 
 /// Read selected SQL projects using one shared requested-allocation ledger.
 /// All retained arrays use fixed-size boxed chunks charged before allocation;
-/// the caller supplies its explicit per-allocation bookkeeping allowance.
+/// the caller supplies its explicit per-allocation quota allowance. The quota
+/// covers requested layouts, not allocator usable size or an RSS limit.
 /// The sorted input project keys and snapshot are caller-owned and must already
 /// be accounted for in the caller's remaining budget.
 pub(super) fn load_projects_bounded<'a>(
