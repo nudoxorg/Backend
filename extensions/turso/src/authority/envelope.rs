@@ -87,10 +87,9 @@ pub const MAX_COMPILER_NATIVE_HEADERS_BYTES: usize = 32 * 1024 * 1024;
 pub struct CompilerNativeHeadersMember { object_id: AuthorityHash, byte_length: u32 }
 impl CompilerNativeHeadersMember {
     pub fn from_verified_object(object: VerifiedObjectEnvelope, bytes: &[u8], budget: &mut usize) -> Result<Self, CompilerEnvelopeError> {
-        *budget = budget.checked_sub(bytes.len()).ok_or(CompilerEnvelopeError::NativeHeaders)?;
-        let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical_budgeted(bytes, budget).map_err(|_| CompilerEnvelopeError::NativeHeaders)?;
-        let key = ObjectKey::<backend_semantic::native_ts_headers::NativeTsHeaderAggregateSchema>::from_value(&aggregate);
-        if bytes.is_empty() || bytes.len() > MAX_COMPILER_NATIVE_HEADERS_BYTES || object.schema() != COMPILER_NATIVE_HEADERS_SCHEMA || object.key() != key.as_bytes() || object.payload_len() != bytes.len() as u64 { return Err(CompilerEnvelopeError::NativeHeaders); }
+        let _aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical_budgeted(bytes, budget).map_err(|_| CompilerEnvelopeError::NativeHeaders)?;
+        let key = native_headers_key(bytes).map_err(|_| CompilerEnvelopeError::NativeHeaders)?;
+        if bytes.is_empty() || bytes.len() > MAX_COMPILER_NATIVE_HEADERS_BYTES || object.schema() != COMPILER_NATIVE_HEADERS_SCHEMA || object.key() != &key || object.payload_len() != bytes.len() as u64 { return Err(CompilerEnvelopeError::NativeHeaders); }
         Ok(Self { object_id: *object.id().as_bytes(), byte_length: u32::try_from(bytes.len()).map_err(|_| CompilerEnvelopeError::NativeHeaders)? })
     }
     pub const fn object_id(&self) -> &AuthorityHash { &self.object_id }
@@ -99,9 +98,12 @@ impl CompilerNativeHeadersMember {
 /// Constructs the typed aggregate object; the canonical aggregate decoder must validate its contents.
 pub fn compiler_native_headers_object(bytes: &[u8], budget: &mut usize) -> Result<TypedObject, CompilerEnvelopeError> {
     if bytes.is_empty() || bytes.len() > MAX_COMPILER_NATIVE_HEADERS_BYTES { return Err(CompilerEnvelopeError::NativeHeaders); }
-    *budget = budget.checked_sub(bytes.len().checked_mul(2).ok_or(CompilerEnvelopeError::NativeHeaders)?).ok_or(CompilerEnvelopeError::NativeHeaders)?;
-    let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical_budgeted(bytes, budget).map_err(|_| CompilerEnvelopeError::NativeHeaders)?;
-    Ok(TypedObject::from_value(&ObjectKey::<backend_semantic::native_ts_headers::NativeTsHeaderAggregateSchema>::from_value(&aggregate), &aggregate))
+    // from_value retains one encoded Vec while ObjectVersion encodes another;
+    // converting the Vec into an Arc can temporarily hold a third copy and its header.
+    let copies = bytes.len().checked_mul(3).and_then(|n| n.checked_add(2 * std::mem::size_of::<usize>())).ok_or(CompilerEnvelopeError::NativeHeaders)?;
+    *budget = budget.checked_sub(copies).ok_or(CompilerEnvelopeError::NativeHeaders)?;
+    let _aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical_budgeted(bytes, budget).map_err(|_| CompilerEnvelopeError::NativeHeaders)?;
+    Ok(TypedObject::from_value(&ObjectKey::<CompilerNativeHeadersBytesSchema>::from_value(bytes), bytes))
 }
 /// Bytes authenticated by the selected compiler closure; source/image admission remains separate.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1625,8 +1627,9 @@ fn reopen_native_headers_bounded(store: &FileStore, closure: &backend_store::Dur
     closure.admit_claim(claim).map_err(|e| format!("admit header aggregate: {e:?}"))?.ok_or("header aggregate absent from selected closure")?;
     let mut bytes = Vec::new();
     let verified = store.write_verified_object_payload(claim, u64::from(member.byte_length()), &mut bytes).map_err(|e| format!("read header aggregate: {e:?}"))?;
-    let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical_budgeted(&bytes, &mut decoded_budget).map_err(|e| e.to_string())?;
-    if verified.id().as_bytes() != member.object_id() || verified.schema() != COMPILER_NATIVE_HEADERS_SCHEMA || verified.payload_len() != u64::from(member.byte_length()) || verified.key() != ObjectKey::<backend_semantic::native_ts_headers::NativeTsHeaderAggregateSchema>::from_value(&aggregate).as_bytes() || bytes.len() != len { return Err("header aggregate schema, key, identity, or extent mismatch".into()); }
+    let _aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical_budgeted(&bytes, &mut decoded_budget).map_err(|e| e.to_string())?;
+    let key = native_headers_key(&bytes)?;
+    if verified.id().as_bytes() != member.object_id() || verified.schema() != COMPILER_NATIVE_HEADERS_SCHEMA || verified.payload_len() != u64::from(member.byte_length()) || verified.key() != &key || bytes.len() != len { return Err("header aggregate schema, key, identity, or extent mismatch".into()); }
     Ok(Some(bytes))
 }
 
@@ -2672,6 +2675,20 @@ impl Schema for CompilerNativeHeadersMetadataSchema {
     type Value = CompilerPublicationMetadata;
     fn encode(value: &Self::Value, output: &mut Vec<u8>) { output.extend_from_slice(&value.canonical_bytes()); }
 }
+// The bytes have already passed the aggregate's canonical decoder. Encoding
+// them in one append avoids the geometric growth of per-entry Vec writes.
+struct CompilerNativeHeadersBytesSchema;
+impl Schema for CompilerNativeHeadersBytesSchema {
+    const DOMAIN: u8 = 0x7a; const TYPE: u16 = 0xc00e; const VERSION: u8 = 1;
+    type Value = [u8];
+    fn encode(value: &Self::Value, output: &mut Vec<u8>) { output.extend_from_slice(value); }
+}
+fn native_headers_key(bytes: &[u8]) -> Result<[u8; 32], String> {
+    let mut hash = backend_version::ObjectKeyHasher::new(COMPILER_NATIVE_HEADERS_SCHEMA, bytes.len()).map_err(|e| format!("header key: {e:?}"))?;
+    hash.update(bytes).map_err(|e| format!("header key: {e:?}"))?;
+    hash.finish().map_err(|e| format!("header key: {e:?}"))
+}
+
 struct CompilerCSharpEvidenceMetadataSchema;
 impl Schema for CompilerCSharpEvidenceMetadataSchema {
     const DOMAIN: u8 = 0x7a;
@@ -3418,10 +3435,11 @@ mod tests {
                 compiler_extent: (0, 15), header_extent: (0, 12) }],
         }] };
         let bytes = aggregate.encode_checked().unwrap();
+        assert_eq!(native_headers_key(&bytes).unwrap(), ObjectKey::<backend_semantic::native_ts_headers::NativeTsHeaderAggregateSchema>::from_value(&aggregate).to_bytes());
         let mut decode_budget = usize::MAX;
         NativeTsHeaderAggregate::decode_canonical_budgeted(&bytes, &mut decode_budget).unwrap();
         let decoded = usize::MAX - decode_budget;
-        let writer = bytes.len() * 3 + decoded * 2;
+        let writer = bytes.len() * 3 + 2 * std::mem::size_of::<usize>() + decoded * 2;
         let reader = bytes.len() * 2 + decoded;
         let mut initial_budget = writer;
         let object = compiler_native_headers_object(&bytes, &mut initial_budget).unwrap();
