@@ -5197,18 +5197,22 @@ fn native_tsz_declaration_coordinate(
         let Some(node) = arena.get(*declaration) else {
             continue;
         };
-        let (name_node, kind, has_body) = if let Some(method) = arena.get_method_decl(node) {
-            (method.name, EntityKind::Function, !method.body.is_none())
+        let (name_node, kind, has_body, async_start) = if let Some(method) = arena.get_method_decl(node) {
+            (method.name, EntityKind::Function, !method.body.is_none(), None)
         } else if let Some(function) = arena.get_function(node) {
+            if function.async_start.is_some() && !function.is_async {
+                continue;
+            }
             (
                 function.name,
                 EntityKind::Function,
                 !function.body.is_none(),
+                function.async_start,
             )
         } else if let Some(property) = arena.get_property_decl(node) {
-            (property.name, EntityKind::Field, false)
+            (property.name, EntityKind::Field, false, None)
         } else if let Some(accessor) = arena.get_accessor(node) {
-            (accessor.name, EntityKind::Field, !accessor.body.is_none())
+            (accessor.name, EntityKind::Field, !accessor.body.is_none(), None)
         } else {
             continue;
         };
@@ -5230,6 +5234,17 @@ fn native_tsz_declaration_coordinate(
         let Some(source) = arena.get_source_file_at(file.source_file) else {
             continue;
         };
+        let declaration_start = match async_start {
+            Some(start) => {
+                let Some(end) = start.checked_add(5) else { continue };
+                if start > stable.pos || end > name_start
+                    || source.text.get(start as usize..end as usize) != Some("async") {
+                    continue;
+                }
+                start
+            }
+            None => stable.pos,
+        };
         if source
             .text
             .get(name_start as usize..name_end as usize)
@@ -5243,7 +5258,7 @@ fn native_tsz_declaration_coordinate(
             file_index: stable.file_idx,
             path: file.file_name.clone(),
             source_identity: identity,
-            declaration_start: stable.pos,
+            declaration_start,
             declaration_end: stable.end,
             name_start,
             kind,

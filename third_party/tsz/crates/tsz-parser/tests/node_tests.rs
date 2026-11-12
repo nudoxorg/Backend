@@ -464,6 +464,7 @@ fn test_parent_mapping_function() {
         FunctionData {
             modifiers: None,
             is_async: false,
+            async_start: None,
             asterisk_token: false,
             name,
             type_parameters: None,

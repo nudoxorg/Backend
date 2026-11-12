@@ -424,14 +424,15 @@ impl<'work> ParserStateCore<'work> {
     ) -> NodeIndex {
         match self.token() {
             SyntaxKind::AsyncKeyword if self.look_ahead_is_async_function() => {
+                let async_start = self.token_pos();
                 self.parse_expected(SyntaxKind::AsyncKeyword);
                 self.parse_function_declaration_with_async(
-                    true,
+                    Some(async_start),
                     Some(Self::make_node_list(modifiers)),
                 )
             }
             SyntaxKind::FunctionKeyword => self.parse_function_declaration_with_async(
-                false,
+                None,
                 Some(Self::make_node_list(modifiers)),
             ),
             SyntaxKind::ClassKeyword => self.parse_class_declaration_with_modifiers(
