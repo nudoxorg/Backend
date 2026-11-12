@@ -60,6 +60,21 @@ const MAX_OBJECTS: usize = 100_002;
 const MAX_PAYLOAD_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_OBJECT_BYTES: usize = 512 * 1024 * 1024;
 const MAX_METADATA_BYTES: u64 = 64 * 1024 * 1024;
+
+fn native_header_reader_admissible(bytes: &[u8], reader_budget: usize, writer_budget: usize) -> bool {
+    let Some(mut credit) = bytes.len().checked_mul(2)
+        .and_then(|wire| reader_budget.checked_sub(wire)) else { return false };
+    credit = credit.min(writer_budget);
+    let before = credit;
+    if backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical_budgeted(bytes, &mut credit).is_err() { return false; }
+    let decoded = before - credit;
+    if !bytes.len().checked_add(2 * std::mem::size_of::<usize>())
+        .and_then(|wire| wire.checked_add(decoded)).is_some_and(|cost| cost <= reader_budget) { return false; }
+    // Both object construction and member verification charge their own wire
+    // and decoded temporaries. Refuse before streaming if either cannot fit.
+    bytes.len().checked_mul(3).and_then(|wire| decoded.checked_mul(2).and_then(|heap| wire.checked_add(heap)))
+        .is_some_and(|cost| cost <= writer_budget)
+}
 const MAX_CHUNK_BYTES: usize = 16 * 1024;
 const MAX_PUT_CALLS: usize = 1_000_000;
 const AUTHORITY_PAGE: usize = 512;
@@ -3658,6 +3673,13 @@ impl SemanticAuthority {
             let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate { files };
             let bytes = aggregate.encode_checked_budgeted(&mut budget)
                 .map_err(|error| BuiltinModelError(format!("encode native headers: {error}")))?;
+            // Do not attach optional metadata that the selected-owner reader
+            // cannot reopen under its fixed 64 MiB witness budget. Reopen
+            // reserves two wire copies before materializing the aggregate.
+            let reader_admissible = native_header_reader_admissible(&bytes, 64 * 1024 * 1024, budget);
+            if !reader_admissible {
+                None
+            } else {
             if !payload_ids.len().checked_add(2).is_some_and(|count| count <= backend_extension_turso::MAX_COMPILER_PUBLICATION_MEMBER_IDS)
                 || !u64::try_from(bytes.len()).is_ok_and(|len| streamed_payload_bytes.checked_add(len).is_some_and(|total| total <= MAX_PAYLOAD_BYTES)) {
                 return Err(BuiltinModelError("native headers exceed compiler closure budget".into()));
@@ -3671,6 +3693,7 @@ impl SemanticAuthority {
                 .map_err(|error| BuiltinModelError(format!("verify native header object: {error:?}")))?;
             Some(backend_extension_turso::CompilerNativeHeadersMember::from_verified_object(verified, &bytes, &mut budget)
                 .map_err(|error| BuiltinModelError(format!("admit native header member: {error}")))?)
+            }
         } else { None };
 
         // A C# captured-input attempt must retain its complete checked
@@ -5265,6 +5288,20 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_WORKSPACE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn native_header_admission_reserves_reader_and_writer_costs() {
+        let bytes = backend_semantic::native_ts_headers::NativeTsHeaderAggregate { files: vec![] }
+            .encode_checked().expect("canonical aggregate");
+        let mut credit = usize::MAX;
+        backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical_budgeted(&bytes, &mut credit).expect("decode aggregate");
+        let decoded = usize::MAX - credit;
+        let reader = (bytes.len() * 2 + decoded).max(bytes.len() + 2 * std::mem::size_of::<usize>() + decoded);
+        let writer = bytes.len() * 3 + decoded * 2;
+        assert!(native_header_reader_admissible(&bytes, reader, writer));
+        assert!(!native_header_reader_admissible(&bytes, reader - 1, writer));
+        assert!(!native_header_reader_admissible(&bytes, reader, writer - 1));
+    }
 
     fn worker_test_key() -> ProductSemanticPublicationKey {
         let coordinate = PackageUrl::parse("pkg:cargo/worker-return@1.0.0".to_owned())
