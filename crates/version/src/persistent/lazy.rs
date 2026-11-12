@@ -319,8 +319,9 @@ fn entries_before_anchor_limit(
 }
 
 fn tree_height(member_count: usize, leaf_minimum: usize, branch_minimum: usize) -> Option<usize> {
-    if leaf_minimum == 0 || branch_minimum < 2 { return None; }
+    if leaf_minimum == 0 { return None; }
     let mut nodes = member_count.max(1).div_ceil(leaf_minimum);
+    if nodes > 1 && branch_minimum < 2 { return None; }
     let mut height = 1usize;
     while nodes > 1 { nodes = nodes.div_ceil(branch_minimum); height = height.checked_add(1)?; }
     Some(height)
