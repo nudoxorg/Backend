@@ -89,6 +89,31 @@ fn large_valid_typescript_keeps_compiler_publication_without_optional_headers() 
     Ok(())
 }
 
+#[test]
+fn compiler_worker_retains_headers_after_seventeen_small_files() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestRoot(std::env::temp_dir().join(format!("nudox-native-header-files-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos())));
+    let package = root.0.join("package");
+    fs::create_dir_all(&package)?;
+    let mut paths = Vec::new();
+    let mut sources = Vec::new();
+    for i in 0..17 {
+        let path = format!("file{i:02}.ts");
+        let text = format!("export function f{i}() {{ return {i}; }}\n");
+        fs::write(package.join(&path), &text)?;
+        sources.push(OwnedPackageSource::new(&path, &text)?);
+        paths.push(format!("\"{path}\""));
+    }
+    fs::write(package.join("tsconfig.json"), format!("{{\"compilerOptions\":{{\"noLib\":true,\"types\":[]}},\"files\":[{}]}}", paths.join(",")))?;
+    let client = LocalCompilerHost::new(Environment(root.0.join("data")), LocalHostDiscovery::ExplicitOnly).open()?;
+    let request = PackageCompileRequest::new(GenerateTarget { correlation: CorrelationId(417), profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript), stage: Stage::LowerIr },
+        PackageUrl::parse("pkg:npm/header-files@1.0.0".to_owned()).map_err(|e| format!("package: {e:?}"))?).map_err(|e| format!("request: {e:?}"))?;
+    let staged = client.compile_package_sources_staged(OwnedPackageSourceSet::new(request, package, sources.into_boxed_slice())?)?;
+    assert_eq!(staged.native_typescript_headers().len(), 17);
+    let last = staged.native_typescript_headers().iter().find(|file| file.path == "file16.ts").ok_or("last header missing")?;
+    assert_eq!(last.entries.len(), 1);
+    Ok(())
+}
+
 fn project_fixture(private: bool, graph_origin: bool) -> Result<(), Box<dyn std::error::Error>> {
     let root = TestRoot(std::env::temp_dir().join(format!(
         "nudox-native-reference-projection-{}-{}",
