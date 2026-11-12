@@ -802,6 +802,30 @@ mod tests {
         let _ = remove_store_fixture(root);
     }
 
+    #[test]
+    fn read_only_registry_admission_preserves_raw_reference_validation() {
+        let (_cleanup, store, root) = test_store("admit-only-raw");
+        let referenced = bytes_object(b"referenced value".to_vec());
+        store.write_object(&referenced).expect("referenced object");
+        let reference = *referenced.id().as_bytes();
+        let state = backend_version::RelationState::<crate::RawRelation>::from_entries(
+            [(b"a".to_vec(), crate::StoredValue::new(vec![1], 1, vec![reference]))],
+            backend_version::CoverageWitness::Partial(backend_version::partial_coverage(1)),
+        ).expect("state");
+        store.write_relation_state(&state).expect("persist");
+        let object = store.read_relation_node(state.root()).expect("node");
+        let registry = &store.relation_registry;
+        let schema = object.schema();
+        let references = registry.admit_relation_object(schema, object.key(), object.version(), object.bytes()).expect("references");
+        assert_eq!(references.value_references, vec![reference]);
+        assert!(registry.admit_relation_object_only(schema, object.key(), object.version(), object.bytes()).is_ok());
+        let mut malformed = object.bytes().to_vec(); malformed.pop();
+        let version = backend_version::state_root_digest(schema, &malformed).expect("digest");
+        assert!(registry.admit_relation_object(schema, object.key(), &version, &malformed).is_err());
+        assert!(registry.admit_relation_object_only(schema, object.key(), &version, &malformed).is_err());
+        let _ = remove_store_fixture(root);
+    }
+
     struct BytesSchema;
 
     impl Schema for BytesSchema {
