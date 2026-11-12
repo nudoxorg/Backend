@@ -3969,6 +3969,27 @@ mod tests {
         const SMALL_FIXTURE_OVERHEAD: usize = 256 * 1024;
         assert!(selected_peak.bytes_max as usize <= reader_credit + SMALL_FIXTURE_OVERHEAD, "small selected fixture peak: {selected_peak:?}");
         drop(store);
+        // This is a synthetic selected-generation fixture, not an owner receipt.
+        let store = FileStore::open(&directory, 8 * 1024 * 1024).unwrap();
+        assert!(reopen_selected_native_headers_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(0, 100_000), &|| false).is_err());
+        assert!(reopen_selected_native_headers_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(64 * 1024 * 1024, 100_000), &|| true).is_err());
+        let mut budget = SelectedNativeHeaderBudget::new(64 * 1024 * 1024, 100_000);
+        let mut bounded = None;
+        let bounded_peak = measure(|| bounded = Some(reopen_selected_native_headers_budgeted(&store, &selected, &mut budget, &|| false).unwrap().unwrap()));
+        assert_eq!(bounded.unwrap().as_bytes(), bytes.as_slice());
+        assert!(bounded_peak.bytes_max as usize <= 64 * 1024 * 1024, "budgeted selected peak: {bounded_peak:?}");
+        let used_work = 100_000 - budget.remaining_work();
+        assert!(reopen_selected_native_headers_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(64 * 1024 * 1024, used_work), &|| false).is_ok());
+        assert!(reopen_selected_native_headers_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(64 * 1024 * 1024, used_work - 1), &|| false).is_err());
+        let mut low = 0usize;
+        let mut high = 64 * 1024 * 1024;
+        while low + 1 < high {
+            let mid = low + (high - low) / 2;
+            if reopen_selected_native_headers_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(mid, 100_000), &|| false).is_ok() { high = mid; } else { low = mid; }
+        }
+        assert!(reopen_selected_native_headers_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(high, 100_000), &|| false).is_ok());
+        assert!(reopen_selected_native_headers_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(high - 1, 100_000), &|| false).is_err());
+        drop(store);
         std::fs::remove_dir_all(directory).unwrap();
     }
 
