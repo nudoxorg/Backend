@@ -13348,6 +13348,96 @@ mod references_tests {
         Ok(())
     }
 
+    // Reference implementation of the pre-batch edge binder. It scans the
+    // originating image for each relation, so the batch path can be checked
+    // against the actual previous ambiguity and identity semantics.
+    fn legacy_edge_origins(
+        images: &[backend_semantic::ir::SemanticImageView<'_>],
+        package: backend_engine::PackageKey,
+        edges: &BTreeSet<(backend_engine::GraphRelation, usize)>,
+    ) -> Result<Vec<(backend_engine::GraphRelation, usize, [u8; 32], u32, u32, DeclarationIdentity)>, String> {
+        edges.iter().map(|(relation, index)| {
+            let backend_engine::RowId::Symbol(source) = relation.from else { return Err("not a symbol".into()) };
+            let image = images.get(*index).ok_or("image unavailable")?;
+            let mut owner = None;
+            for entity in DocumentationSession::new(image).publication_entities() {
+                let entity = entity.map_err(|error| error.to_string())?;
+                let identity = entity.entity.version.identity();
+                if view_build::semantic_symbol(package, identity) != source { continue; }
+                let candidate = (entity.entity.id.raw, identity);
+                if owner.replace(candidate).is_some_and(|previous| previous != candidate) {
+                    return Err("ambiguous owner".into());
+                }
+            }
+            let (entity_index, identity) = owner.ok_or("owner unavailable")?;
+            let image_identity = *backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(image.as_ref()).as_ref();
+            Ok((*relation, *index, image_identity, u32::try_from(image.as_ref().len()).map_err(|error| error.to_string())?, entity_index, identity))
+        }).collect()
+    }
+
+    fn bound_edge_tuples(
+        origins: Vec<NativeGraphEdgeSourceOrigin>,
+    ) -> Vec<(backend_engine::GraphRelation, usize, [u8; 32], u32, u32, DeclarationIdentity)> {
+        origins.into_iter().map(|origin| (origin.relation, origin.image_index, origin.image_identity,
+            origin.image_byte_len, origin.entity_index, origin.owner)).collect()
+    }
+
+    #[test]
+    fn batched_edge_origins_match_legacy_for_repeated_source_and_distinct_kinds() -> Result<(), String> {
+        let package = backend_engine::package_key("fixture");
+        let caller = backend_engine::RowId::Symbol(view_build::semantic_symbol(package, fixture_version(1).identity()));
+        let callee = backend_engine::RowId::Symbol(view_build::semantic_symbol(package, fixture_version(2).identity()));
+        let first = fixture_image()?;
+        let images = vec![backend_semantic::ir::SemanticImageView::reopen(&first).map_err(|error| error.to_string())?];
+        let calls = backend_engine::GraphRelation::new(caller, callee, backend_engine::SemanticLinkKind::Calls);
+        let reads = backend_engine::GraphRelation::new(caller, callee, backend_engine::SemanticLinkKind::Reads);
+        let reverse = backend_engine::GraphRelation::new(callee, caller, backend_engine::SemanticLinkKind::Calls);
+        let edges = BTreeSet::from([(calls, 0), (reads, 0), (reverse, 0)]);
+        let expected = legacy_edge_origins(&images, package, &edges)?;
+        let actual = bound_edge_tuples(bind_native_graph_edge_source_origins(&images, package, edges).map_err(|error| error.to_string())?);
+        assert_eq!(actual, expected, "batching must retain every edge and exact issuer tuple");
+        let same_source = actual.iter().filter(|entry| entry.0.from == caller).collect::<Vec<_>>();
+        assert_eq!(same_source.len(), 2, "different relation kinds must not collapse");
+        assert_eq!((same_source[0].1, same_source[0].2, same_source[0].3, same_source[0].4, same_source[0].5),
+                   (same_source[1].1, same_source[1].2, same_source[1].3, same_source[1].4, same_source[1].5));
+        Ok(())
+    }
+
+    #[test]
+    fn batched_origins_keep_conflicting_images_and_refuse_missing_owners() -> Result<(), String> {
+        let package = backend_engine::package_key("fixture");
+        let caller = backend_engine::RowId::Symbol(view_build::semantic_symbol(package, fixture_version(1).identity()));
+        let callee = backend_engine::RowId::Symbol(view_build::semantic_symbol(package, fixture_version(2).identity()));
+        let missing = backend_engine::RowId::Symbol(backend_engine::symbol_key("fixture::missing"));
+        let first = fixture_image()?;
+        let second = fixture_image()?;
+        let images = [&first, &second].into_iter().map(|bytes| backend_semantic::ir::SemanticImageView::reopen(bytes))
+            .collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
+        let edge = backend_engine::GraphRelation::new(caller, callee, backend_engine::SemanticLinkKind::Calls);
+        let conflicting = BTreeSet::from([(edge, 0), (edge, 1)]);
+        let expected = legacy_edge_origins(&images, package, &conflicting)?;
+        let actual = bound_edge_tuples(bind_native_graph_edge_source_origins(&images, package, conflicting).map_err(|error| error.to_string())?);
+        assert_eq!(actual, expected);
+        assert_eq!(actual.len(), 2, "distinct image origins must remain distinct even for identical bytes");
+        let key = backend_library::RelatedEdgeKey::new(edge);
+        let mut window = super::super::graph_edge_window::EdgeWindow::new(None, 2).ok_or("window")?;
+        window.insert(key, (edge, 0));
+        window.insert(key, (edge, 1));
+        let (entries, more) = window.finish();
+        assert!(!more);
+        assert_eq!(entries, vec![(key, None)], "conflicting source images remain a withheld frontier");
+
+        let absent_owner = backend_engine::GraphRelation::new(missing, callee, backend_engine::SemanticLinkKind::Calls);
+        let absent = BTreeSet::from([(absent_owner, 0)]);
+        assert!(legacy_edge_origins(&images, package, &absent).is_err());
+        assert!(bind_native_graph_edge_source_origins(&images, package, absent).is_err());
+        let wanted = BTreeSet::from([caller, missing]);
+        let nodes = observed_page_node_origins(&images[..1], &[0], package, &wanted).map_err(|error| error.to_string())?;
+        assert!(nodes.get(&caller).is_some_and(Option::is_some));
+        assert!(!nodes.contains_key(&missing), "missing endpoint must not gain an issuer");
+        Ok(())
+    }
+
     #[test]
     fn native_reference_occurrences_keep_their_image_origins() -> Result<(), String> {
         let package = backend_engine::package_key("fixture");
