@@ -41,6 +41,63 @@ fn native_incoming_graph_edge_uses_producing_publication() -> Result<(), Box<dyn
 }
 
 #[test]
+fn native_ts_cross_file_calls_reach_reference_projection() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestRoot(std::env::temp_dir().join(format!(
+        "nudox-native-ts-call-projection-{}-{}", std::process::id(),
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+    )));
+    let package = root.0.join("package");
+    fs::create_dir_all(package.join("src"))?;
+    let csv = "export function loadSectionsCsv(): string { return 'csv'; }\n";
+    let scheduler = "import { loadSectionsCsv } from './csv';\nexport function generateSchedule(): string { return loadSectionsCsv(); }\n";
+    let route = "import { generateSchedule } from './scheduler';\nexport function POST(): string { return generateSchedule(); }\n";
+    for (path, text) in [("src/csv.ts", csv), ("src/scheduler.ts", scheduler), ("src/route.ts", route)] {
+        fs::write(package.join(path), text)?;
+    }
+    fs::write(package.join("tsconfig.json"), r#"{"compilerOptions":{"noLib":true,"types":[],"module":"ESNext","moduleResolution":"bundler"},"files":["src/csv.ts","src/scheduler.ts","src/route.ts"]}"#)?;
+    let client = LocalCompilerHost::new(Environment(root.0.join("data")), LocalHostDiscovery::ExplicitOnly).open()?;
+    let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
+    let request = PackageCompileRequest::new(
+        GenerateTarget { correlation: CorrelationId(415), profile, stage: Stage::LowerIr },
+        PackageUrl::parse("pkg:npm/ts-call-fixture@1.0.0".to_owned()).map_err(|e| format!("package: {e:?}"))?,
+    ).map_err(|e| format!("request: {e:?}"))?;
+    let sources = [("src/csv.ts", csv), ("src/scheduler.ts", scheduler), ("src/route.ts", route)]
+        .into_iter().map(|(path, text)| OwnedPackageSource::new(path, text)).collect::<Result<Vec<_>, _>>()?;
+    let compiled = client.compile_package_sources(OwnedPackageSourceSet::new(request, package, sources.into_boxed_slice())?)?;
+    let images = compiled.images.iter().map(|image| image.reopen()).collect::<Result<Vec<_>, _>>()?;
+    let key = publication_key(profile, "pkg:npm/ts-call-fixture@1.0.0")?;
+    let view = projected_view(key.package_key(), &images)?;
+    let target = |name: &[u8]| -> Result<_, Box<dyn std::error::Error>> {
+        for image in &images {
+            for entity in DocumentationSession::new(image).publication_entities() {
+                let entity = entity?;
+                if entity.entity.kind == ItemKind::Function && entity.name.named_bytes() == Some(name) {
+                    return Ok(entity.entity.version.identity());
+                }
+            }
+        }
+        Err(format!("missing declaration {name:?}").into())
+    };
+    let scope = BTreeMap::from([(Language::TypeScript, view_build::RetargetingScope::SelectedArtifacts)]);
+    for (callee, caller, source, text) in [
+        (b"loadSectionsCsv".as_slice(), b"generateSchedule".as_slice(), "src/scheduler.ts", scheduler),
+        (b"generateSchedule".as_slice(), b"POST".as_slice(), "src/route.ts", route),
+    ] {
+        let callee_symbol = view_build::semantic_symbol(key.package_key(), target(callee)?);
+        let caller_symbol = view_build::semantic_symbol(key.package_key(), target(caller)?);
+        let facts = project_native_reference_facts(&images, &view, key.package_key(), callee_symbol, &scope, &[], true)?;
+        let exact_call = facts.iter().filter(|fact| fact.site == caller_symbol
+            && fact.relation == backend_engine::SemanticLinkKind::Calls
+            && fact.evidence.confidence == backend_engine::SemanticConfidence::Compiler
+            && fact.evidence.source.as_ref().is_some_and(|span| span.file.as_str() == source
+                && text.get(span.start as usize..span.end as usize).is_some_and(|token| token.as_bytes() == callee)))
+            .count();
+        assert_eq!(exact_call, 1, "exact caller reference for {callee:?}: {facts:?}");
+    }
+    Ok(())
+}
+
+#[test]
 fn compiler_worker_captures_five_thousand_function_headers() -> Result<(), Box<dyn std::error::Error>> {
     let root = TestRoot(std::env::temp_dir().join(format!(
         "nudox-native-header-many-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
