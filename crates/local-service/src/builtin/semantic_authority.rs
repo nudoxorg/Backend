@@ -3647,8 +3647,10 @@ impl SemanticAuthority {
                 return Err(BuiltinModelError("native headers require a TypeScript snapshot witness".into()));
             }
             let rows = staged.native_typescript_headers();
-            let retained = rows.iter().try_fold(0usize, |total, row| total.checked_add(row.checked_retained_bytes()?))
-                .ok_or_else(|| BuiltinModelError("native header staging size overflow".into()))?;
+            let retained = rows.iter().try_fold(2 * std::mem::size_of::<usize>(), |total, row| {
+                total.checked_add(row.checked_retained_bytes()?)?
+                    .checked_add(4 * std::mem::size_of::<usize>())
+            }).ok_or_else(|| BuiltinModelError("native header staging size overflow".into()))?;
             let mut budget = (128usize * 1024 * 1024).checked_sub(retained)
                 .ok_or_else(|| BuiltinModelError("native header staging budget exceeded".into()))?;
             let mut files = rows.to_vec();
