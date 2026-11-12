@@ -966,6 +966,11 @@ impl generation_residence::SelectedSemanticImageLoader for CapturedClosureImageL
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_FORGE_LINE_SOURCE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn load_selected_native_lines(
     store: &FileStore,
     selection: &generation_residence::SelectedSemanticImageSelection,
@@ -3832,6 +3837,19 @@ impl SemanticAuthority {
                 .map_err(|e| BuiltinModelError(format!("native line wire allocation: {e:?}")))?;
             backend_semantic::native_source_lines::encode_files_into(files(), &mut bytes, &mut checkpoint)
                 .map_err(|e| BuiltinModelError(format!("encode native source lines: {e:?}")))?;
+            // The fixture selects a fully authenticated but inconsistent line object
+            // to exercise the replay join, including the inline-None case.
+            #[cfg(test)]
+            TEST_FORGE_LINE_SOURCE.with(|forge| {
+                if forge.replace(false) {
+                    let mut limit = 1024 * 1024;
+                    let mut aggregate = backend_semantic::native_source_lines::NativeSourceLineAggregate::decode_budgeted(&bytes, &mut limit).expect("fixture line aggregate");
+                    aggregate.files[0].source = backend_semantic::ir::SourceIdentity::from_bytes(b"different fixture source").expect("fixture source");
+                    // The replacement source must still cover all recorded offsets.
+                    aggregate.files[0].source.byte_len = staged.native_typescript_line_at(order[0] as usize).expect("fixture line").source.byte_len;
+                    aggregate.encode_into(&mut bytes, &mut |_| Ok::<(), ()>(())).expect("forge canonical fixture lines");
+                }
+            });
             if !payload_ids.len().checked_add(2).is_some_and(|n| n <= backend_extension_turso::MAX_COMPILER_PUBLICATION_MEMBER_IDS)
                 || !u64::try_from(bytes.len()).is_ok_and(|len| streamed_payload_bytes.checked_add(len).is_some_and(|total| total <= MAX_PAYLOAD_BYTES)) {
                 return Err(BuiltinModelError("native source lines exceed compiler closure budget".into()));
@@ -5746,6 +5764,12 @@ mod tests {
         let selections = authority.image_loader.selections.read().expect("selection snapshot after final stop");
         assert!(SelectedClosureImageLoader::committed_pair_optional_in(&selections, &key).expect("selection lookup").is_none(), "final stop must not select a generation");
         drop(selections);
+        TEST_FORGE_LINE_SOURCE.with(|forge| forge.set(true));
+        let (_, wrong_line_selection) = authority
+            .publish_staged(&key, attempt, &staged, |_| Ok(()))
+            .expect("select authenticated wrong-source line fixture");
+        let attempt = authority.begin_candidate_attempt(&key, &observation)
+            .expect("begin valid retry attempt");
         let (claim, selected) = authority
             .publish_staged(&key, attempt, &staged, |_| Ok(()))
             .expect("real admission counts the declared accelerator in the exact payload set");
@@ -5949,6 +5973,13 @@ mod tests {
             .expect("open copied workspace object store");
         let replay_store = FileStore::open(workspace.0.join(CAS_DIRECTORY), 128 * 1024 * 1024)
             .expect("open selected compiler store");
+        // This is an authenticated selected closure produced through the normal
+        // publication path; its NLM source differs while inline evidence is absent.
+        assert!(current.line_starts.is_none());
+        let mut wrong_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(super::super::MAX_REBUILD_BYTES, NATIVE_HEADER_WORK_UNITS);
+        let error = bounded_replay::admit(&replay_store, &wrong_line_selection, &capture, &[&current], &[&removed], &mut wrong_budget, &|| false)
+            .expect_err("selected line source mismatch must refuse without inline offsets");
+        assert!(error.0.contains("native replay line source differs from Program"), "unexpected refusal: {error:?}");
         let checks = std::cell::Cell::new(0usize);
         let count_checks = || { checks.set(checks.get() + 1); false };
         let mut replay_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(super::super::MAX_REBUILD_BYTES, NATIVE_HEADER_WORK_UNITS);
