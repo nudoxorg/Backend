@@ -17,6 +17,13 @@ use std::{
 pub(super) fn start_owner(
     paths: &backend_runtime::WorkspacePaths,
 ) -> Result<EmbeddedLocalService, Box<dyn Error>> {
+    start_owner_with_frame_budget(paths, None)
+}
+
+fn start_owner_with_frame_budget(
+    paths: &backend_runtime::WorkspacePaths,
+    budget: Option<usize>,
+) -> Result<EmbeddedLocalService, Box<dyn Error>> {
     let mut config = ProcessConfig::parse([
         "--endpoint".to_owned(),
         paths.endpoint().to_string_lossy().into_owned(),
@@ -28,9 +35,41 @@ pub(super) fn start_owner(
         "--forge-offline".to_owned(),
     ])?;
     config.profile = "builtin".to_owned();
+    if let Some(budget) = budget { config.listener.limits.max_frames_per_connection = budget; }
     config.worker_endpoint = None;
     config.authority_secret = Some(paths.authority_secret().to_path_buf());
     Ok(EmbeddedLocalService::start(config)?)
+}
+
+#[test]
+#[ignore = "real owner index with a one-frame connection budget"]
+fn native_ts_index_polling_reconnects_without_resubmitting() -> Result<(), Box<dyn Error>> {
+    if backend_client::connection_frame_budget() != 1 {
+        return Err("run with BACKEND_LOCALD_MAX_FRAMES_PER_CONNECTION=1".into());
+    }
+    let mut builder = tempfile::Builder::new();
+    builder.prefix("tsx-poll-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o700));
+    }
+    let fixture = builder.tempdir_in("/tmp")?;
+    let project = fixture.path().join("project");
+    fs::create_dir(&project)?;
+    fs::write(project.join("view.ts"), "export function greeting() { return 1; }\n")?;
+    let paths = backend_runtime::WorkspacePaths::discover(Some(fixture.path().join("owner")), Some(fixture.path().join("state")), Some(fixture.path().join("owner.sock")))?;
+    paths.initialize()?;
+    let owner = start_owner_with_frame_budget(&paths, Some(1))?;
+    let mut session = Session::connect(owner.endpoint())?;
+    index(&mut session, &project, 0x53)?;
+    let key = IndexOperationKey::from_bytes([0x53; 32]).map_err(|e| io::Error::other(e.to_string()))?;
+    assert!(matches!(poll_index_status(&mut session, key)?, IndexOperationObservation::Known(known) if matches!(known.state, IndexOperationState::Published(_))));
+    drop(session);
+    let report = owner.close()?;
+    assert!(report.connections >= 2, "one-frame budget must rotate connections");
+    assert_eq!(report.failures, 0);
+    Ok(())
 }
 
 fn index(session: &mut Session, project: &Path, byte: u8) -> Result<(), Box<dyn Error>> {
@@ -38,15 +77,23 @@ fn index(session: &mut Session, project: &Path, byte: u8) -> Result<(), Box<dyn 
         .map_err(|e| io::Error::other(e.to_string()))?;
     let key =
         IndexOperationKey::from_bytes([byte; 32]).map_err(|e| io::Error::other(e.to_string()))?;
-    let mut status =
-        session.start_index_operation(key, package, CompileExecutionIntent::Interactive)?;
+    eprintln!("native owner: start index request");
+    let mut status = session.start_index_operation(key, package, CompileExecutionIntent::Interactive)
+        .map_err(|e| io::Error::other(format!("start index request: {e:?}")))?;
+    eprintln!("native owner: index accepted; polling status");
     let deadline = Instant::now() + Duration::from_secs(600);
     loop {
         let IndexOperationObservation::Known(known) = status else {
             return Err("unknown index operation".into());
         };
         match known.state {
-            IndexOperationState::Published(_) => return Ok(()),
+            IndexOperationState::Published(_) => {
+                if session.connection_frames_remaining() == Some(0) {
+                    session.reconnect().map_err(|e| io::Error::other(format!("reconnect after index: {e:?}")))?;
+                }
+                eprintln!("native owner: index published");
+                return Ok(());
+            },
             IndexOperationState::Accepted | IndexOperationState::Active { .. } => {}
             state => return Err(io::Error::other(format!("index refused: {state:?}")).into()),
         }
@@ -54,8 +101,15 @@ fn index(session: &mut Session, project: &Path, byte: u8) -> Result<(), Box<dyn 
             return Err("index deadline".into());
         }
         thread::sleep(Duration::from_millis(30));
-        status = session.index_operation_status(key)?;
+        status = poll_index_status(session, key)?;
     }
+}
+
+pub(super) fn poll_index_status(session: &mut Session, key: IndexOperationKey) -> Result<IndexOperationObservation, Box<dyn Error>> {
+    if session.connection_frames_remaining() == Some(0) {
+        session.reconnect().map_err(|e| io::Error::other(format!("reconnect index status: {e:?}")))?;
+    }
+    session.index_operation_status(key).map_err(|e| io::Error::other(format!("index status request: {e:?}")).into())
 }
 
 /// Resolve the actual returned native Function row, then prove its selected
@@ -529,13 +583,22 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
     )?;
     paths.initialize()?;
     let authority = backend_engine::read_authority_secret(paths.authority_secret())?;
-    let owner = start_owner(&paths)?;
-    let mut session = Session::connect(owner.endpoint())?;
-    index(&mut session, &project, 0x51)?;
+    eprintln!("native owner: start warm owner");
+    let owner = start_owner(&paths).map_err(|e| io::Error::other(format!("start warm owner: {e:?}")))?;
+    let mut session = Session::connect(owner.endpoint()).map_err(|e| io::Error::other(format!("connect warm owner: {e:?}")))?;
+    if let Err(error) = index(&mut session, &project, 0x51) {
+        let running = owner.is_running();
+        drop(session);
+        let disposition = owner.close();
+        return Err(io::Error::other(format!("warm index: {error:?}; owner running: {running}; owner close: {disposition:?}")).into());
+    }
+    eprintln!("native owner: select warm document");
     let (coordinate, document) =
-        select_native_document(&mut session, &authority, "Greeting", "view.ts")?;
+        select_native_document(&mut session, &authority, "Greeting", "view.ts")
+            .map_err(|e| io::Error::other(format!("select warm document: {e:?}")))?;
     assert_eq!(document.signature.as_deref(), Some(expected_signature));
-    let CommandReply::Document(shown) = session.document(&coordinate)?.reply else {
+    eprintln!("native owner: warm document");
+    let CommandReply::Document(shown) = session.document(&coordinate).map_err(|e| io::Error::other(format!("warm document: {e:?}")))?.reply else {
         return Err("document reply".into());
     };
     assert_eq!(shown.signature.as_deref(), Some(expected_signature));
@@ -558,8 +621,9 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
         limit: 12,
         source_identity: None,
     };
+    eprintln!("native owner: first source range");
     let CommandReply::Document(ranged) = session
-        .declaration_source_range(&selector, None, request)?
+        .declaration_source_range(&selector, None, request).map_err(|e| io::Error::other(format!("first source range: {e:?}")))?
         .reply
     else {
         return Err("range page document".into());
@@ -585,8 +649,9 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
         limit: 12,
         source_identity: Some(page.source_identity),
     };
+    eprintln!("native owner: source continuation");
     let CommandReply::Document(next) = session
-        .declaration_source_range(&selector, None, continuation)?
+        .declaration_source_range(&selector, None, continuation).map_err(|e| io::Error::other(format!("source continuation: {e:?}")))?
         .reply
     else {
         return Err("range continuation document".into());
@@ -608,8 +673,9 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
         .map_err(|error| io::Error::other(format!("{error:?}")))?;
     let target =
         ProductText::new(coordinate.clone()).map_err(|e| io::Error::other(e.to_string()))?;
+    eprintln!("native owner: references");
     let SurfaceReply::References { coverage, .. } =
-        session.surface(SurfaceCommand::References { target })?
+        session.surface(SurfaceCommand::References { target }).map_err(|e| io::Error::other(format!("references: {e:?}")))?
     else {
         return Err("references coverage reply".into());
     };
@@ -621,11 +687,14 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
         "unavailable native reference coverage cannot claim completeness"
     );
     drop(session);
+    eprintln!("native owner: close warm owner");
     assert_eq!(owner.close()?.failures, 0);
-    let owner = start_owner(&paths)?;
-    let mut session = Session::connect(owner.endpoint())?;
+    eprintln!("native owner: start cold owner");
+    let owner = start_owner(&paths).map_err(|e| io::Error::other(format!("start cold owner: {e:?}")))?;
+    let mut session = Session::connect(owner.endpoint()).map_err(|e| io::Error::other(format!("connect cold owner: {e:?}")))?;
+    eprintln!("native owner: cold source");
     let CommandReply::Document(cold) = session
-        .declaration(&selector, DeclarationRead::Source)?
+        .declaration(&selector, DeclarationRead::Source).map_err(|e| io::Error::other(format!("cold source: {e:?}")))?
         .reply
     else {
         return Err("cold retained selection reply".into());
@@ -635,8 +704,9 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
     cold.source_policy
         .verify_owner(&authority, &original)
         .map_err(|error| io::Error::other(format!("{error:?}")))?;
+    eprintln!("native owner: cold continuation");
     let CommandReply::Document(cold_range) = session
-        .declaration_source_range(&selector, None, continuation)?
+        .declaration_source_range(&selector, None, continuation).map_err(|e| io::Error::other(format!("cold continuation: {e:?}")))?
         .reply
     else {
         return Err("cold continuation reply".into());
@@ -654,6 +724,7 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
         project.join("view.ts"),
         "export async function Greeting(): Promise<string> { return 'afters'; }\n",
     )?;
+    eprintln!("native owner: stale continuation");
     if let Ok(reply) = session.declaration_source_range(&selector, None, continuation) {
         let CommandReply::Document(stale) = reply.reply else {
             return Err("stale range reply".into());
@@ -676,6 +747,7 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
         );
     }
     drop(session);
+    eprintln!("native owner: close cold owner");
     assert_eq!(owner.close()?.failures, 0);
     Ok(())
 }
@@ -1212,7 +1284,7 @@ fn native_ts_last_file_deletion_retires_selected_evidence() -> Result<(), Box<dy
 }
 
 /// This is deliberately a real owner/index/cold-reopen fixture.  If the
-/// compiler emits an image for the recursive-alias input, the fixture must fail:
+/// compiler emits an image for the over-width input, the fixture must fail:
 /// it has not exercised the member-only case.
 #[test]
 #[ignore = "native owner journey; run alone with the frontend failpoint"]
@@ -1225,10 +1297,14 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
         loop {
             let IndexOperationObservation::Known(known) = status else { return Err("unknown index operation".into()) };
             match known.state {
-                IndexOperationState::Published(_) => return Ok(()),
+                IndexOperationState::Published(_) => {
+                    if session.connection_frames_remaining() == Some(0) { session.reconnect()?; }
+                    return Ok(());
+                }
                 IndexOperationState::PartiallyPublished { refused_profiles, .. } => {
                     if refused_profiles.is_empty() { return Err("partial publication missing refused profiles".into()); }
                     eprintln!("member fixture partial profiles: {refused_profiles:?}");
+                    if session.connection_frames_remaining() == Some(0) { session.reconnect()?; }
                     return Ok(());
                 }
                 IndexOperationState::Accepted | IndexOperationState::Active { .. } => {}
@@ -1236,7 +1312,7 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
             }
             if Instant::now() >= deadline { return Err("index deadline".into()); }
             thread::sleep(Duration::from_millis(30));
-            status = session.index_operation_status(key)?;
+            status = poll_index_status(session, key)?;
         }
     }
     use backend_engine::builtin::{native_source_evidence_key, native_source_evidence_relation, NativeSourceEvidenceKind};
@@ -1263,18 +1339,18 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
     fs::create_dir_all(project.join("src/app"))?;
     fs::create_dir_all(project.join("src/components"))?;
     fs::create_dir_all(project.join("src/types"))?;
-    // Exact native TSZ source-local gap fixture used by
-    // application::compiler_coverage_tests::linked_tsz_tsx_cycle_is_an_exact_file_gap_while_navbar_and_caller_publish.
+    // A parser-valid tuple over the native lowering width limit produces a
+    // source-local gap without inventing a Program member or compiler fact.
     fs::write(project.join("tsconfig.json"), r#"{"compilerOptions":{"noLib":true,"types":[],"module":"ESNext","moduleResolution":"bundler","jsx":"preserve"},"files":["src/app/layout.tsx","src/app/page.tsx","src/components/NavBar.tsx","src/types/react-node.tsx"]}"#)?;
-    let member = "import type { ReactNode } from \"../types/react-node\";\nexport type Layout = ReactNode;\n";
+    let member = format!("export declare const wide: [{}];\n", std::iter::repeat_n("unknown", 256).collect::<Vec<_>>().join(", "));
     let image = "export function NavBar() { return \"nav\"; }\n";
-    let changed_member = "import type { ReactNode } from \"../types/react-node\";\nexport type Layout = ReactNodf;\n";
+    let changed_member = member.replacen("unknown", "unknowm", 1);
     let changed_image = "export function NavBar() { return \"nax\"; }\n";
     fs::write(project.join("src/types/react-node.tsx"), "export type ReactNode = { readonly children?: ReactNode };\n")?;
     fs::write(project.join("src/app/page.tsx"), "import { NavBar } from \"../components/NavBar\";\nexport function Page() { return NavBar(); }\n")?;
     assert_eq!(member.len(), changed_member.len());
     assert_eq!(image.len(), changed_image.len());
-    fs::write(project.join("src/app/layout.tsx"), member)?;
+    fs::write(project.join("src/app/layout.tsx"), &member)?;
     fs::write(project.join("src/components/NavBar.tsx"), image)?;
     let paths = backend_runtime::WorkspacePaths::discover(
         Some(fixture.path().join("owner")), Some(fixture.path().join("state")),
@@ -1305,10 +1381,12 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
     // this test; it grants no image or declaration authority.
     let profile = super::profile_descriptor(super::BuiltinProfile::Product)?;
     let dispatcher = super::builtin_dispatcher(Some(super::ECHO_AUTHORITY_SECRET), profile, 60_000)?;
-    let daemon = crate::Locald::open_with_dispatcher_and_registry(
+    let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
         paths.data(), super::BuiltinModel, super::genesis()?, dispatcher,
         backend_engine::DaemonConfig::default(), super::product_relation_registry()?,
     )?;
+    let mut selected_authority = super::semantic_authority::SemanticAuthority::open(paths.data())?;
+    selected_authority.reconcile_workspace(&mut daemon)?;
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let project_key = backend_engine::PackageKey::from_value(project.canonicalize()?.to_str().ok_or("project path")?).to_bytes();
     let relation = native_source_evidence_relation(&snapshot)?.ok_or("missing selected NSE")?;
@@ -1345,7 +1423,6 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
     assert_eq!(publications.lookup(selected_key)?, Some(backend_engine::builtin::ProductSemanticPublicationRecord::Published { coverage, claim }));
     {
         use backend_semantic::ir::{SourceCoverageGapCause, SourceCoverageRow};
-        let selected_authority = super::semantic_authority::SemanticAuthority::open(paths.data())?;
         let observed = selected_authority.selected_source_coverage(selected_key, claim)?
             .ok_or("selected compiler coverage absent")?;
         assert_eq!((observed.source_count(), observed.completed()), (4, 3));
@@ -1390,6 +1467,7 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
     }
     drop(relation);
     drop(snapshot);
+    drop(selected_authority);
     drop(daemon);
 
     let owner = start_owner(&paths)?;

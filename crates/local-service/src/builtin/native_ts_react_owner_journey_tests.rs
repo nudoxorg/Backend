@@ -141,7 +141,7 @@ fn native_react_children_journey(
                 return Err("index deadline".into());
             }
             thread::sleep(Duration::from_millis(30));
-            status = session.index_operation_status(key)?;
+            status = super::native_ts_owner_journey_tests::poll_index_status(&mut session, key)?;
         }
         session.reconnect()?;
         for (name, expected_source) in [
