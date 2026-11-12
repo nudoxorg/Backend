@@ -276,6 +276,23 @@ fn stream_typed_object(
         .map_err(|error| BuiltinModelError(format!("finish semantic output object: {error:?}")))
 }
 
+#[cfg(test)]
+static TEST_BEFORE_LOCAL_SELECTION: std::sync::OnceLock<std::sync::Mutex<Option<(std::sync::mpsc::SyncSender<()>, std::sync::mpsc::Receiver<()>)>>> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+pub(super) fn test_install_before_local_selection_gate(reached: std::sync::mpsc::SyncSender<()>, release: std::sync::mpsc::Receiver<()>) {
+    *TEST_BEFORE_LOCAL_SELECTION.get_or_init(|| std::sync::Mutex::new(None)).lock().expect("selection gate lock") = Some((reached, release));
+}
+
+#[cfg(test)]
+fn test_wait_before_local_selection() {
+    let gate = TEST_BEFORE_LOCAL_SELECTION.get_or_init(|| std::sync::Mutex::new(None)).lock().expect("selection gate lock").take();
+    if let Some((reached, release)) = gate {
+        let _ = reached.send(());
+        let _ = release.recv_timeout(std::time::Duration::from_secs(120));
+    }
+}
+
 // In-place heap sort permits cancellation at every bounded path comparison.
 fn sort_native_line_ordinals(
     order: &mut [u32], staged: &backend_engine::application::StagedSemanticPackage,
@@ -3995,6 +4012,8 @@ impl SemanticAuthority {
             runtime_admission,
             &self.store,
         )?;
+        #[cfg(test)]
+        test_wait_before_local_selection();
         self.select_verified_closure(key, admitted, move |candidate| {
             if stopped() { return Err(BuiltinModelError("compiler publication cancelled".into())); }
             admit_before_select(candidate)?;
