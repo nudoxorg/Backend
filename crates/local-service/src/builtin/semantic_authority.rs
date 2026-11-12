@@ -927,6 +927,10 @@ impl generation_residence::SelectedSemanticImageLoader for SelectedClosureImageL
     ) -> Result<generation_residence::SelectedSemanticImages, BuiltinModelError> {
         load_selected_images(&self.store, selection, max_bytes, max_images)
     }
+
+    fn native_lines(&self, selection: &generation_residence::SelectedSemanticImageSelection, budget: &mut backend_extension_turso::SelectedNativeHeaderBudget, stopped: &dyn Fn() -> bool) -> Result<Option<backend_extension_turso::VerifiedNativeLinesWitness>, BuiltinModelError> {
+        load_selected_native_lines(&self.store, selection, budget, stopped)
+    }
 }
 
 impl generation_residence::SelectedSemanticImageLoader for CapturedClosureImageLoader {
@@ -952,6 +956,25 @@ impl generation_residence::SelectedSemanticImageLoader for CapturedClosureImageL
         max_images: usize,
     ) -> Result<generation_residence::SelectedSemanticImages, BuiltinModelError> {
         load_selected_images(&self.store, selection, max_bytes, max_images)
+    }
+
+    fn native_lines(&self, selection: &generation_residence::SelectedSemanticImageSelection, budget: &mut backend_extension_turso::SelectedNativeHeaderBudget, stopped: &dyn Fn() -> bool) -> Result<Option<backend_extension_turso::VerifiedNativeLinesWitness>, BuiltinModelError> {
+        load_selected_native_lines(&self.store, selection, budget, stopped)
+    }
+}
+
+fn load_selected_native_lines(
+    store: &FileStore,
+    selection: &generation_residence::SelectedSemanticImageSelection,
+    budget: &mut backend_extension_turso::SelectedNativeHeaderBudget,
+    stopped: &dyn Fn() -> bool,
+) -> Result<Option<backend_extension_turso::VerifiedNativeLinesWitness>, BuiltinModelError> {
+    match selection {
+        generation_residence::SelectedSemanticImageSelection::Admitted(selected) =>
+            backend_extension_turso::reopen_selected_native_lines_budgeted(store, selected, budget, stopped)
+                .map_err(|error| BuiltinModelError(format!("reopen selected native lines: {error}"))),
+        #[cfg(test)]
+        generation_residence::SelectedSemanticImageSelection::Fixture(_) => Ok(None),
     }
 }
 
