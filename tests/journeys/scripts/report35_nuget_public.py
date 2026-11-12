@@ -81,13 +81,19 @@ class Fixture:
         else:return b'{"error":"fixture not found"}',404
         return json.dumps(obj,separators=(',',':')).encode(),200
     def close(self):
+        errors=[]
         for server_name,thread_name in (('server','thread'),('trap','trap_thread')):
             server=getattr(self,server_name,None);thread=getattr(self,thread_name,None)
             if server is None:continue
-            if thread is not None and thread.is_alive():
-                server.shutdown();thread.join(timeout=5)
-                check(not thread.is_alive(),'fixture HTTP thread survived shutdown')
-            server.server_close()
+            try:
+                if thread is not None and thread.is_alive():
+                    server.shutdown();thread.join(timeout=5)
+                    check(not thread.is_alive(),'fixture HTTP thread survived shutdown')
+            except Exception as error:errors.append(repr(error))
+            finally:
+                try:server.server_close()
+                except Exception as error:errors.append(repr(error))
+        check(not errors,'fixture cleanup failed: '+repr(errors))
 
 
 def selected_candidate(page, require_description=True):
