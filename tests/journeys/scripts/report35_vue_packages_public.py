@@ -25,6 +25,13 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def is_full_search(reply, query):
+    return (isinstance(reply, dict) and reply.get('answer') == 'records'
+            and reply.get('query') == query and isinstance(reply.get('records'), list)
+            and reply.get('search_scope') is None
+            and reply.get('full_search') in (None, 'ready'))
+
+
 class StrictJourney(Journey):
     """Retire only process groups started by this journey, and report failures."""
     def _stop(self, proc):
@@ -184,11 +191,7 @@ def main():
         return content
 
     def require_full_search(label, reply, query):
-        require(label + ' typed full lexical search',
-                isinstance(reply, dict) and reply.get('answer') == 'records'
-                and reply.get('query') == query and isinstance(reply.get('records'), list)
-                and reply.get('search_scope') != 'published_names_only'
-                and reply.get('full_search') != 'preparing', reply)
+        require(label + ' typed full lexical search', is_full_search(reply, query), reply)
 
     def verify(phase):
         rc, search, raw = journey.cli(phase + '-search', ['search', 'mounted', '--limit', '100'])
