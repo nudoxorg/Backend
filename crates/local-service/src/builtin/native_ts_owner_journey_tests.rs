@@ -1596,7 +1596,7 @@ fn native_ts_large_crlf_line_map_source_show_read_and_cold() -> Result<(), Box<d
     let project_key = backend_engine::PackageKey::from_value(project.canonicalize()?.to_str().ok_or("project path")?).to_bytes();
     let ts = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
     let relation = native_source_evidence_relation(&snapshot)?.ok_or("native evidence")?;
-    let row = relation.lookup(&native_source_evidence_key(project_key, ts, "view.ts")?)?.ok_or("native image row")?;
+    let row = relation.lookup(&native_source_evidence_key(project_key, ts, "view.ts").map_err(io::Error::other)?)?.ok_or("native image row")?;
     assert!(row.line_starts.is_none(), "large line index must not be inline");
     let captures = backend_engine::builtin::semantic_capture_relation(&snapshot)?.ok_or("capture relation")?;
     let page = captures.page(None, backend_engine::MAX_SNAPSHOT_PAGE_ROWS)?;
