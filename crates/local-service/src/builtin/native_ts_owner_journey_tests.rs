@@ -1334,8 +1334,9 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
 
     let _guard = FrontendFailpoint;
     super::ingest::TEST_REJECT_STRUCTURAL_FRONTENDS.store(true, Ordering::Release);
-    let fixture = tempfile::Builder::new().prefix("nse-member-").tempdir_in("/tmp")?;
-    let project = fixture.path().join("project");
+    let fixture = tempfile::Builder::new().prefix("nse-member-").tempdir_in("/tmp")?.keep();
+    eprintln!("retained native member fixture: {}", fixture.display());
+    let project = fixture.as_path().join("project");
     fs::create_dir_all(project.join("src/app"))?;
     fs::create_dir_all(project.join("src/components"))?;
     fs::create_dir_all(project.join("src/types"))?;
@@ -1353,8 +1354,8 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
     fs::write(project.join("src/app/layout.tsx"), &member)?;
     fs::write(project.join("src/components/NavBar.tsx"), image)?;
     let paths = backend_runtime::WorkspacePaths::discover(
-        Some(fixture.path().join("owner")), Some(fixture.path().join("state")),
-        Some(fixture.path().join("owner.sock")),
+        Some(fixture.as_path().join("owner")), Some(fixture.as_path().join("state")),
+        Some(fixture.as_path().join("owner.sock")),
     )?;
     paths.initialize()?;
     let authority = backend_engine::read_authority_secret(paths.authority_secret())?;
