@@ -617,7 +617,11 @@ mod tests {
         let directory=tempfile::tempdir().unwrap();
         let registry=RelationAdmissionRegistry::new().with_relation::<NativeSourceEvidenceRelation>().unwrap();
         let store=FileStore::open_with_registry(directory.path(),1024*1024,registry).unwrap();
-        let mut rows=(0..1024).map(|i| {let mut r=row();r.path=format!("p/{i:04}.ts");(r.key().unwrap(),r)}).collect::<Vec<_>>();
+        let mut rows=(0..1024).map(|i| {
+            let mut r=row(); r.path=format!("p/{i:04}.ts"); r.line_starts=Some(vec![0,10,20]);
+            r.headers=Some(NativeHeaderEvidence { image_identity:[3;32], image_byte_len:123, producer_recipe:[4;32], aggregate_digest:[5;32] });
+            (r.key().unwrap(),r)
+        }).collect::<Vec<_>>();
         rows.sort_unstable_by_key(|r|r.0);
         let coverage=CoverageWitness::Partial(UntrustedCoverageScope::from_scope_root(ScopeRoot::from_u64(1)));
         let state=RelationState::<NativeSourceEvidenceRelation>::from_entries(rows.clone(),coverage).unwrap();
@@ -626,7 +630,9 @@ mod tests {
         let width=rows.iter().map(|(_,r)|r.checked_encoded_len().unwrap()).max().unwrap();
         let key=rows[0].0;rows[0].1.input_digest[0]^=1;
         let changes=[TreeChange::<NativeSourceEvidenceRelation>{key,after:Some(rows[0].1.clone())}];
-        let shape=LazyTreeMetadataShape::new(32,width,64,1024,18,2);
+        let leaf_min=64usize.min((16_384usize-32)/(width+48)).max(1);
+        let spill=1024/leaf_min+2;
+        let shape=LazyTreeMetadataShape::new(32,width,64,1024,spill,2);
         let update=relation.prepare_update_bounded(&changes,LazyTreeUpdateBudget::new(1,62*1024*1024,shape)).unwrap();
         let expected=RelationState::<NativeSourceEvidenceRelation>::from_entries(rows,coverage).unwrap();
         assert_eq!(update.target().root(),expected.root());
