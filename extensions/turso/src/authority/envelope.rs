@@ -3413,6 +3413,8 @@ impl<'bytes> Decoder<'bytes> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::panic)]
+
     #[test]
     fn selected_header_consumer_work_uses_same_ledger() {
         let budget = super::SelectedNativeHeaderBudget::new(0, 3);
@@ -3425,8 +3427,6 @@ mod tests {
         assert!(budget.checkpoint(1, &|| false).is_ok());
         assert_eq!(budget.remaining_work(), 0);
     }
-    #![allow(clippy::expect_used, clippy::panic)]
-
     use super::*;
     use backend_store::{ArtifactPlan, ClosureManifest};
     use backend_version::ObjectKey;
