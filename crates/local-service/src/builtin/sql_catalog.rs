@@ -829,6 +829,9 @@ pub(super) fn load_projects_bounded<'a>(
             },
         )?;
     }
+    if !result.plans.is_full() {
+        return Err("SQL project key count changed".into());
+    }
     let Some(relation) = sql_analysis_preflight_relation(snapshot).map_err(|e| e.to_string())?
     else {
         return Ok((result, max_bytes - remaining));
