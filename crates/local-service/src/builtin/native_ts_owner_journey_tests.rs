@@ -33,7 +33,7 @@ pub(super) fn start_owner(
     Ok(EmbeddedLocalService::start(config)?)
 }
 
-fn index(session: &mut Session, endpoint: &Path, project: &Path, byte: u8) -> Result<(), Box<dyn Error>> {
+fn index(session: &mut Session, project: &Path, byte: u8) -> Result<(), Box<dyn Error>> {
     let package = PackageReference::parse(project.to_string_lossy().into_owned())
         .map_err(|e| io::Error::other(e.to_string()))?;
     let key =
@@ -43,13 +43,18 @@ fn index(session: &mut Session, endpoint: &Path, project: &Path, byte: u8) -> Re
         .map_err(|e| io::Error::other(format!("start index request: {e:?}")))?;
     eprintln!("native owner: index accepted; polling status");
     let deadline = Instant::now() + Duration::from_secs(600);
-    let mut polls = 0usize;
     loop {
         let IndexOperationObservation::Known(known) = status else {
             return Err("unknown index operation".into());
         };
         match known.state {
-            IndexOperationState::Published(_) => { eprintln!("native owner: index published"); return Ok(()) },
+            IndexOperationState::Published(_) => {
+                if session.connection_frames_remaining() == Some(0) {
+                    session.reconnect().map_err(|e| io::Error::other(format!("reconnect after index: {e:?}")))?;
+                }
+                eprintln!("native owner: index published");
+                return Ok(());
+            },
             IndexOperationState::Accepted | IndexOperationState::Active { .. } => {}
             state => return Err(io::Error::other(format!("index refused: {state:?}")).into()),
         }
@@ -57,13 +62,11 @@ fn index(session: &mut Session, endpoint: &Path, project: &Path, byte: u8) -> Re
             return Err("index deadline".into());
         }
         thread::sleep(Duration::from_millis(30));
-        if polls == 200 {
-            *session = Session::connect(endpoint).map_err(|e| io::Error::other(format!("reconnect index status: {e:?}")))?;
-            polls = 0;
+        if session.connection_frames_remaining() == Some(0) {
+            session.reconnect().map_err(|e| io::Error::other(format!("reconnect index status: {e:?}")))?;
         }
         status = session.index_operation_status(key)
             .map_err(|e| io::Error::other(format!("index status request: {e:?}")))?;
-        polls += 1;
     }
 }
 
@@ -354,7 +357,7 @@ fn native_ts_listener_journey(
     let authority = backend_engine::read_authority_secret(paths.authority_secret())?;
     let owner = start_owner(&paths)?;
     let mut session = Session::connect(owner.endpoint())?;
-    index(&mut session, owner.endpoint(), &project, 0x41)?;
+    index(&mut session, &project, 0x41)?;
     let (_, observed) = select_native_document(&mut session, &authority, "Greeting", "view.ts")?;
     let site = observed.location.captured().ok_or("observed native site")?;
     assert_eq!(site.path(), "view.ts");
@@ -408,7 +411,7 @@ fn native_ts_listener_journey(
         require_references,
     )?;
     assert_eq!(cold, original);
-    index(&mut session, owner.endpoint(), &project, 0x43)?;
+    index(&mut session, &project, 0x43)?;
     assert_eq!(
         query(
             &mut session,
@@ -447,7 +450,7 @@ fn native_ts_listener_journey(
     assert!(session.document(&stale_coordinate).is_err());
     let stale_locator = ProductText::new(stale_coordinate).map_err(|e| io::Error::other(e.to_string()))?;
     assert!(session.surface(SurfaceCommand::Read { locators: vec![stale_locator].into_boxed_slice() }).is_err());
-    index(&mut session, owner.endpoint(), &project, 0x42)?;
+    index(&mut session, &project, 0x42)?;
     let edited = query(
         &mut session,
         &authority,
@@ -541,7 +544,7 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
     eprintln!("native owner: start warm owner");
     let owner = start_owner(&paths).map_err(|e| io::Error::other(format!("start warm owner: {e:?}")))?;
     let mut session = Session::connect(owner.endpoint()).map_err(|e| io::Error::other(format!("connect warm owner: {e:?}")))?;
-    if let Err(error) = index(&mut session, owner.endpoint(), &project, 0x51) {
+    if let Err(error) = index(&mut session, &project, 0x51) {
         let running = owner.is_running();
         drop(session);
         let disposition = owner.close();
@@ -739,7 +742,7 @@ fn native_ts_read_owner_policy_and_same_length_stale_refusal() -> Result<(), Box
     let authority = backend_engine::read_authority_secret(paths.authority_secret())?;
     let owner = start_owner(&paths)?;
     let mut session = Session::connect(owner.endpoint())?;
-    index(&mut session, owner.endpoint(), &project, 0x71)?;
+    index(&mut session, &project, 0x71)?;
     let CommandReply::Names(names) = session.names("Greeting", 100)?.reply else {
         return Err("Read names reply".into());
     };
@@ -846,7 +849,7 @@ fn native_ts_health_without_structural_frontends() -> Result<(), Box<dyn Error>>
     let owner = start_owner(&paths)?;
     let mut session = Session::connect(owner.endpoint())?;
     let initial = session.health()?;
-    index(&mut session, owner.endpoint(), &project, 0x61)?;
+    index(&mut session, &project, 0x61)?;
     let after = session.health()?;
     let select = |report: &backend_library::HealthReport, native: bool| {
         report
@@ -1045,7 +1048,7 @@ fn native_ts_retirement_journey(exclude: bool, check_search: bool) -> Result<(),
     let authority = backend_engine::read_authority_secret(paths.authority_secret())?;
     let owner = start_owner(&paths)?;
     let mut session = Session::connect(owner.endpoint())?;
-    index(&mut session, owner.endpoint(), &project, 0x91)?;
+    index(&mut session, &project, 0x91)?;
     let (old_coordinate, old_document) =
         select_native_document(&mut session, &authority, "Retired", "view.ts")?;
     let (_, kept_document) = select_native_document(&mut session, &authority, "Kept", "other.ts")?;
@@ -1088,7 +1091,7 @@ fn native_ts_retirement_journey(exclude: bool, check_search: bool) -> Result<(),
     } else {
         fs::remove_file(project.join("view.ts"))?;
     }
-    index(&mut session, owner.endpoint(), &project, 0x92)?;
+    index(&mut session, &project, 0x92)?;
     assert_retired_handle_unavailable(&mut session, &selector)?;
     let CommandReply::Names(retired_names) = session.names("Retired", 100)?.reply else {
         return Err("retired Names reply".into());
@@ -1204,13 +1207,13 @@ fn native_ts_last_file_deletion_retires_selected_evidence() -> Result<(), Box<dy
     let authority = backend_engine::read_authority_secret(paths.authority_secret())?;
     let owner = start_owner(&paths)?;
     let mut session = Session::connect(owner.endpoint())?;
-    index(&mut session, owner.endpoint(), &project, 0xa1)?;
+    index(&mut session, &project, 0xa1)?;
     let (coordinate, document) = select_native_document(&mut session, &authority, "Retired", "view.ts")?;
     let selection = document.selection.as_ref().ok_or("last source selection")?;
     let symbol = backend_library::SelectedSymbolId::new(*selection.symbol().as_bytes()).ok_or("last selected ID")?;
     let selector = backend_library::DeclarationSelector::SelectedAt { symbol, coordinate };
     fs::remove_file(project.join("view.ts"))?;
-    index(&mut session, owner.endpoint(), &project, 0xa2)?;
+    index(&mut session, &project, 0xa2)?;
     assert_retired_handle_unavailable(&mut session, &selector)?;
     let CommandReply::Names(names) = session.names("Retired", 100)?.reply else { return Err("retired Names reply".into()) };
     assert!(!names.root.rows().iter().any(|row| row.id == backend_library::RowId::Symbol(selection.symbol())));
