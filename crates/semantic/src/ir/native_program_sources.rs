@@ -75,6 +75,199 @@ pub enum NativeProgramSourceManifestError {
     ProgramIdentity,
 }
 
+/// Failure of a borrowed admission, separating malformed data from a stopped operation.
+#[derive(Debug)]
+pub enum BorrowedNativeProgramError<E> {
+    /// The encoded manifest violates the existing admission contract.
+    Manifest(NativeProgramSourceManifestError),
+    /// The caller's shared work ledger, deadline, or cancellation stopped admission.
+    Stopped(E),
+    /// The caller did not provide the scratch requested by `scratch_slots`.
+    Scratch,
+}
+
+/// A validated single-program manifest borrowing its pinned canonical bytes.
+pub struct BorrowedNativeProgramSourceManifest<'a> {
+    bytes: &'a [u8],
+    program: [u8; 32],
+    toolchain: ContentId<ToolchainDomain>,
+    count: usize,
+}
+
+impl<'a> BorrowedNativeProgramSourceManifest<'a> {
+    /// Maximum number of path slots needed to admit this single envelope.
+    /// The caller owns and accounts for these slots before calling `decode`.
+    pub fn scratch_slots(bytes: &[u8]) -> Result<usize, NativeProgramSourceManifestError> {
+        if bytes.len() < HEADER || bytes.len() > MAX_NATIVE_PROGRAM_MANIFEST_BYTES {
+            return Err(NativeProgramSourceManifestError::Limit);
+        }
+        let mut input = Input(bytes);
+        if input.take(8)? != MAGIC || input.u16()? != VERSION {
+            return Err(NativeProgramSourceManifestError::Encoding);
+        }
+        input.take(64)?;
+        let count = input.u32()? as usize;
+        if count == 0 || count > MAX_NATIVE_PROGRAM_SOURCES {
+            return Err(NativeProgramSourceManifestError::Limit);
+        }
+        Ok(count)
+    }
+
+    /// Validates without allocating. The caller supplies the pinned wire and
+    /// accounted scratch; `checkpoint` debits the live operation and checks
+    /// its actual cancellation and deadline.
+    pub fn decode<E>(
+        bytes: &'a [u8],
+        scratch: &mut [Option<&'a str>],
+        mut checkpoint: impl FnMut(u64) -> Result<(), E>,
+    ) -> Result<Self, BorrowedNativeProgramError<E>> {
+        use BorrowedNativeProgramError::{Manifest, Scratch, Stopped};
+        let count = Self::scratch_slots(bytes).map_err(Manifest)?;
+        if scratch.len() < count {
+            return Err(Scratch);
+        }
+        // Charge wire traversal before path validation, then check at each row.
+        for _ in bytes.chunks(4096) {
+            checkpoint(1).map_err(Stopped)?;
+        }
+        let mut input = Input(bytes);
+        input.take(10).map_err(Manifest)?;
+        let toolchain = ContentId::try_from(input.take(32).map_err(Manifest)?)
+            .map_err(|_| Manifest(NativeProgramSourceManifestError::Encoding))?;
+        let program: [u8; 32] = input
+            .take(32)
+            .map_err(Manifest)?
+            .try_into()
+            .map_err(|_| Manifest(NativeProgramSourceManifestError::Encoding))?;
+        input.u32().map_err(Manifest)?;
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"typescript-tsz-program-source-manifest-v1\0");
+        let mut prior = None;
+        let mut packages = 0;
+        for _ in 0..count {
+            checkpoint(1).map_err(Stopped)?;
+            let row = input.row().map_err(Manifest)?;
+            if prior.is_some_and(|path| path >= row.program_path) {
+                return Err(Manifest(NativeProgramSourceManifestError::Encoding));
+            }
+            prior = Some(row.program_path);
+            if let Some(path) = row.package_path {
+                scratch[packages] = Some(path);
+                packages += 1;
+            }
+            hash.update(&(row.program_path.len() as u32).to_le_bytes());
+            for chunk in row.program_path.as_bytes().chunks(4096) {
+                checkpoint(1).map_err(Stopped)?;
+                hash.update(chunk);
+            }
+            hash.update(row.source.identity.as_ref());
+        }
+        if !input.0.is_empty() {
+            return Err(Manifest(NativeProgramSourceManifestError::Encoding));
+        }
+        if hash.finalize().as_bytes() != &program {
+            return Err(Manifest(NativeProgramSourceManifestError::ProgramIdentity));
+        }
+        // In-place heapsort avoids an allocation and meters each comparison.
+        fn less<E>(
+            a: &str,
+            b: &str,
+            checkpoint: &mut impl FnMut(u64) -> Result<(), E>,
+        ) -> Result<bool, E> {
+            for (a, b) in a.as_bytes().chunks(4096).zip(b.as_bytes().chunks(4096)) {
+                checkpoint(1)?;
+                match a.cmp(b) {
+                    std::cmp::Ordering::Less => return Ok(true),
+                    std::cmp::Ordering::Greater => return Ok(false),
+                    std::cmp::Ordering::Equal => {}
+                }
+            }
+            checkpoint(1)?;
+            Ok(a.len() < b.len())
+        }
+        fn sift<E>(
+            values: &mut [Option<&str>],
+            mut root: usize,
+            end: usize,
+            checkpoint: &mut impl FnMut(u64) -> Result<(), E>,
+        ) -> Result<(), E> {
+            loop {
+                let mut child = root * 2 + 1;
+                if child >= end {
+                    return Ok(());
+                }
+                if child + 1 < end
+                    && less(
+                        values[child].unwrap(),
+                        values[child + 1].unwrap(),
+                        checkpoint,
+                    )?
+                {
+                    child += 1;
+                }
+                if !less(values[root].unwrap(), values[child].unwrap(), checkpoint)? {
+                    return Ok(());
+                }
+                values.swap(root, child);
+                root = child;
+            }
+        }
+        let values = &mut scratch[..packages];
+        for root in (0..packages / 2).rev() {
+            sift(values, root, packages, &mut checkpoint).map_err(Stopped)?;
+        }
+        for end in (1..packages).rev() {
+            values.swap(0, end);
+            sift(values, 0, end, &mut checkpoint).map_err(Stopped)?;
+        }
+        for pair in values.windows(2) {
+            if !less(pair[0].unwrap(), pair[1].unwrap(), &mut checkpoint).map_err(Stopped)? {
+                return Err(Manifest(NativeProgramSourceManifestError::Encoding));
+            }
+        }
+        Ok(Self {
+            bytes,
+            program,
+            toolchain,
+            count,
+        })
+    }
+
+    /// Exact native membership identity.
+    pub const fn program(&self) -> [u8; 32] {
+        self.program
+    }
+    /// Compiler toolchain bound by the manifest.
+    pub const fn toolchain(&self) -> ContentId<ToolchainDomain> {
+        self.toolchain
+    }
+    /// Visit validated rows while charging and checking the caller's operation.
+    pub fn visit_sources<E>(
+        &self,
+        mut checkpoint: impl FnMut(u64) -> Result<(), E>,
+        mut visit: impl FnMut(NativeProgramSourceRef<'a>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let mut rows = Sources {
+            input: Input(&self.bytes[HEADER..]),
+            remaining: self.count,
+        };
+        for _ in 0..self.count {
+            checkpoint(1)?;
+            let row = rows.next().expect("validated manifest");
+            for _ in row.program_path.as_bytes().chunks(4096) {
+                checkpoint(1)?;
+            }
+            if let Some(path) = row.package_path {
+                for _ in path.as_bytes().chunks(4096) {
+                    checkpoint(1)?;
+                }
+            }
+            visit(row)?;
+        }
+        Ok(())
+    }
+}
+
 impl NativeProgramSourceManifest {
     /// Constructs membership from actual native files. No caller supplies a program ID.
     pub fn from_sources(
@@ -299,6 +492,66 @@ impl ExactSizeIterator for Sources<'_> {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn borrowed_admission_matches_owned_and_checks_budget() {
+        let owned = NativeProgramSourceManifest::from_sources(
+            ContentId::from_canonical_bytes(b"compiler"),
+            rows(),
+        )
+        .unwrap();
+        let mut scratch = vec![
+            None;
+            BorrowedNativeProgramSourceManifest::scratch_slots(owned.as_bytes())
+                .unwrap()
+        ];
+        let view =
+            BorrowedNativeProgramSourceManifest::decode(owned.as_bytes(), &mut scratch, |_| {
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        assert_eq!(view.program(), owned.program());
+        assert_eq!(view.toolchain(), owned.toolchain());
+        let mut visited = Vec::new();
+        view.visit_sources(
+            |_| Ok::<_, ()>(()),
+            |row| {
+                visited.push(row);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(visited, owned.sources().collect::<Vec<_>>());
+        assert!(matches!(
+            BorrowedNativeProgramSourceManifest::decode(
+                owned.as_bytes(),
+                &mut [],
+                |_| Ok::<_, ()>(())
+            ),
+            Err(BorrowedNativeProgramError::Scratch)
+        ));
+        assert!(matches!(
+            BorrowedNativeProgramSourceManifest::decode(
+                owned.as_bytes(),
+                &mut scratch,
+                |_| Err(())
+            ),
+            Err(BorrowedNativeProgramError::Stopped(()))
+        ));
+        let mut corrupt = owned.as_bytes().to_vec();
+        corrupt[42] ^= 1;
+        let mut corrupt_scratch = vec![None; scratch.len()];
+        assert!(matches!(
+            BorrowedNativeProgramSourceManifest::decode(&corrupt, &mut corrupt_scratch, |_| Ok::<
+                _,
+                (),
+            >(
+                ()
+            )),
+            Err(BorrowedNativeProgramError::Manifest(
+                NativeProgramSourceManifestError::ProgramIdentity
+            ))
+        ));
+    }
     fn rows() -> Vec<NativeProgramSource> {
         [
             (

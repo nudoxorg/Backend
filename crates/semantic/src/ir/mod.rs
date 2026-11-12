@@ -360,6 +360,7 @@ pub use native_program_forest::{
     NativeProgramOwnedSourceRef, NativeProgramSources,
 };
 pub use native_program_sources::{
+    BorrowedNativeProgramError, BorrowedNativeProgramSourceManifest,
     MAX_NATIVE_PROGRAM_MANIFEST_BYTES, MAX_NATIVE_PROGRAM_SOURCES, NativeProgramSource,
     NativeProgramSourceManifest, NativeProgramSourceManifestError,
     NativeProgramSourceManifestSchema, NativeProgramSourceRef,
