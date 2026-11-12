@@ -78,7 +78,7 @@ pub use durable::{
     RelationNodeChild, RelationNodeRead, RelationNodeWriteStats, SelectedHead,
     StorePublicationAuthority, WeakPublicationAuthority, StoredClosureReceipt, StreamingClosureBudget, WorkspaceHistoryError,
     StreamingClosureBuilder, TransactionId, TreeReadStats, TreeWriteStats, VerifiedClosureMember,
-    VerifiedObjectEnvelope, VerifiedObjectView, WorkspaceFileDurable, WorkspaceFilePrepared,
+    BoundedObjectReader, VerifiedObjectEnvelope, VerifiedObjectView, WorkspaceFileDurable, WorkspaceFilePrepared,
     untrusted_object_id_for_encoded_value,
     WorkspaceFilePublished, admit_object_envelope, write_object_envelope,
     write_streamed_object_envelope,

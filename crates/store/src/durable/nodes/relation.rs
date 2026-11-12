@@ -7,7 +7,6 @@ use backend_version::{
     TreeNodeLoader, TreeNodeView, UntrustedId, admit_canonical_root_claim,
 };
 use std::collections::HashSet;
-use std::io::Read as _;
 
 /// An owned, read-only adapter for the version layer's lazy relation tree.
 ///

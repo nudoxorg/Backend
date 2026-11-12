@@ -78,6 +78,49 @@ impl<'a> VerifiedObjectView<'a> {
     }
 }
 
+/// A pinned object descriptor with a structurally checked but untrusted header.
+/// Its fields do not establish object identity, schema validity or membership.
+pub struct BoundedObjectReader<'a> {
+    file: File,
+    _pin: &'a GcPinGuard,
+    id: ObjectId,
+    schema: SchemaIdentity,
+    key: Hash,
+    version: Hash,
+    length: usize,
+}
+
+impl BoundedObjectReader<'_> {
+    /// Payload length claimed by the untrusted header.
+    pub const fn payload_len(&self) -> usize { self.length }
+    /// Schema claimed by the untrusted header.
+    pub const fn claimed_schema(&self) -> SchemaIdentity { self.schema }
+    /// Key claimed by the untrusted header.
+    pub const fn claimed_key(&self) -> &Hash { &self.key }
+
+    /// Reads into caller-owned, already-reserved storage, verifies both object
+    /// and typed version identities, then invokes the authenticated callback.
+    /// The supplied slice must have exactly the claimed length. It must not be
+    /// interpreted as authority if this function returns an error.
+    pub fn read_into<T, F>(mut self, payload: &mut [u8], budget: &mut usize, visit: F) -> Result<T, StoreError>
+    where F: for<'a> FnOnce(VerifiedObjectView<'a>, &mut usize) -> Result<T, StoreError> {
+        if payload.len() != self.length { return Err(StoreError::Bounds); }
+        self.file.read_exact(payload).map_err(|error| if error.kind() == std::io::ErrorKind::UnexpectedEof { StoreError::Corrupt } else { io_error(&error) })?;
+        let mut trailing = [0u8;1];
+        loop {
+            match self.file.read(&mut trailing) {
+                Ok(0) => break,
+                Ok(_) => return Err(StoreError::Corrupt),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(io_error(&error)),
+            }
+        }
+        if object_commitment_view(self.schema, &self.key, &self.version, payload)? != *self.id.as_bytes() { return Err(StoreError::Corrupt); }
+        admit_backend_object_version(self.schema, payload, &self.version)?;
+        visit(VerifiedObjectView { id: self.id, schema: self.schema, key: self.key, version: self.version, bytes: payload }, budget)
+    }
+}
+
 /// Removes crash-orphaned files only from the store writer's private temp namespace.
 pub(super) fn scavenge_store_temps(root: &Path) -> Result<usize, StoreError> {
     let mut removed = 0usize;
@@ -508,6 +551,25 @@ impl FileStore {
         P: FnOnce(SchemaIdentity, &Hash, usize, &mut usize) -> Result<(), StoreError>,
         F: for<'a> FnOnce(VerifiedObjectView<'a>, &mut usize) -> Result<T, StoreError>,
     {
+        let reader = self.open_bounded_nonrelation_object(pin, claim, accepted_schemas, expected_key, max_payload, budget, before_open)?;
+        let length = reader.payload_len();
+        *budget = budget.checked_sub(length).ok_or(StoreError::Bounds)?;
+        before_payload(reader.claimed_schema(), reader.claimed_key(), length, budget)?;
+        let mut payload = Vec::new();
+        payload.try_reserve_exact(length).map_err(|_| StoreError::Bounds)?;
+        payload.resize(length, 0);
+        reader.read_into(&mut payload, budget, visit)
+    }
+
+    /// Opens one immutable object and checks its untrusted fixed header before
+    /// any payload allocation or read. The returned descriptor holds the GC
+    /// pin borrow and exposes only untrusted geometry until `read_into` succeeds.
+    pub fn open_bounded_nonrelation_object<'a, O>(
+        &self, pin: &'a GcPinGuard, claim: UntrustedObjectId,
+        accepted_schemas: &[SchemaIdentity], expected_key: Option<Hash>, max_payload: usize,
+        budget: &mut usize, before_open: O,
+    ) -> Result<BoundedObjectReader<'a>, StoreError>
+    where O: FnOnce(&mut usize) -> Result<(), StoreError> {
         // Stack storage for the root C string, object locator, and envelope
         // header is reserved before opening the descriptor.
         const OPEN_STACK: usize = 4096 + 80 + OBJECT_MAGIC.len() + 32 + 1 + 2 + 1 + 32 + 32 + 8;
@@ -540,19 +602,9 @@ impl FileStore {
         if length > max_payload { return Err(StoreError::Bounds); }
         if !accepted_schemas.contains(&schema) || expected_key.is_some_and(|expected| expected != key)
             || self.relation_registry.contains_schema(schema) { return Err(StoreError::Corrupt); }
-        *budget = budget.checked_sub(length).ok_or(StoreError::Bounds)?;
-        before_payload(schema, &key, length, budget)?;
-        let mut payload = Vec::new();
-        payload.try_reserve_exact(length).map_err(|_| StoreError::Bounds)?;
-        payload.resize(length, 0);
-        file.read_exact(&mut payload).map_err(|error| io_error(&error))?;
-        let mut trailing = [0u8; 1];
-        if file.read(&mut trailing).map_err(|error| io_error(&error))? != 0 { return Err(StoreError::Corrupt); }
-        let actual = object_commitment_view(schema, &key, &version, &payload)?;
-        if actual != claimed { return Err(StoreError::Corrupt); }
-        admit_backend_object_version(schema, &payload, &version)?;
-        visit(VerifiedObjectView { id, schema, key, version, bytes: &payload }, budget)
+        Ok(BoundedObjectReader { file, _pin: pin, id, schema, key, version, length })
     }
+
 
     /// Opens and admits the object named by `claim`, returning `None` when
     /// the object path is absent. The safe artifact opener owns path, link,
@@ -877,6 +929,15 @@ mod tests {
                 |view,_| { assert_eq!(view.id(), object.id()); assert_eq!(view.bytes(), object.bytes()); Ok(()) }).expect("read");
         });
         assert!(usize::try_from(measured.bytes_max).unwrap() <= object.bytes().len() + 4096);
+        // Two-phase path uses caller-owned storage and allocates no payload.
+        let mut destination = vec![0u8; object.bytes().len()];
+        budget = open_stack;
+        let allocation = allocation_counter::measure(|| {
+            let reader = store.open_bounded_nonrelation_object(&pin, claim, &[schema], Some(*object.key()), object.bytes().len(), &mut budget, |_| Ok(())).expect("open");
+            assert_eq!(reader.payload_len(), destination.len());
+            reader.read_into(&mut destination, &mut budget, |view,_| { assert_eq!(view.bytes(), object.bytes()); Ok(()) }).expect("authenticate");
+        });
+        assert_eq!(allocation.bytes_max, 0);
         let path = store.object_path(object.id());
         let mut bytes = fs::read(&path).expect("read envelope");
         *bytes.last_mut().expect("payload") ^= 1;
