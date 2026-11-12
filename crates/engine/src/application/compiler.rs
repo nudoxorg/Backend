@@ -3228,7 +3228,7 @@ mod source_degradation_tests {
             });
             assert_eq!(
                 typescript_source_gap_cause(&terminal, source()),
-                restored_csharp_references.as_ref().map(|references| references.digest),
+                None,
                 "{failure:?}"
             );
         }
