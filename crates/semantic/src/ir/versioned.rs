@@ -3095,6 +3095,19 @@ mod tests {
     }
 
     #[test]
+    fn semantic_plane_decode_allocation_bound_matches_measured_shape() {
+        let kind = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
+        let value = manifest(build(1), input(1), vec![plane(kind, vec![segment(kind, 1, b"x"), segment(kind, 2, b"y")])]);
+        let bytes = value.encode().unwrap();
+        let bound = SemanticPlaneManifest::decode_allocation_bound(&bytes).unwrap();
+        let mut decoded = None;
+        let peak = allocation_counter::measure(|| decoded = Some(SemanticPlaneManifest::decode(&bytes).unwrap()));
+        assert!(decoded.is_some());
+        assert!(peak.bytes_max as usize <= bound, "plane decode peak {peak:?}, bound {bound}");
+        assert!(SemanticPlaneManifest::decode_allocation_bound(&bytes[..bytes.len()-1]).is_err());
+    }
+
+    #[test]
     fn coverage_wire_is_fixed_width_for_complete_and_partial_claims() {
         const EXPECTED_COVERAGE_BYTES: usize = 130;
 
