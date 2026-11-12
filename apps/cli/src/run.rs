@@ -1274,3 +1274,72 @@ mod related_delivery_tests {
         assert_eq!(related_initial_delivery(200, Some(7)), 7);
     }
 }
+
+#[cfg(test)]
+mod related_driver_window_tests {
+    use super::*;
+    use backend_library::{
+        Basis, CommandReply, Cursor, DeclarationSelector, Frontier, GraphNeighborhoodQuery,
+        GraphRelation, Library, RelatedDirection, RelatedEdgeKey, RelatedEdgePage, RelatedEdgeTerminal,
+        RelatedPageCursor, RelatedPageRequest, RelatedPageScope, Row, RowId, SemanticLinkKind,
+        VerifiedRelatedPageRequest, ViewRoot, object_version, symbol_key, view_key, view_state_root,
+    };
+
+    struct Owner {
+        library: Library,
+        windows: Vec<backend_library::QueryWindow>,
+        inputs: Vec<Option<RelatedPageCursor>>,
+    }
+
+    impl Engine for Owner {
+        fn revision(&mut self) -> Result<ViewStateRoot, ClientError> { unreachable!() }
+        fn health(&mut self) -> Result<HealthReport, ClientError> { unreachable!() }
+        fn probe(&mut self, _: Probe<'_>) -> Result<ReplyDto, ClientError> { unreachable!() }
+        fn surface(&mut self, _: SurfaceCommand) -> Result<SurfaceReply, ClientError> { unreachable!() }
+
+        fn declaration_related_window(&mut self, selector: &DeclarationSelector, window: backend_library::QueryWindow, cursor: Option<RelatedPageCursor>) -> Result<ReplyDto, ClientError> {
+            self.windows.push(window);
+            self.inputs.push(cursor.clone());
+            let address = selector.address();
+            let root = self.library.revision_root();
+            let scope = RelatedPageScope { root: *root.as_bytes(), source: address.claimed_bytes(), source_selected: address.is_selected(), direction: RelatedDirection::Both, issued: window.issued().get(), delivery: window.delivery().get(), windowed: window.is_windowed() };
+            let request = RelatedPageRequest { scope, cursor };
+            let verified = VerifiedRelatedPageRequest::verify(&request, *root.as_bytes(), &[7; 32]).expect("owner authenticates unchanged cursor scope");
+            let center = address.resolve(self.library.view()).expect("center");
+            let mut edges = self.library.view().row_refs().filter(|row| row.parent == Some(center)).map(|row| GraphRelation::new(RowId::Symbol(center), row.id, SemanticLinkKind::Calls)).collect::<Vec<_>>();
+            edges.sort_by_key(|edge| RelatedEdgeKey::new(*edge));
+            edges.retain(|edge| verified.after().is_none_or(|after| RelatedEdgeKey::new(*edge) > after));
+            // The owner may return fewer edges than its delivery ceiling.
+            let more = edges.len() > 2;
+            edges.truncate(2);
+            let terminal = if more { RelatedEdgeTerminal::More(verified.issue_cursor(RelatedEdgeKey::new(*edges.last().expect("edge"))).expect("cursor")) } else { RelatedEdgeTerminal::Complete };
+            let snapshot = self.library.graph_from_semantic_relations(GraphNeighborhoodQuery::addressed(address, root), &edges).expect("graph");
+            Ok(ReplyDto::new(1, CommandReply::RelatedEdgePage(RelatedEdgePage { keys: edges.iter().copied().map(RelatedEdgeKey::new).collect(), snapshot, semantic_revision: *root.as_bytes(), terminal, withheld: true })))
+        }
+    }
+
+    #[test]
+    fn cli_driver_keeps_issued_credit_across_real_continuation() {
+        let basis = Basis::new(view_state_root(&[("related".to_owned(), "1".to_owned())]), object_version(&[1]));
+        let center = symbol_key("pkg::center");
+        let mut rows = vec![Row::new(RowId::Symbol(center), basis, "pkg::center")];
+        for i in 0..3 {
+            let label = format!("pkg::child{i}");
+            let mut row = Row::new(RowId::Symbol(symbol_key(&label)), basis, label);
+            row.parent = Some(center);
+            rows.push(row);
+        }
+        let view = ViewRoot::new_incomplete(view_key(b"cli-related-window"), basis, Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0), rows, vec![]).expect("view");
+        let library = Library::from_view(view.clone(), Cursor::for_view_root(&view)).expect("owner");
+        let mut owner = Owner { library, windows: vec![], inputs: vec![] };
+        let selector = DeclarationSelector::Coordinate("pkg::center".to_owned());
+        let mut next = None;
+        related_with_output_admission(&mut owner, &selector, 100, None, || Ok(()), |_, cursor| { next = cursor.map(str::to_owned); Ok(()) }).expect("first page");
+        let token = next.expect("first page continues");
+        related_with_output_admission(&mut owner, &selector, 100, Some(&token), || Ok(()), |_, _| Ok(())).expect("continued page");
+        assert_eq!(owner.windows.len(), 2);
+        assert!(owner.windows.iter().all(|window| window.issued().get() == 100 && window.delivery().get() == 32 && window.is_windowed()));
+        assert!(owner.inputs[0].is_none());
+        assert_eq!(owner.inputs[1], Some(crate::related_cursor::decode(&token).expect("token")));
+    }
+}
