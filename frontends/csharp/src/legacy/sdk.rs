@@ -1785,6 +1785,10 @@ mod tests {
         };
         let encoded = receipt.encode().unwrap();
         let decoded = CSharpResolverReceipt::decode(&encoded).unwrap();
+        let mut legacy: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert!(legacy.as_object_mut().unwrap().remove("globalization_policy").is_some());
+        let legacy_bytes = serde_json::to_vec(&legacy).unwrap();
+        assert!(CSharpResolverReceipt::decode(&legacy_bytes).is_err());
         assert!(snapshot.replay_receipt(&decoded, sdk.path(), "net10.0", None, [8; 32]));
         let mut wrong_environment = decoded.clone();
         wrong_environment.globalization_policy = "ambient-culture".into();
