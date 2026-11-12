@@ -3997,7 +3997,9 @@ impl SemanticAuthority {
         )?;
         self.select_verified_closure(key, admitted, move |candidate| {
             if stopped() { return Err(BuiltinModelError("compiler publication cancelled".into())); }
-            admit_before_select(candidate)
+            admit_before_select(candidate)?;
+            if stopped() { return Err(BuiltinModelError("compiler publication cancelled".into())); }
+            Ok(())
         })
     }
 
@@ -5741,6 +5743,15 @@ mod tests {
         assert!(stops.get() > 3, "stop must occur after staged publication began");
         let selections = authority.image_loader.selections.read().expect("selection snapshot");
         assert!(SelectedClosureImageLoader::committed_pair_optional_in(&selections, &key).expect("selection lookup").is_none(), "cancelled publication must not select a generation");
+        drop(selections);
+        let final_stop = std::sync::atomic::AtomicBool::new(false);
+        let final_stopped = || final_stop.load(std::sync::atomic::Ordering::Acquire);
+        assert!(authority.publish_staged_with_stop(&key, attempt.clone(), &staged, &final_stopped, |_| {
+            final_stop.store(true, std::sync::atomic::Ordering::Release);
+            Ok(())
+        }).is_err());
+        let selections = authority.image_loader.selections.read().expect("selection snapshot after final stop");
+        assert!(SelectedClosureImageLoader::committed_pair_optional_in(&selections, &key).expect("selection lookup").is_none(), "final stop must not select a generation");
         drop(selections);
         let (claim, selected) = authority
             .publish_staged(&key, attempt, &staged, |_| Ok(()))
