@@ -95,7 +95,11 @@ fn vue_index_rotates_small_frame_budget() -> Result<(), Box<dyn Error>> {
 }
 
 fn verify(session: &mut Session, project: &std::path::Path) -> Result<(), Box<dyn Error>> {
-    let CommandReply::Names(names) = session.names("mounted", 100)?.reply else {
+    let CommandReply::Names(names) = session
+        .names("mounted", 100)
+        .map_err(|e| std::io::Error::other(format!("names: {e}")))?
+        .reply
+    else {
         return Err("names reply".into());
     };
     let row = names
@@ -120,7 +124,11 @@ fn verify(session: &mut Session, project: &std::path::Path) -> Result<(), Box<dy
         {
             session.reconnect()?;
         }
-        match session.search("mounted", 100)?.reply {
+        match session
+            .search("mounted", 100)
+            .map_err(|e| std::io::Error::other(format!("lexical search: {e}")))?
+            .reply
+        {
             CommandReply::Search(search) => break search,
             CommandReply::PublishedNameSearch(_) if Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(100));
@@ -132,8 +140,12 @@ fn verify(session: &mut Session, project: &std::path::Path) -> Result<(), Box<dy
         search.root.rows().iter().any(|row| row.id == selected),
         "ordinary lexical search retains the Vue declaration"
     );
-    let module = format!("{}::App.vue:1::App", project.display());
-    let CommandReply::Document(component) = session.source(&module)?.reply else {
+    let module = format!("{}::App.vue", project.display());
+    let CommandReply::Document(component) = session
+        .source(&module)
+        .map_err(|e| std::io::Error::other(format!("component source {module}: {e}")))?
+        .reply
+    else {
         return Err("component source reply".into());
     };
     assert!(
@@ -144,7 +156,11 @@ fn verify(session: &mut Session, project: &std::path::Path) -> Result<(), Box<dy
         "full verified Vue host source"
     );
 
-    let CommandReply::Document(document) = session.source(&coordinate)?.reply else {
+    let CommandReply::Document(document) = session
+        .source(&coordinate)
+        .map_err(|e| std::io::Error::other(format!("declaration source: {e}")))?
+        .reply
+    else {
         return Err("source reply".into());
     };
     assert!(
@@ -155,9 +171,12 @@ fn verify(session: &mut Session, project: &std::path::Path) -> Result<(), Box<dy
         "{document:?}"
     );
     assert!(!document.excerpt.text().unwrap().contains("<template>"));
-    let reply = session.surface(SurfaceCommand::References {
-        target: ProductText::new(&coordinate).map_err(|e| std::io::Error::other(e.to_string()))?,
-    })?;
+    let reply = session
+        .surface(SurfaceCommand::References {
+            target: ProductText::new(&coordinate)
+                .map_err(|e| std::io::Error::other(e.to_string()))?,
+        })
+        .map_err(|e| std::io::Error::other(format!("references: {e}")))?;
     let SurfaceReply::References {
         references,
         coverage,

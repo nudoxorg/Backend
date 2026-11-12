@@ -61,7 +61,7 @@ def main():
         require(phase + ' CLI source', rc == 0 and "return 'é漢'" in raw and '<template>' not in raw, raw)
         result = mcp('backend.source', {'coordinate': coord}, phase + '-mcp-source')
         require(phase + ' MCP source', "return 'é漢'" in json.dumps(result, ensure_ascii=False), result)
-        module = f'{journey.project}::App.vue:1::App'
+        module = f'{journey.project}::App.vue'
         rc, _, raw = journey.cli(phase + '-component-source', ['source', module])
         require(phase + ' CLI full component source', rc == 0 and '<template>' in raw and '<script setup' in raw, raw)
         result = mcp('backend.source', {'coordinate': module}, phase + '-mcp-component-source')
