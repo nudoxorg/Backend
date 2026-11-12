@@ -18,6 +18,7 @@ from runtime_build_receipt import stable_file, verify_runtime_build_receipt
 COUNT = 5000
 LIMIT = 137
 ALIAS = "@/src/center.ts:1::related_hub"
+CALLER_ALIAS = "@/src/callers_00.ts:2::related_caller_0000_x"
 NAME = re.compile(r"related_caller_(\d{4})_")
 
 
@@ -138,6 +139,14 @@ def main():
         check(mcp_callers == expected, f"MCP callers {len(mcp_callers)}/{COUNT}, missing {sorted(expected-mcp_callers)[:20]}")
         check(cli == mcp, f"CLI/MCP edge sets differ: {len(cli-mcp)} / {len(mcp-cli)}")
         check(cli_cursor and mcp_cursor, "fixture did not produce continuation")
+        outgoing_cli, _, _ = run_pages(j, "cli", "outgoing-cli", alias=CALLER_ALIAS)
+        outgoing_mcp, _, _ = run_pages(j, "mcp", "outgoing-mcp", alias=CALLER_ALIAS)
+        def has_caller_edge(edges):
+            return any("related_caller_0000_x" in json.loads(edge[0])
+                       and "related_hub" in json.loads(edge[1])
+                       and "call" in json.loads(edge[2]).lower() for edge in edges)
+        check(outgoing_cli == outgoing_mcp and has_caller_edge(outgoing_cli),
+              "caller-centered CLI/MCP related pages omitted the outgoing call")
         j.stop_mcp()
         j.stop_owner()
         j.start_owner(project)
@@ -147,6 +156,10 @@ def main():
         cold_mcp, cold_mcp_callers, mcp_cursor = run_pages(j, "mcp", "cold-mcp")
         check(cold_mcp == cli and cold_mcp_callers == expected and mcp_cursor,
               "cold MCP reopen changed related edges or omitted continuation")
+        cold_out_cli, _, _ = run_pages(j, "cli", "cold-outgoing-cli", alias=CALLER_ALIAS)
+        cold_out_mcp, _, _ = run_pages(j, "mcp", "cold-outgoing-mcp", alias=CALLER_ALIAS)
+        check(cold_out_cli == outgoing_cli and cold_out_mcp == outgoing_mcp,
+              "cold reopen changed caller-centered outgoing edges")
         # A cursor issued before restart must resume against the same owner scope.
         tail, _, _ = run_pages(j, "cli", "cold-resume", first_cursor=cli_cursor)
         check(tail and tail.issubset(cli), "cold resumed frontier did not retain prior edges")
