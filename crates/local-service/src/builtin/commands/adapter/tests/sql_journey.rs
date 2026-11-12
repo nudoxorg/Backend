@@ -388,6 +388,48 @@ fn sqlite_project_indexes_publishes_queries_reindexes_and_survives_cold_reopen()
 }
 
 #[test]
+fn many_sql_facts_publish_discover_and_reopen_with_bounded_catalog() {
+    // Populate definitions and references so the selected catalog exercises
+    // repeated scans and digest staging over a substantial mixed fact set.
+    let mut schema = String::new();
+    let mut queries = String::new();
+    for index in 0..180 {
+        use std::fmt::Write as _;
+        writeln!(&mut schema, "CREATE TABLE catalog_item_{index:03} (id INTEGER, value TEXT);").unwrap();
+        writeln!(&mut queries, "SELECT value FROM catalog_item_{index:03} WHERE id = ?1;").unwrap();
+    }
+    let workers = admitted_workers(Some(frontend_worker("sqlite", "sqlite-worker")), None);
+    let mut wire = SourceWire::start_sql(
+        TestStage::BeforeSourcePreparation,
+        true,
+        SqlFixture { files: vec![("db/0001_schema.sql".into(), schema.into_bytes()), ("db/0002_queries.sql".into(), queries.into_bytes())], workers },
+    );
+    wire.wait_at_source_within(TERMINAL_WAIT);
+    wire.release();
+    wire.wait_terminal_within(TERMINAL_WAIT);
+    mixed_published(&wire);
+    wire.commands.lock().expect("adapter").source_test_hook = None;
+    let project = wire.source.parent().expect("project").to_owned();
+    let mut session = Session::connect(&wire.endpoint).expect("listener");
+    let reply = session.surface(backend_library::SurfaceCommand::IndexSearch {
+        query: backend_library::ProductText::new("catalog_item_179").unwrap(), limit: 20, cursor: None,
+    }).expect("ordinary SQL search");
+    let backend_library::SurfaceReply::IndexSearchPage(page) = reply else { panic!("search page") };
+    assert!(page.hits.iter().any(|hit| matches!(hit,
+        backend_library::RegistrySearchHit::LocalDeclaration(row) if row.name.as_str() == "catalog_item_179")));
+    drop(session);
+    let root = TempTree(std::mem::take(&mut wire.fixture.root.0));
+    drop(wire);
+    let started = std::time::Instant::now();
+    let reopened = crate::builtin::sql_journey_support::reopen_and_query(&root.0.join("workspace"), &project)
+        .expect("cold bounded catalog reopen");
+    eprintln!("many SQL facts cold catalog and query: {:?}", started.elapsed());
+    assert!(reopened.analysis);
+    assert_eq!(reopened.tables.len(), 180);
+    assert!(reopened.tables.iter().any(|name| name == "catalog_item_179"));
+}
+
+#[test]
 fn unsupported_statement_and_unparseable_file_are_reported_as_gaps_never_as_empty() {
     let workers = admitted_workers(Some(frontend_worker("sqlite", "sqlite-worker")), None);
     let files = vec![
