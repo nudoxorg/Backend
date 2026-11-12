@@ -276,6 +276,35 @@ fn stream_typed_object(
         .map_err(|error| BuiltinModelError(format!("finish semantic output object: {error:?}")))
 }
 
+// In-place heap sort permits cancellation at every bounded path comparison.
+fn sort_native_line_ordinals(
+    order: &mut [u32], staged: &backend_engine::application::StagedSemanticPackage,
+    check: &impl Fn() -> Result<(), backend_extension_turso::CompilerEnvelopeError>,
+) -> Result<(), BuiltinModelError> {
+    fn sift(order: &mut [u32], mut root: usize, end: usize, staged: &backend_engine::application::StagedSemanticPackage,
+        check: &impl Fn() -> Result<(), backend_extension_turso::CompilerEnvelopeError>) -> Result<(), BuiltinModelError> {
+        while root < end / 2 {
+            let left = root * 2 + 1;
+            let mut child = left;
+            let compare = |a: u32, b: u32| -> Result<std::cmp::Ordering, BuiltinModelError> {
+                check().map_err(|e| BuiltinModelError(format!("native line sorting stopped: {e}")))?;
+                let a = staged.native_typescript_line_at(a as usize).ok_or_else(|| BuiltinModelError("native line ordinal missing".into()))?;
+                let b = staged.native_typescript_line_at(b as usize).ok_or_else(|| BuiltinModelError("native line ordinal missing".into()))?;
+                Ok(a.path.cmp(&b.path))
+            };
+            if left + 1 < end && compare(order[left], order[left + 1])?.is_lt() { child = left + 1; }
+            if !compare(order[root], order[child])?.is_lt() { break; }
+            order.swap(root, child);
+            root = child;
+        }
+        Ok(())
+    }
+    let n = order.len();
+    for root in (0..n / 2).rev() { sift(order, root, n, staged, check)?; }
+    for end in (1..n).rev() { order.swap(0, end); sift(order, 0, end, staged, check)?; }
+    Ok(())
+}
+
 fn closure_composition_budget(
     changes: usize,
 ) -> Result<ClosureCompositionBudget, BuiltinModelError> {
@@ -3773,14 +3802,7 @@ impl SemanticAuthority {
                 work.set(work.get().checked_sub(1).ok_or(backend_extension_turso::CompilerEnvelopeError::Stopped)?);
                 Ok(())
             };
-            let sort_stopped = std::cell::Cell::new(false);
-            order[..count].sort_unstable_by(|a, b| {
-                if check().is_err() { sort_stopped.set(true); return std::cmp::Ordering::Equal; }
-                let left = staged.native_typescript_line_at(*a as usize).map(|f| f.path.as_str()).unwrap_or("");
-                let right = staged.native_typescript_line_at(*b as usize).map(|f| f.path.as_str()).unwrap_or("");
-                left.cmp(right)
-            });
-            if sort_stopped.get() { return Err(BuiltinModelError("native line sorting stopped".into())); }
+            sort_native_line_ordinals(&mut order[..count], staged, &check)?;
             let files = || order[..count].iter().filter_map(|ordinal| staged.native_typescript_line_at(*ordinal as usize));
             let mut checkpoint = |_: usize| check();
             let (length, observed_count) = backend_semantic::native_source_lines::encoded_len_files(files(), &mut checkpoint)
