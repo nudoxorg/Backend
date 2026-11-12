@@ -20,10 +20,21 @@ fn index_fixture(fixture: &mut AdapterFixture) {
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     while adapter.indexing.is_some() {
         adapter.poll_deferred(daemon);
-        assert!(
-            std::time::Instant::now() < deadline,
-            "structural index terminal"
-        );
+        if std::time::Instant::now() >= deadline {
+            let stage = match &adapter.indexing.as_ref().expect("active index").work {
+                IndexJobWork::Acquiring(_) => "acquiring",
+                IndexJobWork::Scanning(_) => "scanning",
+                IndexJobWork::Compiling { .. } => "compiling",
+                IndexJobWork::Publishing { .. } => "publishing",
+                IndexJobWork::PublicationWorker { .. } => "publication worker",
+                IndexJobWork::PreparingSource { .. } => "preparing source",
+                IndexJobWork::SourceRetiring { .. } => "retiring source",
+                IndexJobWork::RetirementPending { .. } => "retirement pending",
+                IndexJobWork::PublicationRetiring { .. } => "retiring publication",
+                IndexJobWork::Transition => "transition",
+            };
+            panic!("structural index terminal: still {stage}");
+        }
         std::thread::sleep(Duration::from_millis(2));
     }
     finish_search_lane(adapter, daemon);
