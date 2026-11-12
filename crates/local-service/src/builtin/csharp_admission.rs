@@ -194,10 +194,7 @@ pub(super) fn plan_untrusted_csharp_replacement(
 /// It proves source and attempt correlation only; SDK and execution custody
 /// are still required before any publication grant.
 pub(super) struct CSharpSelectedCompile<'a> {
-    witness: std::sync::Arc<super::commands::index::CapturedCSharpUnitAdmission>,
-    attempt: &'a backend_extension_turso::CandidateAttempt,
-    staged: &'a backend_engine::application::StagedSemanticPackage,
-    cancellation: std::sync::Arc<AtomicBool>,
+    completed: &'a super::commands::adapter::index_profile_worker::CSharpCompletedWorkerResult,
 }
 
 /// Rechecks the real selected Pending and authoritative attempt on the worker.
@@ -227,17 +224,19 @@ pub(super) fn validate_selected_attempt(
 impl<'a> CSharpSelectedCompile<'a> {
     pub(super) fn capture(
         base: &WorkspaceSnapshot,
-        witness: std::sync::Arc<super::commands::index::CapturedCSharpUnitAdmission>,
-        attempt: &'a backend_extension_turso::CandidateAttempt,
-        staged: &'a backend_engine::application::StagedSemanticPackage,
+        completed: &'a super::commands::adapter::index_profile_worker::CSharpCompletedWorkerResult,
         authority: &super::semantic_authority::SemanticAuthority,
-        cancellation: &std::sync::Arc<AtomicBool>,
     ) -> Result<Self, String> {
-        validate_selected_attempt(base, &witness, attempt, authority, cancellation)?;
+        let witness = completed.witness();
+        let attempt = completed.attempt();
+        let cancellation = completed.cancellation();
+        if !completed.ticket_matches_witness() { return Err("C# worker ticket differs from source custody".into()); }
+        validate_selected_attempt(base, witness, attempt, authority, cancellation)?;
+        let staged = completed.staged().ok_or("C# compiler produced no staged output")?;
         if !witness.matches_staged_invocation(staged, *attempt.input_digest()) {
             return Err("C# staged invocation differs from selected source".into());
         }
-        validate_selected_attempt(base, &witness, attempt, authority, cancellation)?;
-        Ok(Self { witness, attempt, staged, cancellation: std::sync::Arc::clone(cancellation) })
+        validate_selected_attempt(base, witness, attempt, authority, cancellation)?;
+        Ok(Self { completed })
     }
 }

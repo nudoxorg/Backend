@@ -2606,6 +2606,11 @@ impl DeferredProfileTicket {
         &self.attempt
     }
 
+    pub(super) fn is_csharp_unit(&self) -> bool { self.csharp_unit_claim_only }
+    pub(super) fn matches_csharp_witness(&self, witness: &CapturedCSharpUnitAdmission) -> bool {
+        self.csharp_unit_claim_only && witness.key() == &self.key
+    }
+
     #[must_use]
     pub(super) const fn profile(&self) -> LanguageProfile {
         self.key.profile()
@@ -2667,6 +2672,10 @@ impl DeferredIndex {
                 profile.sources,
             )
         })
+    }
+
+    pub(super) fn csharp_witness(&self) -> Option<Arc<CapturedCSharpUnitAdmission>> {
+        self.csharp_selected_source.as_ref().map(Arc::clone)
     }
 
     /// Worker-only recheck. No probe I/O occurs in the owner wrapper.
@@ -3166,18 +3175,8 @@ pub(super) fn finish_deferred_profile_for_snapshot(
             }
         };
     if profile.csharp_unit_claim_only {
-        let matches_selected = job.csharp_selected_source.as_ref().is_some_and(|witness| {
-            witness.key() == &profile.key && super::super::csharp_admission::CSharpSelectedCompile::capture(
-                snapshot, Arc::clone(witness), &profile.attempt, &staged, semantic_authority,
-                witness.cancellation_token(),
-            ).is_ok()
-        });
         semantic_authority.retire_candidate_attempt(&profile.attempt, backend_extension_turso::CandidateAttemptRetirementReason::Refused)?;
-        return Err(BuiltinModelError(if matches_selected {
-            "selected C# project output awaits SDK and execution closure admission"
-        } else {
-            "C# compiler invocation differs from selected source custody"
-        }.to_owned()).into());
+        return Err(BuiltinModelError("selected C# project output awaits SDK and execution closure admission".to_owned()).into());
     }
     let cargo_alias_evidence = match staged_cargo_alias_evidence(
         profile.profile(),

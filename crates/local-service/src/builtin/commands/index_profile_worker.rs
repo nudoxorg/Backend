@@ -10,13 +10,35 @@ use super::super::index::{
     DeferredIndex, DeferredProfileFailure, DeferredProfileTicket, deferred_compile_was_cancelled,
     finish_deferred_profile_for_snapshot, refuse_stale_csharp_capture, run_deferred_compile,
 };
-use backend_engine::application::{LocalCompilerClient, OwnedPackageSourceSet};
+use backend_engine::application::{LocalCompilerClient, OwnedPackageSourceSet, PackageSemanticRuntimeError, StagedSemanticPackage};
 use backend_engine::{ReadHeadWriter, RetiredReadHead, WorkspaceSnapshot};
 use backend_semantic::vocabulary::LanguageProfile;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::thread::JoinHandle;
+
+/// A single worker execution owns the ticket, the exact compiler output and
+/// original source custody together. No constructor accepts a staged package.
+pub(in crate::builtin) struct CSharpCompletedWorkerResult {
+    ticket: DeferredProfileTicket,
+    compiled: Result<StagedSemanticPackage, PackageSemanticRuntimeError>,
+    witness: Arc<super::super::index::CapturedCSharpUnitAdmission>,
+    cancellation: Arc<AtomicBool>,
+}
+impl CSharpCompletedWorkerResult {
+    fn compile(ticket: DeferredProfileTicket, sources: OwnedPackageSourceSet,
+        compiler: &LocalCompilerClient, witness: Arc<super::super::index::CapturedCSharpUnitAdmission>,
+        cancellation: Arc<AtomicBool>) -> Self {
+        let compiled = run_deferred_compile(compiler, sources, Arc::clone(&cancellation));
+        Self { ticket, compiled, witness, cancellation }
+    }
+    pub(in crate::builtin) fn attempt(&self) -> &backend_extension_turso::CandidateAttempt { self.ticket.candidate_attempt() }
+    pub(in crate::builtin) fn staged(&self) -> Option<&StagedSemanticPackage> { self.compiled.as_ref().ok() }
+    pub(in crate::builtin) fn witness(&self) -> &Arc<super::super::index::CapturedCSharpUnitAdmission> { &self.witness }
+    pub(in crate::builtin) fn cancellation(&self) -> &Arc<AtomicBool> { &self.cancellation }
+    pub(in crate::builtin) fn ticket_matches_witness(&self) -> bool { self.ticket.matches_csharp_witness(&self.witness) }
+}
 
 pub(super) struct ProfileIdentity {
     pub(super) attempt: backend_extension_turso::CandidateAttempt,
@@ -98,32 +120,48 @@ impl ProfileWork {
                 self.profile.take().expect("single-use compiler profile"), detail,
             ));
         }
-        let compiled = run_deferred_compile(
-            &self.compiler,
-            self.sources
-                .take()
-                .expect("single-use compiler source frontier"),
-            Arc::clone(&self.cancelled),
-        );
-        if let Some(observation) = &self.observation {
-            observation.phase("deferred-compile-returned");
-        }
-        if self.cancelled.load(Ordering::Acquire) || deferred_compile_was_cancelled(&compiled) {
-            return ProfileOutcome::Cancelled;
-        }
-        let check = self.job.csharp_capture_is_current(
-            self.profile.as_ref().expect("single-use compiler profile"), &self.snapshot, &self.cancelled,
-        );
-        if self.cancelled.load(Ordering::Acquire) {
-            return ProfileOutcome::Cancelled;
-        }
-        if !matches!(&check, Ok(true)) {
-            let detail = match check { Err(error) => error, _ => BuiltinModelError("C# capture changed during compilation".to_owned()) };
-            return ProfileOutcome::Admitted(refuse_stale_csharp_capture(
-                self.semantic.as_mut().expect("owned semantic writer").authority_mut(),
-                self.profile.take().expect("single-use compiler profile"), detail,
-            ));
-        }
+        let ticket = self.profile.take().expect("single-use compiler profile");
+        let sources = self.sources.take().expect("single-use compiler source frontier");
+        let (ticket, compiled) = if ticket.is_csharp_unit() {
+            let witness = match self.job.csharp_witness() {
+                Some(witness) => witness,
+                None => return ProfileOutcome::Admitted(refuse_stale_csharp_capture(
+                    self.semantic.as_mut().expect("owned semantic writer").authority_mut(), ticket,
+                    BuiltinModelError("C# selected source custody is missing".to_owned()),
+                )),
+            };
+            let completed = CSharpCompletedWorkerResult::compile(ticket, sources, &self.compiler, witness, Arc::clone(&self.cancelled));
+            if let Some(observation) = &self.observation { observation.phase("deferred-compile-returned"); }
+            if self.cancelled.load(Ordering::Acquire) || deferred_compile_was_cancelled(&completed.compiled) {
+                return ProfileOutcome::Cancelled;
+            }
+            let check = self.job.csharp_capture_is_current(&completed.ticket, &self.snapshot, &self.cancelled);
+            if self.cancelled.load(Ordering::Acquire) { return ProfileOutcome::Cancelled; }
+            if !matches!(&check, Ok(true)) {
+                let detail = match check { Err(error) => error, _ => BuiltinModelError("C# capture changed during compilation".to_owned()) };
+                return ProfileOutcome::Admitted(refuse_stale_csharp_capture(
+                    self.semantic.as_mut().expect("owned semantic writer").authority_mut(), completed.ticket, detail,
+                ));
+            }
+            let selected = if completed.staged().is_some() {
+                super::super::super::csharp_admission::CSharpSelectedCompile::capture(
+                    &self.snapshot, &completed, self.semantic.as_mut().expect("owned semantic writer").authority_mut(),
+                ).is_ok()
+            } else { true };
+            if self.cancelled.load(Ordering::Acquire) { return ProfileOutcome::Cancelled; }
+            if !selected {
+                return ProfileOutcome::Admitted(refuse_stale_csharp_capture(
+                    self.semantic.as_mut().expect("owned semantic writer").authority_mut(), completed.ticket,
+                    BuiltinModelError("C# compiler invocation differs from selected source custody".to_owned()),
+                ));
+            }
+            (completed.ticket, completed.compiled)
+        } else {
+            let compiled = run_deferred_compile(&self.compiler, sources, Arc::clone(&self.cancelled));
+            if let Some(observation) = &self.observation { observation.phase("deferred-compile-returned"); }
+            if self.cancelled.load(Ordering::Acquire) || deferred_compile_was_cancelled(&compiled) { return ProfileOutcome::Cancelled; }
+            (ticket, compiled)
+        };
         if let Some(observation) = &self.observation {
             observation.phase("deferred-profile-admission-start");
         }
@@ -134,7 +172,7 @@ impl ProfileWork {
                 .expect("owned semantic writer")
                 .authority_mut(),
             &mut self.job,
-            self.profile.take().expect("single-use compiler profile"),
+            ticket,
             compiled,
         );
         if let Some(observation) = &self.observation {

@@ -40,7 +40,7 @@ use std::sync::{Arc, Mutex};
 #[path = "capture_recovery.rs"]
 mod capture_recovery;
 #[path = "index_profile_worker.rs"]
-mod index_profile_worker;
+pub(in crate::builtin) mod index_profile_worker;
 #[path = "index_publication_worker.rs"]
 mod index_publication_worker;
 use index_profile_worker::{ProfileCompletion, ProfileOutcome, ProfileWork, ProfileWorker};
