@@ -3736,7 +3736,11 @@ impl SemanticAuthority {
             if staged.profile().language() != backend_semantic::vocabulary::Language::TypeScript || program_member.is_none() {
                 return Err(BuiltinModelError("native source lines require the selected TypeScript program".into()));
             }
-            let mut budget = 128usize * 1024 * 1024;
+            let retained = staged.native_typescript_lines().try_fold(0usize, |total, file| {
+                total.checked_add(file.path.capacity())?.checked_add(file.line_starts.capacity().checked_mul(std::mem::size_of::<u32>())?)
+            }).ok_or_else(|| BuiltinModelError("native line retained size overflow".into()))?;
+            let mut budget = (128usize * 1024 * 1024).checked_sub(retained)
+                .ok_or_else(|| BuiltinModelError("native line staging budget exceeded".into()))?;
             let slots = staged.native_typescript_line_slots();
             let mut order = backend_store::try_allocate_exact_zeroed_u32_budgeted(slots, &mut budget)
                 .map_err(|e| BuiltinModelError(format!("native line order allocation: {e:?}")))?;
