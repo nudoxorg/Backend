@@ -5760,6 +5760,7 @@ mod tests {
         let file = view.find_file("src/main.ts", &mut |_| Ok::<(), ()>(())).expect("line lookup").expect("main line map");
         assert!(file.matches_source(SOURCE.as_bytes(), &mut |_| Ok::<(), ()>(())).expect("source match"));
         assert!(!file.matches_source(SPARE.as_bytes(), &mut |_| Ok::<(), ()>(())).expect("changed source refusal"));
+        let main_line_starts: Vec<u32> = (0..file.line_count()).map(|index| file.line_start(index).expect("validated line")).collect();
         let selected_certificate =
             backend_extension_turso::reopen_selected_typescript_snapshot_witness(
                 &authority.store,
@@ -5949,6 +5950,19 @@ mod tests {
         assert!(admit_replayed_native_evidence(
             &workspace_store, std::slice::from_ref(&capture), &[&current], &[&removed],
         ).is_ok(), "a fresh Program may retire an omitted path");
+        let mut with_lines = current.clone();
+        with_lines.line_starts = Some(main_line_starts.clone());
+        assert!(admit_replayed_native_evidence(
+            &workspace_store, std::slice::from_ref(&capture), &[&with_lines], &[&removed],
+        ).is_ok(), "selected line-map evidence must replay");
+        let mut tampered_lines = with_lines.clone();
+        tampered_lines.line_starts.as_mut().expect("line evidence")[0] = 1;
+        assert!(admit_replayed_native_evidence(
+            &workspace_store, std::slice::from_ref(&capture), &[&tampered_lines], &[&removed],
+        ).is_err(), "changed line-map evidence must refuse");
+        assert!(admit_replayed_native_evidence(
+            &workspace_store, std::slice::from_ref(&capture), &[&with_lines], &[&removed],
+        ).is_ok(), "late line-map failure must not alter selected replay state");
         assert!(admit_replayed_native_evidence(
             &workspace_store, std::slice::from_ref(&capture), &[&spare], &[&current],
         ).is_err(), "a path still present in the Program cannot retire");
