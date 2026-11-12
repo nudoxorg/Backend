@@ -17,7 +17,9 @@ pub struct CanonicalNode<R: Relation> {
 impl<R: Relation> Clone for CanonicalNode<R> {
     fn clone(&self) -> Self {
         Self {
-            bytes: self.bytes.clone(),
+            // Request exactly the wire length rather than inheriting a source
+            // Vec's spare capacity; allocator bookkeeping is separate.
+            bytes: Vec::from(Box::<[u8]>::from(self.bytes.as_slice())),
             commitment: self.commitment,
             first_key: self.first_key.clone(),
             level: self.level,

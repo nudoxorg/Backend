@@ -314,6 +314,7 @@ pub use vcs::{
     SemanticStableLinks, Snapshot, StableLink, StableLinkKey, StableLinks,
 };
 pub use versioned::{
+    BorrowedSemanticCatalogHasher, BorrowedSemanticManifest, BorrowedSemanticManifestError,
     EmbeddingNormalization, EmbeddingPlaneIdentity, MAX_SEMANTIC_SEGMENT_BYTES,
     SemanticBuildIdentity, SemanticCoverageState, SemanticDeltaAction, SemanticDeltaCursor,
     SemanticHydrationCoverage, SemanticHydrationCursor, SemanticHydrationCursorToken,

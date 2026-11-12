@@ -1815,6 +1815,7 @@ dependencies = [
  "backend-version",
  "blake3",
  "bolero",
+ "bytemuck",
  "derive_more",
  "fearless_simd",
  "loom",

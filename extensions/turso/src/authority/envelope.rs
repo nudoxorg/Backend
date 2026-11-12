@@ -5,6 +5,9 @@
 //! the outer `ClosureId`: that ID is derived from a closure containing this
 //! envelope and would create a content-addressing cycle if embedded here.
 
+#[path = "borrowed_metadata.rs"]
+mod borrowed_metadata;
+
 use super::types::{
     AuthorityHash, AuthorityNamespace, AuthorityPlane, CandidateAttempt, CandidateGeneration,
     ClosureClaim, DurableClosureVerifier, SelectedGeneration,
@@ -499,18 +502,6 @@ impl CompilerPublicationMetadata {
         {
             return Err(CompilerEnvelopeError::DuplicateMember);
         }
-        let mut ordinals = images
-            .iter()
-            .map(|image| image.artifact_ordinal)
-            .collect::<Vec<_>>();
-        ordinals.sort_unstable();
-        if ordinals
-            .iter()
-            .enumerate()
-            .any(|(expected, actual)| usize::try_from(*actual).ok() != Some(expected))
-        {
-            return Err(CompilerEnvelopeError::MemberOrder);
-        }
         if metadata_member_count(images.len(), versioned_planes.as_ref())? > MAX_MEMBER_IDS {
             return Err(CompilerEnvelopeError::MemberCount);
         }
@@ -566,7 +557,7 @@ impl CompilerPublicationMetadata {
         mut self,
         member: CompilerProgramSourceMember,
     ) -> Result<Self, CompilerEnvelopeError> {
-        if self.csharp_evidence.is_some() || metadata_member_ids(&self).len() >= MAX_MEMBER_IDS {
+        if self.csharp_evidence.is_some() || metadata_member_ids_checked(&self)?.len() >= MAX_MEMBER_IDS {
             return Err(CompilerEnvelopeError::MemberCount);
         }
         self.native_program_sources = Some(member);
@@ -587,7 +578,7 @@ impl CompilerPublicationMetadata {
         if self.native_program_sources.is_none() || self.csharp_evidence.is_some() {
             return Err(CompilerEnvelopeError::SourceCoverage);
         }
-        if self.source_coverage.is_some() || metadata_member_ids(&self).len() >= MAX_MEMBER_IDS {
+        if self.source_coverage.is_some() || metadata_member_ids_checked(&self)?.len() >= MAX_MEMBER_IDS {
             return Err(CompilerEnvelopeError::MemberCount);
         }
         self.source_coverage = Some(member);
@@ -609,7 +600,7 @@ impl CompilerPublicationMetadata {
             || member.byte_length == 0
             || member.byte_length as usize
                 > backend_semantic::ir::MAX_TYPESCRIPT_SNAPSHOT_WITNESS_BYTES
-            || metadata_member_ids(&self).len() >= MAX_MEMBER_IDS
+            || metadata_member_ids_checked(&self)?.len() >= MAX_MEMBER_IDS
         {
             return Err(CompilerEnvelopeError::TypeScriptSnapshotWitness);
         }
@@ -628,7 +619,7 @@ impl CompilerPublicationMetadata {
         if self.csharp_evidence.is_some() || self.native_program_sources.is_some()
             || self.source_coverage.is_some() || self.typescript_snapshot.is_some()
             || member.byte_length == 0 || member.byte_length as usize > backend_semantic::ir::MAX_CSHARP_INVOCATION_EVIDENCE_BYTES
-            || metadata_member_ids(&self).len() >= MAX_MEMBER_IDS {
+            || metadata_member_ids_checked(&self)?.len() >= MAX_MEMBER_IDS {
             return Err(CompilerEnvelopeError::CSharpInvocationEvidence);
         }
         self.csharp_evidence = Some(member);
@@ -639,7 +630,7 @@ impl CompilerPublicationMetadata {
 
     /// Binds the aggregate to this exact compiler publication before sealing.
     pub fn with_native_headers(mut self, member: CompilerNativeHeadersMember) -> Result<Self, CompilerEnvelopeError> {
-        if self.native_headers.is_some() || self.native_program_sources.is_none() || self.csharp_evidence.is_some() || metadata_member_ids(&self).len() >= MAX_MEMBER_IDS { return Err(CompilerEnvelopeError::NativeHeaders); }
+        if self.native_headers.is_some() || self.native_program_sources.is_none() || self.csharp_evidence.is_some() || metadata_member_ids_checked(&self)?.len() >= MAX_MEMBER_IDS { return Err(CompilerEnvelopeError::NativeHeaders); }
         self.native_headers = Some(member);
         Ok(self)
     }
@@ -744,21 +735,21 @@ impl CompilerPublicationMetadata {
     /// Returns canonical, versioned metadata bytes.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        let mut output = Vec::with_capacity(
-            METADATA_MAGIC.len()
-                + 2
-                + 4
-                + self.manifest_bytes.len()
-                + COMPILATION_BINDING_BYTES
-                + 4
-                + self.images.len() * 72
-                + 1
-                + self
-                    .versioned_planes
-                    .as_ref()
-                    .map_or(0, |planes| 4 + planes.canonical_bytes().len())
-                + usize::from(self.native_program_sources.is_some()) * 68,
-        );
+        let mut capacity = METADATA_MAGIC.len() + 2 + 4 + self.manifest_bytes.len()
+            + COMPILATION_BINDING_BYTES + 4 + self.images.len() * 72 + 1;
+        if let Some(planes) = &self.versioned_planes { capacity += 4 + planes.canonical_bytes().len(); }
+        if self.typescript_snapshot.is_some() || self.native_headers.is_some() {
+            capacity += 2 + usize::from(self.native_program_sources.is_some()) * 68
+                + usize::from(self.source_coverage.is_some()) * 68
+                + usize::from(self.typescript_snapshot.is_some()) * 36
+                + usize::from(self.native_headers.is_some()) * 37;
+        } else {
+            capacity += usize::from(self.source_coverage.is_some())
+                + usize::from(self.native_program_sources.is_some()) * 68
+                + usize::from(self.source_coverage.is_some()) * 68
+                + usize::from(self.csharp_evidence.is_some()) * 36;
+        }
+        let mut output = Vec::with_capacity(capacity);
         output.extend_from_slice(METADATA_MAGIC);
         output.extend_from_slice(
             &if self.native_headers.is_some() {
@@ -901,14 +892,47 @@ impl CompilerPublicationMetadata {
         {
             return Err(CompilerEnvelopeError::ManifestFacts);
         }
-        let manifest_bytes = input.take(manifest_length)?.to_vec();
+        let manifest_bytes = input.take(manifest_length)?;
         let binding_bytes = input.array::<COMPILATION_BINDING_BYTES>()?;
         let count =
             usize::try_from(input.u32()?).map_err(|_| CompilerEnvelopeError::MemberCount)?;
         if count == 0 || count > MAX_MEMBER_IDS {
             return Err(CompilerEnvelopeError::MemberCount);
         }
-        let mut images = Vec::with_capacity(count);
+        let required = count.checked_mul(72).and_then(|n| n.checked_add(1)).ok_or(CompilerEnvelopeError::Truncated)?;
+        if input.bytes.len().saturating_sub(input.offset) < required { return Err(CompilerEnvelopeError::Truncated); }
+        // Preflight optional framing without allocating image rows or manifests.
+        let mut scan = Decoder { bytes: input.bytes, offset: input.offset };
+        scan.take(count.checked_mul(72).ok_or(CompilerEnvelopeError::Truncated)?)?;
+        match scan.u8()? {
+            0 => {},
+            1 => {
+                let n = scan.u32()? as usize;
+                let nested = scan.take(n)?;
+                super::versioned::preflight_versioned_framing(nested).map_err(CompilerEnvelopeError::VersionedPlane)?;
+            },
+            _ => return Err(CompilerEnvelopeError::VersionedPlaneMetadata),
+        }
+        let has_program = if matches!(version, COVERAGE_METADATA_VERSION | TYPESCRIPT_SNAPSHOT_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION) {
+            match scan.u8()? { 0 => false, 1 => true, _ => return Err(CompilerEnvelopeError::NativeProgramSources) }
+        } else { version == PROGRAM_METADATA_VERSION };
+        if has_program { scan.take(68)?; }
+        let has_coverage = match version {
+            COVERAGE_METADATA_VERSION => true,
+            TYPESCRIPT_SNAPSHOT_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION => match scan.u8()? { 0 => false, 1 => true, _ => return Err(CompilerEnvelopeError::SourceCoverage) },
+            _ => false,
+        };
+        if has_coverage { scan.take(68)?; }
+        let has_snapshot = match version {
+            TYPESCRIPT_SNAPSHOT_METADATA_VERSION => true,
+            NATIVE_HEADERS_METADATA_VERSION => match scan.u8()? { 0 => false, 1 => true, _ => return Err(CompilerEnvelopeError::TypeScriptSnapshotWitness) },
+            _ => false,
+        };
+        if has_snapshot { scan.take(36)?; }
+        if version == CSHARP_EVIDENCE_METADATA_VERSION || version == NATIVE_HEADERS_METADATA_VERSION { scan.take(36)?; }
+        if !scan.is_empty() { return Err(CompilerEnvelopeError::TrailingBytes); }
+        let mut images = Vec::new();
+        images.try_reserve_exact(count).map_err(|_| CompilerEnvelopeError::MemberCount)?;
         for _ in 0..count {
             images.push(CompilerImageMember {
                 artifact_ordinal: input.u32()?,
@@ -1027,7 +1051,7 @@ impl CompilerPublicationMetadata {
             return Err(CompilerEnvelopeError::MemberOrder);
         }
         let mut metadata = Self::new_with_versioned_planes(
-            &manifest_bytes,
+            manifest_bytes,
             binding_bytes,
             images,
             versioned_planes,
@@ -1048,6 +1072,74 @@ impl CompilerPublicationMetadata {
         }
         Ok(metadata)
     }
+}
+
+/// Requested retained and temporary allocations of metadata decoding. The
+/// authenticated input buffer and closure/member traversal are separate charges.
+fn compiler_metadata_decode_bound(bytes: &[u8]) -> Result<usize, CompilerEnvelopeError> {
+    let mut input = Decoder::new(bytes);
+    if input.take(METADATA_MAGIC.len())? != METADATA_MAGIC { return Err(CompilerEnvelopeError::MetadataMagic); }
+    let version = input.u16()?;
+    if !matches!(version, METADATA_VERSION | PROGRAM_METADATA_VERSION | COVERAGE_METADATA_VERSION | TYPESCRIPT_SNAPSHOT_METADATA_VERSION | CSHARP_EVIDENCE_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION) { return Err(CompilerEnvelopeError::MetadataVersion); }
+    let manifest_len = input.u32()? as usize;
+    if manifest_len < SEMANTIC_MANIFEST_HEADER_BYTES || manifest_len > MAX_MANIFEST_BYTES { return Err(CompilerEnvelopeError::ManifestFacts); }
+    input.take(manifest_len)?;
+    input.take(COMPILATION_BINDING_BYTES)?;
+    let count = input.u32()? as usize;
+    if count == 0 || count > MAX_MEMBER_IDS { return Err(CompilerEnvelopeError::MemberCount); }
+    input.take(count.checked_mul(72).ok_or(CompilerEnvelopeError::Truncated)?)?;
+    let mut bound = bytes.len().checked_add(manifest_len).ok_or(CompilerEnvelopeError::MemberCount)?; // canonical output + retained manifest
+    let per_image = std::mem::size_of::<CompilerImageMember>().checked_mul(2).ok_or(CompilerEnvelopeError::MemberCount)?;
+    let bitmap = count.checked_add(7).ok_or(CompilerEnvelopeError::MemberCount)? / 8;
+    bound = bound.checked_add(count.checked_mul(per_image).ok_or(CompilerEnvelopeError::MemberCount)?)
+        .and_then(|n| n.checked_add(bitmap)).ok_or(CompilerEnvelopeError::MemberCount)?;
+    let mut nested_wire_len = 0usize;
+    let mut nested_physical_slots = 0usize;
+    match input.u8()? {
+        0 => {},
+        1 => {
+            let n = input.u32()? as usize;
+            nested_wire_len = n;
+            let nested = input.take(n)?;
+            let (nested_bound, slots) = super::versioned::versioned_decode_allocation_bound(nested).map_err(CompilerEnvelopeError::VersionedPlane)?;
+            nested_physical_slots = slots;
+            // Outer canonical encoding asks for the versioned wire once when
+            // sizing and once when emitting it.
+            bound = bound.checked_add(nested_bound).and_then(|v| v.checked_add(n.checked_mul(2)?)).ok_or(CompilerEnvelopeError::MemberCount)?;
+        },
+        _ => return Err(CompilerEnvelopeError::VersionedPlaneMetadata),
+    }
+    // The ordinary decoder performs the full optional-tail preflight before
+    // materialization. This scan checks the same flags and extents here.
+    let has_program = if matches!(version, COVERAGE_METADATA_VERSION | TYPESCRIPT_SNAPSHOT_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION) {
+        match input.u8()? { 0 => false, 1 => true, _ => return Err(CompilerEnvelopeError::NativeProgramSources) }
+    } else { version == PROGRAM_METADATA_VERSION };
+    if has_program { input.take(68)?; }
+    let has_coverage = match version {
+        COVERAGE_METADATA_VERSION => true,
+        TYPESCRIPT_SNAPSHOT_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION => match input.u8()? { 0 => false, 1 => true, _ => return Err(CompilerEnvelopeError::SourceCoverage) },
+        _ => false,
+    };
+    if has_coverage { input.take(68)?; }
+    let has_snapshot = match version {
+        TYPESCRIPT_SNAPSHOT_METADATA_VERSION => true,
+        NATIVE_HEADERS_METADATA_VERSION => match input.u8()? { 0 => false, 1 => true, _ => return Err(CompilerEnvelopeError::TypeScriptSnapshotWitness) },
+        _ => false,
+    };
+    if has_snapshot { input.take(36)?; }
+    if version == CSHARP_EVIDENCE_METADATA_VERSION || version == NATIVE_HEADERS_METADATA_VERSION { input.take(36)?; }
+    if !input.is_empty() { return Err(CompilerEnvelopeError::TrailingBytes); }
+    // Each optional setter checks an exact member inventory. Its canonical
+    // metadata object ID is streamed from one temporary canonical encoding;
+    // The inventory reserves raw image/plane/optional slots before deduping.
+    let setters = usize::from(has_program) + usize::from(has_coverage) + usize::from(has_snapshot)
+        + usize::from(version == CSHARP_EVIDENCE_METADATA_VERSION)
+        + usize::from(version == NATIVE_HEADERS_METADATA_VERSION);
+    let inventory_slots = count.checked_add(nested_physical_slots).and_then(|v| v.checked_add(6)).ok_or(CompilerEnvelopeError::MemberCount)?;
+    let per_setter = bytes.len().checked_add(nested_wire_len.checked_mul(2).ok_or(CompilerEnvelopeError::MemberCount)?)
+        .and_then(|v| v.checked_add(inventory_slots.checked_mul(32)?)).ok_or(CompilerEnvelopeError::MemberCount)?;
+    bound = bound.checked_add(setters.checked_mul(per_setter).ok_or(CompilerEnvelopeError::MemberCount)?).ok_or(CompilerEnvelopeError::MemberCount)?;
+    Ok(bound)
 }
 
 /// Canonical package compiler output identity admitted before head selection.
@@ -1187,6 +1279,10 @@ impl CompilerPublicationEnvelope {
     /// Checks that the envelope names the exact Turso-selected immutable tuple.
     #[must_use]
     pub fn matches_selected(&self, selected: &SelectedGeneration) -> bool {
+        self.matches_selected_with_verified_id(selected, &self.object_id())
+    }
+
+    fn matches_selected_with_verified_id(&self, selected: &SelectedGeneration, verified_id: &AuthorityHash) -> bool {
         let (attempt_id, attempt_epoch) = selected.attempt();
         self.namespace == *selected.namespace()
             && self.attempt_id == *attempt_id
@@ -1196,7 +1292,7 @@ impl CompilerPublicationEnvelope {
             && self.logical_generation == *selected.target_root()
             && self.physical_pack_id == *selected.pack_id()
             && self.semantic_manifest_root == selected.semantic_manifest_root().copied()
-            && self.object_id() == *selected.candidate_id()
+            && verified_id == selected.candidate_id()
     }
 
     /// Confirms metadata identity, logical root, and exact compiler member set.
@@ -1204,10 +1300,14 @@ impl CompilerPublicationEnvelope {
         &self,
         metadata: &CompilerPublicationMetadata,
     ) -> Result<(), CompilerEnvelopeError> {
-        if self.metadata_id != metadata.object_id()
+        self.validate_metadata_with_verified_id(metadata, &metadata.object_id())
+    }
+
+    fn validate_metadata_with_verified_id(&self, metadata: &CompilerPublicationMetadata, verified_id: &AuthorityHash) -> Result<(), CompilerEnvelopeError> {
+        if &self.metadata_id != verified_id
             || self.logical_generation != metadata.binding_identity
             || self.semantic_manifest_root != metadata.semantic_manifest_root().copied()
-            || self.member_ids.as_ref() != metadata_member_ids(metadata).as_slice()
+            || self.member_ids.as_ref() != metadata_member_ids_with_id(metadata, *verified_id).as_slice()
         {
             return Err(CompilerEnvelopeError::MetadataMismatch);
         }
@@ -1217,9 +1317,13 @@ impl CompilerPublicationEnvelope {
     /// Returns the canonical, versioned envelope bytes.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        let mut output = Vec::with_capacity(
-            MAGIC.len() + 2 + 16 * 4 + 4 * 5 + 16 + 32 * 6 + 1 + self.member_ids.len() * 32,
-        );
+        let capacity = MAGIC.len() + 2 + 5 * 4
+            + self.namespace.package().len() + self.namespace.source().len()
+            + self.namespace.branch().len() + self.namespace.environment().len() + self.profile().len()
+            + 1 + 16 + 8 + 32 * 4 + 1
+            + usize::from(self.semantic_manifest_root.is_some()) * 32
+            + 32 + 4 + self.member_ids.len() * 32;
+        let mut output = Vec::with_capacity(capacity);
         self.encode_into(&mut output);
         output
     }
@@ -1317,7 +1421,10 @@ impl CompilerPublicationEnvelope {
         if member_count == 0 || member_count > MAX_MEMBER_IDS {
             return Err(CompilerEnvelopeError::MemberCount);
         }
-        let mut member_ids = Vec::with_capacity(member_count);
+        let required = member_count.checked_mul(32).ok_or(CompilerEnvelopeError::Truncated)?;
+        if input.bytes.len().saturating_sub(input.offset) < required { return Err(CompilerEnvelopeError::Truncated); }
+        let mut member_ids = Vec::new();
+        member_ids.try_reserve_exact(member_count).map_err(|_| CompilerEnvelopeError::MemberCount)?;
         for _ in 0..member_count {
             member_ids.push(input.array::<32>()?);
         }
@@ -1346,15 +1453,15 @@ impl CompilerPublicationEnvelope {
             physical_pack_id: expected_physical_pack_id,
             member_ids: member_ids.into_boxed_slice(),
         };
-        if envelope
-            .member_ids
-            .binary_search(&envelope.object_id())
-            .is_ok()
-        {
-            return Err(CompilerEnvelopeError::SelfMember);
-        }
         if envelope.canonical_bytes() != bytes {
             return Err(CompilerEnvelopeError::NonCanonical);
+        }
+        // Canonicality is established above. Derive the physical identity
+        // directly from those bytes without rebuilding key/version payloads.
+        let object_id = backend_store::untrusted_object_id_for_encoded_value(COMPILER_PUBLICATION_ENVELOPE_SCHEMA, bytes)
+            .map_err(|_| CompilerEnvelopeError::ByteLengthOverflow)?;
+        if envelope.member_ids.binary_search(object_id.as_bytes()).is_ok() {
+            return Err(CompilerEnvelopeError::SelfMember);
         }
         Ok(envelope)
     }
@@ -1422,6 +1529,37 @@ impl<'store, 'envelope, 'metadata>
             expected_metadata,
         }
     }
+}
+
+/// Requested allocations for envelope decode, excluding authenticated input
+/// and closure-index traversal. The complete row extent is checked first.
+fn compiler_envelope_decode_bound(bytes: &[u8]) -> Result<usize, CompilerEnvelopeError> {
+    let mut input = Decoder::new(bytes);
+    if input.take(MAGIC.len())? != MAGIC { return Err(CompilerEnvelopeError::Magic); }
+    if input.u16()? != ENVELOPE_VERSION { return Err(CompilerEnvelopeError::Version); }
+    let mut names = 0usize;
+    let mut profile_len = 0usize;
+    for index in 0..5 {
+        if index == 4 && input.u8()? != 1 { return Err(CompilerEnvelopeError::Profile); }
+        let n = input.u32()? as usize;
+        if n == 0 || n > if index == 4 { MAX_PROFILE_BYTES } else { 4096 } { return Err(CompilerEnvelopeError::Truncated); }
+        let name = input.take(n)?;
+        std::str::from_utf8(name).map_err(|_| CompilerEnvelopeError::Truncated)?;
+        names = names.checked_add(n).ok_or(CompilerEnvelopeError::MemberCount)?;
+        if index == 4 { profile_len = n; }
+    }
+    input.take(16 + 8 + 32 * 4)?;
+    match input.u8()? { 0 => {}, 1 => { input.take(32)?; }, _ => return Err(CompilerEnvelopeError::VersionedPlaneMetadata) }
+    input.take(32)?;
+    let count = input.u32()? as usize;
+    if count == 0 || count > MAX_MEMBER_IDS { return Err(CompilerEnvelopeError::MemberCount); }
+    let row_bytes = count.checked_mul(32).ok_or(CompilerEnvelopeError::MemberCount)?;
+    input.take(row_bytes)?;
+    if !input.is_empty() { return Err(CompilerEnvelopeError::TrailingBytes); }
+    bytes.len().checked_add(names.checked_mul(2).ok_or(CompilerEnvelopeError::MemberCount)?)
+        .and_then(|n| n.checked_add(profile_len))
+        .and_then(|n| n.checked_add(row_bytes.checked_mul(2)?))
+        .ok_or(CompilerEnvelopeError::MemberCount)
 }
 
 /// Cold-reopens one Turso-selected envelope and metadata from its verified closure.
@@ -1606,6 +1744,313 @@ pub fn reopen_selected_typescript_snapshot_witness(
         .map(|bytes| bytes.map(|bytes| VerifiedTypeScriptSnapshotWitness(bytes.into_boxed_slice())))
 }
 
+/// Borrowed, fully qualified selected envelope. The object bytes must have
+/// already passed physical, typed-version, and key verification.
+struct BorrowedSelectedEnvelope<'a> {
+    metadata_id: AuthorityHash,
+    logical_generation: AuthorityHash,
+    semantic_root: Option<AuthorityHash>,
+    member_wire: &'a [u8],
+}
+impl BorrowedSelectedEnvelope<'_> {
+    fn members(&self) -> impl Iterator<Item = AuthorityHash> + '_ {
+        self.member_wire.chunks_exact(32).map(|chunk| { let mut id = [0; 32]; id.copy_from_slice(chunk); id })
+    }
+}
+fn borrowed_selected_envelope<'a>(bytes: &'a [u8], selected: &SelectedGeneration, id: &AuthorityHash, checkpoint: &dyn Fn() -> Result<(), CompilerEnvelopeError>) -> Result<BorrowedSelectedEnvelope<'a>, CompilerEnvelopeError> {
+    let mut input = Decoder::new(bytes);
+    if input.take(MAGIC.len())? != MAGIC { return Err(CompilerEnvelopeError::Magic); }
+    if input.u16()? != ENVELOPE_VERSION { return Err(CompilerEnvelopeError::Version); }
+    let namespace = selected.namespace();
+    for expected in [namespace.package(), namespace.source(), namespace.branch(), namespace.environment()] {
+        if input.borrowed_string(4096)? != expected { return Err(CompilerEnvelopeError::Namespace); }
+    }
+    if input.u8()? != 1 { return Err(CompilerEnvelopeError::Profile); }
+    if Some(input.borrowed_string(MAX_PROFILE_BYTES)?) != namespace.plane().profile() { return Err(CompilerEnvelopeError::Profile); }
+    let attempt_id = input.array::<16>()?;
+    let epoch = input.u64()?;
+    let fence = input.array::<32>()?;
+    let digest = input.array::<32>()?;
+    let logical_generation = input.array::<32>()?;
+    let metadata_id = input.array::<32>()?;
+    let semantic_root = decode_optional_hash(&mut input)?;
+    let pack = input.array::<32>()?;
+    let count = input.u32()? as usize;
+    if count == 0 || count > MAX_MEMBER_IDS { return Err(CompilerEnvelopeError::MemberCount); }
+    let rows = input.take(count.checked_mul(32).ok_or(CompilerEnvelopeError::Truncated)?)?;
+    if !input.is_empty() { return Err(CompilerEnvelopeError::TrailingBytes); }
+    let (selected_attempt, selected_epoch) = selected.attempt();
+    if &attempt_id != selected_attempt || epoch != selected_epoch || (epoch, fence) != selected.scheduler_fence()
+        || &digest != selected.input_digest() || &logical_generation != selected.target_root()
+        || semantic_root != selected.semantic_manifest_root().copied() || &pack != selected.pack_id() || id != selected.candidate_id()
+    { return Err(CompilerEnvelopeError::AttemptMismatch); }
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(PACK_DOMAIN); hasher.update(&(count as u64).to_le_bytes());
+    let mut previous: Option<&[u8]> = None;
+    let mut has_metadata = false;
+    for row in rows.chunks_exact(32) {
+        checkpoint()?;
+        if previous.is_some_and(|prior| prior >= row) { return Err(CompilerEnvelopeError::MemberOrder); }
+        if row == id.as_slice() { return Err(CompilerEnvelopeError::SelfMember); }
+        if row == metadata_id.as_slice() { has_metadata = true; }
+        hasher.update(row); previous = Some(row);
+    }
+    if !has_metadata { return Err(CompilerEnvelopeError::MetadataMissing); }
+    if hasher.finalize().as_bytes() != &pack { return Err(CompilerEnvelopeError::PackIdentity); }
+    Ok(BorrowedSelectedEnvelope { metadata_id, logical_generation, semantic_root, member_wire: rows })
+}
+
+/// Caller-owned peak-memory credit and finite selected-admission work tokens.
+/// A work token admits one schema-bounded node operation, object chunk, or
+/// metadata decode; callers must set an operation-appropriate finite limit.
+#[derive(Debug)]
+pub struct SelectedNativeHeaderBudget { memory: usize, work: std::cell::Cell<u64> }
+impl SelectedNativeHeaderBudget {
+    pub fn new(memory_bytes: usize, work_units: u64) -> Self { Self { memory: memory_bytes, work: std::cell::Cell::new(work_units) } }
+    pub const fn remaining_memory(&self) -> usize { self.memory }
+    pub fn remaining_work(&self) -> u64 { self.work.get() }
+}
+fn verify_metadata_member_bitmap(
+    envelope: &BorrowedSelectedEnvelope<'_>, metadata: &CompilerPublicationMetadata,
+    metadata_id: AuthorityHash, budget: &mut SelectedNativeHeaderBudget, cancelled: &dyn Fn() -> bool,
+) -> Result<(), String> {
+    let count = envelope.member_wire.len() / 32;
+    let bytes = count.checked_add(7).ok_or("member bitmap overflow")? / 8;
+    let before = budget.memory;
+    let result = (|| {
+        let mut seen = backend_store::try_allocate_exact_zeroed_bytes_budgeted(bytes, &mut budget.memory)
+            .map_err(|e| format!("member bitmap: {e:?}"))?;
+        let ids = std::iter::once(metadata_id)
+            .chain(metadata.native_program_sources.iter().map(|x| *x.object_id()))
+            .chain(metadata.source_coverage.iter().map(|x| *x.object_id()))
+            .chain(metadata.typescript_snapshot.iter().map(|x| *x.object_id()))
+            .chain(metadata.csharp_evidence.iter().map(|x| *x.object_id()))
+            .chain(metadata.native_headers.iter().map(|x| *x.object_id()))
+            .chain(metadata.images.iter().map(|x| *x.object_id()))
+            .chain(metadata.versioned_planes.iter().flat_map(|p| p.artifacts().iter().map(|a| *a.manifest_object_id())))
+            .chain(metadata.versioned_planes.iter().flat_map(|p| p.members().map(|m| *m.object_id())));
+        for id in ids {
+            let mut low = 0usize; let mut high = count;
+            while low < high {
+                header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected inventory stopped: {e:?}"))?;
+                let mid = low + (high - low) / 2;
+                let cell = &envelope.member_wire[mid * 32..mid * 32 + 32];
+                if cell < id.as_slice() { low = mid + 1; } else { high = mid; }
+            }
+            if low == count || envelope.member_wire[low * 32..low * 32 + 32] != id {
+                return Err("selected compiler metadata names a foreign member".into());
+            }
+            seen[low / 8] |= 1 << (low % 8);
+        }
+        for index in 0..count {
+            header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected inventory stopped: {e:?}"))?;
+            if seen[index / 8] & (1 << (index % 8)) == 0 { return Err("selected compiler envelope has an unconsumed member".into()); }
+        }
+        Ok(())
+    })();
+    budget.memory = before;
+    result
+}
+
+fn header_checkpoint(work: &std::cell::Cell<u64>, cancelled: &dyn Fn() -> bool) -> Result<(), backend_store::StoreError> {
+    if cancelled() { return Err(backend_store::StoreError::Bounds); }
+    work.set(work.get().checked_sub(1).ok_or(backend_store::StoreError::Bounds)?);
+    Ok(())
+}
+fn header_reserve(memory: &mut usize, bytes: usize) -> Result<(), String> {
+    *memory = memory.checked_sub(bytes).ok_or("selected header memory budget exceeded")?; Ok(())
+}
+fn header_member_bounded(store: &FileStore, pin: &backend_store::GcPinGuard, closure: backend_store::ClosureId, id: AuthorityHash,
+    budget: &mut SelectedNativeHeaderBudget, cancelled: &dyn Fn() -> bool) -> Result<u64, String> {
+    let before = budget.memory;
+    let work = &budget.work;
+    let result = store.contains_closure_member_bounded(pin, closure, UntrustedObjectId::from_bytes(id), 32, &mut budget.memory,
+        |_| header_checkpoint(work, cancelled),
+        |_, _| header_checkpoint(work, cancelled));
+    // Membership returns only scalars; its node and locator reservations are temporary.
+    budget.memory = before;
+    let (found, count) = result.map_err(|e| format!("bounded selected member: {e:?}"))?;
+    if !found { return Err("selected compiler member absent from closure".into()); }
+    Ok(count)
+}
+fn header_object_bounded(store: &FileStore, pin: &backend_store::GcPinGuard, id: AuthorityHash,
+    schemas: &[SchemaIdentity], maximum: usize, budget: &mut SelectedNativeHeaderBudget,
+    cancelled: &dyn Fn() -> bool) -> Result<(Box<[u8]>, SchemaIdentity, AuthorityHash), String> {
+    let work = &budget.work;
+    let reader = store.open_bounded_nonrelation_object(pin, UntrustedObjectId::from_bytes(id), schemas, None, maximum,
+        &mut budget.memory, |_| header_checkpoint(work, cancelled)).map_err(|e| format!("open bounded compiler object: {e:?}"))?;
+    let len = reader.payload_len();
+    // Exact requested-layout, fallible allocation; no intermediate Vec.
+    let mut bytes = backend_store::try_allocate_exact_zeroed_bytes_budgeted(len, &mut budget.memory)
+        .map_err(|e| format!("compiler payload allocation: {e:?}"))?;
+    let (schema, key, checked_id) = reader.read_into(&mut bytes, &mut budget.memory,
+        |_, _| header_checkpoint(work, cancelled),
+        |view, _| Ok((view.schema(), *view.key(), *view.id().as_bytes())))
+        .map_err(|e| format!("read bounded compiler object: {e:?}"))?;
+    if checked_id != id { return Err("verified compiler object identity differs".into()); }
+    Ok((bytes, schema, key))
+}
+
+fn selected_borrowed_metadata_member(
+    wire: &[u8], schema: SchemaIdentity, metadata_id: AuthorityHash,
+    envelope: &BorrowedSelectedEnvelope<'_>, budget: &mut SelectedNativeHeaderBudget,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Option<CompilerNativeHeadersMember>, String> {
+    let version_at = METADATA_MAGIC.len();
+    let version = wire.get(version_at..version_at + 2).ok_or("truncated metadata version")?;
+    let version = u16::from_le_bytes([version[0], version[1]]);
+    let expected = match version {
+        METADATA_VERSION => COMPILER_PUBLICATION_METADATA_SCHEMA,
+        PROGRAM_METADATA_VERSION => COMPILER_PROGRAM_METADATA_SCHEMA,
+        COVERAGE_METADATA_VERSION => COMPILER_COVERAGE_METADATA_SCHEMA,
+        TYPESCRIPT_SNAPSHOT_METADATA_VERSION => COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA,
+        CSHARP_EVIDENCE_METADATA_VERSION => COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA,
+        NATIVE_HEADERS_METADATA_VERSION => COMPILER_NATIVE_HEADERS_METADATA_SCHEMA,
+        _ => return Err("invalid compiler metadata version".into()),
+    };
+    if schema != expected { return Err("compiler metadata schema differs".into()); }
+    let bitmap_len = (MAX_MEMBER_IDS + 7) / 8;
+    let mut bitmap = backend_store::try_allocate_exact_zeroed_bytes_budgeted(bitmap_len, &mut budget.memory)
+        .map_err(|e| format!("allocate metadata bitmap: {e:?}"))?;
+    let metadata = borrowed_metadata::BorrowedCompilerMetadata::parse(wire, metadata_id, envelope.member_wire,
+        &mut bitmap, &mut |_| header_checkpoint(&budget.work, cancelled))
+        .map_err(|e| format!("selected metadata validation: {e:?}"))?;
+    if envelope.logical_generation != metadata.binding_identity || envelope.semantic_root != metadata.semantic_catalog_root {
+        return Err("selected compiler metadata differs from envelope".into());
+    }
+    let member = metadata.native_headers;
+    drop(bitmap);
+    budget.memory = budget.memory.checked_add(bitmap_len).ok_or("metadata bitmap refund overflow")?;
+    Ok(member)
+}
+
+/// Reopens selected header evidence while charging metadata, member traversal,
+/// payload decoding, and work to one caller-owned budget. Cancellation is
+/// checked before each bounded store operation and before/after decoding.
+/// Metadata validation checks cancellation throughout borrowed traversal.
+pub fn reopen_selected_native_headers_budgeted(
+    store: &FileStore, selected: &SelectedGeneration, budget: &mut SelectedNativeHeaderBudget,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Option<VerifiedNativeHeadersWitness>, String> {
+    let initial = budget.memory;
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
+    let pin = store.pin_garbage_collection_bounded(&mut budget.memory, |_| header_checkpoint(&budget.work, cancelled))
+        .map_err(|e| format!("pin selected compiler closure: {e:?}"))?;
+    let closure = backend_store::ClosureId::from_bytes(*selected.closure_id());
+    let count = header_member_bounded(store, &pin, closure, *selected.candidate_id(), budget, cancelled)?;
+    if count == 0 || count > (MAX_MEMBER_IDS as u64 + 1) { return Err("selected compiler closure count exceeds limit".into()); }
+    let envelope_max = MAGIC.len() + 2 + 5 * 4 + 4 * 4096 + MAX_PROFILE_BYTES + 1 + 16 + 8 + 32 * 6 + 1 + 4 + MAX_MEMBER_IDS * 32;
+    let (envelope_wire, schema, key) = header_object_bounded(store, &pin, *selected.candidate_id(), &[COMPILER_PUBLICATION_ENVELOPE_SCHEMA], envelope_max, budget, cancelled)?;
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected envelope stopped: {e:?}"))?;
+    verified_payload_key_checkpointed(schema, &envelope_wire, &key, budget, cancelled)?;
+    let envelope = borrowed_selected_envelope(&envelope_wire, selected, selected.candidate_id(), &|| {
+        header_checkpoint(&budget.work, cancelled).map_err(|_| CompilerEnvelopeError::Stopped)
+    }).map_err(|e| e.to_string())?;
+    if count != u64::try_from(envelope.member_wire.len() / 32).map_err(|_| "member count overflow")? + 1 { return Err("selected compiler closure count differs".into()); }
+    let metadata_id = envelope.metadata_id;
+    header_member_bounded(store, &pin, closure, metadata_id, budget, cancelled)?;
+    let metadata_max = MAX_MANIFEST_BYTES + 64 * 1024 * 1024 + MAX_MEMBER_IDS * 72 + 1024;
+    let schemas = [COMPILER_PUBLICATION_METADATA_SCHEMA, COMPILER_PROGRAM_METADATA_SCHEMA, COMPILER_COVERAGE_METADATA_SCHEMA,
+        COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA, COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA, COMPILER_NATIVE_HEADERS_METADATA_SCHEMA];
+    let (wire, schema, key) = header_object_bounded(store, &pin, metadata_id, &schemas, metadata_max, budget, cancelled)?;
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected metadata stopped: {e:?}"))?;
+    verified_payload_key_checkpointed(schema, &wire, &key, budget, cancelled)?;
+    let member = selected_borrowed_metadata_member(&wire, schema, metadata_id, &envelope, budget, cancelled)?;
+    for id in envelope.members() {
+        if header_member_bounded(store, &pin, closure, id, budget, cancelled)? != count { return Err("selected closure count changed".into()); }
+    }
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
+    let Some(member) = member else { budget.memory = initial; return Ok(None) };
+    let id = *member.object_id();
+    let length = member.byte_length() as usize;
+    let (wire, schema, key) = header_object_bounded(store, &pin, id, &[COMPILER_NATIVE_HEADERS_SCHEMA], length, budget, cancelled)?;
+    if schema != COMPILER_NATIVE_HEADERS_SCHEMA || wire.len() != length { return Err("selected header extent differs".into()); }
+    verified_payload_key_checkpointed(schema, &wire, &key, budget, cancelled)?;
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
+    // Validate all canonical NHA1 framing without materializing decoded rows.
+    let _view = backend_semantic::native_ts_headers::NativeTsHeaderAggregateView::parse_canonical_checkpointed(&wire, &mut |_| header_checkpoint(&budget.work, cancelled))
+        .map_err(|e| format!("selected header scan: {e:?}"))?;
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
+    let retained = wire.len().checked_add(2 * std::mem::size_of::<usize>()).ok_or("header retained budget overflow")?;
+    let bytes = wire;
+    budget.memory = initial.checked_sub(retained).ok_or("header retained budget exceeded")?;
+    Ok(Some(VerifiedNativeHeadersWitness { bytes, object_id: id }))
+}
+
+/// Selected-closure authenticated header claims borrowed from caller scratch.
+pub struct VerifiedNativeHeadersView<'a> { view: backend_semantic::native_ts_headers::NativeTsHeaderAggregateView<'a>, object_id: AuthorityHash }
+impl<'a> VerifiedNativeHeadersView<'a> {
+    pub const fn object_id(&self) -> &AuthorityHash { &self.object_id }
+    pub fn view(&self) -> &backend_semantic::native_ts_headers::NativeTsHeaderAggregateView<'a> { &self.view }
+}
+fn header_object_into_scratch<'a>(store: &FileStore, pin: &backend_store::GcPinGuard, id: AuthorityHash,
+    schemas: &[SchemaIdentity], maximum: usize, budget: &mut SelectedNativeHeaderBudget,
+    cancelled: &dyn Fn() -> bool, scratch: &'a mut [u8]) -> Result<(&'a [u8], &'a mut [u8], SchemaIdentity, AuthorityHash), String> {
+    let work = &budget.work;
+    let reader = store.open_bounded_nonrelation_object(pin, UntrustedObjectId::from_bytes(id), schemas, None, maximum,
+        &mut budget.memory, |_| header_checkpoint(work, cancelled)).map_err(|e| format!("open bounded compiler object: {e:?}"))?;
+    let len = reader.payload_len();
+    if len > scratch.len() { return Err("selected compiler scratch capacity exceeded".into()); }
+    let (payload, remaining) = scratch.split_at_mut(len);
+    let (schema, key, checked_id) = reader.read_into(payload, &mut budget.memory,
+        |_, _| header_checkpoint(work, cancelled), |view, _| Ok((view.schema(), *view.key(), *view.id().as_bytes())))
+        .map_err(|e| format!("read bounded compiler object: {e:?}"))?;
+    if checked_id != id { return Err("verified compiler object identity differs".into()); }
+    Ok((payload, remaining, schema, key))
+}
+
+/// Reopens selected claims in caller-provisioned, operation-charged scratch.
+/// The returned borrowed view cannot outlive that scratch. Metadata decoding
+/// is validated without allocating owned metadata vectors.
+pub fn reopen_selected_native_headers_in_scratch<'a>(
+    store: &FileStore, selected: &SelectedGeneration, budget: &mut SelectedNativeHeaderBudget,
+    cancelled: &dyn Fn() -> bool, scratch: &'a mut [u8],
+) -> Result<Option<VerifiedNativeHeadersView<'a>>, String> {
+    let initial = budget.memory;
+    let scratch_charge = scratch.len();
+    header_reserve(&mut budget.memory, scratch_charge)?;
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
+    let pin = store.pin_garbage_collection_bounded(&mut budget.memory, |_| header_checkpoint(&budget.work, cancelled))
+        .map_err(|e| format!("pin selected compiler closure: {e:?}"))?;
+    let closure = backend_store::ClosureId::from_bytes(*selected.closure_id());
+    let count = header_member_bounded(store, &pin, closure, *selected.candidate_id(), budget, cancelled)?;
+    if count == 0 || count > (MAX_MEMBER_IDS as u64 + 1) { return Err("selected compiler closure count exceeds limit".into()); }
+    let envelope_max = MAGIC.len() + 2 + 5 * 4 + 4 * 4096 + MAX_PROFILE_BYTES + 1 + 16 + 8 + 32 * 6 + 1 + 4 + MAX_MEMBER_IDS * 32;
+    let (envelope_wire, remaining_scratch, schema, key) = header_object_into_scratch(store, &pin, *selected.candidate_id(), &[COMPILER_PUBLICATION_ENVELOPE_SCHEMA], envelope_max, budget, cancelled, scratch)?;
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected envelope stopped: {e:?}"))?;
+    verified_payload_key_checkpointed(schema, &envelope_wire, &key, budget, cancelled)?;
+    let envelope = borrowed_selected_envelope(&envelope_wire, selected, selected.candidate_id(), &|| {
+        header_checkpoint(&budget.work, cancelled).map_err(|_| CompilerEnvelopeError::Stopped)
+    }).map_err(|e| e.to_string())?;
+    if count != u64::try_from(envelope.member_wire.len() / 32).map_err(|_| "member count overflow")? + 1 { return Err("selected compiler closure count differs".into()); }
+    let metadata_id = envelope.metadata_id;
+    header_member_bounded(store, &pin, closure, metadata_id, budget, cancelled)?;
+    let metadata_max = MAX_MANIFEST_BYTES + 64 * 1024 * 1024 + MAX_MEMBER_IDS * 72 + 1024;
+    let schemas = [COMPILER_PUBLICATION_METADATA_SCHEMA, COMPILER_PROGRAM_METADATA_SCHEMA, COMPILER_COVERAGE_METADATA_SCHEMA,
+        COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA, COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA, COMPILER_NATIVE_HEADERS_METADATA_SCHEMA];
+    let (wire, _, schema, key) = header_object_into_scratch(store, &pin, metadata_id, &schemas, metadata_max, budget, cancelled, &mut *remaining_scratch)?;
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected metadata stopped: {e:?}"))?;
+    verified_payload_key_checkpointed(schema, &wire, &key, budget, cancelled)?;
+    let member = selected_borrowed_metadata_member(&wire, schema, metadata_id, &envelope, budget, cancelled)?;
+    for id in envelope.members() {
+        if header_member_bounded(store, &pin, closure, id, budget, cancelled)? != count { return Err("selected closure count changed".into()); }
+    }
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
+    let Some(member) = member else { budget.memory = initial.checked_sub(scratch_charge).ok_or("scratch budget exceeded")?; return Ok(None) };
+    let id = *member.object_id();
+    let length = member.byte_length() as usize;
+    let (wire, _, schema, key) = header_object_into_scratch(store, &pin, id, &[COMPILER_NATIVE_HEADERS_SCHEMA], length, budget, cancelled, &mut *remaining_scratch)?;
+    if schema != COMPILER_NATIVE_HEADERS_SCHEMA || wire.len() != length { return Err("selected header extent differs".into()); }
+    verified_payload_key_checkpointed(schema, &wire, &key, budget, cancelled)?;
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
+    // Validate all canonical NHA1 framing without materializing decoded rows.
+    let view = backend_semantic::native_ts_headers::NativeTsHeaderAggregateView::parse_canonical_checkpointed(wire, &mut |_| header_checkpoint(&budget.work, cancelled))
+        .map_err(|e| format!("selected header scan: {e:?}"))?;
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
+    budget.memory = initial.checked_sub(scratch_charge).ok_or("scratch budget exceeded")?;
+    Ok(Some(VerifiedNativeHeadersView { view, object_id: id }))
+}
+
 /// Reopens the aggregate only from the selected authenticated compiler closure.
 pub fn reopen_selected_native_headers(store: &FileStore, selected: &SelectedGeneration, max_bytes: usize) -> Result<Option<VerifiedNativeHeadersWitness>, String> {
     let reopened = reopen_selected_compiler_metadata(store, selected)?;
@@ -1779,12 +2224,33 @@ impl DurableClosureVerifier for FileStoreCompilerPublicationVerifier<'_, '_, '_>
 }
 
 fn metadata_member_ids(metadata: &CompilerPublicationMetadata) -> Vec<AuthorityHash> {
+    metadata_member_ids_with_id(metadata, metadata.object_id())
+}
+
+fn metadata_member_ids_checked(metadata: &CompilerPublicationMetadata) -> Result<Vec<AuthorityHash>, CompilerEnvelopeError> {
+    // This path propagates identity framing failures rather than falling back
+    // to unbudgeted typed-object construction.
+    let bytes = metadata.canonical_bytes();
+    let id = backend_store::untrusted_object_id_for_encoded_value(metadata.schema(), &bytes)
+        .map_err(|_| CompilerEnvelopeError::ByteLengthOverflow)?;
+    let raw_id = *id.as_bytes();
+    drop(bytes);
+    Ok(metadata_member_ids_with_id(metadata, raw_id))
+}
+
+fn metadata_member_ids_with_id(metadata: &CompilerPublicationMetadata, metadata_id: AuthorityHash) -> Vec<AuthorityHash> {
     let plane_count = metadata
         .versioned_planes
         .as_ref()
         .map_or(0, VersionedPlaneMetadata::segment_count);
-    let mut members = Vec::with_capacity(metadata.images.len() + plane_count + 1);
-    members.push(metadata.object_id());
+    let artifact_count = metadata.versioned_planes.as_ref().map_or(0, |planes| planes.artifacts().len());
+    let optional_count = usize::from(metadata.native_program_sources.is_some())
+        + usize::from(metadata.source_coverage.is_some())
+        + usize::from(metadata.typescript_snapshot.is_some())
+        + usize::from(metadata.csharp_evidence.is_some())
+        + usize::from(metadata.native_headers.is_some());
+    let mut members = Vec::with_capacity(metadata.images.len() + plane_count + artifact_count + optional_count + 1);
+    members.push(metadata_id);
     if let Some(member) = metadata.native_program_sources() {
         members.push(*member.object_id());
     }
@@ -2485,6 +2951,8 @@ pub enum CompilerEnvelopeError {
     CSharpInvocationEvidence,
     /// Native header aggregate is malformed or misbound.
     NativeHeaders,
+    /// Caller cancellation or finite work stopped the checked traversal.
+    Stopped,
     /// The canonical versioned-plane metadata is invalid.
     VersionedPlane(VersionedPlaneError),
 }
@@ -2563,50 +3031,31 @@ fn verify_manifest_image_inventory(
     if usize::try_from(fragment_count).ok() != Some(images.len()) {
         return Err(CompilerEnvelopeError::ManifestFacts);
     }
-    let mut manifest_images = Vec::with_capacity(images.len());
+    // Validate manifest facts without retaining an image-sized tuple vector.
     for ordinal in 0..images.len() {
         let entry_start = SEMANTIC_MANIFEST_HEADER_BYTES + ordinal * SEMANTIC_MANIFEST_ENTRY_BYTES;
         let image_start = entry_start + SEMANTIC_MANIFEST_IMAGE_IDENTITY_OFFSET;
-        let identity: AuthorityHash = manifest_bytes[image_start..image_start + 32]
-            .try_into()
-            .map_err(|_| CompilerEnvelopeError::ManifestFacts)?;
-        SemanticImageIdentity::try_from(identity)
-            .map_err(|_| CompilerEnvelopeError::ImageIdentity)?;
+        let identity: AuthorityHash = manifest_bytes[image_start..image_start + 32].try_into().map_err(|_| CompilerEnvelopeError::ManifestFacts)?;
+        SemanticImageIdentity::try_from(identity).map_err(|_| CompilerEnvelopeError::ImageIdentity)?;
         let length_start = entry_start + SEMANTIC_MANIFEST_IMAGE_LENGTH_OFFSET;
-        let length = u32::from_le_bytes(
-            manifest_bytes[length_start..length_start + 4]
-                .try_into()
-                .map_err(|_| CompilerEnvelopeError::ManifestFacts)?,
-        );
-        if length == 0 {
-            return Err(CompilerEnvelopeError::ImageLength);
-        }
-        manifest_images.push((identity, length));
+        let length = u32::from_le_bytes(manifest_bytes[length_start..length_start + 4].try_into().map_err(|_| CompilerEnvelopeError::ManifestFacts)?);
+        if length == 0 { return Err(CompilerEnvelopeError::ImageLength); }
     }
-    let mut metadata_images = vec![None; images.len()];
+    let bitmap_len = images.len().checked_add(7).ok_or(CompilerEnvelopeError::MemberCount)? / 8;
+    let mut seen = backend_store::try_allocate_exact_zeroed_bytes(bitmap_len).map_err(|_| CompilerEnvelopeError::MemberCount)?;
     for image in images {
-        let ordinal = usize::try_from(image.artifact_ordinal)
-            .map_err(|_| CompilerEnvelopeError::MemberOrder)?;
-        let slot = metadata_images
-            .get_mut(ordinal)
-            .ok_or(CompilerEnvelopeError::MemberOrder)?;
-        if slot
-            .replace((image.semantic_image_identity, image.byte_length))
-            .is_some()
-        {
-            return Err(CompilerEnvelopeError::MemberOrder);
+        let ordinal = usize::try_from(image.artifact_ordinal).map_err(|_| CompilerEnvelopeError::MemberOrder)?;
+        if ordinal >= images.len() { return Err(CompilerEnvelopeError::MemberOrder); }
+        let mask = 1u8 << (ordinal % 8);
+        if seen[ordinal / 8] & mask != 0 { return Err(CompilerEnvelopeError::MemberOrder); }
+        seen[ordinal / 8] |= mask;
+        let entry_start = SEMANTIC_MANIFEST_HEADER_BYTES + ordinal * SEMANTIC_MANIFEST_ENTRY_BYTES;
+        let image_start = entry_start + SEMANTIC_MANIFEST_IMAGE_IDENTITY_OFFSET;
+        let length_start = entry_start + SEMANTIC_MANIFEST_IMAGE_LENGTH_OFFSET;
+        let length = u32::from_le_bytes(manifest_bytes[length_start..length_start + 4].try_into().map_err(|_| CompilerEnvelopeError::ManifestFacts)?);
+        if manifest_bytes[image_start..image_start + 32] != image.semantic_image_identity || length != image.byte_length {
+            return Err(CompilerEnvelopeError::MetadataMismatch);
         }
-    }
-    if metadata_images.iter().any(Option::is_none) {
-        return Err(CompilerEnvelopeError::MemberOrder);
-    }
-    if manifest_images
-        .iter()
-        .copied()
-        .zip(metadata_images.into_iter().flatten())
-        .any(|(manifest, metadata)| manifest != metadata)
-    {
-        return Err(CompilerEnvelopeError::MetadataMismatch);
     }
     Ok(())
 }
@@ -2686,6 +3135,27 @@ impl Schema for CompilerNativeHeadersBytesSchema {
     type Value = [u8];
     fn encode(value: &Self::Value, output: &mut Vec<u8>) { output.extend_from_slice(value); }
 }
+/// Checks the logical key against authenticated canonical bytes without
+/// allocating a second encoding of the metadata value.
+fn verified_payload_key(schema: SchemaIdentity, bytes: &[u8], expected: &AuthorityHash) -> Result<(), String> {
+    let mut hash = backend_version::ObjectKeyHasher::new(schema, bytes.len()).map_err(|e| format!("compiler key: {e:?}"))?;
+    hash.update(bytes).map_err(|e| format!("compiler key: {e:?}"))?;
+    if &hash.finish().map_err(|e| format!("compiler key: {e:?}"))? != expected { return Err("compiler typed object key differs from canonical bytes".into()); }
+    Ok(())
+}
+
+fn verified_payload_key_checkpointed(schema: SchemaIdentity, bytes: &[u8], expected: &AuthorityHash,
+    budget: &SelectedNativeHeaderBudget, cancelled: &dyn Fn() -> bool) -> Result<(), String> {
+    let mut hash = backend_version::ObjectKeyHasher::new(schema, bytes.len()).map_err(|e| format!("compiler key: {e:?}"))?;
+    for chunk in bytes.chunks(64 * 1024) {
+        header_checkpoint(&budget.work, cancelled).map_err(|e| format!("compiler key stopped: {e:?}"))?;
+        hash.update(chunk).map_err(|e| format!("compiler key: {e:?}"))?;
+    }
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("compiler key stopped: {e:?}"))?;
+    if &hash.finish().map_err(|e| format!("compiler key: {e:?}"))? != expected { return Err("compiler typed object key differs from canonical bytes".into()); }
+    Ok(())
+}
+
 fn native_headers_key(bytes: &[u8]) -> Result<[u8; 32], String> {
     let mut hash = backend_version::ObjectKeyHasher::new(COMPILER_NATIVE_HEADERS_SCHEMA, bytes.len()).map_err(|e| format!("header key: {e:?}"))?;
     hash.update(bytes).map_err(|e| format!("header key: {e:?}"))?;
@@ -2822,6 +3292,12 @@ impl<'bytes> Decoder<'bytes> {
 
     fn u64(&mut self) -> Result<u64, CompilerEnvelopeError> {
         Ok(u64::from_le_bytes(self.array()?))
+    }
+
+    fn borrowed_string(&mut self, maximum: usize) -> Result<&'bytes str, CompilerEnvelopeError> {
+        let length = self.u32()? as usize;
+        if length == 0 || length > maximum { return Err(CompilerEnvelopeError::Truncated); }
+        std::str::from_utf8(self.take(length)?).map_err(|_| CompilerEnvelopeError::Truncated)
     }
 
     fn string(&mut self, maximum: usize) -> Result<String, CompilerEnvelopeError> {
@@ -3422,6 +3898,193 @@ mod tests {
     }
 
     #[test]
+    fn metadata_versions_four_through_nine_preserve_canonical_roundtrip() {
+        let base = metadata(compiler_image().0);
+        let program = CompilerProgramSourceMember { object_id: [0x11; 32], program: [0x22; 32], byte_length: 8 };
+        let coverage = CompilerSourceCoverageMember { object_id: [0x33; 32], identity: [0x44; 32], byte_length: 8 };
+        let snapshot = CompilerTypeScriptSnapshotMember { object_id: [0x55; 32], byte_length: 8 };
+        let csharp = CompilerCSharpEvidenceMember { object_id: [0x66; 32], byte_length: 8 };
+        let headers = CompilerNativeHeadersMember { object_id: [0x77; 32], byte_length: 8 };
+        let v5 = base.clone().with_native_program_sources(program).unwrap();
+        let v6 = v5.clone().with_source_coverage(coverage).unwrap();
+        let v7 = v6.clone().with_typescript_snapshot_witness(snapshot).unwrap();
+        let v8 = base.clone().with_csharp_evidence(csharp).unwrap();
+        let v9 = v7.clone().with_native_headers(headers).unwrap();
+        for (expected_version, value) in [(4, base), (5, v5), (6, v6), (7, v7), (8, v8), (9, v9)] {
+            let bytes = value.canonical_bytes();
+            assert_eq!(metadata_member_ids_checked(&value).unwrap(), metadata_member_ids(&value));
+            assert_eq!(u16::from_le_bytes(bytes[METADATA_MAGIC.len()..METADATA_MAGIC.len()+2].try_into().unwrap()), expected_version);
+            let ids = metadata_member_ids_checked(&value).unwrap();
+            let cells: Vec<u8> = ids.iter().flat_map(|id| id.iter().copied()).collect();
+            let mut bitmap = vec![0; (MAX_MEMBER_IDS + 7) / 8];
+            let parsed = borrowed_metadata::BorrowedCompilerMetadata::parse(
+                &bytes, value.object_id(), &cells, &mut bitmap, &mut |_| Ok::<(), ()>(())).unwrap();
+            assert_eq!(parsed.binding_identity, value.binding_identity);
+            assert_eq!(parsed.semantic_catalog_root, value.semantic_manifest_root().copied());
+            assert_eq!(parsed.native_headers, value.native_headers().copied());
+            assert!(borrowed_metadata::BorrowedCompilerMetadata::parse(
+                &bytes[..bytes.len()-1], value.object_id(), &cells, &mut bitmap, &mut |_| Ok::<(), ()>(())).is_err());
+            let mut wrong_id = value.object_id(); wrong_id[0] ^= 1;
+            assert!(borrowed_metadata::BorrowedCompilerMetadata::parse(
+                &bytes, wrong_id, &cells, &mut bitmap, &mut |_| Ok::<(), ()>(())).is_err());
+            assert!(matches!(borrowed_metadata::BorrowedCompilerMetadata::parse(
+                &bytes, value.object_id(), &cells, &mut bitmap, &mut |_| Err::<(), ()>(())),
+                Err(borrowed_metadata::BorrowedMetadataError::Stopped(()))));
+            let bound = compiler_metadata_decode_bound(&bytes).unwrap();
+            let mut reopened = None;
+            let peak = allocation_counter::measure(|| { reopened = Some(CompilerPublicationMetadata::decode(&bytes).unwrap()); });
+            assert_eq!(reopened.unwrap(), value);
+            assert!(peak.bytes_max as usize <= bound, "metadata v{expected_version} allocation peak {peak:?}, bound {bound}");
+            assert!(compiler_metadata_decode_bound(&bytes[..bytes.len()-1]).is_err());
+            assert!(CompilerPublicationMetadata::decode(&bytes[..bytes.len()-1]).is_err());
+        }
+    }
+
+    #[test]
+    fn dense_v9_metadata_allocation_bound_covers_nested_planes_and_all_tails() {
+        use backend_semantic::ir::{LanguageProfile, RustEdition, SemanticBuildIdentity, SemanticInputWitness, SemanticIrPlane, SemanticPlane, SemanticPlaneKind, SemanticPlaneManifest, SemanticPlaneSegment};
+        use backend_semantic::vocabulary::Stage;
+        use backend_version::{Coverage, ScopeRoot};
+        let (image, image_object) = compiler_image();
+        let generation = backend_semantic::ir::GenerationId::from_canonical_bytes(image_object.bytes());
+        let kind = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
+        let payloads = (0..=255u8).map(|i| vec![i, 42]).collect::<Vec<_>>();
+        let segments = payloads.iter().enumerate().map(|(i, payload)| SemanticPlaneSegment::from_payload(kind, [i as u8; 32], [i as u8; 32], 1, payload).unwrap()).collect::<Vec<_>>();
+        let ids = segments.iter().zip(&payloads).map(|(segment, payload)| (segment.admit(kind, payload).unwrap(), payload.as_slice())).collect::<Vec<_>>();
+        let plane = SemanticPlane::claimed(kind, segments, Coverage::Partial).unwrap();
+        let manifest = SemanticPlaneManifest::new(generation,
+            SemanticBuildIdentity::new([1; 32], [2; 32], LanguageProfile::Rust(RustEdition::Rust2024), Stage::LowerIr, [3; 32], [4; 32], [5; 32], [6; 32]),
+            SemanticInputWitness::claimed([7; 32], ScopeRoot::from_bytes([8; 32])), vec![plane]).unwrap();
+        let encoded = manifest.encode().unwrap();
+        let planes = VersionedPlanePublication::from_payloads(&encoded, ids).unwrap();
+        let metadata = metadata_with_versioned_planes(image, Some(planes.metadata().clone()))
+            .with_native_program_sources(CompilerProgramSourceMember { object_id: [0x11; 32], program: [0x22; 32], byte_length: 8 }).unwrap()
+            .with_source_coverage(CompilerSourceCoverageMember { object_id: [0x33; 32], identity: [0x44; 32], byte_length: 8 }).unwrap()
+            .with_typescript_snapshot_witness(CompilerTypeScriptSnapshotMember { object_id: [0x55; 32], byte_length: 8 }).unwrap()
+            .with_native_headers(CompilerNativeHeadersMember { object_id: [0x77; 32], byte_length: 8 }).unwrap();
+        let bytes = metadata.canonical_bytes();
+        let bound = compiler_metadata_decode_bound(&bytes).unwrap();
+        let mut decoded = None;
+        let peak = allocation_counter::measure(|| decoded = Some(CompilerPublicationMetadata::decode(&bytes).unwrap()));
+        assert_eq!(decoded.unwrap(), metadata);
+        assert!(peak.bytes_max as usize <= bound, "dense nested v9 peak {peak:?}, bound {bound}");
+    }
+
+    #[test]
+    fn near_limit_synthetic_metadata_allocation_bound() {
+        let (image, _) = compiler_image();
+        let images = (0..MAX_MEMBER_IDS - 10).map(|i| {
+            let mut row = image;
+            row.object_id = [0; 32];
+            row.object_id[24..].copy_from_slice(&(i as u64 + 1).to_be_bytes());
+            row
+        }).collect::<Vec<_>>();
+        let value = metadata_with_images(images, None)
+            .with_native_program_sources(CompilerProgramSourceMember { object_id: [0x11; 32], program: [0x22; 32], byte_length: 8 }).unwrap()
+            .with_native_headers(CompilerNativeHeadersMember { object_id: [0x77; 32], byte_length: 8 }).unwrap();
+        let bytes = value.canonical_bytes();
+        assert!(bytes.len() > 48 * 1024 * 1024);
+        let bound = compiler_metadata_decode_bound(&bytes).unwrap();
+        let mut decoded = None;
+        let peak = allocation_counter::measure(|| decoded = Some(CompilerPublicationMetadata::decode(&bytes).unwrap()));
+        assert_eq!(decoded.unwrap(), value);
+        assert!(peak.bytes_max as usize <= bound, "near-limit metadata peak {peak:?}, bound {bound}");
+    }
+
+    #[test]
+    fn truncated_maximum_inventories_refuse_before_count_sized_allocation() {
+        use allocation_counter::measure;
+        let record = metadata(compiler_image().0);
+        let mut bytes = record.canonical_bytes();
+        let offset = METADATA_MAGIC.len() + 2 + 4 + record.manifest_bytes().len() + COMPILATION_BINDING_BYTES;
+        bytes[offset..offset + 4].copy_from_slice(&(MAX_MEMBER_IDS as u32).to_le_bytes());
+        bytes.truncate(offset + 4);
+        let measured = measure(|| assert!(matches!(CompilerPublicationMetadata::decode(&bytes), Err(CompilerEnvelopeError::Truncated))));
+        assert!(measured.bytes_max < 32 * 1024, "metadata preflight: {measured:?}");
+        bytes.resize(offset + 4 + MAX_MEMBER_IDS * 72 - 1, 0);
+        let measured = measure(|| assert!(matches!(CompilerPublicationMetadata::decode(&bytes), Err(CompilerEnvelopeError::Truncated))));
+        assert!(measured.bytes_max < 32 * 1024, "metadata final row preflight: {measured:?}");
+        bytes.resize(offset + 4 + MAX_MEMBER_IDS * 72, 0);
+        bytes[METADATA_MAGIC.len()..METADATA_MAGIC.len() + 2].copy_from_slice(&NATIVE_HEADERS_METADATA_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&[0, 1]); // no versioned planes, program present
+        bytes.extend_from_slice(&[0; 68]);
+        bytes.extend_from_slice(&[0, 0]); // no coverage or snapshot
+        bytes.extend_from_slice(&[0; 35]); // header pointer lacks its final byte
+        let measured = measure(|| assert!(matches!(CompilerPublicationMetadata::decode(&bytes), Err(CompilerEnvelopeError::Truncated))));
+        assert!(measured.bytes_max < 32 * 1024, "metadata optional tail preflight: {measured:?}");
+        bytes.truncate(offset + 4 + MAX_MEMBER_IDS * 72);
+        bytes[METADATA_MAGIC.len()..METADATA_MAGIC.len() + 2].copy_from_slice(&METADATA_VERSION.to_le_bytes());
+        let mut nested = Vec::new();
+        nested.extend_from_slice(b"TURVPM\0\0");
+        nested.extend_from_slice(&3u16.to_le_bytes());
+        nested.extend_from_slice(&[0; 32]);
+        nested.extend_from_slice(&50_000u32.to_le_bytes());
+        bytes.push(1);
+        bytes.extend_from_slice(&(nested.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&nested);
+        let measured = measure(|| assert!(matches!(CompilerPublicationMetadata::decode(&bytes), Err(CompilerEnvelopeError::VersionedPlane(VersionedPlaneError::Truncated)))));
+        assert!(measured.bytes_max < 32 * 1024, "nested metadata preflight: {measured:?}");
+        let envelope = CompilerPublicationEnvelope::new(&attempt(), &record).unwrap();
+        let mut bytes = envelope.canonical_bytes();
+        let bound = compiler_envelope_decode_bound(&bytes).unwrap();
+        let mut reopened = None;
+        let peak = measure(|| { reopened = Some(CompilerPublicationEnvelope::decode(&bytes).unwrap()); });
+        assert_eq!(reopened.unwrap(), envelope);
+        assert!(peak.bytes_max as usize <= bound, "envelope allocation peak {peak:?}, bound {bound}");
+        let offset = bytes.len() - envelope.member_ids().len() * 32 - 4;
+        bytes[offset..offset + 4].copy_from_slice(&(MAX_MEMBER_IDS as u32).to_le_bytes());
+        bytes.truncate(offset + 4);
+        let measured = measure(|| assert!(matches!(CompilerPublicationEnvelope::decode(&bytes), Err(CompilerEnvelopeError::Truncated))));
+        assert!(measured.bytes_max < 32 * 1024, "envelope preflight: {measured:?}");
+        bytes.resize(offset + 4 + MAX_MEMBER_IDS * 32 - 1, 0);
+        let measured = measure(|| assert!(matches!(CompilerPublicationEnvelope::decode(&bytes), Err(CompilerEnvelopeError::Truncated))));
+        assert!(measured.bytes_max < 32 * 1024, "envelope final row preflight: {measured:?}");
+    }
+
+    #[test]
+    fn selected_member_bitmap_preserves_deduplicated_set_and_stops() {
+        let (image, _) = compiler_image();
+        let shared = *image.object_id();
+        let metadata = metadata(image)
+            .with_native_program_sources(CompilerProgramSourceMember { object_id: shared, program: [1; 32], byte_length: 1 }).unwrap()
+            .with_native_headers(CompilerNativeHeadersMember { object_id: shared, byte_length: 1 }).unwrap();
+        let metadata_id = [0x91; 32];
+        let ids = metadata_member_ids_with_id(&metadata, metadata_id);
+        let wire = ids.iter().flat_map(|id| id.iter().copied()).collect::<Vec<_>>();
+        let envelope = BorrowedSelectedEnvelope { metadata_id, logical_generation: metadata.binding_identity, semantic_root: metadata.semantic_manifest_root().copied(), member_wire: &wire };
+        let mut budget = SelectedNativeHeaderBudget::new(1024, 10_000);
+        assert!(verify_metadata_member_bitmap(&envelope, &metadata, metadata_id, &mut budget, &|| false).is_ok());
+        assert_eq!(budget.remaining_memory(), 1024);
+        assert!(verify_metadata_member_bitmap(&envelope, &metadata, metadata_id, &mut SelectedNativeHeaderBudget::new(0, 10_000), &|| false).is_err());
+        assert!(verify_metadata_member_bitmap(&envelope, &metadata, metadata_id, &mut SelectedNativeHeaderBudget::new(1024, 10_000), &|| true).is_err());
+        let mut altered = metadata.clone(); altered.native_headers.as_mut().unwrap().object_id = [0x92; 32];
+        assert!(verify_metadata_member_bitmap(&envelope, &altered, metadata_id, &mut SelectedNativeHeaderBudget::new(1024, 10_000), &|| false).is_err());
+        let mut extra = ids.clone(); extra.push([0xff; 32]); extra.sort_unstable(); extra.dedup();
+        let extra_wire = extra.iter().flat_map(|id| id.iter().copied()).collect::<Vec<_>>();
+        let extra_envelope = BorrowedSelectedEnvelope { member_wire: &extra_wire, ..envelope };
+        assert!(verify_metadata_member_bitmap(&extra_envelope, &metadata, metadata_id, &mut SelectedNativeHeaderBudget::new(1024, 10_000), &|| false).is_err());
+    }
+
+    #[test]
+    fn large_envelope_decode_obeys_shape_bound() {
+        let record = metadata(compiler_image().0);
+        let mut envelope = CompilerPublicationEnvelope::new(&attempt(), &record).unwrap();
+        let mut ids = (0..8191u64).map(|value| {
+            let mut id = [0u8; 32]; id[24..].copy_from_slice(&value.to_be_bytes()); id
+        }).collect::<Vec<_>>();
+        ids.push(*envelope.metadata_id());
+        ids.sort_unstable(); ids.dedup();
+        envelope.physical_pack_id = physical_pack_id(&ids);
+        envelope.member_ids = ids.into_boxed_slice();
+        let bytes = envelope.canonical_bytes();
+        let bound = compiler_envelope_decode_bound(&bytes).unwrap();
+        let mut decoded = None;
+        let peak = allocation_counter::measure(|| decoded = Some(CompilerPublicationEnvelope::decode(&bytes).unwrap()));
+        assert_eq!(decoded.unwrap(), envelope);
+        assert!(peak.bytes_max as usize <= bound, "large envelope decode peak {peak:?}, bound {bound}");
+    }
+
+    #[test]
     fn native_headers_v9_binds_exact_closure_member_and_extent() {
         let (image, _) = compiler_image();
         let program = CompilerProgramSourceMember { object_id: [0x11; 32], program: [0x22; 32], byte_length: 8 };
@@ -3528,6 +4191,42 @@ mod tests {
         let closure_id = store.write_closure(&ClosureManifest::new(objects).unwrap()).unwrap();
         let candidate = envelope.candidate(attempt.clone(), *closure_id.as_bytes()).unwrap();
         let selected = selected_generation(&attempt, &candidate, 1);
+        let envelope_wire = envelope.canonical_bytes();
+        let borrowed = borrowed_selected_envelope(&envelope_wire, &selected, selected.candidate_id(), &|| Ok(())).unwrap();
+        assert_eq!(borrowed.metadata_id, *envelope.metadata_id());
+        assert!(borrowed.members().eq(envelope.member_ids().iter().copied()));
+        assert!(matches!(borrowed_selected_envelope(&envelope_wire, &selected, selected.candidate_id(), &|| Err(CompilerEnvelopeError::Stopped)), Err(CompilerEnvelopeError::Stopped)));
+        // Parser-level qualification controls: these bytes are deliberately not
+        // reauthenticated as a selected CAS object, and are not owner proof.
+        macro_rules! reject_edit {
+            ($edit:expr) => {{
+                let mut changed = envelope.clone();
+                ($edit)(&mut changed);
+                assert!(borrowed_selected_envelope(&changed.canonical_bytes(), &selected, selected.candidate_id(), &|| Ok(())).is_err());
+            }};
+        }
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| e.namespace.package = "other".into());
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| e.namespace.source = "other".into());
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| e.namespace.branch = "other".into());
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| e.namespace.environment = "other".into());
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| e.profile = "other".into());
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| e.attempt_id[0] ^= 1);
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| e.attempt_epoch ^= 1);
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| e.attempt_fence[0] ^= 1);
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| e.input_digest[0] ^= 1);
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| e.logical_generation[0] ^= 1);
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| e.semantic_manifest_root = Some([0x91; 32]));
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| e.physical_pack_id[0] ^= 1);
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| e.metadata_id = [0x93; 32]);
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| { let mut ids = e.member_ids.to_vec(); ids.push(*selected.candidate_id()); ids.sort_unstable(); e.member_ids = ids.into_boxed_slice(); });
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| { let mut ids = e.member_ids.to_vec(); ids.push(ids[0]); ids.sort_unstable(); e.member_ids = ids.into_boxed_slice(); });
+        let mut bad_flag = envelope_wire.clone();
+        let flag = bad_flag.len() - envelope.member_ids().len() * 32 - 4 - 32 - 1;
+        bad_flag[flag] = 2;
+        assert!(borrowed_selected_envelope(&bad_flag, &selected, selected.candidate_id(), &|| Ok(())).is_err());
+        let mut changed = envelope_wire.clone();
+        let end = changed.len(); changed[end - 1] ^= 1;
+        assert!(borrowed_selected_envelope(&changed, &selected, selected.candidate_id(), &|| Ok(())).is_err());
         let reader_credit = 2 * bytes.len() + decoded;
         // Measure payload work only after the metadata and closure are already open.
         let closure = store.open_closure(closure_id).unwrap();
@@ -3549,6 +4248,36 @@ mod tests {
         // reader_credit and needs a separate production budget.
         const SMALL_FIXTURE_OVERHEAD: usize = 256 * 1024;
         assert!(selected_peak.bytes_max as usize <= reader_credit + SMALL_FIXTURE_OVERHEAD, "small selected fixture peak: {selected_peak:?}");
+        drop(store);
+        // This is a synthetic selected-generation fixture, not an owner receipt.
+        let store = FileStore::open(&directory, 8 * 1024 * 1024).unwrap();
+        let mut scratch = vec![0u8; 4 * 1024 * 1024];
+        let mut scratch_budget = SelectedNativeHeaderBudget::new(64 * 1024 * 1024, 100_000);
+        let borrowed_header = reopen_selected_native_headers_in_scratch(&store, &selected, &mut scratch_budget, &|| false, &mut scratch).unwrap().unwrap();
+        assert_eq!(borrowed_header.object_id(), header_member.object_id());
+        assert_eq!(borrowed_header.view().file("src/main.ts").unwrap().entry(15_999).unwrap().entity_id, 15_999);
+        drop(borrowed_header);
+        assert_eq!(scratch_budget.remaining_memory(), 60 * 1024 * 1024);
+        let mut tiny = [0u8; 1];
+        assert!(reopen_selected_native_headers_in_scratch(&store, &selected, &mut SelectedNativeHeaderBudget::new(64 * 1024 * 1024, 100_000), &|| false, &mut tiny).is_err());
+        assert!(reopen_selected_native_headers_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(0, 100_000), &|| false).is_err());
+        assert!(reopen_selected_native_headers_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(64 * 1024 * 1024, 100_000), &|| true).is_err());
+        let mut budget = SelectedNativeHeaderBudget::new(64 * 1024 * 1024, 100_000);
+        let mut bounded = None;
+        let bounded_peak = measure(|| bounded = Some(reopen_selected_native_headers_budgeted(&store, &selected, &mut budget, &|| false).unwrap().unwrap()));
+        assert_eq!(bounded.unwrap().as_bytes(), bytes.as_slice());
+        assert!(bounded_peak.bytes_max as usize <= 64 * 1024 * 1024, "budgeted selected peak: {bounded_peak:?}");
+        let used_work = 100_000 - budget.remaining_work();
+        assert!(reopen_selected_native_headers_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(64 * 1024 * 1024, used_work), &|| false).is_ok());
+        assert!(reopen_selected_native_headers_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(64 * 1024 * 1024, used_work - 1), &|| false).is_err());
+        let mut low = 0usize;
+        let mut high = 64 * 1024 * 1024;
+        while low + 1 < high {
+            let mid = low + (high - low) / 2;
+            if reopen_selected_native_headers_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(mid, 100_000), &|| false).is_ok() { high = mid; } else { low = mid; }
+        }
+        assert!(reopen_selected_native_headers_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(high, 100_000), &|| false).is_ok());
+        assert!(reopen_selected_native_headers_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(high - 1, 100_000), &|| false).is_err());
         drop(store);
         std::fs::remove_dir_all(directory).unwrap();
     }

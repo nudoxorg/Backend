@@ -312,6 +312,41 @@ fn sorted_owned_relation_state_moves_payloads_instead_of_cloning_them()
 #[derive(Debug, Eq, PartialEq)]
 struct VariableRelation;
 
+#[test]
+fn streaming_value_comparison_preserves_exact_canonical_admission() {
+    struct StreamingRelation;
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    impl Relation for StreamingRelation {
+        const DOMAIN: u8 = 0xf5;
+        const TYPE: u16 = 0x5105;
+        type Key = u8;
+        type Value = u8;
+        fn encode_key(v: &u8, out: &mut Vec<u8>) { out.push(*v); }
+        fn encode_value(v: &u8, out: &mut Vec<u8>) { out.push(*v); }
+    }
+    impl CanonicalRelation for StreamingRelation {
+        fn decode_key(bytes: &[u8]) -> Result<u8, RelationDecodeError> {
+            if bytes.len() != 1 { return Err(RelationDecodeError::Malformed); }
+            Ok(bytes[0])
+        }
+        fn decode_value(bytes: &[u8]) -> Result<u8, RelationDecodeError> {
+            if bytes.len() != 1 || !bytes[0].is_ascii_alphabetic() { return Err(RelationDecodeError::Malformed); }
+            Ok(bytes[0].to_ascii_lowercase())
+        }
+        fn canonical_value_matches(value: &u8, bytes: &[u8]) -> bool {
+            CALLS.fetch_add(1, AtomicOrdering::Relaxed);
+            bytes == [*value]
+        }
+    }
+    let node = canonical_leaf::<StreamingRelation>(&[(1, b'a')]).expect("canonical fixture");
+    CALLS.store(0, AtomicOrdering::Relaxed);
+    assert!(admit_canonical_root::<StreamingRelation>(node.as_bytes()).is_ok());
+    assert!(CALLS.load(AtomicOrdering::Relaxed) > 0);
+    let mut alternate = node.as_bytes().to_vec();
+    *alternate.last_mut().unwrap() = b'A';
+    assert!(matches!(admit_canonical_root::<StreamingRelation>(&alternate), Err(NodeError::NonCanonicalEncoding)));
+}
+
 impl Relation for VariableRelation {
     const DOMAIN: u8 = 11;
     const TYPE: u16 = 7;
@@ -750,6 +785,112 @@ fn bounded_decoder_small_and_near_cap_update_match_rebuild_at_exact_peak()
         let rebuilt = PersistentTree::<VariableRelation>::from_sorted_items(&rows)?;
         assert_eq!(exact.target().root(), rebuilt.root().commitment());
     }
+    Ok(())
+}
+
+#[test]
+fn bounded_decoder_updates_1024_long_rows_without_worst_width_explosion()
+    -> Result<(), Box<dyn std::error::Error>> {
+    let mut rows = (0..1024u64).map(|i| (i, vec![i as u8; 4000])).collect::<Vec<_>>();
+    let tree = PersistentTree::<VariableRelation>::from_sorted_items(&rows)?;
+    let nodes = tree.node_closure().map(|n| (n.id().to_bytes(), n.canonical_bytes().to_vec())).collect();
+    let loader = MeasuredLoader::<VariableRelation>::new(nodes);
+    let claim = UntrustedId::from_wire(tree.root().commitment().as_bytes(), IdContext::relation::<VariableRelation>())?;
+    let lazy = LazyTree::open(&loader, claim)?;
+    rows[500].1[0] ^= 1;
+    let changes = [TreeChange::<VariableRelation> { key: 500, after: Some(rows[500].1.clone()) }];
+    let shape = LazyTreeMetadataShape::new(8, 4000, 64, 1024, 258, 4);
+    let baseline = lazy.prepare_update_decoded_bounded(&changes, LazyTreeUpdateBudget::new(1, 64 * 1024 * 1024, shape))?;
+    let peak = baseline.work().peak_metadata_bytes;
+    assert!(peak < 64 * 1024 * 1024);
+    assert!(lazy.prepare_update_decoded_bounded(&changes, LazyTreeUpdateBudget::new(1, peak - 1, shape)).is_err());
+    let exact = lazy.prepare_update_decoded_bounded(&changes, LazyTreeUpdateBudget::new(1, peak, shape))?;
+    let rebuilt = PersistentTree::<VariableRelation>::from_sorted_items(&rows)?;
+    assert_eq!(exact.target().root(), rebuilt.root().commitment());
+    Ok(())
+}
+
+#[test]
+fn streaming_leaf_visit_crosses_node_boundaries_without_skips()
+    -> Result<(), Box<dyn std::error::Error>> {
+    let rows=(0..200u64).map(|i| (i,vec![i as u8;4096])).collect::<Vec<_>>();
+    let tree=PersistentTree::<VariableRelation>::from_sorted_items(&rows)?;
+    let nodes=tree.node_closure().map(|n|(n.id().to_bytes(),n.canonical_bytes().to_vec())).collect();
+    let loader=MeasuredLoader::<VariableRelation>::new(nodes);
+    let claim=UntrustedId::from_wire(tree.root().commitment().as_bytes(),IdContext::relation::<VariableRelation>())?;
+    let lazy=LazyTree::open(&loader,claim)?;
+    let mut seen=Vec::new();
+    let mut cursor=None;
+    loop {
+        cursor=lazy.visit_streaming_with_depth_limit(cursor.as_ref(),7,32,|key,value| {
+            seen.push((*key,value)); Ok(())
+        })?;
+        if cursor.is_none(){break;}
+    }
+    assert_eq!(seen,rows);
+    Ok(())
+}
+
+#[test]
+fn bounded_decoder_spill_insert_and_delete_match_canonical_rebuild()
+    -> Result<(), Box<dyn std::error::Error>> {
+    for deleting in [false, true] {
+        let width = 65_480;
+        let base = if deleting {
+            vec![(1u64, vec![1; width]), (2, vec![2; width]), (3, vec![3; width])]
+        } else {
+            vec![(1u64, vec![1; width]), (3, vec![3; width])]
+        };
+        let tree = PersistentTree::<VariableRelation>::from_sorted_items(&base)?;
+        let nodes = tree.node_closure().map(|n| (n.id().to_bytes(), n.canonical_bytes().to_vec())).collect();
+        let loader = MeasuredLoader::<VariableRelation>::new(nodes);
+        let claim = UntrustedId::from_wire(tree.root().commitment().as_bytes(), IdContext::relation::<VariableRelation>())?;
+        let lazy = LazyTree::open(&loader, claim)?;
+        let after = if deleting { None } else { Some(vec![2; width]) };
+        let changes = [TreeChange::<VariableRelation> { key: 2, after }];
+        let target = if deleting { vec![base[0].clone(), base[2].clone()] }
+                     else { vec![base[0].clone(), (2, vec![2; width]), base[1].clone()] };
+        let shape = LazyTreeMetadataShape::new(8, width, 4, 4, 6, 4);
+        let baseline = lazy.prepare_update_decoded_bounded(&changes, LazyTreeUpdateBudget::new(1, 64 * 1024 * 1024, shape))?;
+        let peak = baseline.work().peak_metadata_bytes;
+        assert!(lazy.prepare_update_decoded_bounded(&changes, LazyTreeUpdateBudget::new(1, peak - 1, shape)).is_err());
+        let exact = lazy.prepare_update_decoded_bounded(&changes, LazyTreeUpdateBudget::new(1, peak, shape))?;
+        let rebuilt = PersistentTree::<VariableRelation>::from_sorted_items(&target)?;
+        assert_eq!(exact.target().root(), rebuilt.root().commitment());
+    }
+    Ok(())
+}
+
+#[test]
+fn bounded_decoder_multilevel_branch_spill_matches_rebuild()
+    -> Result<(), Box<dyn std::error::Error>> {
+    // Each near-cap value occupies one leaf. Select enough deterministic keys
+    // to force at least two branch nodes, then delete inside the first branch.
+    let keys = (0..1025u64).collect::<Vec<_>>();
+    let cuts = tree::anchored_cut_points_children::<VariableRelation, _>(
+        keys.iter(), DEFAULT_CUT_POLICY, 1,
+    )?;
+    assert!(cuts.len() >= 2);
+    let count = cuts[0] + 1;
+    let rows = (0..count as u64).map(|i| (i, vec![i as u8; 65_480])).collect::<Vec<_>>();
+    let tree = PersistentTree::<VariableRelation>::from_sorted_items(&rows)?;
+    assert!(tree.root().level() >= 2, "fixture must exercise branch spill");
+    let nodes = tree.node_closure().map(|n| (n.id().to_bytes(), n.canonical_bytes().to_vec())).collect();
+    let loader = MeasuredLoader::<VariableRelation>::new(nodes);
+    let claim = UntrustedId::from_wire(tree.root().commitment().as_bytes(), IdContext::relation::<VariableRelation>())?;
+    let lazy = LazyTree::open(&loader, claim)?;
+    let removed = (cuts[0] / 2) as u64;
+    let changes = [TreeChange::<VariableRelation> { key: removed, after: None }];
+    let max_entries = count.min(1024);
+    let minimum = max_entries.min(64);
+    let shape = LazyTreeMetadataShape::new(8, 65_480, minimum, max_entries, max_entries + 2, 8);
+    let baseline = lazy.prepare_update_decoded_bounded(&changes, LazyTreeUpdateBudget::new(1, 64 * 1024 * 1024, shape))?;
+    let peak = baseline.work().peak_metadata_bytes;
+    assert!(lazy.prepare_update_decoded_bounded(&changes, LazyTreeUpdateBudget::new(1, peak - 1, shape)).is_err());
+    let exact = lazy.prepare_update_decoded_bounded(&changes, LazyTreeUpdateBudget::new(1, peak, shape))?;
+    let target = rows.into_iter().filter(|(key, _)| *key != removed).collect::<Vec<_>>();
+    let rebuilt = PersistentTree::<VariableRelation>::from_sorted_items(&target)?;
+    assert_eq!(exact.target().root(), rebuilt.root().commitment());
     Ok(())
 }
 

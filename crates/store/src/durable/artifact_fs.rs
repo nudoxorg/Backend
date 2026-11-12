@@ -358,6 +358,80 @@ mod imp {
         error == Errno::NOENT
     }
 
+    /// Stack-locator directory handles for bounded selected reads. The caller
+    /// keeps the store GC pin alive for the lifetime of these handles.
+    pub(in crate::durable) struct BoundedReadDirectories {
+        objects: File,
+        nodes: File,
+        closures: File,
+    }
+
+    impl BoundedReadDirectories {
+        pub(in crate::durable) fn open(store: &FileStore, checkpoint: &mut dyn FnMut() -> Result<(), StoreError>) -> Result<Self, StoreError> {
+            use std::os::unix::ffi::OsStrExt;
+            let root = store.root.as_os_str().as_bytes();
+            // The kernel path interface has a finite bound. This private
+            // bounded API fails closed for paths that cannot fit the buffer.
+            let mut root_buf = [0u8; 4096];
+            if root.len() >= root_buf.len() || root.contains(&0) { return Err(StoreError::Bounds); }
+            root_buf[..root.len()].copy_from_slice(root);
+            let root_path = std::ffi::CStr::from_bytes_with_nul(&root_buf[..=root.len()]).map_err(|_| StoreError::Corrupt)?;
+            checkpoint()?;
+            let root = File::from(open(root_path, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map_err(path_error)?);
+            if !store.root_directory.matches_open_directory(&root).map_err(|e| io_error(&e))? { return Err(StoreError::UnsafePath); }
+            fn child(parent: &File, name: &'static [u8]) -> Result<File, StoreError> {
+                let name = std::ffi::CStr::from_bytes_with_nul(name).map_err(|_| StoreError::Corrupt)?;
+                openat(parent, name, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map(File::from).map_err(path_error)
+            }
+            checkpoint()?; let objects = child(&root, b"objects\0")?;
+            checkpoint()?; let nodes = child(&root, b"nodes\0")?;
+            checkpoint()?; let closures = child(&root, b"closures\0")?;
+            Ok(Self { objects, nodes, closures })
+        }
+
+        fn open_named(parent: &File, name: &std::ffi::CStr, checkpoint: &mut dyn FnMut() -> Result<(), StoreError>) -> Result<File, StoreError> {
+            const ATTEMPTS: usize = 100;
+            for attempt in 0..ATTEMPTS {
+                checkpoint()?;
+                let file = File::from(openat(parent, name, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map_err(path_error)?);
+                let metadata = file.metadata().map_err(|e| io_error(&e))?;
+                if !metadata.is_file() { return Err(StoreError::UnsafePath); }
+                if metadata.nlink() == 1 { checkpoint()?; seal_immutable_read(&file)?; return Ok(file); }
+                if metadata.nlink() != 2 || attempt + 1 == ATTEMPTS { return Err(StoreError::UnsafePath); }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Err(StoreError::UnsafePath)
+        }
+
+        fn hash_name<'a>(hash: &[u8; 32], suffix: &[u8], buf: &'a mut [u8; 80]) -> Result<&'a std::ffi::CStr, StoreError> {
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            for (i, byte) in hash.iter().enumerate() { buf[i*2] = HEX[usize::from(byte >> 4)]; buf[i*2+1] = HEX[usize::from(byte & 15)]; }
+            let end = 64usize.checked_add(suffix.len()).ok_or(StoreError::Bounds)?;
+            if end >= buf.len() { return Err(StoreError::Bounds); }
+            buf[64..end].copy_from_slice(suffix); buf[end] = 0;
+            std::ffi::CStr::from_bytes_with_nul(&buf[..=end]).map_err(|_| StoreError::Corrupt)
+        }
+        pub(in crate::durable) fn relation_ref(&self, schema: backend_version::SchemaIdentity, version: &[u8;32], checkpoint: &mut dyn FnMut() -> Result<(), StoreError>) -> Result<File, StoreError> {
+            let mut name = [0u8; 96];
+            let mut at = 0usize;
+            fn put(name: &mut [u8], at: &mut usize, bytes: &[u8]) { name[*at..*at+bytes.len()].copy_from_slice(bytes); *at += bytes.len(); }
+            fn hex_byte(name: &mut [u8], at: &mut usize, value: u8) { const H: &[u8;16] = b"0123456789abcdef"; name[*at] = H[usize::from(value >> 4)]; name[*at+1] = H[usize::from(value & 15)]; *at += 2; }
+            put(&mut name, &mut at, b"rel-"); hex_byte(&mut name, &mut at, schema.domain()); put(&mut name, &mut at, b"-");
+            for byte in schema.ty().to_be_bytes() { hex_byte(&mut name, &mut at, byte); }
+            put(&mut name, &mut at, b"-"); hex_byte(&mut name, &mut at, schema.version()); put(&mut name, &mut at, b"-");
+            for byte in version { hex_byte(&mut name, &mut at, *byte); }
+            put(&mut name, &mut at, b".ref\0");
+            let name = std::ffi::CStr::from_bytes_with_nul(&name[..at]).map_err(|_| StoreError::Corrupt)?;
+            Self::open_named(&self.nodes, name, checkpoint)
+        }
+        pub(in crate::durable) fn object(&self, id: ObjectId, checkpoint: &mut dyn FnMut() -> Result<(), StoreError>) -> Result<File, StoreError> {
+            let mut buf = [0; 80]; Self::open_named(&self.objects, Self::hash_name(id.as_bytes(), b".object", &mut buf)?, checkpoint)
+        }
+        pub(in crate::durable) fn closure(&self, id: ClosureId, checkpoint: &mut dyn FnMut() -> Result<(), StoreError>) -> Result<File, StoreError> {
+            let mut buf = [0; 80]; Self::open_named(&self.closures, Self::hash_name(id.as_bytes(), b".closure", &mut buf)?, checkpoint)
+        }
+    }
+
     fn store_root(store: &FileStore) -> Result<File, StoreError> {
         open(
             &store.root,
@@ -2722,6 +2796,9 @@ pub(super) use imp::{
     open_object, open_store_file, prepare_staging_root, reap_stale_sessions, unlink_stage_file,
     write_closure_descriptor,
 };
+
+#[cfg(unix)]
+pub(super) use imp::BoundedReadDirectories;
 
 #[cfg(unix)]
 pub(super) use imp::{InitialPairPublication, prepare_initial_pair, publish_initial_pair};
