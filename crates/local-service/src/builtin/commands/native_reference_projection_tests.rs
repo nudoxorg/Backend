@@ -71,6 +71,24 @@ fn compiler_worker_captures_five_thousand_function_headers() -> Result<(), Box<d
     Ok(())
 }
 
+#[test]
+fn large_valid_typescript_keeps_compiler_publication_without_optional_headers() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestRoot(std::env::temp_dir().join(format!("nudox-native-header-large-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos())));
+    let package = root.0.join("package");
+    fs::create_dir_all(&package)?;
+    let source = format!("/* {} */\nexport function available() {{ return 1; }}\n", "x".repeat(1024 * 1024));
+    fs::write(package.join("large.ts"), &source)?;
+    fs::write(package.join("tsconfig.json"), r#"{"compilerOptions":{"noLib":true,"types":[]},"files":["large.ts"]}"#)?;
+    let client = LocalCompilerHost::new(Environment(root.0.join("data")), LocalHostDiscovery::ExplicitOnly).open()?;
+    let request = PackageCompileRequest::new(GenerateTarget { correlation: CorrelationId(416), profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript), stage: Stage::LowerIr },
+        PackageUrl::parse("pkg:npm/header-large@1.0.0".to_owned()).map_err(|e| format!("package: {e:?}"))?).map_err(|e| format!("request: {e:?}"))?;
+    let staged = client.compile_package_sources_staged(OwnedPackageSourceSet::new(request, package,
+        vec![OwnedPackageSource::new("large.ts", &source)?].into_boxed_slice())?)?;
+    assert!(staged.semantic_output_object(0).is_some());
+    assert!(staged.native_typescript_headers().iter().all(|file| file.path != "large.ts"));
+    Ok(())
+}
+
 fn project_fixture(private: bool, graph_origin: bool) -> Result<(), Box<dyn std::error::Error>> {
     let root = TestRoot(std::env::temp_dir().join(format!(
         "nudox-native-reference-projection-{}-{}",

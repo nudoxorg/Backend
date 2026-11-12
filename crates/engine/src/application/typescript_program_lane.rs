@@ -154,6 +154,30 @@ mod tests {
     }
 
     #[test]
+    fn optional_capture_exhaustion_preserves_checkpoint_stops() {
+        struct Check(bool);
+        impl backend_frontend_typescript::TszExecutionCheckpoint for Check {
+            fn checkpoint(&self, _: u64) -> Result<(), backend_frontend_typescript::TszProjectExecutionStop> {
+                if self.0 { Err(backend_frontend_typescript::TszProjectExecutionStop::Cancelled) } else { Ok(()) }
+            }
+        }
+        let mut authority = TszProjectAuthority::default();
+        authority.update(sources(), recipe(), &[]).unwrap();
+        let project = authority.project().unwrap();
+        let text = sources().remove(0).source;
+        let source = backend_semantic::ir::SourceIdentity::from_bytes(text.as_bytes()).unwrap();
+        let mut remaining = 0;
+        let result = project.with_source_nodes("src/main.ts", |arena, retained| {
+            super::capture_headers(arena, retained, "src/main.ts", source, &[], &Check(false), &mut remaining)
+        }).unwrap();
+        assert!(matches!(result, Ok(None)));
+        let result = project.with_source_nodes("src/main.ts", |arena, retained| {
+            super::capture_headers(arena, retained, "src/main.ts", source, &[], &Check(true), &mut remaining)
+        }).unwrap();
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn duplicate_nodes_cannot_alias_one_mutable_authority() {
         let mut lane = TypeScriptProgramAuthorityLane::default();
         lane.prepare(Path::new("/a"), &[None]).unwrap();
@@ -187,7 +211,7 @@ pub(super) fn capture_headers(
         .checkpoint(0)
         .map_err(|e| format!("header capture stopped: {e:?}"))?;
     if text.len() > 1024 * 1024 || path.len() > 4096 || *remaining < SCRATCH {
-        return Err("native header capture budget exceeded".into());
+        return Ok(None);
     }
     let image = SemanticImageView::reopen(encoded).map_err(|e| format!("header image: {e}"))?;
     let ImageProvenance::Captured {
@@ -283,9 +307,11 @@ pub(super) fn capture_headers(
             >())?)
         })
         .ok_or("header budget overflow")?;
-    *remaining = remaining
-        .checked_sub(charge)
-        .ok_or("header budget exhausted")?;
+    let Some(after) = remaining.checked_sub(charge) else {
+        checkpoint.checkpoint(0).map_err(|e| format!("header capture stopped: {e:?}"))?;
+        return Ok(None);
+    };
+    *remaining = after;
     let mut hash = blake3::Hasher::new();
     hash.update(b"nudox.native-ts-header-spans.v1\0");
     hash.update(backend_frontend_typescript::TSZ_NATIVE_AUTHORITY_IDENTITY);

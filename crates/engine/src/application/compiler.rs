@@ -5889,13 +5889,30 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         )
                     })).flatten();
                     if let Some(result) = captured {
-                        if let Some(headers) = result.map_err(|_| PackageSemanticError::Capacity { lane: "TypeScript header capture" })? {
+                        let result = result.map_err(|_| {
+                            if let Some(cause) = budget.stop_reason() {
+                                PackageSemanticError::Compile {
+                                    path: source.relative_path.into(),
+                                    terminal: Box::new(package_authority_terminal(
+                                        package.package_target.target(), application_request, source_authority,
+                                        self.toolchain_for_package(application_request, typescript_toolchain)
+                                            .unwrap_or(ToolchainSelection::ExplicitlyUnavailable { tool: NativeTool::TypeScriptCompiler }),
+                                        PackageAuthorityError::TypeScriptTsz(backend_frontend_typescript::TszAuthorityError::ExecutionStopped(cause)),
+                                    )),
+                                }
+                            } else {
+                                PackageSemanticError::Capacity { lane: "TypeScript header capture" }
+                            }
+                        })?;
+                        if let Some(headers) = result {
                             let previous_capacity = native_typescript_headers.capacity();
                             native_typescript_headers.try_reserve_exact(1).map_err(PackageSemanticError::Allocation)?;
                             let new_slots = native_typescript_headers.capacity().saturating_sub(previous_capacity);
                             let slack = new_slots.saturating_sub(1).checked_mul(std::mem::size_of::<StagedNativeTypeScriptHeaders>()).ok_or(PackageSemanticError::Capacity { lane: "TypeScript header capture budget" })?;
-                            native_header_budget = native_header_budget.checked_sub(slack).ok_or(PackageSemanticError::Capacity { lane: "TypeScript header capture budget" })?;
-                            native_typescript_headers.push(headers);
+                            if let Some(after) = native_header_budget.checked_sub(slack) {
+                                native_header_budget = after;
+                                native_typescript_headers.push(headers);
+                            }
                         }
                     }
                 }
