@@ -76,9 +76,10 @@ pub(crate) enum DefStorePlan {
     /// Install a shared store (project-wide `DefId` namespace), then warm
     /// the local symbol/def caches from it.
     Shared(Arc<DefinitionStore>),
+    /// Inherit the parent store without warming arena-local caches.
+    Inherited(Arc<DefinitionStore>),
     /// Leave the empty default store and skip warm-up. The caller MUST
-    /// install a populated store before use (`ProgramContext::apply_to`, or
-    /// the parent-propagation block in `with_parent_cache`).
+    /// install a populated store before use (`ProgramContext::apply_to`).
     Deferred,
 }
 
@@ -172,6 +173,10 @@ impl<'a> CheckerContext<'a> {
                 inherit_has_lib,
             );
         let symbol_cache_capacity = symbol_cache_capacity.unwrap_or_else(|| binder.symbols.len());
+        let initial_store = match &def_store {
+            DefStorePlan::Inherited(store) => Arc::clone(store),
+            _ => Arc::new(DefinitionStore::new()),
+        };
         let mut ctx = Self::base(
             arena,
             binder,
@@ -181,6 +186,7 @@ impl<'a> CheckerContext<'a> {
             capabilities,
             symbol_cache_capacity,
             preallocate_arena_caches,
+            initial_store,
         );
 
         let warm = match def_store {
@@ -199,7 +205,7 @@ impl<'a> CheckerContext<'a> {
                 ctx.definition_store = store;
                 true
             }
-            DefStorePlan::Deferred => false,
+            DefStorePlan::Inherited(_) | DefStorePlan::Deferred => false,
         };
         match cache {
             None => {
@@ -238,6 +244,7 @@ impl<'a> CheckerContext<'a> {
         capabilities: crate::query_boundaries::capabilities::EnvironmentCapabilities,
         symbol_cache_capacity: usize,
         preallocate_arena_caches: bool,
+        definition_store: Arc<DefinitionStore>,
     ) -> Self {
         let flow_graph = Some(FlowGraph::new(&binder.flow_nodes));
 
@@ -447,7 +454,7 @@ impl<'a> CheckerContext<'a> {
             enclosing_class: None,
             enclosing_class_chain: Vec::new(),
             type_env: RefCell::new(TypeEnvironment::new()),
-            definition_store: Arc::new(DefinitionStore::new()),
+            definition_store,
             share_owner_symbol_type_results: false,
             symbol_to_def: RefCell::new(FxHashMap::default()),
             def_to_symbol: RefCell::new(FxHashMap::default()),
@@ -864,8 +871,7 @@ impl<'a> CheckerContext<'a> {
                 file_name,
                 compiler_options,
                 options_policy: OptionsPolicy::PRE_RESOLVED,
-                // The shared store is installed from the parent below.
-                def_store: DefStorePlan::Deferred,
+                def_store: DefStorePlan::Inherited(Arc::clone(&parent.definition_store)),
                 cache: None,
                 cache_order: CacheRestoreOrder::BeforeWarm,
                 inherit_has_lib: parent.capabilities.has_lib,
@@ -973,10 +979,8 @@ impl<'a> CheckerContext<'a> {
             ));
         ctx.heritage_merge_depth = Cell::new(parent.heritage_merge_depth.get());
 
-        // Share DefinitionStore with parent so DefIds are globally unique
-        // across parent/child checkers. This prevents DefId collisions where
-        // the child's DefId(1) means a different thing than the parent's DefId(1).
-        ctx.definition_store = Arc::clone(&parent.definition_store);
+        // The parent DefinitionStore was installed during construction, so
+        // parent and child use the same DefId namespace.
         ctx.share_owner_symbol_type_results = parent.share_owner_symbol_type_results;
 
         // Every `with_parent_cache` child is a transient delegation checker:
