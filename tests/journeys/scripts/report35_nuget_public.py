@@ -25,26 +25,15 @@ def digest(path):
         for chunk in iter(lambda:f.read(1024*1024),b''): h.update(chunk)
     return h.hexdigest()
 
+BLAKE3_HELPER = None
+
 def blake3_short(data):
-    """BLAKE3 for one <=1024-byte chunk; refuses longer source-proof inputs."""
-    check(len(data)<=1024,'fixture proof input exceeds the independently reviewed one-chunk bound')
-    iv=[0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]
-    permutation=[2,6,3,10,7,0,4,13,1,11,12,5,9,14,15,8]
-    def rotate(v,n):return ((v>>n)|(v<<(32-n)))&0xffffffff
-    def compress(cv,block,length,flags):
-        v=cv+iv[:4]+[0,0,length,flags];m=list(block)
-        def g(a,b,c,d,x,y):
-            v[a]=(v[a]+v[b]+x)&0xffffffff;v[d]=rotate(v[d]^v[a],16);v[c]=(v[c]+v[d])&0xffffffff;v[b]=rotate(v[b]^v[c],12)
-            v[a]=(v[a]+v[b]+y)&0xffffffff;v[d]=rotate(v[d]^v[a],8);v[c]=(v[c]+v[d])&0xffffffff;v[b]=rotate(v[b]^v[c],7)
-        for _ in range(7):
-            g(0,4,8,12,m[0],m[1]);g(1,5,9,13,m[2],m[3]);g(2,6,10,14,m[4],m[5]);g(3,7,11,15,m[6],m[7]);g(0,5,10,15,m[8],m[9]);g(1,6,11,12,m[10],m[11]);g(2,7,8,13,m[12],m[13]);g(3,4,9,14,m[14],m[15]);m=[m[i] for i in permutation]
-        return [v[i]^v[i+8] for i in range(8)]+[v[i+8]^cv[i] for i in range(8)]
-    blocks=[data[i:i+64] for i in range(0,len(data),64)] or [b''];cv=iv
-    for i,block in enumerate(blocks):
-        final=i==len(blocks)-1;flags=(1 if i==0 else 0)|(2|8 if final else 0)
-        out=compress(cv,struct.unpack('<16I',block.ljust(64,b'\0')),len(block),flags)
-        if final:return struct.pack('<16I',*out)[:32]
-        cv=out[:8]
+    check(len(data)<=1024,'fixture proof input exceeds bound')
+    check(BLAKE3_HELPER is not None,'native BLAKE3 helper required')
+    result=subprocess.run([str(BLAKE3_HELPER)],input=data,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=10,check=True)
+    text=result.stdout.decode('ascii').strip()
+    check(len(text)==64 and all(c in '0123456789abcdef' for c in text),'invalid native BLAKE3 digest')
+    return bytes.fromhex(text)
 
 class Fixture:
     def __init__(self, scenario):
@@ -338,7 +327,11 @@ def self_check():
     print('SELF-CHECK PASS: 9 fixture modes; strict MCP, typed evidence, BLAKE3 vectors and receipt negatives; zero product processes')
 
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument('--self-check',action='store_true');ap.add_argument('--source',type=pathlib.Path);ap.add_argument('--expected-source');ap.add_argument('--expected-tree');ap.add_argument('--expected-lock-sha256');ap.add_argument('--bin-dir',type=pathlib.Path);ap.add_argument('--build-receipt',type=pathlib.Path);ap.add_argument('--output-parent',type=pathlib.Path);ap.add_argument('--timeout',type=float,default=120);args=ap.parse_args()
+    ap=argparse.ArgumentParser();ap.add_argument('--self-check',action='store_true');ap.add_argument('--blake3-helper',required=True,type=pathlib.Path);ap.add_argument('--source',type=pathlib.Path);ap.add_argument('--expected-source');ap.add_argument('--expected-tree');ap.add_argument('--expected-lock-sha256');ap.add_argument('--bin-dir',type=pathlib.Path);ap.add_argument('--build-receipt',type=pathlib.Path);ap.add_argument('--output-parent',type=pathlib.Path);ap.add_argument('--timeout',type=float,default=120);args=ap.parse_args()
+    global BLAKE3_HELPER
+    BLAKE3_HELPER=args.blake3_helper.resolve(strict=True)
+    check(BLAKE3_HELPER.is_file() and os.access(BLAKE3_HELPER,os.X_OK),'native helper missing')
+    helper_hash=digest(BLAKE3_HELPER)
     if args.self_check:self_check();return
     check(all((args.source,args.expected_source,args.expected_tree,args.expected_lock_sha256,args.bin_dir,args.build_receipt,args.output_parent)),'source/tree/lock/binaries/receipt/output required')
     check(1<=args.timeout<=300,'timeout must be 1..300 seconds')
@@ -355,7 +348,7 @@ def main():
     verified=verify_runtime_build_receipt(build_receipt,source);build_receipt_hash=verified['receipt_sha256']
     check(all(verified['artifacts'][name]['path']==str(bins[name]) and verified['artifacts'][name]['sha256']==before[name] for name in NAMES),'verified artifact mismatch')
     out=pathlib.Path(tempfile.mkdtemp(prefix='report35-nuget-',dir=args.output_parent));os.chmod(out,0o700)
-    receipt={'schema':'nudox.report35.nuget-public.v1','contract_source':CONTRACT_COMMIT,'contract_tree':CONTRACT_TREE,'source_commit':commit,'source_tree':tree,'cargo_lock_sha256':lock,'binaries_before':before,'build_receipt_path':str(build_receipt),'build_receipt_sha256':build_receipt_hash,'receipt_verification':'full runtime build receipt verified against exact source and artifacts','network':network,'account_gate_environment_set':'NUDOX_ACCOUNT_GATE' in os.environ,'cases':[],'result':'failed','limits':['does not execute/acquire packages','no real account/fake credential','private loopback provider; external network namespace not asserted']}
+    receipt={'schema':'nudox.report35.nuget-public.v1','contract_source':CONTRACT_COMMIT,'contract_tree':CONTRACT_TREE,'source_commit':commit,'source_tree':tree,'cargo_lock_sha256':lock,'binaries_before':before,'blake3_helper':{'path':str(BLAKE3_HELPER),'sha256':helper_hash},'build_receipt_path':str(build_receipt),'build_receipt_sha256':build_receipt_hash,'receipt_verification':'full runtime build receipt verified against exact source and artifacts','network':network,'account_gate_environment_set':'NUDOX_ACCOUNT_GATE' in os.environ,'cases':[],'result':'failed','limits':['does not execute/acquire packages','no real account/fake credential','private loopback provider; external network namespace not asserted']}
     try:
         for scenario in ('positive','cross-origin','escape','encoded-separator','cycle','missing-page','wrong-id','count-mismatch','resource-limit'):
             caseout=out/scenario;caseout.mkdir(mode=0o700);fixture=Fixture(scenario);j=None
@@ -391,6 +384,7 @@ def main():
         try:
             check(git('rev-parse','HEAD')==commit and git('rev-parse','HEAD^{tree}')==tree and not git('status','--porcelain') and digest(source/'Cargo.lock')==lock,'source changed during run')
             check(verify_runtime_build_receipt(build_receipt,source)['receipt_sha256']==build_receipt_hash,'build receipt or artifacts changed during run')
+            check(digest(BLAKE3_HELPER)==helper_hash,'native BLAKE3 helper changed during run')
         except (Failure,OSError,subprocess.SubprocessError) as exc:errors['source_or_receipt']=repr(exc)
         if errors:receipt['result']='failed'
         (out/'receipt.json').write_text(json.dumps(receipt,indent=2)+'\n');print('receipt='+str(out/'receipt.json'),flush=True)
