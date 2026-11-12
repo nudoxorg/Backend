@@ -609,6 +609,79 @@ pub enum CheckedError {
     Terminal(backend_compile::ProcessTerminal),
     InvalidResponse,
 }
+/// Observe a pinned worker's producer basis using one fixed readiness request.
+///
+/// The caller must already admit the exact executable artifact; the response is
+/// only a basis claim from those admitted bytes, not semantic authority. The
+/// probe uses the same bounded supervisor and reaper custody as host analysis.
+/// It accepts neither a caller-supplied query nor a private dependency closure.
+///
+/// # Errors
+/// Returns process, timeout, cancellation, or response-validation failures.
+pub fn probe_basis_checked(
+    launch: CheckedLaunch<'_>,
+    dialect: Dialect,
+    engine: Engine,
+) -> Result<ProducerBasis, CheckedError> {
+    use backend_compile::{
+        ProcessStdin, ProcessSupervisor, ProcessTerminal, ProtocolDescriptor, SupervisedCommand,
+    };
+    use sha2::{Digest, Sha256};
+    if launch.cancellation.is_cancelled() {
+        return Err(CheckedError::Cancelled);
+    }
+    if !launch.environment.variables().is_empty() || !launch.artifact.dependencies().is_empty() {
+        return Err(CheckedError::UnsupportedSettings);
+    }
+    let deadline = std::time::Instant::now()
+        .checked_add(launch.limits.wall_time())
+        .ok_or(CheckedError::Process(
+            backend_compile::ProcessError::Deadline,
+        ))?;
+    let request = Request {
+        version: PROTOCOL_VERSION,
+        expected_basis: None,
+        source: b"SELECT 1".to_vec(),
+        settings: Settings::ProcessDefaults,
+        context: None,
+    };
+    let encoded = serde_json::to_vec(&request).map_err(|_| CheckedError::InvalidResponse)?;
+    let command = SupervisedCommand::for_authority_with_artifact_until(
+        launch.program.to_owned(),
+        Vec::new(),
+        launch.environment,
+        launch.workspace.to_owned(),
+        ProcessStdin::bytes(encoded),
+        launch.artifact,
+        None,
+        ProtocolDescriptor::new(PROTOCOL_VERSION, false),
+        launch.limits,
+        launch.cancellation,
+        deadline,
+    )
+    .map_err(CheckedError::Process)?;
+    let receipt = ProcessSupervisor::new(command)
+        .run_with_observer_until(launch.cancellation, deadline)
+        .map_err(CheckedError::Process)?;
+    if receipt.terminal() != ProcessTerminal::Success || !receipt.reaped() {
+        return Err(CheckedError::Terminal(receipt.terminal()));
+    }
+    if launch.cancellation.is_cancelled() {
+        return Err(CheckedError::Cancelled);
+    }
+    let digest: [u8; 32] = Sha256::digest(&request.source).into();
+    let response = decode_response(receipt.stdout(), &request, dialect, engine, digest)
+        .ok_or(CheckedError::InvalidResponse)?;
+    if !matches!(response.syntax, Syntax::Parsed { .. }) {
+        return Err(CheckedError::InvalidResponse);
+    }
+    let basis = response.basis.ok_or(CheckedError::MissingBasis)?;
+    if !supported_basis(&basis, dialect, engine) {
+        return Err(CheckedError::UnsupportedSettings);
+    }
+    Ok(basis)
+}
+
 /// Verify actual host against both caller-authenticated source domains and run a
 /// caller-admitted executable via the existing bounded process supervisor.
 /// This does not authenticate the source row, catalog, recipe or artifact admission.
@@ -891,6 +964,70 @@ fn analyze_checked_inner<'a>(
 mod tests {
     use super::*;
     use std::{os::unix::fs::PermissionsExt, time::Duration};
+
+    #[test]
+    fn readiness_probe_supervises_pinned_worker_and_rejects_drift() {
+        use backend_compile::{ProcessEnvironment, ProcessLimits, ToolchainArtifact};
+        use sha2::{Digest, Sha256};
+        use std::sync::atomic::AtomicBool;
+        let path = std::env::temp_dir().join(format!("nudox-sql-probe-{}", std::process::id()));
+        let basis = ProducerBasis {
+            engine: Engine::Syntaqlite4e4de76,
+            native_revision: "4e4de76312429fb2235ae093ab2125914320d5bd".into(),
+            recipe: "syntaqlite-sqlite-fmt-analysis-dqs-default-v1".into(),
+            lock_sha256: [3; 32],
+            support_sha256: Some([4; 32]),
+            settings: EffectiveSettings::Sqlite {
+                version: i32::MAX,
+                cflags: 0,
+                analyzer_dqs_fallback: true,
+            },
+        };
+        let response = Response {
+            version: PROTOCOL_VERSION,
+            basis: Some(basis.clone()),
+            dialect: Dialect::Sqlite,
+            engine: Engine::Syntaqlite4e4de76,
+            content_sha256: Sha256::digest(b"SELECT 1").into(),
+            syntax: Syntax::Parsed {
+                statements: 1,
+                identifiers: vec![],
+                identifier_coverage: IdentifierCoverage::Unavailable,
+            },
+            binding: Binding::MissingContext,
+            outline: Some(Outline {
+                coverage: OutlineCoverage::Complete,
+                statements: vec![],
+            }),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nIFS= read -r request || :\nprintf '%s' '{}'\n",
+                json
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let artifact = ToolchainArtifact::from_path(&path, Vec::new()).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let launch = || CheckedLaunch {
+            program: &path,
+            workspace: path.parent().unwrap(),
+            artifact: artifact.clone(),
+            environment: ProcessEnvironment::new(vec![]).unwrap(),
+            limits: ProcessLimits::new(65536, 4096, Duration::from_secs(2), 69632).unwrap(),
+            cancellation: &cancelled,
+        };
+        assert_eq!(
+            probe_basis_checked(launch(), Dialect::Sqlite, Engine::Syntaqlite4e4de76).unwrap(),
+            basis
+        );
+        std::fs::write(&path, b"#!/bin/sh\nexit 0\n").unwrap();
+        assert!(probe_basis_checked(launch(), Dialect::Sqlite, Engine::Syntaqlite4e4de76).is_err());
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn protocol_rejects_unknown_fields_and_wrong_version() {

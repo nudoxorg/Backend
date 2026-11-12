@@ -16,7 +16,7 @@ use super::{
     sql_index::SqlWorkers,
 };
 use backend_compile::ToolchainArtifact;
-use backend_sql_contract::{Dialect, Engine, Request, Settings};
+use backend_sql_contract::{CheckedLaunch, Dialect, Engine};
 use std::{path::Path, sync::Arc};
 
 const fn valid_compiled_anchor(value: &str) -> bool {
@@ -202,21 +202,31 @@ fn admit_sibling(
     if artifact.identity().to_bytes() != expected {
         return None;
     }
-    // The worker's own report names the producer basis it was built with; the
-    // anchor above is what makes that report trustworthy.
-    let response = backend_sql_contract::call_worker(
-        &candidate,
-        &Request {
-            version: backend_sql_contract::PROTOCOL_VERSION,
-            expected_basis: None,
-            source: b"SELECT 1".to_vec(),
-            settings: Settings::ProcessDefaults,
-            context: None,
+    // The exact admitted worker can report its basis through the same bounded
+    // supervisor and process-group retirement used for actual host analysis.
+    let limits = backend_compile::ProcessLimits::new(
+        8 * 1024 * 1024,
+        128 * 1024,
+        std::time::Duration::from_secs(10),
+        9 * 1024 * 1024,
+    )
+    .and_then(|limits| limits.with_input_bytes_limit(4 * 1024 * 1024))
+    .ok()?;
+    let cancellation = std::sync::atomic::AtomicBool::new(false);
+    let basis = backend_sql_contract::probe_basis_checked(
+        CheckedLaunch {
+            program: &candidate,
+            workspace: candidate.parent()?,
+            artifact: artifact.clone(),
+            environment: backend_compile::ProcessEnvironment::new(vec![]).ok()?,
+            limits,
+            cancellation: &cancellation,
         },
         dialect,
         engine,
-    );
-    Some((candidate, artifact, response.basis?))
+    )
+    .ok()?;
+    Some((candidate, artifact, basis))
 }
 
 #[cfg(test)]
