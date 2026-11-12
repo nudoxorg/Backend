@@ -2,18 +2,22 @@
 """Strict development-mode CLI/MCP Vue and installed-metadata journey.
 
 Uses private synthetic files, a real owner and cold restart. No package code runs.
-The binaries must be built from the supplied commit; their hashes are recorded,
-not independently tied to that commit. NuGet discovery requires a separate
+A verified Root Cargo build receipt binds the binaries to the exact checkout. NuGet discovery requires a separate
 configured loopback-provider public journey and is not claimed here.
 """
 import argparse
 import hashlib
 import json
 import pathlib
+import os
+import shutil
+import signal
+import time
 import subprocess
 import sys
 
 from csharp_public_route import Journey
+from runtime_build_receipt import verify_runtime_build_receipt
 from csharp_aspnet_acceptance import coverage_word, declarations, index_published, spans
 
 
@@ -21,11 +25,104 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+class StrictJourney(Journey):
+    """Retire only process groups started by this journey, and report failures."""
+    def _stop(self, proc):
+        if proc is None:
+            return
+        if proc.stdin:
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            proc.poll()
+            try:
+                os.killpg(proc.pid, 0)
+            except ProcessLookupError:
+                break
+            except PermissionError:
+                pass  # A terminating group may temporarily be unsignalable.
+            time.sleep(.05)
+        else:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        proc.wait(timeout=10)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(proc.pid, 0)
+            except ProcessLookupError:
+                self.records.append({'retired_process_group': proc.pid, 'exit': proc.returncode})
+                return
+            except PermissionError:
+                pass
+            time.sleep(.05)
+        raise RuntimeError(f'owned process group {proc.pid} survived cleanup')
+
+    def cli(self, label, args, project=None, timeout=900):
+        project = project or self.project
+        cmd = [str(self.bin / 'backend-cli'), '--format', 'json', '--project', str(project),
+               '--workspace', str(self.workspace), '--endpoint', str(self.endpoint), *args]
+        for attempt in range(6):
+            proc = subprocess.Popen(cmd, cwd=project, env=self.env, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, start_new_session=True)
+            timed_out = False
+            try:
+                out, err = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                self._stop(proc)
+                out, err = proc.communicate()
+            else:
+                self._stop(proc)
+            raw, stderr = out.decode('utf-8', 'replace'), err.decode('utf-8', 'replace')
+            (self.out / f'{self.label}-{label}-attempt-{attempt + 1}.stdout').write_text(raw)
+            (self.out / f'{self.label}-{label}-attempt-{attempt + 1}.stderr').write_text(stderr)
+            if timed_out:
+                raise TimeoutError(f'CLI {label} timed out; output preserved')
+            try:
+                obj = json.loads(raw)
+            except ValueError:
+                obj = None
+            self.records.append({'label': label, 'attempt': attempt + 1,
+                                 'argv': cmd[1:], 'exit': proc.returncode})
+            repeatable = (proc.returncode != 0 and isinstance(obj, dict)
+                          and obj.get('slug') == 'endpoint' and obj.get('cause') == 'unreachable'
+                          and 'can be repeated' in str(obj.get('detail', '')))
+            if not repeatable:
+                break
+            time.sleep(10)
+        return proc.returncode, obj, raw + '\n' + stderr
+
+    def close(self, preserve_fixture):
+        errors = []
+        for stop in (self.stop_mcp, self.stop_owner):
+            try:
+                stop()
+            except Exception as error:
+                errors.append(repr(error))
+        if not preserve_fixture and not errors:
+            try:
+                shutil.rmtree(self.root)
+            except Exception as error:
+                errors.append(repr(error))
+        return errors
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--bin-dir', required=True)
     parser.add_argument('--output', required=True)
     parser.add_argument('--source-commit', required=True)
+    parser.add_argument('--build-receipt', required=True, type=pathlib.Path)
     args = parser.parse_args()
     repo = pathlib.Path(__file__).resolve().parents[3]
     git = lambda *cmd: subprocess.check_output(['git', '-C', str(repo), *cmd], text=True).strip()
@@ -33,10 +130,15 @@ def main():
     if head != args.source_commit or git('status', '--porcelain'):
         raise SystemExit('source checkout must be clean and match --source-commit exactly')
     tree = git('rev-parse', 'HEAD^{tree}')
+    build = verify_runtime_build_receipt(args.build_receipt, repo)
+    binary_dir = pathlib.Path(args.bin_dir).resolve(strict=True)
+    for name, artifact in build['artifacts'].items():
+        if (binary_dir / name).resolve(strict=True) != pathlib.Path(artifact['path']):
+            raise SystemExit(f'{name} is not the verified build receipt artifact')
     output = pathlib.Path(args.output).resolve()
-    output.mkdir(parents=True, exist_ok=True)
+    output.mkdir(parents=True, exist_ok=False)
     checks = []
-    journey = Journey(args.bin_dir, output, label='vue-packages')
+    journey = StrictJourney(binary_dir, output, label='vue-packages')
 
     def require(name, condition, detail=''):
         checks.append({'name': name, 'pass': bool(condition), 'detail': str(detail)[:500]})
@@ -129,8 +231,20 @@ def main():
     except Exception as error:
         checks.append({'name': 'journey completed', 'pass': False, 'detail': repr(error)})
     finally:
-        journey.close()
-    receipt = {'source_commit': head, 'source_tree': tree, 'cargo_lock_sha256': digest(repo / 'Cargo.lock'), 'binary_sha256': {name: digest(pathlib.Path(args.bin_dir) / name) for name in ('backend-cli', 'backend-mcp', 'backend-locald')}, 'binary_source_binding': 'not independently attested', 'mode': 'development assumed; authenticated account not exercised', 'account_gate_environment_set': 'NUDOX_ACCOUNT_GATE' in journey.env, 'fixture': 'synthetic; package code not executed', 'nuget_public_journey': 'not exercised', 'checks': checks}
+        cleanup_errors = journey.close(preserve_fixture=True)
+        checks.append({'name': 'owned process cleanup', 'pass': not cleanup_errors, 'detail': str(cleanup_errors)})
+        try:
+            after = verify_runtime_build_receipt(args.build_receipt, repo)
+            unchanged = after['receipt_sha256'] == build['receipt_sha256'] and after['artifacts'] == build['artifacts']
+            checks.append({'name': 'build provenance unchanged', 'pass': unchanged, 'detail': ''})
+        except Exception as error:
+            checks.append({'name': 'build provenance unchanged', 'pass': False, 'detail': repr(error)})
+        if all(c['pass'] for c in checks):
+            try:
+                shutil.rmtree(journey.root)
+            except Exception as error:
+                checks.append({'name': 'fixture cleanup', 'pass': False, 'detail': repr(error)})
+    receipt = {'source_commit': head, 'source_tree': tree, 'cargo_lock_sha256': digest(repo / 'Cargo.lock'), 'binary_sha256': {name: item['sha256'] for name, item in build['artifacts'].items()}, 'build_receipt': {'path': build['receipt_path'], 'sha256': build['receipt_sha256']}, 'records': journey.records, 'fixture_root_if_preserved': str(journey.root) if journey.root.exists() else None, 'mode': 'development assumed; authenticated account not exercised', 'account_gate_environment_set': 'NUDOX_ACCOUNT_GATE' in journey.env, 'fixture': 'synthetic; package code not executed', 'nuget_public_journey': 'not exercised', 'checks': checks}
     (output / 'receipt.json').write_text(json.dumps(receipt, indent=2))
     print(json.dumps(receipt, indent=2))
     return 0 if checks and all(check['pass'] for check in checks) else 1
