@@ -4579,8 +4579,39 @@ mod tests {
         assert!(reopen_selected_native_lines_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000), &|| true).is_err());
         let mut missing = vec![image_object, program_object, metadata.typed_object(), envelope.typed_object()];
         missing.sort_by_key(|o| (o.schema(), *o.key(), *o.version()));
+        let policy = ArtifactBudget::new(16, 64, 8 * 1024 * 1024, 1024 * 1024, 64);
+        let verifier = FileStoreCompilerPublicationVerifier::new(&store, policy, &envelope, &metadata);
+        let valid_candidate = envelope.candidate(attempt.clone(), *closure.as_bytes()).unwrap();
+        verifier.verify_closure(&ClosureClaim::for_candidate(&valid_candidate)).unwrap();
+        // These physically valid object IDs are not sufficient to admit an
+        // incorrectly typed or malformed line member before selection.
+        struct TestLineBytes;
+        impl Schema for TestLineBytes {
+            const DOMAIN: u8 = 0x7a; const TYPE: u16 = 0xc00f; const VERSION: u8 = 1;
+            type Value = [u8];
+            fn encode(value: &Self::Value, out: &mut Vec<u8>) { out.extend_from_slice(value); }
+        }
+        let bad_wire: &[u8] = b"NLM1\0\0\0\1";
+        let bad_object = TypedObject::from_value(&ObjectKey::<TestLineBytes>::from_value(bad_wire), bad_wire);
+        for bad_member in [
+            CompilerNativeLinesMember { object_id: *program_object.id().as_bytes(), byte_length: program_object.bytes().len() as u32 },
+            CompilerNativeLinesMember { object_id: *bad_object.id().as_bytes(), byte_length: bad_object.bytes().len() as u32 },
+        ] {
+            let (bad_image, bad_image_object) = compiler_image();
+            let bad_metadata = metadata(bad_image).with_native_program_sources(program_member).unwrap().with_native_lines(bad_member).unwrap();
+            let bad_envelope = CompilerPublicationEnvelope::new(&attempt, &bad_metadata).unwrap();
+            let mut payloads = vec![bad_image_object, program_object.clone(), bad_metadata.typed_object(), bad_envelope.typed_object()];
+            if bad_member.object_id == *bad_object.id().as_bytes() { payloads.push(bad_object.clone()); }
+            payloads.sort_by_key(|o| (o.schema(), *o.key(), *o.version()));
+            let bad_closure = store.write_closure(&ClosureManifest::new(payloads).unwrap()).unwrap();
+            let bad_candidate = bad_envelope.candidate(attempt.clone(), *bad_closure.as_bytes()).unwrap();
+            let bad_verifier = FileStoreCompilerPublicationVerifier::new(&store, policy, &bad_envelope, &bad_metadata);
+            assert!(bad_verifier.verify_closure(&ClosureClaim::for_candidate(&bad_candidate)).is_err());
+        }
         let missing_closure = store.write_closure(&ClosureManifest::new(missing).unwrap()).unwrap();
         let missing_selected = selected_generation(&attempt, &envelope.candidate(attempt.clone(), *missing_closure.as_bytes()).unwrap(), 2);
+        let missing_candidate = envelope.candidate(attempt.clone(), *missing_closure.as_bytes()).unwrap();
+        assert!(verifier.verify_closure(&ClosureClaim::for_candidate(&missing_candidate)).is_err());
         assert!(reopen_selected_native_lines_budgeted(&store, &missing_selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000), &|| false).is_err());
         assert!(visit_selected_publication_wire(&store, &missing_selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000), &|| false, 8 * 1024 * 1024, 1, |_, _| Ok(())).is_err());
         drop(store);
