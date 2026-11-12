@@ -171,34 +171,12 @@ impl NativeSourceLineAggregate {
     pub fn file(&self,path:&str)->Option<&NativeSourceLineFile>{self.files.binary_search_by(|f|f.path.as_str().cmp(path)).ok().map(|i|&self.files[i])}
     /// Validates producer fields and computes canonical size without allocation.
     pub fn encoded_len_checkpointed<E>(&self,checkpoint:&mut impl FnMut(usize)->Result<(),E>)->Result<usize,BorrowedSourceLinesError<E>>{
-        if self.files.len()>MAX_NATIVE_SOURCE_LINE_FILES{return Err(BorrowedSourceLinesError::Invalid);}
-        let mut size=8usize;let mut previous:Option<&str>=None;
-        for file in &self.files {
-            checkpoint(file.path.len()).map_err(BorrowedSourceLinesError::Stopped)?;
-            if !valid_path(&file.path) || previous.is_some_and(|p|p>=file.path.as_str()) || file.source.byte_len>64*1024*1024 || file.line_starts.is_empty() || file.line_starts.len()>MAX_NATIVE_SOURCE_LINES_PER_FILE {return Err(BorrowedSourceLinesError::Invalid);}
-            previous=Some(&file.path);
-            let mut prior=None;
-            for &offset in &file.line_starts {checkpoint(4).map_err(BorrowedSourceLinesError::Stopped)?; if (prior.is_none() && offset!=0) || prior.is_some_and(|p|p>=offset) || offset>file.source.byte_len {return Err(BorrowedSourceLinesError::Invalid);} prior=Some(offset);}
-            size=size.checked_add(42).and_then(|n|n.checked_add(file.path.len())).and_then(|n|n.checked_add(file.line_starts.len().checked_mul(4)?)).ok_or(BorrowedSourceLinesError::Invalid)?;
-        }
-        if size>MAX_NATIVE_SOURCE_LINE_BYTES{return Err(BorrowedSourceLinesError::Invalid);} Ok(size)
+        encoded_len_files(self.files.iter(),checkpoint).map(|(size,_)|size)
     }
-    /// Writes canonical wire into an exact caller-owned buffer. On error the
-    /// output may be partially written and must be discarded.
+    /// Writes canonical wire into an exact caller-owned buffer.
     pub fn encode_into<E>(&self,out:&mut [u8],checkpoint:&mut impl FnMut(usize)->Result<(),E>)->Result<(),BorrowedSourceLinesError<E>>{
-        let expected=self.encoded_len_checkpointed(checkpoint)?;
-        if out.len()!=expected{return Err(BorrowedSourceLinesError::Invalid);}
-        struct Writer<'a>{bytes:&'a mut [u8],at:usize}
-        impl Writer<'_>{fn put(&mut self,b:&[u8]){let end=self.at+b.len();self.bytes[self.at..end].copy_from_slice(b);self.at=end;}}
-        let mut w=Writer{bytes:out,at:0};w.put(b"NLM1");w.put(&(self.files.len() as u32).to_be_bytes());
-        for file in &self.files {
-            checkpoint(file.path.len()).map_err(BorrowedSourceLinesError::Stopped)?;
-            w.put(&(file.path.len() as u16).to_be_bytes());w.put(file.path.as_bytes());w.put(file.source.identity.as_ref());w.put(&file.source.byte_len.to_be_bytes());w.put(&(file.line_starts.len() as u32).to_be_bytes());
-            for offset in &file.line_starts {checkpoint(4).map_err(BorrowedSourceLinesError::Stopped)?;w.put(&offset.to_be_bytes());}
-        }
-        Ok(())
+        encode_files_into(self.files.iter(),out,checkpoint)
     }
-
     /// Precharges decoded arrays before materializing untrusted bytes.
     pub fn decode_budgeted(bytes:&[u8], budget:&mut usize)->Result<Self,&'static str>{
         fn parse(bytes:&[u8], materialize:bool)->Option<(NativeSourceLineAggregate,usize)>{
@@ -243,9 +221,62 @@ impl NativeSourceLineAggregate {
     }
 }
 
+/// Validates a sorted stream of borrowed producer files and returns exact
+/// canonical wire length and count. It retains no paths or line arrays.
+pub fn encoded_len_files<'a,E>(files:impl Iterator<Item=&'a NativeSourceLineFile>,checkpoint:&mut impl FnMut(usize)->Result<(),E>)->Result<(usize,usize),BorrowedSourceLinesError<E>>{
+    let mut size=8usize;let mut count=0usize;let mut previous:Option<&str>=None;
+    for file in files {
+        checkpoint(file.path.len()).map_err(BorrowedSourceLinesError::Stopped)?;
+        count=count.checked_add(1).ok_or(BorrowedSourceLinesError::Invalid)?;
+        if count>MAX_NATIVE_SOURCE_LINE_FILES || !valid_path(&file.path) || previous.is_some_and(|p|p>=file.path.as_str()) || file.source.byte_len>64*1024*1024 || file.line_starts.is_empty() || file.line_starts.len()>MAX_NATIVE_SOURCE_LINES_PER_FILE{return Err(BorrowedSourceLinesError::Invalid);}
+        previous=Some(&file.path);let mut prior=None;
+        for &offset in &file.line_starts {checkpoint(4).map_err(BorrowedSourceLinesError::Stopped)?;if (prior.is_none() && offset!=0) || prior.is_some_and(|p|p>=offset) || offset>file.source.byte_len{return Err(BorrowedSourceLinesError::Invalid);}prior=Some(offset);}
+        size=size.checked_add(42).and_then(|n|n.checked_add(file.path.len())).and_then(|n|n.checked_add(file.line_starts.len().checked_mul(4)?)).ok_or(BorrowedSourceLinesError::Invalid)?;
+    }
+    if size>MAX_NATIVE_SOURCE_LINE_BYTES{return Err(BorrowedSourceLinesError::Invalid);}Ok((size,count))
+}
+
+/// Writes sorted borrowed files into exactly sized caller-owned storage. A
+/// stopped/failed operation may leave partial bytes and must be discarded.
+pub fn encode_files_into<'a,E,I>(files:I,out:&mut [u8],checkpoint:&mut impl FnMut(usize)->Result<(),E>)->Result<(),BorrowedSourceLinesError<E>>
+where I:Iterator<Item=&'a NativeSourceLineFile>+Clone {
+    let (size,count)=encoded_len_files(files.clone(),checkpoint)?;
+    if out.len()!=size{return Err(BorrowedSourceLinesError::Invalid);}
+    struct Writer<'a>{bytes:&'a mut [u8],at:usize}
+    impl Writer<'_>{fn put(&mut self,b:&[u8])->bool{let Some(end)=self.at.checked_add(b.len()) else{return false;};let Some(target)=self.bytes.get_mut(self.at..end) else{return false;};target.copy_from_slice(b);self.at=end;true}}
+    let mut w=Writer{bytes:out,at:0};
+    macro_rules! put {($value:expr)=>{if !w.put($value){return Err(BorrowedSourceLinesError::Invalid);}}}
+    put!(b"NLM1");put!(&(count as u32).to_be_bytes());
+    let mut written=0usize;let mut previous:Option<&str>=None;
+    for file in files {
+        checkpoint(file.path.len()).map_err(BorrowedSourceLinesError::Stopped)?;
+        written=written.checked_add(1).ok_or(BorrowedSourceLinesError::Invalid)?;
+        if written>count || !valid_path(&file.path) || previous.is_some_and(|p|p>=file.path.as_str()) || file.source.byte_len>64*1024*1024 || file.line_starts.is_empty() || file.line_starts.len()>MAX_NATIVE_SOURCE_LINES_PER_FILE{return Err(BorrowedSourceLinesError::Invalid);}
+        previous=Some(&file.path);
+        put!(&(file.path.len() as u16).to_be_bytes());put!(file.path.as_bytes());put!(file.source.identity.as_ref());put!(&file.source.byte_len.to_be_bytes());put!(&(file.line_starts.len() as u32).to_be_bytes());
+        let mut prior=None;
+        for &offset in &file.line_starts {checkpoint(4).map_err(BorrowedSourceLinesError::Stopped)?;if (prior.is_none() && offset!=0) || prior.is_some_and(|p|p>=offset) || offset>file.source.byte_len{return Err(BorrowedSourceLinesError::Invalid);}prior=Some(offset);put!(&offset.to_be_bytes());}
+    }
+    if written!=count || w.at!=size{return Err(BorrowedSourceLinesError::Invalid);}Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn borrowed_iterator_encoder_rejects_inconsistent_clones() {
+        struct Changing<'a>{current:Option<&'a NativeSourceLineFile>,other:&'a NativeSourceLineFile}
+        impl<'a> Clone for Changing<'a>{fn clone(&self)->Self{Self{current:Some(self.other),other:self.current.unwrap_or(self.other)}}}
+        impl<'a> Iterator for Changing<'a>{type Item=&'a NativeSourceLineFile;fn next(&mut self)->Option<Self::Item>{self.current.take()}}
+        let source=SourceIdentity::from_bytes(b"x").unwrap();
+        let short=NativeSourceLineFile{path:"a".into(),source,line_starts:vec![0]};
+        let long=NativeSourceLineFile{path:"longer".into(),source,line_starts:vec![0]};
+        let (size,_)=encoded_len_files(std::iter::once(&short),&mut |_|Ok::<(),()>(())).unwrap();
+        let mut wire=vec![0;size];
+        let iter=Changing{current:Some(&long),other:&short};
+        assert!(matches!(encode_files_into(iter,&mut wire,&mut |_|Ok::<(),()>(())),Err(BorrowedSourceLinesError::Invalid)));
+    }
+
     #[test]
     fn borrowed_lines_match_exact_source_without_allocating_and_stop() {
         let mut source=vec![b'a';65_535]; source.extend_from_slice("α\n".as_bytes());
