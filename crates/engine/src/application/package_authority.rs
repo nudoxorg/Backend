@@ -1093,7 +1093,8 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                         });
                     }
                 };
-                let request = CSharpAuthorityRequest {
+                let csharp_request = CSharpAuthorityRequest {
+                    resolved_reference_snapshot: None,
                     package_root: request.package_root,
                     source_path: request.source_path,
                     project_file: project_file.as_deref(),
@@ -1114,12 +1115,12 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                     Some(snapshot) => configuration
                         .producer
                         .produce_with_owned_reference_snapshot(
-                            request,
+                            csharp_request,
                             std::sync::Arc::new(snapshot.clone_owned().map_err(|_| {
                                 PackageAuthorityError::CSharp(CSharpAuthorityError::Configuration)
                             })?),
                         ),
-                    None => configuration.producer.produce(request),
+                    None => configuration.producer.produce(csharp_request),
                 }
                 .map_err(PackageAuthorityError::CSharp)?;
                 let resolver_snapshot = image.resolved_reference_snapshot().cloned();

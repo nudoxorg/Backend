@@ -4416,8 +4416,13 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             if candidates.is_empty() { return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK resolver candidates unavailable" }); }
             let _project_path = csharp_project_path.ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK project path unavailable" })?;
             let global_json = captured_global_json;
+            let toolchain = match self.toolchain(first_application_request) {
+                Ok(ToolchainSelection::ResolvedNative(toolchain)) => toolchain.external()
+                    .map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK host unavailable" })?,
+                _ => return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK host unavailable" }),
+            };
             let snapshot = backend_frontend_csharp::legacy::resolve_references_with_sdk(
-                self.toolchain(first_application_request).map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK host unavailable" })?.external().map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK host unavailable" })?.executable(),
+                toolchain.executable(),
                 &observed.target_framework,
                 &observed.sdk_directory,
                 global_json,
@@ -5986,7 +5991,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         });
                     }
                     csharp_resolver_receipt = match csharp_resolver_receipt {
-                        Some(previous) if previous != receipt => {
+                        Some(previous) if &previous != receipt => {
                             return Err(PackageSemanticError::CSharpSdkUnavailable {
                                 reason: "C# SDK resolver receipt changed within attempt",
                             });
