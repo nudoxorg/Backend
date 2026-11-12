@@ -1755,6 +1755,62 @@ pub fn reopen_selected_typescript_snapshot_witness(
         .map(|bytes| bytes.map(|bytes| VerifiedTypeScriptSnapshotWitness(bytes.into_boxed_slice())))
 }
 
+/// Borrowed, fully qualified selected envelope. The object bytes must have
+/// already passed physical, typed-version, and key verification.
+struct BorrowedSelectedEnvelope<'a> {
+    metadata_id: AuthorityHash,
+    logical_generation: AuthorityHash,
+    semantic_root: Option<AuthorityHash>,
+    member_wire: &'a [u8],
+}
+impl BorrowedSelectedEnvelope<'_> {
+    fn members(&self) -> impl Iterator<Item = AuthorityHash> + '_ {
+        self.member_wire.chunks_exact(32).map(|chunk| { let mut id = [0; 32]; id.copy_from_slice(chunk); id })
+    }
+}
+fn borrowed_selected_envelope<'a>(bytes: &'a [u8], selected: &SelectedGeneration, id: &AuthorityHash, checkpoint: &dyn Fn() -> Result<(), CompilerEnvelopeError>) -> Result<BorrowedSelectedEnvelope<'a>, CompilerEnvelopeError> {
+    let mut input = Decoder::new(bytes);
+    if input.take(MAGIC.len())? != MAGIC { return Err(CompilerEnvelopeError::Magic); }
+    if input.u16()? != ENVELOPE_VERSION { return Err(CompilerEnvelopeError::Version); }
+    let namespace = selected.namespace();
+    for expected in [namespace.package(), namespace.source(), namespace.branch(), namespace.environment()] {
+        if input.borrowed_string(4096)? != expected { return Err(CompilerEnvelopeError::Namespace); }
+    }
+    if input.u8()? != 1 { return Err(CompilerEnvelopeError::Profile); }
+    if Some(input.borrowed_string(MAX_PROFILE_BYTES)?) != namespace.plane().profile() { return Err(CompilerEnvelopeError::Profile); }
+    let attempt_id = input.array::<16>()?;
+    let epoch = input.u64()?;
+    let fence = input.array::<32>()?;
+    let digest = input.array::<32>()?;
+    let logical_generation = input.array::<32>()?;
+    let metadata_id = input.array::<32>()?;
+    let semantic_root = decode_optional_hash(&mut input)?;
+    let pack = input.array::<32>()?;
+    let count = input.u32()? as usize;
+    if count == 0 || count > MAX_MEMBER_IDS { return Err(CompilerEnvelopeError::MemberCount); }
+    let rows = input.take(count.checked_mul(32).ok_or(CompilerEnvelopeError::Truncated)?)?;
+    if !input.is_empty() { return Err(CompilerEnvelopeError::TrailingBytes); }
+    let (selected_attempt, selected_epoch) = selected.attempt();
+    if &attempt_id != selected_attempt || epoch != selected_epoch || (epoch, fence) != selected.scheduler_fence()
+        || &digest != selected.input_digest() || &logical_generation != selected.target_root()
+        || semantic_root != selected.semantic_manifest_root().copied() || &pack != selected.pack_id() || id != selected.candidate_id()
+    { return Err(CompilerEnvelopeError::AttemptMismatch); }
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(PACK_DOMAIN); hasher.update(&(count as u64).to_le_bytes());
+    let mut previous: Option<&[u8]> = None;
+    let mut has_metadata = false;
+    for row in rows.chunks_exact(32) {
+        checkpoint()?;
+        if previous.is_some_and(|prior| prior >= row) { return Err(CompilerEnvelopeError::MemberOrder); }
+        if row == id.as_slice() { return Err(CompilerEnvelopeError::SelfMember); }
+        if row == metadata_id.as_slice() { has_metadata = true; }
+        hasher.update(row); previous = Some(row);
+    }
+    if !has_metadata { return Err(CompilerEnvelopeError::MetadataMissing); }
+    if hasher.finalize().as_bytes() != &pack { return Err(CompilerEnvelopeError::PackIdentity); }
+    Ok(BorrowedSelectedEnvelope { metadata_id, logical_generation, semantic_root, member_wire: rows })
+}
+
 /// Caller-owned peak-memory credit and finite selected-admission work tokens.
 /// A work token admits one schema-bounded node operation, object chunk, or
 /// metadata decode; callers must set an operation-appropriate finite limit.
@@ -1822,16 +1878,14 @@ pub fn reopen_selected_native_headers_budgeted(
     let count = header_member_bounded(store, &pin, closure, *selected.candidate_id(), budget, cancelled)?;
     if count == 0 || count > (MAX_MEMBER_IDS as u64 + 1) { return Err("selected compiler closure count exceeds limit".into()); }
     let envelope_max = MAGIC.len() + 2 + 5 * 4 + 4 * 4096 + MAX_PROFILE_BYTES + 1 + 16 + 8 + 32 * 6 + 1 + 4 + MAX_MEMBER_IDS * 32;
-    let (wire, schema, key) = header_object_bounded(store, &pin, *selected.candidate_id(), &[COMPILER_PUBLICATION_ENVELOPE_SCHEMA], envelope_max, budget, cancelled)?;
+    let (envelope_wire, schema, key) = header_object_bounded(store, &pin, *selected.candidate_id(), &[COMPILER_PUBLICATION_ENVELOPE_SCHEMA], envelope_max, budget, cancelled)?;
     header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected envelope stopped: {e:?}"))?;
-    verified_payload_key(schema, &wire, &key)?;
-    let charge = compiler_envelope_decode_bound(&wire).map_err(|e| e.to_string())?;
-    header_reserve(&mut budget.memory, charge)?;
-    let envelope = CompilerPublicationEnvelope::decode(&wire).map_err(|e| e.to_string())?;
-    if !envelope.matches_selected_with_verified_id(selected, selected.candidate_id()) { return Err("selected compiler envelope differs".into()); }
-    if count != u64::try_from(envelope.member_ids().len()).map_err(|_| "member count overflow")? + 1 { return Err("selected compiler closure count differs".into()); }
-    drop(wire);
-    let metadata_id = *envelope.metadata_id();
+    verified_payload_key(schema, &envelope_wire, &key)?;
+    let envelope = borrowed_selected_envelope(&envelope_wire, selected, selected.candidate_id(), &|| {
+        header_checkpoint(&budget.work, cancelled).map_err(|_| CompilerEnvelopeError::Stopped)
+    }).map_err(|e| e.to_string())?;
+    if count != u64::try_from(envelope.member_wire.len() / 32).map_err(|_| "member count overflow")? + 1 { return Err("selected compiler closure count differs".into()); }
+    let metadata_id = envelope.metadata_id;
     header_member_bounded(store, &pin, closure, metadata_id, budget, cancelled)?;
     let metadata_max = MAX_MANIFEST_BYTES + 64 * 1024 * 1024 + MAX_MEMBER_IDS * 72 + 1024;
     let schemas = [COMPILER_PUBLICATION_METADATA_SCHEMA, COMPILER_PROGRAM_METADATA_SCHEMA, COMPILER_COVERAGE_METADATA_SCHEMA,
@@ -1847,10 +1901,16 @@ pub fn reopen_selected_native_headers_budgeted(
     let plane_slots = metadata.versioned_planes.as_ref().map_or(0, |p| p.segment_count() + p.artifacts().len());
     let inventory = metadata.images.len().checked_add(plane_slots).and_then(|n| n.checked_add(6)).and_then(|n| n.checked_mul(32)).ok_or("compiler inventory budget overflow")?;
     header_reserve(&mut budget.memory, inventory)?;
-    envelope.validate_metadata_with_verified_id(&metadata, &metadata_id).map_err(|e| e.to_string())?;
-    if selected.semantic_manifest_root().copied() != metadata.semantic_manifest_root().copied() { return Err("selected semantic root differs".into()); }
-    for id in envelope.member_ids() {
-        if header_member_bounded(store, &pin, closure, *id, budget, cancelled)? != count { return Err("selected closure count changed".into()); }
+    let inventory = metadata_member_ids_with_id(&metadata, metadata_id);
+    if envelope.logical_generation != metadata.binding_identity || envelope.semantic_root != metadata.semantic_manifest_root().copied()
+        || envelope.member_wire.len() / 32 != inventory.len() { return Err("selected compiler metadata differs from envelope".into()); }
+    for (actual, expected) in envelope.members().zip(inventory.iter().copied()) {
+        header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected inventory stopped: {e:?}"))?;
+        if actual != expected { return Err("selected compiler metadata differs from envelope".into()); }
+    }
+    drop(inventory);
+    for id in envelope.members() {
+        if header_member_bounded(store, &pin, closure, id, budget, cancelled)? != count { return Err("selected closure count changed".into()); }
     }
     header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
     let Some(member) = metadata.native_headers() else { budget.memory = initial; return Ok(None) };
@@ -2769,6 +2829,8 @@ pub enum CompilerEnvelopeError {
     CSharpInvocationEvidence,
     /// Native header aggregate is malformed or misbound.
     NativeHeaders,
+    /// Caller cancellation or finite work stopped the checked traversal.
+    Stopped,
     /// The canonical versioned-plane metadata is invalid.
     VersionedPlane(VersionedPlaneError),
 }
@@ -3115,6 +3177,12 @@ impl<'bytes> Decoder<'bytes> {
 
     fn u64(&mut self) -> Result<u64, CompilerEnvelopeError> {
         Ok(u64::from_le_bytes(self.array()?))
+    }
+
+    fn borrowed_string(&mut self, maximum: usize) -> Result<&'bytes str, CompilerEnvelopeError> {
+        let length = self.u32()? as usize;
+        if length == 0 || length > maximum { return Err(CompilerEnvelopeError::Truncated); }
+        std::str::from_utf8(self.take(length)?).map_err(|_| CompilerEnvelopeError::Truncated)
     }
 
     fn string(&mut self, maximum: usize) -> Result<String, CompilerEnvelopeError> {
