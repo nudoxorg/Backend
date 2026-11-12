@@ -3190,7 +3190,11 @@ pub(super) fn finish_deferred_profile_for_snapshot(
         Err(error) => {
             semantic_authority.retire_candidate_attempt(
                 &profile.attempt,
-                backend_extension_turso::CandidateAttemptRetirementReason::Refused,
+                if cancellation.load(Ordering::Acquire) {
+                    backend_extension_turso::CandidateAttemptRetirementReason::Cancelled
+                } else {
+                    backend_extension_turso::CandidateAttemptRetirementReason::Refused
+                },
             )?;
             return Err(error.into());
         }
