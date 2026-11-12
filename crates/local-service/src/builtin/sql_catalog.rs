@@ -781,11 +781,11 @@ fn verify_fact(
 /// Read selected SQL projects using one shared requested-allocation ledger.
 /// All retained arrays use fixed-size boxed chunks charged before allocation;
 /// the caller supplies its explicit per-allocation bookkeeping allowance.
-/// The input project set and snapshot are caller-owned and must already be
-/// accounted for in the caller's remaining budget.
-pub(super) fn load_projects_bounded(
+/// The sorted input project keys and snapshot are caller-owned and must already
+/// be accounted for in the caller's remaining budget.
+pub(super) fn load_projects_bounded<'a>(
     snapshot: &WorkspaceSnapshot,
-    projects: &std::collections::BTreeSet<[u8; 32]>,
+    projects: impl ExactSizeIterator<Item = &'a [u8; 32]>,
     cancelled: &dyn Fn() -> bool,
     max_bytes: usize,
     allocation_bookkeeping_bytes: usize,
@@ -800,7 +800,12 @@ pub(super) fn load_projects_bounded(
             cancelled,
         )?,
     };
-    for (i, key) in projects.iter().copied().enumerate() {
+    let mut previous = None;
+    for (i, key) in projects.copied().enumerate() {
+        if previous.is_some_and(|value| value >= key) {
+            return Err("SQL project keys are not strictly ordered".into());
+        }
+        previous = Some(key);
         if cancelled() {
             return Err("SQL read cancelled".into());
         }
