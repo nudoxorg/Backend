@@ -1536,6 +1536,10 @@ mod bounded_catalog_tests {
             selection_digest(project, &selection, &mut scratch).unwrap(),
             backend_engine::builtin::sql_selection_digest(project, &selection).unwrap()
         );
+        assert_eq!(
+            HostFactDigest::new().finish(),
+            backend_engine::builtin::sql_host_fact_digest(&[]).unwrap()
+        );
         let row = SqlAnalysisRecord::Fact {
             host: [4; 32],
             ordinal: 0,
