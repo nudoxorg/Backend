@@ -180,6 +180,15 @@ mod tests {
         assert_eq!(measured.bytes_current, (bytes - size_of::<Row>()) as i64);
         let row = row.expect("retained row");
         assert_eq!(row.retained_requested_bytes(), Some(bytes));
+        assert_eq!(row.label, "pkg::schema.sql::book");
+        assert_eq!(row.signature.as_deref(), Some("SQL table book"));
+        assert_eq!(
+            &*row.document,
+            &[Fragment::Text("SQL table in schema.sql".to_owned())]
+        );
+        assert_eq!(row.package, Some(backend_engine::package_key("pkg")));
+        assert_eq!(row.kind, Some(DeclarationKind::Unknown));
+        assert_eq!(row.basis, initial.basis());
         assert_eq!(
             row.identity_preimage().expect("identity").as_str(),
             "pkg::schema.sql::book\0sql:4294967295"

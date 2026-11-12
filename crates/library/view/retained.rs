@@ -96,17 +96,22 @@ mod tests {
         row = row
             .try_with_identity_preimage("row\0occurrence:1")
             .expect("identity");
+        let fragment_capacity = match &row.document[0] {
+            Fragment::Text(text) => text.capacity(),
+            _ => unreachable!(),
+        };
         assert_eq!(
             row.retained_requested_bytes(),
             Some(
                 size_of::<Row>()
-                    + 512
-                    + 1024
-                    + 2048
+                    + row.label.capacity()
+                    + row.signature.as_ref().expect("signature").capacity()
+                    + fragment_capacity
                     + 2 * size_of::<Fragment>()
                     + "row\0occurrence:1".len()
             )
         );
+        assert!(row.retained_owned_requested_bytes().expect("layout") > 512 + 1024 + 2048);
     }
 
     #[test]
