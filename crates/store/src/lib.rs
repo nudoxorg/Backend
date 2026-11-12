@@ -43,6 +43,18 @@ pub fn try_allocate_exact_zeroed_bytes_budgeted(len: usize, budget: &mut usize) 
     }
 }
 
+/// Fallibly allocates exactly `count` zeroed u32 cells and debits their
+/// requested allocation layout before allocation. The caller retains the
+/// reservation for the Vec lifetime; allocator bookkeeping is separate.
+pub fn try_allocate_exact_zeroed_u32_budgeted(count: usize, budget: &mut usize) -> Result<Vec<u32>, StoreError> {
+    let bytes = count.checked_mul(std::mem::size_of::<u32>()).ok_or(StoreError::Bounds)?;
+    *budget = budget.checked_sub(bytes).ok_or(StoreError::Bounds)?;
+    match bytemuck::allocation::try_zeroed_vec::<u32>(count) {
+        Ok(values) => Ok(values),
+        Err(()) => { *budget += bytes; Err(StoreError::Bounds) }
+    }
+}
+
 fn digest(domain: &[u8], bytes: &[u8]) -> Hash {
     let mut h = blake3::Hasher::new();
     h.update(domain);
