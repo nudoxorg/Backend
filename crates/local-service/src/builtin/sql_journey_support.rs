@@ -69,6 +69,21 @@ pub(super) fn reopen_and_query(workspace: &Path, project: &Path) -> Result<Reope
     let Some(table_hits) = page(SqlObjectKind::Table)? else {
         return Ok(Reopened { analysis: false, tables: Vec::new(), balance_dropped: false });
     };
+    // Exercise the actual selected catalog after a cold owner reopen. Tiny
+    // credit and cancellation must not produce a partial catalog.
+    let project_key = backend_library::package_key(package.as_str()).to_bytes();
+    if super::sql_catalog::load_projects_bounded(&snapshot, std::iter::once(&project_key), &|| false, 0, 64).is_ok() {
+        return Err("zero-credit SQL catalog unexpectedly admitted".into());
+    }
+    if super::sql_catalog::load_projects_bounded(&snapshot, std::iter::once(&project_key), &|| true, 64 * 1024 * 1024, 64).is_ok() {
+        return Err("cancelled SQL catalog unexpectedly admitted".into());
+    }
+    let (catalog, _) = super::sql_catalog::load_projects_bounded(
+        &snapshot, std::iter::once(&project_key), &|| false, 64 * 1024 * 1024, 64,
+    )?;
+    if catalog.get(&project_key).is_none() {
+        return Err("cold selected SQL catalog missing".into());
+    }
     let mut tables = table_hits
         .into_iter()
         .filter_map(|hit| match hit.fact {
