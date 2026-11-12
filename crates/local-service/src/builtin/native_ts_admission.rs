@@ -244,7 +244,8 @@ pub(super) fn refresh_native_ts_evidence_plan(
             backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES,
             backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES as u64,
         );
-        let stopped = || candidate.revalidated.cancelled();
+        let deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
+        let stopped = || candidate.revalidated.cancelled() || std::time::Instant::now() >= deadline;
         let header_witness = semantic_authority.native_header_aggregate_for_admitted(&selected, &mut header_budget, &stopped)?;
         let mut checkpoint = |_: usize| header_budget.checkpoint(1, &stopped).map_err(|e| format!("native header stopped: {e:?}"));
         let header_view = header_witness.as_ref().map(|witness| {
@@ -934,7 +935,8 @@ pub(super) fn admit_native_ts_owner_candidate(
         backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES,
         backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES as u64,
     );
-    let stopped = || revalidated.cancelled();
+    let deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
+    let stopped = || revalidated.cancelled() || std::time::Instant::now() >= deadline;
     let header_witness = semantic_authority.native_header_aggregate_for_admitted(&selected, &mut header_budget, &stopped)?;
     let mut checkpoint = |_: usize| header_budget.checkpoint(1, &stopped).map_err(|e| format!("native header stopped: {e:?}"));
     let header_view = header_witness.as_ref().map(|witness| {
