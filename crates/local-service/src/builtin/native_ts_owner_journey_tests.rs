@@ -1593,7 +1593,9 @@ fn native_ts_large_crlf_line_map_source_show_read_and_cold() -> Result<(), Box<d
     }
     let request = || -> Result<SurfaceCommand, io::Error> { Ok(SurfaceCommand::Read { locators: vec![ProductText::new(coordinate.clone()).map_err(|e| io::Error::other(e.to_string()))?].into_boxed_slice() }) };
     let SurfaceReply::Read(records) = session.surface(request()?)? else { return Err("Read reply".into()) };
-    assert!(records.first().and_then(|record| record.extent.as_ref()).is_some(), "fresh native Read extent");
+    let [record] = records.as_ref() else { return Err("warm Read result count".into()) };
+    assert!(record.extent.is_some(), "fresh native Read extent");
+    assert!(record.signature.as_ref().is_some_and(|text| text.as_str().contains("Greeting") && text.as_str().contains("before")));
     drop(session);
     assert_eq!(owner.close()?.failures, 0);
 
@@ -1637,12 +1639,22 @@ fn native_ts_large_crlf_line_map_source_show_read_and_cold() -> Result<(), Box<d
     let CommandReply::Document(cold_show) = cold.document(&coordinate)?.reply else { return Err("cold Show reply".into()) };
     assert_eq!(cold_show.location.captured().ok_or("cold Show location")?.start_line(), 20_001);
     let SurfaceReply::Read(cold_records) = cold.surface(request()?)? else { return Err("cold Read reply".into()) };
-    assert!(cold_records.first().and_then(|record| record.extent.as_ref()).is_some());
+    let [cold_record] = cold_records.as_ref() else { return Err("cold Read result count".into()) };
+    assert!(cold_record.extent.is_some());
+    assert!(cold_record.signature.as_ref().is_some_and(|text| text.as_str().contains("Greeting") && text.as_str().contains("before")));
     let changed = source.replacen("before", "afters", 1);
     assert_eq!(source.len(), changed.len());
     fs::write(project.join("view.ts"), changed)?;
-    if let Ok(SurfaceReply::Read(stale)) = cold.surface(request()?) {
-        assert!(stale.first().is_none_or(|record| record.extent.is_none() && record.source_policy.is_unknown()));
+    match cold.surface(request()?) {
+        Ok(SurfaceReply::Read(stale)) => {
+            let [record] = stale.as_ref() else { return Err("stale Read result count".into()) };
+            assert!(record.extent.is_none() && record.source_policy.is_unknown());
+            assert!(record.signature.as_ref().is_none_or(|text| !text.as_str().contains("before") && !text.as_str().contains("afters")));
+        }
+        Ok(_) => return Err("unexpected stale Read reply".into()),
+        Err(backend_client::ClientError::CommandFailed(backend_library::CommandFailure::InvalidQuery(detail)))
+            if detail.contains("indexed source changed on disk; reindex and retry") => {},
+        Err(error) => return Err(error.into()),
     }
     drop(cold);
     assert_eq!(cold_owner.close()?.failures, 0);
