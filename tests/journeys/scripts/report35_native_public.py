@@ -107,6 +107,28 @@ def main() -> int:
     def names(body):
         return [identity(row).get("name") for row in records(body)]
 
+    def outline_rows(body):
+        def walk(rows):
+            for row in rows:
+                if isinstance(row, dict):
+                    yield row
+                    yield from walk(row.get("children", []))
+        return list(walk(body.get("roots", []))) if isinstance(body, dict) else []
+
+    def selected_symbol(row):
+        data = identity(row).get("semantic_data", {})
+        return data.get("value") if data.get("kind") == "selected-symbol-id" else None
+
+    def compiler_call(row, caller_symbol, source, text, callee):
+        detail = row.get("reference_details", {})
+        evidence = detail.get("evidence", {})
+        span = evidence.get("source", {})
+        start = text.encode().rfind(callee.encode())
+        return (caller_symbol is not None and row.get("site_symbol") == caller_symbol
+                and detail.get("relation") == "calls" and evidence.get("confidence") == "compiler"
+                and span.get("file") == source and span.get("start") == start
+                and span.get("end") == start + len(callee.encode()))
+
     def tool(label, name, arguments):
         reply = route.tool(name, arguments)
         check(label + ":mcp", not reply.get("isError", False), reply)
@@ -127,27 +149,29 @@ def main() -> int:
             },
             "include": ["src/**/*.ts", "src/**/*.tsx"],
         }) + "\n")
-        (project / "src/data.ts").write_text(
-            'export function loadSectionsCsv(): string { return "sections"; }\n'
-        )
-        (project / "src/scheduler.ts").write_text(
+        data_text = 'export function loadSectionsCsv(): string { return "sections"; }\n'
+        scheduler_text = (
             'import { loadSectionsCsv } from "@/data";\n'
             'export async function generateSchedule(req: string): Promise<string> {\n'
             '  return loadSectionsCsv() + req;\n'
             '}\n'
         )
-        (project / "src/route.ts").write_text(
+        route_text = (
             'import { generateSchedule } from "@/scheduler";\n'
             'export async function POST(): Promise<string> { return generateSchedule("request"); }\n'
         )
-        (project / "src/NavBar.tsx").write_text(
+        navbar_text = (
             'import { loadSectionsCsv } from "@/data";\n'
             'export function NavBar(): string { return loadSectionsCsv(); }\n'
         )
+        for path, text in (("src/data.ts", data_text), ("src/scheduler.ts", scheduler_text),
+                           ("src/route.ts", route_text), ("src/NavBar.tsx", navbar_text)):
+            (project / path).write_text(text)
         route.start_owner(project)
         add, _ = cli("add", "add", str(project), "--wait", "--wait-timeout", "900")
         require_json("add", add)
         coordinates = {}
+        symbols = {}
         initial_search = {}
         for name in ("generateSchedule", "loadSectionsCsv", "POST", "NavBar"):
             body, _ = cli("search-" + name, "search", name, "--limit", "20")
@@ -156,6 +180,7 @@ def main() -> int:
             check("search:" + name, bool(found), names(body))
             if found:
                 coordinates[name] = identity(found[0]).get("coordinate")
+                symbols[name] = selected_symbol(found[0])
                 check("search-coordinate:" + name,
                       isinstance(coordinates[name], str) and bool(coordinates[name]), found[0])
         status, _ = cli("status", "status")
@@ -164,12 +189,9 @@ def main() -> int:
             key in status for key in ("coverage", "lanes", "row_count", "rows", "publication", "answer")), status)
         outline, _ = cli("outline", "outline", "--limit", "50")
         require_json("outline", outline)
-        selected_rows("outline:tsx", outline, "NavBar")
+        check("outline:tsx", any(row.get("name") == "NavBar" and row.get("coordinate") == coordinates.get("NavBar")
+                                 for row in outline_rows(outline)), outline)
         query = "{ Declaration { id @output name @output coordinate @output state @output } }"
-        body, _ = cli("declarations", "query", query)
-        require_json("query", body)
-        check("query:declaration", "generateSchedule" in query_names(body), query_names(body))
-        check("query:tsx", "NavBar" in query_names(body), query_names(body))
         for name, caller in (("generateSchedule", "POST"), ("loadSectionsCsv", "generateSchedule")):
             coordinate = coordinates.get(name)
             if not coordinate:
@@ -182,11 +204,13 @@ def main() -> int:
             refs, _ = cli("references-" + name, "references", coordinate)
             require_json("references:" + name, refs)
             ref_rows = records(refs)
-            check("references-caller:" + name,
-                  any(caller in json.dumps(row) for row in ref_rows), ref_rows)
+            source, text = (("src/route.ts", route_text) if caller == "POST" else ("src/scheduler.ts", scheduler_text))
+            check("references-caller:" + name, any(compiler_call(row, symbols.get(caller), source, text, name)
+                                                    for row in ref_rows), ref_rows)
             if name == "loadSectionsCsv":
                 check("references:cross-profile:NavBar", any(
-                    identity(row).get("name") == "NavBar" for row in ref_rows), ref_rows)
+                    compiler_call(row, symbols.get("NavBar"), "src/NavBar.tsx", navbar_text, name)
+                    for row in ref_rows), ref_rows)
             cli_references[name] = refs
         # The historical path coordinate must remain usable on unchanged source.
         coordinate = coordinates.get("generateSchedule")
@@ -215,7 +239,8 @@ def main() -> int:
                   any('return loadSectionsCsv() + req;' in part for part in strings(path_source)), path_source)
             path_refs, _ = cli("path-references", "references", path_coordinate)
             check("path-references:POST",
-                  any("POST" in json.dumps(row) for row in records(path_refs)), path_refs)
+                  any(compiler_call(row, symbols.get("POST"), "src/route.ts", route_text, "generateSchedule")
+                      for row in records(path_refs)), path_refs)
         route.start_mcp(project)
         body = tool("search", "backend.search", {"query": "generateSchedule", "limit": 20})
         selected_rows("mcp:search:declaration", body, "generateSchedule")
@@ -225,9 +250,14 @@ def main() -> int:
         mcp_query = tool("query", "backend.query", {"query": query})
         check("mcp:query:declaration", "generateSchedule" in query_names(mcp_query), query_names(mcp_query))
         check("mcp:query:tsx", "NavBar" in query_names(mcp_query), query_names(mcp_query))
-        cli_query, _ = cli("parity-query", "query", query)
-        check("mcp:cli-query-parity", query_fingerprint(mcp_query) == query_fingerprint(cli_query),
-              {"mcp": query_fingerprint(mcp_query), "cli": query_fingerprint(cli_query)})
+        outline_facts = {(row.get("name"), row.get("coordinate"),
+                          "symbol:" + bytes(row.get("semantic_data", {}).get("value", [])).hex())
+                         for row in outline_rows(outline) if row.get("semantic_data", {}).get("kind") == "selected-symbol-id"}
+        query_facts = {(row.get("name"), row.get("coordinate"), row.get("id")) for row in query_rows(mcp_query)}
+        for name in ("generateSchedule", "loadSectionsCsv", "POST", "NavBar"):
+            expected = (name, coordinates.get(name), "symbol:" + bytes(symbols.get(name) or []).hex())
+            check("mcp:outline-query:" + name, expected in outline_facts and expected in query_facts,
+                  {"expected": expected, "outline": sorted(outline_facts), "query": sorted(query_facts)})
         if coordinate:
             body = tool("source", "backend.source", {"coordinate": coordinate})
             check("mcp:source:body", any("function generateSchedule" in part for part in strings(body)), body)
@@ -235,7 +265,8 @@ def main() -> int:
             check("mcp:cli-source-parity", any(expected_signature in part for part in strings(body)), body)
             mcp_refs = tool("references", "backend.references", {"coordinate": coordinate})
             check("mcp:references:POST",
-                  any("POST" in json.dumps(row) for row in records(mcp_refs)), mcp_refs)
+                  any(compiler_call(row, symbols.get("POST"), "src/route.ts", route_text, "generateSchedule")
+                      for row in records(mcp_refs)), mcp_refs)
             check("mcp:cli-reference-parity",
                   reference_fingerprint(mcp_refs) == reference_fingerprint(
                       cli_references.get("generateSchedule", {})),
@@ -253,13 +284,14 @@ def main() -> int:
                     result = tool("path-" + label, tool_name, arguments)
                 except Exception as error:
                     check("mcp:path-identity:" + label, False, str(error))
-                    continue                check("mcp:path-identity:" + label,
+                    continue
+                check("mcp:path-identity:" + label,
                       any("generateSchedule" in part for part in strings(result)), result)
         mcp_status = tool("status", "backend.status", {})
         check("mcp:status:json", isinstance(mcp_status, dict) and bool(mcp_status), mcp_status)
         mcp_status_body = mcp_status
         check("mcp:status:typed", isinstance(mcp_status_body, dict), mcp_status)
-        comparable = ("coverage", "rows", "source", "revision")
+        comparable = ("coverage", "rows", "source_selection_scope", "revision")
         check("mcp:cli-status-parity", isinstance(status, dict)
               and isinstance(mcp_status_body, dict)
               and all(key in status and key in mcp_status_body
@@ -278,9 +310,10 @@ def main() -> int:
             check("reopen:identity-parity:" + name,
                   bool(initial_search[name]) and row_fingerprint(body) == initial_search[name],
                   {"before": initial_search[name], "after": row_fingerprint(body)})
-        body, _ = cli("reopen-query", "query", query)
-        check("reopen:query-parity", query_fingerprint(body) == query_fingerprint(cli_query),
-              {"before": query_fingerprint(cli_query), "after": query_fingerprint(body)})
+        route.start_mcp(project)
+        reopened_query = tool("reopen-query", "backend.query", {"query": query})
+        check("reopen:query-parity", bool(query_rows(mcp_query)) and query_fingerprint(reopened_query) == query_fingerprint(mcp_query),
+              {"before": query_fingerprint(mcp_query), "after": query_fingerprint(reopened_query)})
         if coordinate:
             body, _ = cli("reopen-source", "source", path_coordinate)
             check("reopen:source-body", any('return loadSectionsCsv() + req;' in part

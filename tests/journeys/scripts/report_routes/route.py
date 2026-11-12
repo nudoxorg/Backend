@@ -559,7 +559,7 @@ class Route:
         argv = [str(self.bin / "backend-mcp"), "--project", str(project), "--workspace", str(self.workspace)]
         if not self.auto_start:
             argv += ["--endpoint", str(self.endpoint)]
-        with open(self.out / "mcp-stderr.log", "wb") as log:
+        with open(self.out / "mcp-stderr.log", "ab") as log:
             self.mcp = subprocess.Popen(argv, cwd=project, env=self.env, stdin=subprocess.PIPE,
                                         stdout=subprocess.PIPE, stderr=log,
                                         start_new_session=True, bufsize=0)
