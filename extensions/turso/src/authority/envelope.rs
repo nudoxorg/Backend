@@ -103,6 +103,16 @@ impl CompilerNativeLinesMember {
             || object.key() != &key || object.payload_len() != bytes.len() as u64 { return Err(CompilerEnvelopeError::NativeHeaders); }
         Ok(Self { object_id: *object.id().as_bytes(), byte_length: u32::try_from(bytes.len()).map_err(|_| CompilerEnvelopeError::NativeHeaders)? })
     }
+    /// Admits a bounded, authenticated view without allocating another copy.
+    pub fn from_verified_view(view: backend_store::VerifiedObjectView<'_>, checkpoint: &mut impl FnMut(usize) -> Result<(), CompilerEnvelopeError>) -> Result<Self, CompilerEnvelopeError> {
+        let bytes = view.bytes();
+        if bytes.is_empty() || bytes.len() > MAX_COMPILER_NATIVE_LINES_BYTES || view.schema() != COMPILER_NATIVE_LINES_SCHEMA { return Err(CompilerEnvelopeError::NativeHeaders); }
+        backend_semantic::native_source_lines::NativeSourceLineAggregateView::parse(bytes, checkpoint).map_err(|_| CompilerEnvelopeError::NativeHeaders)?;
+        let mut key = backend_version::ObjectKeyHasher::new(COMPILER_NATIVE_LINES_SCHEMA, bytes.len()).map_err(|_| CompilerEnvelopeError::NativeHeaders)?;
+        for chunk in bytes.chunks(64 * 1024) { checkpoint(chunk.len())?; key.update(chunk).map_err(|_| CompilerEnvelopeError::NativeHeaders)?; }
+        if &key.finish().map_err(|_| CompilerEnvelopeError::NativeHeaders)? != view.key() { return Err(CompilerEnvelopeError::NativeHeaders); }
+        Ok(Self { object_id: *view.id().as_bytes(), byte_length: u32::try_from(bytes.len()).map_err(|_| CompilerEnvelopeError::NativeHeaders)? })
+    }
     pub const fn object_id(&self) -> &AuthorityHash { &self.object_id }
     pub const fn byte_length(&self) -> u32 { self.byte_length }
 }
