@@ -77,9 +77,7 @@ fn decode_key<R: CanonicalRelation>(bytes: &[u8]) -> Result<R::Key, NodeError> {
 
 fn decode_value<R: CanonicalRelation>(bytes: &[u8]) -> Result<R::Value, NodeError> {
     let value = R::decode_value(bytes).map_err(NodeError::RelationDecode)?;
-    let mut encoded = Vec::new();
-    R::encode_value(&value, &mut encoded);
-    if encoded == bytes {
+    if R::canonical_value_matches(&value, bytes) {
         Ok(value)
     } else {
         Err(NodeError::NonCanonicalEncoding)
