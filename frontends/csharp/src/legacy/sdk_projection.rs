@@ -182,4 +182,54 @@ mod tests {
         let oversized = format!(r#"{{"Properties":{{"MSBuildSDKsPath":"/sdk"}},"Items":{{"NudoxReference":[{{"FullPath":"/a.dll","FusionName":"{}"}}]}}}}"#, "x".repeat(4097));
         assert!(decode(oversized.as_bytes(), 1).is_err());
     }
+    #[test]
+    fn allocations_reject_surplus_before_descending_into_large_item() {
+        let payload = "x".repeat(1_000_000);
+        let input = format!(r#"{{"Properties":{{"MSBuildSDKsPath":"/sdk"}},"Items":{{"NudoxReference":[{{"FullPath":"/a.dll","FusionName":"A"}},{{"surplus":"{payload}"}}]}}}}"#);
+        let mut rejected = false;
+        let allocations = allocation_counter::measure(|| {
+            rejected = std::hint::black_box(decode(input.as_bytes(), 1)).is_err();
+        });
+        assert!(rejected);
+        assert!(allocations.bytes_total < 16 * 1024, "{allocations:?}");
+        assert!(allocations.bytes_max < 16 * 1024, "{allocations:?}");
+    }
+
+    #[test]
+    fn allocations_skip_dense_metadata_without_materializing_it() {
+        let dense = "0,".repeat(300_000) + "0";
+        let input = format!(r#"{{"Properties":{{"MSBuildSDKsPath":"/sdk"}},"Items":{{"NudoxReference":[{{"FullPath":"/a.dll","FusionName":"A","unused":[{dense}]}}]}}}}"#);
+        let mut accepted = false;
+        let allocations = allocation_counter::measure(|| {
+            accepted = std::hint::black_box(decode(input.as_bytes(), 1)).is_ok();
+        });
+        assert!(accepted);
+        assert!(allocations.bytes_total < 16 * 1024, "{allocations:?}");
+        assert!(allocations.bytes_max < 16 * 1024, "{allocations:?}");
+    }
+
+    #[test]
+    fn allocations_bound_escaped_scratch_and_selected_vector_growth() {
+        let escaped = r"\u0078".repeat(4097);
+        let invalid = format!(r#"{{"Properties":{{"MSBuildSDKsPath":"/sdk"}},"Items":{{"NudoxReference":[{{"FullPath":"/a.dll","FusionName":"{escaped}"}}]}}}}"#);
+        let mut rejected = false;
+        let allocations = allocation_counter::measure(|| {
+            rejected = std::hint::black_box(decode(invalid.as_bytes(), 1)).is_err();
+        });
+        assert!(rejected);
+        // serde_json may allocate unescape scratch before our string visitor.
+        assert!(allocations.bytes_total <= (invalid.len() * 3 + 8192) as u64, "{allocations:?}");
+        assert!(allocations.bytes_max <= (invalid.len() * 2 + 8192) as u64, "{allocations:?}");
+        let item = r#"{"FullPath":"/a.dll","FusionName":"A"}"#;
+        let references = vec![item; 64].join(",");
+        let valid = format!(r#"{{"Properties":{{"MSBuildSDKsPath":"/sdk"}},"Items":{{"NudoxReference":[{references}]}}}}"#);
+        let mut count = 0;
+        let allocations = allocation_counter::measure(|| {
+            count = std::hint::black_box(decode(valid.as_bytes(), 64).unwrap()).items.len();
+        });
+        assert_eq!(count, 64);
+        assert!(allocations.bytes_total <= (valid.len() * 8 + 8192) as u64, "{allocations:?}");
+        assert!(allocations.bytes_max <= (valid.len() * 4 + 8192) as u64, "{allocations:?}");
+    }
+
 }
