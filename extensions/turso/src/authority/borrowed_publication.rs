@@ -14,7 +14,8 @@ pub enum SelectedPublicationWire<'a> {
 
 /// Verifies the selected envelope, exact metadata/member inventory and physical
 /// object identities under one GC pin and one caller-owned ledger, then lends
-/// each Program/image wire to `visit`. No bytes can escape via this callback.
+/// each Program/image wire to `visit`. The borrowed slices cannot escape the
+/// callback; any retained copies require a separate ledger reservation.
 ///
 /// The callback must separately reserve and validate every retained Program,
 /// image, source and auxiliary allocation against `budget` before allocating;
