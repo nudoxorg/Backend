@@ -744,21 +744,21 @@ impl CompilerPublicationMetadata {
     /// Returns canonical, versioned metadata bytes.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        let mut output = Vec::with_capacity(
-            METADATA_MAGIC.len()
-                + 2
-                + 4
-                + self.manifest_bytes.len()
-                + COMPILATION_BINDING_BYTES
-                + 4
-                + self.images.len() * 72
-                + 1
-                + self
-                    .versioned_planes
-                    .as_ref()
-                    .map_or(0, |planes| 4 + planes.canonical_bytes().len())
-                + usize::from(self.native_program_sources.is_some()) * 68,
-        );
+        let mut capacity = METADATA_MAGIC.len() + 2 + 4 + self.manifest_bytes.len()
+            + COMPILATION_BINDING_BYTES + 4 + self.images.len() * 72 + 1;
+        if let Some(planes) = &self.versioned_planes { capacity += 4 + planes.canonical_bytes().len(); }
+        if self.typescript_snapshot.is_some() || self.native_headers.is_some() {
+            capacity += 2 + usize::from(self.native_program_sources.is_some()) * 68
+                + usize::from(self.source_coverage.is_some()) * 68
+                + usize::from(self.typescript_snapshot.is_some()) * 36
+                + usize::from(self.native_headers.is_some()) * 37;
+        } else {
+            capacity += usize::from(self.source_coverage.is_some())
+                + usize::from(self.native_program_sources.is_some()) * 68
+                + usize::from(self.source_coverage.is_some()) * 68
+                + usize::from(self.csharp_evidence.is_some()) * 36;
+        }
+        let mut output = Vec::with_capacity(capacity);
         output.extend_from_slice(METADATA_MAGIC);
         output.extend_from_slice(
             &if self.native_headers.is_some() {
