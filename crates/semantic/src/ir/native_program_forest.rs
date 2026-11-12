@@ -729,6 +729,52 @@ mod tests {
     }
 
     #[test]
+    fn borrowed_project_set_preserves_shared_source_owner_tuples() {
+        let mut projects = independent_nodes();
+        projects[0].program = Some(shared_leaf(Some("src/app.ts"), b"same"));
+        projects[1].program = Some(shared_leaf(None, b"same"));
+        let graph = NativeProgramSources::from_project_set(
+            ContentId::from_canonical_bytes(b"compiler"),
+            0,
+            projects,
+        )
+        .unwrap();
+        let shape = BorrowedProgramGraph::scratch(graph.as_bytes(), |_| Ok::<_, ()>(())).unwrap();
+        let mut nodes = vec![0; shape.node_bytes()];
+        let mut rows = vec![0; shape.row_bytes()];
+        let mut paths = vec![0; shape.leaf_paths];
+        let view = BorrowedProgramGraph::decode(
+            graph.as_bytes(),
+            &mut nodes,
+            &mut rows,
+            &mut paths,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+        let mut actual = Vec::new();
+        view.visit_sources(
+            |_| Ok::<_, ()>(()),
+            |row| {
+                actual.push(row);
+                Ok(())
+            },
+        )
+        .unwrap();
+        let mut expected = graph.sources().collect::<Vec<_>>();
+        actual.sort_by(|a, b| {
+            (a.row.program_path, a.node, a.program).cmp(&(b.row.program_path, b.node, b.program))
+        });
+        expected.sort_by(|a, b| {
+            (a.row.program_path, a.node, a.program).cmp(&(b.row.program_path, b.node, b.program))
+        });
+        assert_eq!(actual, expected);
+        assert!(
+            view.visit_sources(|_| Err::<(), _>("stopped"), |_| Ok(()))
+                .is_err()
+        );
+    }
+
+    #[test]
     fn borrowed_graph_rejects_invalid_typed_config_even_with_matching_node_hash() {
         let toolchain = ContentId::from_canonical_bytes(b"compiler");
         let source_nodes = nodes();
