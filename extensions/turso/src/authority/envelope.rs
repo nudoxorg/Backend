@@ -566,7 +566,7 @@ impl CompilerPublicationMetadata {
         mut self,
         member: CompilerProgramSourceMember,
     ) -> Result<Self, CompilerEnvelopeError> {
-        if self.csharp_evidence.is_some() || metadata_member_ids(&self).len() >= MAX_MEMBER_IDS {
+        if self.csharp_evidence.is_some() || metadata_member_ids_checked(&self)?.len() >= MAX_MEMBER_IDS {
             return Err(CompilerEnvelopeError::MemberCount);
         }
         self.native_program_sources = Some(member);
@@ -587,7 +587,7 @@ impl CompilerPublicationMetadata {
         if self.native_program_sources.is_none() || self.csharp_evidence.is_some() {
             return Err(CompilerEnvelopeError::SourceCoverage);
         }
-        if self.source_coverage.is_some() || metadata_member_ids(&self).len() >= MAX_MEMBER_IDS {
+        if self.source_coverage.is_some() || metadata_member_ids_checked(&self)?.len() >= MAX_MEMBER_IDS {
             return Err(CompilerEnvelopeError::MemberCount);
         }
         self.source_coverage = Some(member);
@@ -609,7 +609,7 @@ impl CompilerPublicationMetadata {
             || member.byte_length == 0
             || member.byte_length as usize
                 > backend_semantic::ir::MAX_TYPESCRIPT_SNAPSHOT_WITNESS_BYTES
-            || metadata_member_ids(&self).len() >= MAX_MEMBER_IDS
+            || metadata_member_ids_checked(&self)?.len() >= MAX_MEMBER_IDS
         {
             return Err(CompilerEnvelopeError::TypeScriptSnapshotWitness);
         }
@@ -628,7 +628,7 @@ impl CompilerPublicationMetadata {
         if self.csharp_evidence.is_some() || self.native_program_sources.is_some()
             || self.source_coverage.is_some() || self.typescript_snapshot.is_some()
             || member.byte_length == 0 || member.byte_length as usize > backend_semantic::ir::MAX_CSHARP_INVOCATION_EVIDENCE_BYTES
-            || metadata_member_ids(&self).len() >= MAX_MEMBER_IDS {
+            || metadata_member_ids_checked(&self)?.len() >= MAX_MEMBER_IDS {
             return Err(CompilerEnvelopeError::CSharpInvocationEvidence);
         }
         self.csharp_evidence = Some(member);
@@ -639,7 +639,7 @@ impl CompilerPublicationMetadata {
 
     /// Binds the aggregate to this exact compiler publication before sealing.
     pub fn with_native_headers(mut self, member: CompilerNativeHeadersMember) -> Result<Self, CompilerEnvelopeError> {
-        if self.native_headers.is_some() || self.native_program_sources.is_none() || self.csharp_evidence.is_some() || metadata_member_ids(&self).len() >= MAX_MEMBER_IDS { return Err(CompilerEnvelopeError::NativeHeaders); }
+        if self.native_headers.is_some() || self.native_program_sources.is_none() || self.csharp_evidence.is_some() || metadata_member_ids_checked(&self)?.len() >= MAX_MEMBER_IDS { return Err(CompilerEnvelopeError::NativeHeaders); }
         self.native_headers = Some(member);
         Ok(self)
     }
@@ -1928,13 +1928,18 @@ impl DurableClosureVerifier for FileStoreCompilerPublicationVerifier<'_, '_, '_>
 }
 
 fn metadata_member_ids(metadata: &CompilerPublicationMetadata) -> Vec<AuthorityHash> {
-    // Hash the canonical record directly instead of constructing a typed
-    // object and three independent schema encodings just to obtain its ID.
+    metadata_member_ids_with_id(metadata, metadata.object_id())
+}
+
+fn metadata_member_ids_checked(metadata: &CompilerPublicationMetadata) -> Result<Vec<AuthorityHash>, CompilerEnvelopeError> {
+    // This path propagates identity framing failures rather than falling back
+    // to unbudgeted typed-object construction.
     let bytes = metadata.canonical_bytes();
     let id = backend_store::untrusted_object_id_for_encoded_value(metadata.schema(), &bytes)
-        .map(|id| *id.as_bytes()).unwrap_or_else(|_| metadata.object_id());
+        .map_err(|_| CompilerEnvelopeError::ByteLengthOverflow)?;
+    let raw_id = *id.as_bytes();
     drop(bytes);
-    metadata_member_ids_with_id(metadata, id)
+    Ok(metadata_member_ids_with_id(metadata, raw_id))
 }
 
 fn metadata_member_ids_with_id(metadata: &CompilerPublicationMetadata, metadata_id: AuthorityHash) -> Vec<AuthorityHash> {
