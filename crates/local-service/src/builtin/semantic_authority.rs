@@ -3844,9 +3844,8 @@ impl SemanticAuthority {
                 if forge.replace(false) {
                     let mut limit = 1024 * 1024;
                     let mut aggregate = backend_semantic::native_source_lines::NativeSourceLineAggregate::decode_budgeted(&bytes, &mut limit).expect("fixture line aggregate");
-                    aggregate.files[0].source = backend_semantic::ir::SourceIdentity::from_bytes(b"different fixture source").expect("fixture source");
-                    // The replacement source must still cover all recorded offsets.
-                    aggregate.files[0].source.byte_len = staged.native_typescript_line_at(order[0] as usize).expect("fixture line").source.byte_len;
+                    let alternate = vec![b'x'; aggregate.files[0].source.byte_len as usize];
+                    aggregate.files[0].source = backend_semantic::ir::SourceIdentity::from_bytes(&alternate).expect("fixture source");
                     aggregate.encode_into(&mut bytes, &mut |_| Ok::<(), ()>(())).expect("forge canonical fixture lines");
                 }
             });
