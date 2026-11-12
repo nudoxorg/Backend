@@ -512,8 +512,8 @@ fn actual_worker_late_stop_retires_current_and_queued_attempts() -> Result<(), B
     let (reached_tx, reached_rx) = std::sync::mpsc::sync_channel(1);
     let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
     crate::builtin::semantic_authority::test_install_before_local_selection_gate(reached_tx, release_rx);
-    let worker = ProfileWorker::spawn(work).map_err(|(_, error)| io::Error::other(format!("spawn compiler: {error}")))?;
-    reached_rx.recv_timeout(std::time::Duration::from_secs(600)).map_err(|e| io::Error::other(format!("publication gate: {e}")))?;
+    let worker = ProfileWorker::spawn(work).map_err(|(_, error)| std::io::Error::other(format!("spawn compiler: {error}")))?;
+    reached_rx.recv_timeout(std::time::Duration::from_secs(600)).map_err(|e| std::io::Error::other(format!("publication gate: {e}")))?;
     cancelled.store(true, Ordering::Release);
     release_tx.send(())?;
     let completion = worker.join();
