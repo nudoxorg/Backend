@@ -1577,7 +1577,8 @@ fn native_ts_large_crlf_line_map_source_show_read_and_cold() -> Result<(), Box<d
     let project = fixture.path().join("project");
     fs::create_dir(&project)?;
     fs::write(project.join("tsconfig.json"), r#"{"compilerOptions":{"strict":true},"include":["*.ts"]}"#)?;
-    let mut source = "\r\n".repeat(20_000);
+    let mut source = " ".repeat(30_000);
+    source.push_str(&"\r\n".repeat(20_000));
     source.push_str("export function Greeting() { return 'before'; }\r\n");
     fs::write(project.join("view.ts"), &source)?;
     for (path, text) in [("bare.ts", "// one\rexport function Bare() { return 1; }"), ("sep.ts", "// one\u{2028}export function Sep() { return 2; }"), ("para.ts", "// one\u{2029}export function Para() { return 3; }")] {
