@@ -2347,6 +2347,43 @@ fn qualify_observed_graph_node(
     Ok(Some(QualifiedNativeGraphNode { row, source_policy, binding: publication.claim.binding() }))
 }
 
+// Resolve only page endpoints in one pass over the already admitted images.
+// Multiple claimants stay ambiguous, even when their bytes are identical.
+fn observed_page_node_origins(
+    images: &[backend_semantic::ir::SemanticImageView<'_>],
+    image_publications: &[usize],
+    package: backend_engine::PackageKey,
+    wanted: &BTreeSet<backend_engine::RowId>,
+) -> Result<std::collections::BTreeMap<backend_engine::RowId, Option<(usize, [u8; 32], u32, u32, DeclarationIdentity)>>, BuiltinModelError> {
+    let mut found = std::collections::BTreeMap::new();
+    let mut ambiguous = BTreeSet::new();
+    for (image_index, image) in images.iter().enumerate() {
+        let publication_index = *image_publications.get(image_index).ok_or_else(|| BuiltinModelError("observed graph image has no selected publication".to_owned()))?;
+        let mut metadata = None;
+        for entity in DocumentationSession::new(image).publication_entities() {
+            let entity = entity.map_err(|error| BuiltinModelError(format!("read observed graph node: {error}")))?;
+            let identity = entity.entity.version.identity();
+            let row = backend_engine::RowId::Symbol(view_build::semantic_symbol(package, identity));
+            if !wanted.contains(&row) || ambiguous.contains(&row) { continue; }
+            let (image_identity, image_byte_len) = match metadata {
+                Some(value) => value,
+                None => {
+                    let value = (*backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(image.as_ref()).as_ref(),
+                        u32::try_from(image.as_ref().len()).map_err(|_| BuiltinModelError("observed graph node image is too large".to_owned()))?);
+                    metadata = Some(value);
+                    value
+                }
+            };
+            let candidate = (publication_index, image_identity, image_byte_len, entity.entity.id.raw, identity);
+            if found.insert(row, Some(candidate)).is_some() {
+                found.insert(row, None);
+                ambiguous.insert(row);
+            }
+        }
+    }
+    Ok(found)
+}
+
 fn qualify_native_graph_edge_origin(
     snapshot: &backend_engine::WorkspaceSnapshot,
     view: &backend_engine::ViewRoot,
@@ -2390,28 +2427,47 @@ fn bind_native_graph_edge_source_origins(
     package: backend_engine::PackageKey,
     edges: BTreeSet<(backend_engine::GraphRelation, usize)>,
 ) -> Result<Vec<NativeGraphEdgeSourceOrigin>, BuiltinModelError> {
+    // Retain at most one entry per requested source/image pair, then walk
+    // each selected image once. The map is bounded by the already bounded
+    // selected edge page; it never becomes an index of the whole program.
+    let mut wanted = std::collections::BTreeMap::new();
+    for (relation, image_index) in &edges {
+        let backend_engine::RowId::Symbol(source) = relation.from else {
+            return Err(BuiltinModelError("native graph edge source is not a declaration".to_owned()));
+        };
+        if images.get(*image_index).is_none() {
+            return Err(BuiltinModelError("native graph edge image is unavailable".to_owned()));
+        }
+        wanted.entry((*image_index, source)).or_insert(None);
+    }
+    let mut image_metadata = std::collections::BTreeMap::new();
+    for (image_index, image) in images.iter().enumerate() {
+        if !wanted.keys().any(|(index, _)| *index == image_index) { continue; }
+        let image_byte_len = u32::try_from(image.as_ref().len()).map_err(|_| BuiltinModelError("native graph edge image is too large".to_owned()))?;
+        let image_identity = *backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(image.as_ref()).as_ref();
+        image_metadata.insert(image_index, (image_identity, image_byte_len));
+        for entity in DocumentationSession::new(image).publication_entities() {
+            let entity = entity.map_err(|error| BuiltinModelError(format!("read native graph edge owner: {error}")))?;
+            let identity = entity.entity.version.identity();
+            let key = (image_index, view_build::semantic_symbol(package, identity));
+            let Some(owner) = wanted.get_mut(&key) else { continue };
+            let candidate = (entity.entity.id.raw, identity);
+            if owner.replace(candidate).is_some_and(|previous| previous != candidate) {
+                return Err(BuiltinModelError("native graph edge owner is ambiguous".to_owned()));
+            }
+        }
+    }
     edges.into_iter().map(|(relation, image_index)| {
         let backend_engine::RowId::Symbol(source) = relation.from else {
             return Err(BuiltinModelError("native graph edge source is not a declaration".to_owned()));
         };
-        let image = images.get(image_index).ok_or_else(|| BuiltinModelError("native graph edge image is unavailable".to_owned()))?;
-        let mut owner = None;
-        for entity in DocumentationSession::new(image).publication_entities() {
-            let entity = entity.map_err(|error| BuiltinModelError(format!("read native graph edge owner: {error}")))?;
-            let identity = entity.entity.version.identity();
-            if view_build::semantic_symbol(package, identity) == source {
-                let candidate = (entity.entity.id.raw, identity);
-                if owner.replace(candidate).is_some_and(|previous| previous != candidate) {
-                    return Err(BuiltinModelError("native graph edge owner is ambiguous".to_owned()));
-                }
-            }
-        }
-        let (entity_index, owner) = owner.ok_or_else(|| BuiltinModelError("native graph edge owner is not admitted by its image".to_owned()))?;
-        let image_byte_len = u32::try_from(image.as_ref().len()).map_err(|_| BuiltinModelError("native graph edge image is too large".to_owned()))?;
+        let (entity_index, owner) = wanted.get(&(image_index, source)).copied().flatten()
+            .ok_or_else(|| BuiltinModelError("native graph edge owner is not admitted by its image".to_owned()))?;
+        let (image_identity, image_byte_len) = image_metadata.get(&image_index).copied()
+            .ok_or_else(|| BuiltinModelError("native graph edge image is unavailable".to_owned()))?;
         Ok(NativeGraphEdgeSourceOrigin {
             relation, image_index,
-            image_identity: *backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(image.as_ref()).as_ref(),
-            image_byte_len, entity_index, owner,
+            image_identity, image_byte_len, entity_index, owner,
         })
     }).collect()
 }
@@ -2708,8 +2764,30 @@ fn execute_observed_native_edge_page(
     let mut nodes = Vec::new();
     let mut admitted = BTreeSet::new();
     let mut node_gap = false;
+    let origins = observed_page_node_origins(&images, &image_publications, package, &wanted)?;
     for row in wanted {
-        match qualify_observed_graph_node(&publications, snapshot, view, package, row, workspace, compiler, generations, authority, &mut budget)? {
+        let candidate = origins.get(&row).copied().flatten();
+        let node = if let Some((publication_index, image_identity, image_byte_len, entity_index, owner)) = candidate {
+            let publication = &publications[publication_index];
+            let expected = super::ExpectedNativeSourceOrigin {
+                publication_key: &publication.key, publication_claim: publication.claim,
+                program_identity: programs[publication_index].sources().membership_identity(),
+                image_identity, image_byte_len, entity_index, declaration_identity: owner,
+            };
+            let selected = super::selected_native_policy_for_row(
+                snapshot, view, row, &expected, workspace, compiler, generations, authority, &mut budget,
+            ).map_err(|error| BuiltinModelError(format!("qualify native graph node: {error}")))?;
+            match (row, selected) {
+                (backend_engine::RowId::Symbol(symbol), Some((selection, qualification))) => {
+                    let basis = backend_library::Basis { root: view.root(), ..view.basis() };
+                    let source_policy = backend_library::SelectedResultSourcePolicy::new(symbol, basis, selection, qualification)
+                        .ok_or_else(|| BuiltinModelError("native graph node policy owner or basis mismatch".to_owned()))?;
+                    Some(QualifiedNativeGraphNode { row, source_policy, binding: publication.claim.binding() })
+                }
+                _ => None,
+            }
+        } else { None };
+        match node {
             Some(node) => { admitted.insert(node.row); nodes.push(node); }
             None if row == center_row => return Err(BuiltinModelError("observed graph page center source policy is unavailable".to_owned())),
             None => node_gap = true,
@@ -13236,6 +13314,28 @@ mod references_tests {
                 .map_err(|error| error.to_string())?;
             assert_eq!(facts.len(), expected);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn observed_page_node_origins_preserve_ambiguity_and_selected_membership() -> Result<(), String> {
+        let package = backend_engine::package_key("fixture");
+        let caller = backend_engine::RowId::Symbol(view_build::semantic_symbol(package, fixture_version(1).identity()));
+        let callee = backend_engine::RowId::Symbol(view_build::semantic_symbol(package, fixture_version(2).identity()));
+        let first = fixture_image()?;
+        let second = fixture_image()?;
+        let images = [&first, &second].into_iter()
+            .map(|bytes| backend_semantic::ir::SemanticImageView::reopen(bytes))
+            .collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
+        let unique = observed_page_node_origins(&images[..1], &[7], package, &BTreeSet::from([caller]))
+            .map_err(|error| error.to_string())?;
+        assert_eq!(unique.len(), 1);
+        assert_eq!(unique.get(&caller).and_then(|entry| *entry).map(|entry| entry.0), Some(7));
+        assert!(!unique.contains_key(&callee));
+        let ambiguous = observed_page_node_origins(&images, &[7, 8], package, &BTreeSet::from([caller, callee]))
+            .map_err(|error| error.to_string())?;
+        assert!(matches!(ambiguous.get(&caller), Some(None)));
+        assert!(matches!(ambiguous.get(&callee), Some(None)));
         Ok(())
     }
 
