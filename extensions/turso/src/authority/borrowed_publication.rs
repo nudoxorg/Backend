@@ -10,11 +10,13 @@ use super::*;
 pub enum SelectedPublicationWire<'a> {
     Program { member: CompilerProgramSourceMember, schema: SchemaIdentity, bytes: &'a [u8] },
     Image { member: CompilerImageMember, bytes: &'a [u8] },
+    Headers { member: CompilerNativeHeadersMember, bytes: &'a [u8] },
+    Lines { member: CompilerNativeLinesMember, bytes: &'a [u8] },
 }
 
 /// Verifies the selected envelope, exact metadata/member inventory and physical
 /// object identities under one GC pin and one caller-owned ledger, then lends
-/// each Program/image wire to `visit`. The borrowed slices cannot escape the
+/// each Program/image/header/line wire to `visit`. The borrowed slices cannot escape the
 /// callback; any retained copies require a separate ledger reservation.
 ///
 /// The callback must separately reserve and validate every retained Program,
@@ -87,6 +89,26 @@ where F: for<'a> FnMut(SelectedPublicationWire<'a>, &mut SelectedNativeHeaderBud
         if identity.finalize().as_ref()!=member.semantic_image_identity(){return Err("selected image identity differs".into());}
         visit(SelectedPublicationWire::Image{member,bytes:&wire},budget)?;
         drop(wire);budget.memory=budget.memory.checked_add(temporary).ok_or("image refund overflow")?;
+    }
+    if let Some(member)=metadata.native_headers {
+        let before=budget.memory;
+        let (wire,schema,key)=header_object_bounded(store,&pin,*member.object_id(),&[COMPILER_NATIVE_HEADERS_SCHEMA],member.byte_length() as usize,budget,cancelled)?;
+        let temporary=before.checked_sub(budget.memory).ok_or("header temporary underflow")?;
+        if wire.len()!=member.byte_length() as usize{return Err("selected header extent differs".into());}
+        verified_payload_key_checkpointed(schema,&wire,&key,budget,cancelled)?;
+        backend_semantic::native_ts_headers::NativeTsHeaderAggregateView::parse_canonical_checkpointed(&wire,&mut |_|header_checkpoint(&budget.work,cancelled)).map_err(|e|format!("selected header scan: {e:?}"))?;
+        visit(SelectedPublicationWire::Headers{member,bytes:&wire},budget)?;
+        drop(wire);budget.memory=budget.memory.checked_add(temporary).ok_or("header refund overflow")?;
+    }
+    if let Some(member)=metadata.native_lines {
+        let before=budget.memory;
+        let (wire,schema,key)=header_object_bounded(store,&pin,*member.object_id(),&[COMPILER_NATIVE_LINES_SCHEMA],member.byte_length() as usize,budget,cancelled)?;
+        let temporary=before.checked_sub(budget.memory).ok_or("line-map temporary underflow")?;
+        if wire.len()!=member.byte_length() as usize{return Err("selected line-map extent differs".into());}
+        verified_payload_key_checkpointed(schema,&wire,&key,budget,cancelled)?;
+        backend_semantic::native_source_lines::NativeSourceLineAggregateView::parse(&wire,&mut |_|header_checkpoint(&budget.work,cancelled)).map_err(|e|format!("selected line-map scan: {e:?}"))?;
+        visit(SelectedPublicationWire::Lines{member,bytes:&wire},budget)?;
+        drop(wire);budget.memory=budget.memory.checked_add(temporary).ok_or("line-map refund overflow")?;
     }
     drop(metadata);drop(metadata_wire);drop(envelope);drop(envelope_wire);drop(pin);
     budget.memory=budget.memory.checked_add(frame_charge).ok_or("selected frame refund overflow")?;
