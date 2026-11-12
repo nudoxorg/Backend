@@ -374,6 +374,40 @@ mod tests {
     use backend_semantic::vocabulary::{LanguageProfile, TypeScriptSource};
 
     #[test]
+    fn mixed_image_and_member_lookups_stay_under_replay_work_limit() {
+        use backend_semantic::ir::{NativeProgramSource, NativeProgramSourceManifest, SourceIdentity};
+        use backend_version::{ContentId, ToolchainDomain};
+        let project = [8; 32];
+        let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
+        let source = SourceIdentity::from_bytes(b"fixture source").expect("source identity");
+        let sources: Vec<_> = (0..8192).rev().map(|i| {
+            let path = format!("src/{i:05}.ts");
+            NativeProgramSource { program_path: path.clone(), source, package_path: Some(path) }
+        }).collect();
+        let manifest = NativeProgramSourceManifest::from_sources(ContentId::<ToolchainDomain>::from_canonical_bytes(b"compiler"), sources).expect("canonical Program");
+        let evidence: Vec<_> = (0..8192).rev().map(|i| NativeSourceEvidence {
+            project, profile, path: format!("src/{i:05}.ts"), input_digest: [1; 32],
+            source_digest: *source.identity.as_ref(), byte_length: source.byte_len,
+            kind: if i < 4096 { NativeSourceEvidenceKind::Image } else { NativeSourceEvidenceKind::ProgramMember },
+            line_starts: None, headers: None,
+        }).collect();
+        let refs: Vec<_> = evidence.iter().collect();
+        let mut budget = SelectedNativeHeaderBudget::new(64 * 1024 * 1024, super::super::NATIVE_HEADER_WORK_UNITS);
+        let retained = copy(manifest.as_bytes(), &mut budget, &|| false).expect("Program bytes");
+        let scratch_len = BorrowedNativeProgramSourceManifest::scratch_bytes(&retained).expect("Program scratch");
+        let scratch = allocate(scratch_len, &mut budget, &|| false).expect("Program index");
+        let program = RetainedIndexedNativeProgramSourceManifest::admit(retained, scratch, |n| step(&budget, &|| false, n)).expect("admit Program");
+        let (index, count) = build_index(profile, &refs, &project, "duplicate", &mut budget, &|| false).expect("evidence index");
+        for i in 0..4096 {
+            let path = format!("src/{i:05}.ts");
+            let ordinal = find_index(&refs, &index, count, path.as_bytes(), &budget, &|| false).expect("evidence lookup").expect("image evidence");
+            assert!(refs[ordinal].admits_image());
+            assert_eq!(program.source_for_package_bytes(path.as_bytes(), |n| step(&budget, &|| false, n)).expect("Program lookup"), Some(source));
+        }
+        assert!(budget.remaining_work() > 0, "mixed lookups must fit the real replay work limit");
+    }
+
+    #[test]
     fn evidence_index_bounds_memory_work_duplicates_and_stop() {
         let project = [7; 32];
         let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
