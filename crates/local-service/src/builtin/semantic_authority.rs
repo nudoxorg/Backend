@@ -5819,6 +5819,14 @@ mod tests {
         let reopened = reopen_selected_compiler_metadata(&authority.store, &selected)
             .expect("selected metadata remains lazy");
         assert!(reopened.metadata().typescript_snapshot_witness().is_some());
+        assert!(reopened.metadata().native_lines().is_some(), "strict output inventory must retain compiler line member");
+        let mut line_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(64 * 1024 * 1024, 1_000_000);
+        let lines = backend_extension_turso::reopen_selected_native_lines_budgeted(&authority.store, &selected, &mut line_budget, &|| false)
+            .expect("reopen selected line member").expect("selected line map");
+        let view = backend_semantic::native_source_lines::NativeSourceLineAggregateView::parse(lines.as_bytes(), &mut |_| Ok::<(), ()>(())).expect("canonical line map");
+        let file = view.find_file("src/main.ts", &mut |_| Ok::<(), ()>(())).expect("line lookup").expect("main line map");
+        assert!(file.matches_source(SOURCE.as_bytes(), &mut |_| Ok::<(), ()>(())).expect("source match"));
+        assert!(!file.matches_source(SPARE.as_bytes(), &mut |_| Ok::<(), ()>(())).expect("changed source refusal"));
         let selected_certificate =
             backend_extension_turso::reopen_selected_typescript_snapshot_witness(
                 &authority.store,
