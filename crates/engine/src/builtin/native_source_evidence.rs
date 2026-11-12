@@ -241,7 +241,10 @@ impl Relation for NativeSourceEvidenceRelation {
 // and fixed header bytes; the scratch bound includes a whole 64 KiB node and
 // its decoded row cells plus traversal copies.
 impl backend_version::BoundedCanonicalRelation for NativeSourceEvidenceRelation {
-    const NODE_DECODE_SCRATCH: usize = NATIVE_EVIDENCE_READ_SCRATCH;
+    // Eight copies cover the bounded node wire/encoding buffers and transient
+    // cell/key arrays while a single canonical node is loaded and validated.
+    const NODE_DECODE_SCRATCH: usize = 8 * 64 * 1024
+        + 8 * 1024 * (std::mem::size_of::<NativeSourceEvidence>() + 32 + 64);
 }
 impl CanonicalRelation for NativeSourceEvidenceRelation {
     fn decode_key(bytes: &[u8]) -> Result<Self::Key, RelationDecodeError> {

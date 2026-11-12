@@ -4546,6 +4546,15 @@ fn prepare_stylo_relation_update(
         let update = relation
             .prepare_update(&changes)
             .map_err(|error| BuiltinModelError(format!("prepare native Stylo delta: {error}")))?;
+        // The checked update's peak covers its frontier; reserve the exact
+        // encoded-node copies and output slots before making TypedObjects.
+        let output = update.changed_nodes().iter().try_fold(0usize, |total, node| {
+            total.checked_add(node.as_bytes().len().checked_mul(2)?)?
+                .checked_add(std::mem::size_of::<TypedObject>() + 256)
+        }).ok_or_else(|| BuiltinModelError("native node output overflow".into()))?;
+        if update.work().peak_metadata_bytes.checked_add(output).is_none_or(|n| n > read_budget) {
+            return Err(BuiltinModelError("native node output budget exceeded".into()));
+        }
         let node_objects = update
             .changed_nodes()
             .iter()
@@ -4767,10 +4776,7 @@ fn native_evidence_update_budget(
     changes: &[NativeEvidenceChange], available: usize,
 ) -> Result<backend_version::LazyTreeUpdateBudget, BuiltinModelError> {
     let shape = native_evidence_shape(rows, changes, usize::from(relation.root_level()))?;
-    let scratch = backend_engine::builtin::NATIVE_EVIDENCE_READ_SCRATCH;
-    let remaining = available.checked_sub(scratch).ok_or_else(|| BuiltinModelError("native update scratch budget exceeded".into()))?;
-    let metadata = scratch.checked_add(remaining / 2).ok_or_else(|| BuiltinModelError("native update budget overflow".into()))?;
-    Ok(backend_version::LazyTreeUpdateBudget::new(changes.len(), metadata, shape))
+    Ok(backend_version::LazyTreeUpdateBudget::new(changes.len(), available, shape))
 }
 
 fn charge_native_change_clones(changes: &[NativeEvidenceChange], budget: &mut usize) -> Result<(), BuiltinModelError> {
