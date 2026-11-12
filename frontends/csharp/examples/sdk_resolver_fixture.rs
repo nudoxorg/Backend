@@ -46,6 +46,9 @@ fn main() {
     }
     let assets_bytes = assets.as_ref().map(|path| fs::read(path).expect("project.assets.json"));
     let cancelled = AtomicBool::new(false);
+    let started = Instant::now();
+    eprintln!("SDK fixture: resolver start; pack candidates={}, package candidates={}, assets bytes={}",
+        candidates.len(), package_candidates.len(), assets_bytes.as_ref().map_or(0, Vec::len));
     let snapshot = resolve_references_with_sdk(
         &dotnet,
         &target.to_string_lossy(),
@@ -62,7 +65,8 @@ fn main() {
         Instant::now() + Duration::from_secs(120),
         &cancelled,
     )
-    .expect("native SDK resolver");
+    .unwrap_or_else(|error| panic!("native SDK resolver failed after {:?}: {error}", started.elapsed()));
+    eprintln!("SDK fixture: resolver returned after {:?}; selected={}", started.elapsed(), snapshot.references().len());
     assert!(snapshot.receipt_is_consistent(), "selected custody failed");
     let receipt = snapshot.receipt();
     if let Some(expected) = expected {

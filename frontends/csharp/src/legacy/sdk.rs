@@ -253,6 +253,9 @@ fn copy_pack_layout(
         }
         fs::create_dir_all(target).map_err(|_| "SDK pack snapshot unavailable")?;
         for entry in fs::read_dir(source).map_err(|_| "SDK pack snapshot unavailable")? {
+            if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
+                return Err("SDK pack snapshot cancelled");
+            }
             *entries = entries.checked_add(1).ok_or("SDK pack snapshot limit")?;
             if *entries > 32768 {
                 return Err("SDK pack snapshot limit");
