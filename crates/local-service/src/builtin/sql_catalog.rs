@@ -458,6 +458,11 @@ struct ProjectPlan {
     key: [u8; 32],
     selected: bool,
     filled_selection: bool,
+    attempt_seen: bool,
+    attempt_observed: bool,
+    served_selection: Option<[u8; 32]>,
+    selection_digest: Option<[u8; 32]>,
+    inventory_digest: [u8; 32],
     declared_hosts: usize,
     counted_hosts: usize,
     filled_hosts: usize,
@@ -585,6 +590,59 @@ fn selected_definition(fact: &SqlFact) -> bool {
     use backend_semantic::sql_analysis::SqlDefinitionAction;
     matches!(fact, SqlFact::Definition(definition) if definition.live_at_head && matches!(definition.action, SqlDefinitionAction::Create | SqlDefinitionAction::AddColumn))
 }
+// Serialize directly into fixed caller-owned scratch. Decoded canonical SQL
+// rows already fit this bound; no serialization Vec or row clone is created.
+struct JsonScratch<'a> {
+    bytes: &'a mut [u8],
+    used: usize,
+}
+impl std::io::Write for JsonScratch<'_> {
+    fn write(&mut self, input: &[u8]) -> std::io::Result<usize> {
+        let end = self
+            .used
+            .checked_add(input.len())
+            .ok_or(std::io::ErrorKind::WriteZero)?;
+        let target = self
+            .bytes
+            .get_mut(self.used..end)
+            .ok_or(std::io::ErrorKind::WriteZero)?;
+        target.copy_from_slice(input);
+        self.used = end;
+        Ok(input.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+fn encode_sql_json(row: &SqlAnalysisRecord, scratch: &mut [u8]) -> Result<usize, &'static str> {
+    let mut output = JsonScratch {
+        bytes: scratch,
+        used: 0,
+    };
+    serde_json::to_writer(&mut output, row).map_err(|_| "SQL canonical serialization failed")?;
+    Ok(output.used)
+}
+fn selection_digest(
+    project: [u8; 32],
+    row: &SqlAnalysisRecord,
+    scratch: &mut [u8],
+) -> Result<[u8; 32], &'static str> {
+    let len = encode_sql_json(row, scratch)?;
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"nudox.sql-analysis.v1.selection\0");
+    hash.update(&sql_selection_key(project));
+    hash.update(&(len as u64).to_be_bytes());
+    hash.update(&scratch[..len]);
+    Ok(*hash.finalize().as_bytes())
+}
+struct FactDigestRow {
+    project: usize,
+    host: usize,
+    ordinal: u32,
+    key: [u8; 32],
+    json: Box<[u8]>,
+}
+
 fn verify_fact(
     key: &[u8; 32],
     host: &BoundedSqlHost,
@@ -699,6 +757,11 @@ pub(super) fn load_projects_bounded(
                 key,
                 selected: false,
                 filled_selection: false,
+                attempt_seen: false,
+                attempt_observed: false,
+                served_selection: None,
+                selection_digest: None,
+                inventory_digest: [0; 32],
                 declared_hosts: 0,
                 counted_hosts: 0,
                 filled_hosts: 0,
@@ -713,6 +776,17 @@ pub(super) fn load_projects_bounded(
         return Ok((result, max_bytes - remaining));
     };
 
+    // This serializer scratch overlaps decoder reservations during each visit.
+    // The fixed boxed layout is charged before allocation and released only
+    // after all digest checks and scans complete.
+    let scratch_charge = backend_engine::builtin::MAX_SQL_ROW_BYTES
+        .checked_add(allocation_bookkeeping_bytes)
+        .ok_or("SQL scratch overflow")?;
+    remaining = remaining
+        .checked_sub(scratch_charge)
+        .ok_or("SQL catalog byte bound")?;
+    let mut digest_scratch = Box::new([0u8; backend_engine::builtin::MAX_SQL_ROW_BYTES]);
+
     // Count selection/host slots before retaining any owned row.
     scan_sql(
         &relation,
@@ -720,28 +794,57 @@ pub(super) fn load_projects_bounded(
         allocation_bookkeeping_bytes,
         cancelled,
         |key, row, _| {
-            match row {
+            match &row {
                 SqlAnalysisRecord::Selection {
                     project,
                     host_count,
+                    inventory_digest,
+                    policy_complete,
+                    discovery,
                     ..
                 } => {
-                    if let Some(i) = result.position(&project) {
-                        if *key != sql_selection_key(project) {
-                            return Err("SQL selection key mismatch");
+                    if let Some(i) = result.position(project) {
+                        if *key != sql_selection_key(*project)
+                            || (*policy_complete && discovery.is_none())
+                        {
+                            return Err("invalid SQL selection key or policy");
                         }
+                        let digest = selection_digest(*project, &row, &mut digest_scratch[..])?;
                         let plan = result.plans.get_mut(i).ok_or("missing SQL project slot")?;
                         if plan.selected {
                             return Err("duplicate SQL selection");
                         }
                         plan.selected = true;
+                        plan.selection_digest = Some(digest);
+                        plan.inventory_digest = *inventory_digest;
                         plan.declared_hosts =
-                            usize::try_from(host_count).map_err(|_| "SQL host count overflow")?;
+                            usize::try_from(*host_count).map_err(|_| "SQL host count overflow")?;
+                    }
+                }
+                SqlAnalysisRecord::Attempt {
+                    project,
+                    outcome,
+                    served_selection,
+                } => {
+                    if let Some(i) = result.position(project) {
+                        if *key != backend_engine::builtin::sql_attempt_key(*project) {
+                            return Err("SQL attempt key mismatch");
+                        }
+                        let plan = result.plans.get_mut(i).ok_or("missing SQL project slot")?;
+                        if plan.attempt_seen {
+                            return Err("duplicate SQL attempt");
+                        }
+                        plan.attempt_seen = true;
+                        plan.attempt_observed = matches!(
+                            outcome,
+                            backend_engine::builtin::SqlAttemptOutcome::Observed
+                        );
+                        plan.served_selection = *served_selection;
                     }
                 }
                 SqlAnalysisRecord::Host { project, path, .. } => {
-                    if let Some(i) = result.position(&project) {
-                        if sql_host_key(project, &path).map_err(|_| "invalid SQL host path")?
+                    if let Some(i) = result.position(project) {
+                        if sql_host_key(*project, path).map_err(|_| "invalid SQL host path")?
                             != *key
                         {
                             return Err("SQL host key mismatch");
@@ -761,11 +864,20 @@ pub(super) fn load_projects_bounded(
     let mut total_hosts = 0usize;
     for i in 0..result.plans.capacity {
         let plan = result.plans.get_mut(i).ok_or("missing SQL project slot")?;
+        if plan.attempt_seen
+            && (plan.served_selection != plan.selection_digest
+                || (plan.attempt_observed && !plan.selected))
+        {
+            return Err("SQL attempt does not bind selected analysis".into());
+        }
         if !plan.selected {
             if plan.counted_hosts != 0 {
                 return Err("SQL hosts lack selected project".into());
             }
             continue;
+        }
+        if !plan.attempt_seen {
+            return Err("SQL selection missing latest attempt".into());
         }
         if plan.counted_hosts != plan.declared_hosts {
             return Err("SQL selected host count mismatch".into());
@@ -898,11 +1010,19 @@ pub(super) fn load_projects_bounded(
             return Err("SQL selection or host slot missing".into());
         }
         sql.hosts.sort_by(|a, b| a.path.cmp(&b.path), cancelled)?;
+        let mut inventory = blake3::Hasher::new();
+        inventory.update(b"nudox.sql-analysis.v1.inventory\0");
         for h in 0..sql.hosts.capacity {
             if h > 0 && sql.hosts[h - 1].path == sql.hosts[h].path {
                 return Err("duplicate SQL host path".into());
             }
             let host = sql.hosts.get_mut(h).ok_or("missing SQL host slot")?;
+            inventory.update(&(host.path.len() as u64).to_be_bytes());
+            inventory.update(host.path.as_bytes());
+            inventory.update(&[match host.dialect {
+                SqlDialect::Sqlite => 1,
+                SqlDialect::Postgres => 2,
+            }]);
             host_index.put(
                 host_index_count,
                 HostIndex {
@@ -924,6 +1044,10 @@ pub(super) fn load_projects_bounded(
                 host.seen_ordinals.put(word, 0)?;
             }
         }
+        inventory.update(&(sql.hosts.capacity as u64).to_be_bytes());
+        if *inventory.finalize().as_bytes() != plan.inventory_digest {
+            return Err("SQL selected inventory digest mismatch".into());
+        }
     }
     if host_index_count != total_hosts || !host_index.is_full() {
         return Err("SQL host index missing".into());
@@ -935,6 +1059,12 @@ pub(super) fn load_projects_bounded(
         }
     }
 
+    let mut digest_rows = Slots::new(
+        expected_fact_total,
+        &mut remaining,
+        allocation_bookkeeping_bytes,
+    )?;
+    let mut digest_count = 0usize;
     // Verify every selected host ordinal and count only the live definitions
     // needed by ordinary discovery/query projection.
     scan_sql(
@@ -942,11 +1072,11 @@ pub(super) fn load_projects_bounded(
         &mut remaining,
         allocation_bookkeeping_bytes,
         cancelled,
-        |key, row, _| {
+        |key, row, budget| {
             let SqlAnalysisRecord::Fact {
                 host,
                 ordinal,
-                fact,
+                ref fact,
             } = row
             else {
                 return Ok(());
@@ -966,7 +1096,7 @@ pub(super) fn load_projects_bounded(
             if ordinal >= host.expected_facts {
                 return Err("SQL fact ordinal outside host count");
             }
-            verify_fact(key, host, ordinal, &fact)?;
+            verify_fact(key, host, ordinal, fact)?;
             let word = usize::try_from(ordinal / 64).map_err(|_| "SQL ordinal overflow")?;
             let mask = 1u64 << (ordinal % 64);
             let bits = host
@@ -981,7 +1111,7 @@ pub(super) fn load_projects_bounded(
                 .seen_facts
                 .checked_add(1)
                 .ok_or("SQL fact count overflow")?;
-            if selected_definition(&fact) {
+            if selected_definition(fact) {
                 if !matches!(host.terminal, SqlHostTerminal::Parsed { .. }) {
                     return Err("SQL definition lacks parsed host terminal");
                 }
@@ -990,9 +1120,36 @@ pub(super) fn load_projects_bounded(
                     .checked_add(1)
                     .ok_or("SQL fact count overflow")?;
             }
+            let len = encode_sql_json(&row, &mut digest_scratch[..])?;
+            let charge = len
+                .checked_add(allocation_bookkeeping_bytes)
+                .ok_or("SQL digest allocation overflow")?;
+            *budget = budget.checked_sub(charge).ok_or("SQL catalog byte bound")?;
+            let json = Box::<[u8]>::from(&digest_scratch[..len]);
+            digest_rows.put(
+                digest_count,
+                FactDigestRow {
+                    project: index.project,
+                    host: index.host,
+                    ordinal,
+                    key: *key,
+                    json,
+                },
+            )?;
+            digest_count = digest_count
+                .checked_add(1)
+                .ok_or("SQL digest row overflow")?;
             Ok(())
         },
     )?;
+    if digest_count != expected_fact_total || !digest_rows.is_full() {
+        return Err("SQL digest row missing".into());
+    }
+    digest_rows.sort_by(
+        |a, b| (a.project, a.host, a.ordinal).cmp(&(b.project, b.host, b.ordinal)),
+        cancelled,
+    )?;
+    let mut digest_index = 0usize;
     for i in 0..result.plans.capacity {
         let plan = result.plans.get_mut(i).ok_or("missing SQL project slot")?;
         let Some(sql) = plan.sql.as_mut() else {
@@ -1000,6 +1157,35 @@ pub(super) fn load_projects_bounded(
         };
         for h in 0..sql.hosts.capacity {
             let host = sql.hosts.get_mut(h).ok_or("missing SQL host slot")?;
+            let mut digest = blake3::Hasher::new();
+            digest.update(b"nudox.sql.sqlite.host-facts.v1\0");
+            for ordinal in 0..host.expected_facts {
+                if cancelled() {
+                    return Err("SQL read cancelled".into());
+                }
+                let entry = digest_rows
+                    .slot_mut(digest_index)
+                    .and_then(Option::take)
+                    .ok_or("SQL digest row missing")?;
+                if (entry.project, entry.host, entry.ordinal) != (i, h, ordinal) {
+                    return Err("SQL fact ordinal sequence mismatch".into());
+                }
+                digest.update(&entry.key);
+                digest.update(&(entry.json.len() as u64).to_be_bytes());
+                digest.update(&entry.json);
+                let refund = entry
+                    .json
+                    .len()
+                    .checked_add(allocation_bookkeeping_bytes)
+                    .ok_or("SQL budget overflow")?;
+                drop(entry);
+                remaining = remaining.checked_add(refund).ok_or("SQL budget overflow")?;
+                digest_index += 1;
+            }
+            digest.update(&host.expected_facts.to_be_bytes());
+            if *digest.finalize().as_bytes() != host.fact_digest {
+                return Err("SQL host fact digest mismatch".into());
+            }
             if host.seen_facts != host.expected_facts {
                 return Err("SQL host facts missing".into());
             }
@@ -1012,6 +1198,11 @@ pub(super) fn load_projects_bounded(
             allocation_bookkeeping_bytes,
         )?;
     }
+
+    if digest_index != expected_fact_total {
+        return Err("SQL digest rows remain".into());
+    }
+    digest_rows.refund(&mut remaining)?;
 
     // Move only the selected definitions. The decoder's temporary reservation
     // remains live while each retained ownership charge is transferred.
@@ -1072,6 +1263,10 @@ pub(super) fn load_projects_bounded(
         }
     }
     host_index.refund(&mut remaining)?;
+    drop(digest_scratch);
+    remaining = remaining
+        .checked_add(scratch_charge)
+        .ok_or("SQL budget overflow")?;
     let used = max_bytes
         .checked_sub(remaining)
         .ok_or("SQL budget overflow")?;
