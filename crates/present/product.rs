@@ -2222,7 +2222,7 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
                 }
             } else { "" };
             let selection = if page.basis.implicit_selection { "all .sql files, dialect inferred" } else { "files named by .nudox/sql.json" };
-            view.note = Some(format!("{terminal}; selection: {selection}; gaps: {gap_text}{empty_hint}. Order of files is the declared migration order; no deployed database is claimed."));
+            view.note = Some(format!("{terminal}; selection: {selection}; gaps: {gap_text}{empty_hint}. No deployed database is claimed."));
             view.semantic_data = Some(ProductSemanticData::SqlQuery(page.clone())); view
         }
         SurfaceReply::SqlReadSource(source) => {
