@@ -1170,7 +1170,6 @@ fn stylo_latest_attempt_preserves_last_served_and_rejects_stale_scan()
 }
 
 #[test]
-#[ignore = "requires completed native owner admission"]
 fn stylo_attempt_only_unavailable_noop_and_reopen() -> Result<(), Box<dyn std::error::Error>> {
     use backend_engine::builtin::{StyloAnalysisRecord, StyloAttemptArtifact, StyloAttemptOutcome, StyloUnavailable};
     let mut fixture = AdapterFixture::open(TempTree::new(), false);

@@ -524,33 +524,58 @@ fn native_ts_listener_journey(
 }
 
 #[test]
-#[ignore = "native owner journey; run this test alone with the test-only frontend failpoint"]
 fn native_ts_listener_cold_reopen_and_edit_without_frontends() -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child(
+        module_path!(),
+        "native_ts_listener_cold_reopen_and_edit_without_frontends",
+    )? {
+        return Ok(());
+    }
     native_ts_listener_journey(true, false)
 }
 
 #[test]
-#[ignore = "native owner journey uninstrumented control"]
 fn native_ts_listener_cold_reopen_and_edit_control() -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child(
+        module_path!(),
+        "native_ts_listener_cold_reopen_and_edit_control",
+    )? {
+        return Ok(());
+    }
     native_ts_listener_journey(false, false)
 }
 
 #[test]
-#[ignore = "native owner reference journey with test-only frontend failpoint"]
 fn native_ts_listener_references_without_structural_frontends() -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child(
+        module_path!(),
+        "native_ts_listener_references_without_structural_frontends",
+    )? {
+        return Ok(());
+    }
     native_ts_listener_journey(true, true)
 }
 
 #[test]
-#[ignore = "native owner reference journey uninstrumented control"]
 fn native_ts_listener_references_uninstrumented_control() -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child(
+        module_path!(),
+        "native_ts_listener_references_uninstrumented_control",
+    )? {
+        return Ok(());
+    }
     native_ts_listener_journey(false, true)
 }
 
 #[test]
-#[ignore = "native source range, retained selection and stale-source guard"]
 fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
 -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child(
+        module_path!(),
+        "native_ts_owner_explicit_range_retained_selection_and_stale_refusal",
+    )? {
+        return Ok(());
+    }
     use backend_library::{
         DeclarationRead, DeclarationSelector, ReferenceCoverage, SelectedSymbolId,
         SourceAvailability, SourceRangeRequest, SourceRangeScope,
@@ -753,8 +778,13 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
 }
 
 #[test]
-#[ignore = "native source-qualified Read plus same-length stale host edit"]
 fn native_ts_read_owner_policy_and_same_length_stale_refusal() -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child(
+        module_path!(),
+        "native_ts_read_owner_policy_and_same_length_stale_refusal",
+    )? {
+        return Ok(());
+    }
     let _guard = FrontendFailpoint;
     super::ingest::TEST_REJECT_STRUCTURAL_FRONTENDS.store(true, Ordering::Release);
     let mut builder = tempfile::Builder::new();
@@ -860,8 +890,13 @@ fn native_ts_read_owner_policy_and_same_length_stale_refusal() -> Result<(), Box
 }
 
 #[test]
-#[ignore = "native TS readiness after index with test-only frontend construction failpoint"]
 fn native_ts_health_without_structural_frontends() -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child(
+        module_path!(),
+        "native_ts_health_without_structural_frontends",
+    )? {
+        return Ok(());
+    }
     let _guard = FrontendFailpoint;
     super::ingest::TEST_REJECT_STRUCTURAL_FRONTENDS.store(true, Ordering::Release);
     let mut builder = tempfile::Builder::new();
@@ -1217,26 +1252,46 @@ fn assert_native_search_and_query(
 }
 
 #[test]
-#[ignore = "native same-profile deletion, selected NSE retirement and cold reopen"]
 fn native_ts_deleted_file_retires_evidence_and_old_handle() -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child(
+        module_path!(),
+        "native_ts_deleted_file_retires_evidence_and_old_handle",
+    )? {
+        return Ok(());
+    }
     native_ts_retirement_journey(false, false)
 }
 
 #[test]
-#[ignore = "native same-profile config exclusion, selected NSE retirement and cold reopen"]
 fn native_ts_excluded_file_retires_evidence_and_old_handle() -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child(
+        module_path!(),
+        "native_ts_excluded_file_retires_evidence_and_old_handle",
+    )? {
+        return Ok(());
+    }
     native_ts_retirement_journey(true, false)
 }
 
 #[test]
-#[ignore = "native exclusion search diagnostic; run alone with frontend failpoint"]
 fn native_ts_exclusion_kept_symbol_remains_searchable() -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child(
+        module_path!(),
+        "native_ts_exclusion_kept_symbol_remains_searchable",
+    )? {
+        return Ok(());
+    }
     native_ts_retirement_journey(true, true)
 }
 
 #[test]
-#[ignore = "last native TypeScript source deletion and cold owner retirement"]
 fn native_ts_last_file_deletion_retires_selected_evidence() -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child(
+        module_path!(),
+        "native_ts_last_file_deletion_retires_selected_evidence",
+    )? {
+        return Ok(());
+    }
     let _guard = FrontendFailpoint;
     super::ingest::TEST_REJECT_STRUCTURAL_FRONTENDS.store(true, Ordering::Release);
     let fixture = tempfile::Builder::new().prefix("tsx-last-retire-").tempdir_in("/tmp")?;
