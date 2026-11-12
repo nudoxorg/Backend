@@ -195,3 +195,67 @@ impl<'a> BorrowedCompilerMetadata<'a> {
     }
     pub(super) fn versioned(&self) -> Option<&BorrowedVersionedMetadata<'a>> { self.versioned.as_ref() }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base() -> CompilerPublicationMetadata {
+        let image_identity = *SemanticImageIdentity::from_encoded_bytes(b"borrowed metadata image").as_ref();
+        let image = CompilerImageMember { artifact_ordinal: 0, object_id: [0x45;32], semantic_image_identity: image_identity, byte_length: 7 };
+        let mut manifest = vec![0u8; SEMANTIC_MANIFEST_HEADER_BYTES + SEMANTIC_MANIFEST_ENTRY_BYTES];
+        manifest[..8].copy_from_slice(SEMANTIC_MANIFEST_MAGIC);
+        manifest[8..10].copy_from_slice(&CompilationManifestFormat::SemanticV2.wire_version().to_le_bytes());
+        manifest[12..16].copy_from_slice(&1u32.to_le_bytes());
+        let id_at = SEMANTIC_MANIFEST_HEADER_BYTES + SEMANTIC_MANIFEST_IMAGE_IDENTITY_OFFSET;
+        let len_at = SEMANTIC_MANIFEST_HEADER_BYTES + SEMANTIC_MANIFEST_IMAGE_LENGTH_OFFSET;
+        manifest[id_at..id_at+32].copy_from_slice(&image_identity);
+        manifest[len_at..len_at+4].copy_from_slice(&7u32.to_le_bytes());
+        let manifest_id = ManifestIdentity::from_encoded_bytes(&manifest);
+        let root = GenerationId::from_canonical_bytes(b"borrowed compiler root");
+        let dependencies = ContentId::<DependencySetDomain>::from_canonical_bytes(b"borrowed dependency set");
+        let mut binding = [0u8; COMPILATION_BINDING_BYTES];
+        binding[..8].copy_from_slice(b"NUDXCPB\0"); binding[8..10].copy_from_slice(&1u16.to_le_bytes());
+        binding[12..44].copy_from_slice(root.as_ref()); binding[44..76].copy_from_slice(dependencies.as_ref());
+        binding[76..108].copy_from_slice(manifest_id.as_ref());
+        CompilerPublicationMetadata::new(&manifest, binding, vec![image]).unwrap()
+    }
+
+    #[test]
+    fn borrowed_v9_optional_combinations_and_cancellation() {
+        let program = CompilerProgramSourceMember { object_id: [0x11;32], program: [0x22;32], byte_length: 8 };
+        let coverage = CompilerSourceCoverageMember { object_id: [0x33;32], identity: [0x44;32], byte_length: 8 };
+        let snapshot = CompilerTypeScriptSnapshotMember { object_id: [0x55;32], byte_length: 8 };
+        let headers = CompilerNativeHeadersMember { object_id: [0x77;32], byte_length: 8 };
+        for has_coverage in [false,true] { for has_snapshot in [false,true] {
+            let mut metadata = base().with_native_program_sources(program).unwrap();
+            if has_coverage { metadata = metadata.with_source_coverage(coverage).unwrap(); }
+            if has_snapshot { metadata = metadata.with_typescript_snapshot_witness(snapshot).unwrap(); }
+            metadata = metadata.with_native_headers(headers).unwrap();
+            let bytes = metadata.canonical_bytes();
+            let ids = metadata_member_ids_checked(&metadata).unwrap();
+            let mut members = Vec::new(); for id in &ids { members.extend_from_slice(id); }
+            let mut bitmap = vec![0u8; (MAX_MEMBER_IDS + 7)/8];
+            let mut calls = 0usize;
+            let mut result = None;
+            let allocation = allocation_counter::measure(|| {
+                result = Some(BorrowedCompilerMetadata::parse(&bytes, metadata.object_id(), &members, &mut bitmap, &mut |_| { calls += 1; Ok::<(), ()>(()) }).unwrap());
+            });
+            assert_eq!(allocation.bytes_max, 0);
+            let view = result.unwrap();
+            assert_eq!(view.binding_identity, *metadata.binding_identity());
+            assert_eq!(view.native_program_sources, Some(program));
+            assert_eq!(view.native_headers, Some(headers));
+            assert_eq!(CompilerPublicationMetadata::decode(&bytes).unwrap(), metadata);
+            for cutoff in [1, calls/2, calls.saturating_sub(1)] {
+                let mut seen = 0usize;
+                let stopped = BorrowedCompilerMetadata::parse(&bytes, metadata.object_id(), &members, &mut bitmap, &mut |_| { seen += 1; if seen == cutoff { Err(()) } else { Ok(()) } });
+                assert!(matches!(stopped, Err(BorrowedMetadataError::Stopped(()))));
+            }
+            let mut corrupt = bytes.clone(); corrupt[METADATA_MAGIC.len()+2] ^= 0x80;
+            assert!(BorrowedCompilerMetadata::parse(&corrupt, metadata.object_id(), &members, &mut bitmap, &mut |_| Ok::<(), ()>(())).is_err());
+            let mut incomplete = members.clone(); incomplete.truncate(incomplete.len()-32);
+            assert!(BorrowedCompilerMetadata::parse(&bytes, metadata.object_id(), &incomplete, &mut bitmap, &mut |_| Ok::<(), ()>(())).is_err());
+        }}
+    }
+}
