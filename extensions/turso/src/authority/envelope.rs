@@ -4281,6 +4281,30 @@ mod tests {
         drop(store);
         // This is a synthetic selected-generation fixture, not an owner receipt.
         let store = FileStore::open(&directory, 8 * 1024 * 1024).unwrap();
+        let mut visited = (0usize, 0usize, 0usize);
+        let mut visitor_budget = SelectedNativeHeaderBudget::new(64 * 1024 * 1024, 100_000);
+        visit_selected_publication_wire(&store, &selected, &mut visitor_budget, &|| false, 64 * 1024 * 1024, 1, |item, budget| {
+            match item {
+                SelectedPublicationWire::Program { bytes, .. } => { assert!(!bytes.is_empty()); visited.0 += 1; },
+                SelectedPublicationWire::Image { bytes, .. } => { assert!(!bytes.is_empty()); visited.1 += 1; },
+                SelectedPublicationWire::Headers { bytes, .. } => { assert!(!bytes.is_empty()); visited.2 += 1; },
+            }
+            budget.reserve_retained(1).map_err(|e| format!("{e:?}"))?;
+            Ok(())
+        }).unwrap();
+        assert_eq!(visited, (1, 1, 1));
+        assert_eq!(visitor_budget.remaining_memory(), 64 * 1024 * 1024 - 3);
+        let used = 100_000 - visitor_budget.remaining_work();
+        assert!(visit_selected_publication_wire(&store, &selected, &mut SelectedNativeHeaderBudget::new(64 * 1024 * 1024, used - 1), &|| false, 64 * 1024 * 1024, 1, |_, _| Ok(())).is_err());
+        assert!(visit_selected_publication_wire(&store, &selected, &mut SelectedNativeHeaderBudget::new(64 * 1024 * 1024, 100_000), &|| true, 64 * 1024 * 1024, 1, |_, _| Ok(())).is_err());
+        let stopped = std::cell::Cell::new(false);
+        let mut detached = Vec::new();
+        let late = visit_selected_publication_wire(&store, &selected, &mut SelectedNativeHeaderBudget::new(64 * 1024 * 1024, 100_000), &|| stopped.get(), 64 * 1024 * 1024, 1, |item, _| {
+            if let SelectedPublicationWire::Program { .. } = item { detached.push(1); stopped.set(true); }
+            Ok(())
+        });
+        assert!(late.is_err());
+        assert_eq!(detached, [1]); // Caller discards this detached partial plan.
         let mut scratch = vec![0u8; 4 * 1024 * 1024];
         let mut scratch_budget = SelectedNativeHeaderBudget::new(64 * 1024 * 1024, 100_000);
         let borrowed_header = reopen_selected_native_headers_in_scratch(&store, &selected, &mut scratch_budget, &|| false, &mut scratch).unwrap().unwrap();
