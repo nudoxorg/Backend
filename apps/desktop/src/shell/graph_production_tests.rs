@@ -166,10 +166,12 @@ fn exercise(fixture: &OwnerFixture) {
     let revision = renewal.revision().expect("actual service recertifies attachment renewal");
     let renewed_root = VersionedRoot::from_revision(1, revision.cursor(), 0);
     assert!(renewed_root.same_authority(fixture.root));
-    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("scene before renewal").entity_id(), graph.entity_id(),
-        "the retained scene must survive local interaction before renewal");
-    assert!(old_key.at_authority(renewed_root), "renewal retains the exact producer authority");
-    assert!(rig.cx.update(|_, cx| old_key.serving_owner(cx).is_some()), "the original serving generation remains registered");
+    rig.cx.update(|_, cx| {
+        assert_eq!(rig.shell.read(cx).graph_entity(cx).expect("scene before renewal").entity_id(), graph.entity_id(),
+            "the retained scene must survive local interaction before renewal");
+        assert!(old_key.at_authority(renewed_root), "renewal retains the exact producer authority");
+        assert!(old_key.serving_owner(cx).is_some(), "the original serving generation remains registered");
+    });
     gate.publish(OwnerState::Ready { key: renewed_root, mode: ServiceMode::Attached });
     rig.settle();
     assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("renewed same-generation scene").entity_id(), graph.entity_id());
