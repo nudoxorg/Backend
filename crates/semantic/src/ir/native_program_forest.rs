@@ -669,6 +669,19 @@ mod tests {
                 .unwrap()
         );
         assert!(
+            view.image_matches_bytes(b"vite.config.ts", &vite_image, |_| Ok::<_, ()>(()))
+                .unwrap()
+        );
+        assert!(
+            !view
+                .image_matches_bytes(b"vite.config.ts", &other_image, |_| Ok::<_, ()>(()))
+                .unwrap()
+        );
+        assert!(
+            view.image_matches_bytes(b"vite.config.ts", &vite_image, |_| Err::<(), _>("stopped"))
+                .is_err()
+        );
+        assert!(
             !view
                 .image_matches("missing.ts", &vite_image, |_| Ok::<_, ()>(()))
                 .unwrap()
@@ -692,6 +705,16 @@ mod tests {
             retained
                 .image_matches("vite.config.ts", &vite_image, |_| Ok::<_, ()>(()))
                 .unwrap()
+        );
+        assert!(
+            retained
+                .image_matches_bytes(b"vite.config.ts", &vite_image, |_| Ok::<_, ()>(()))
+                .unwrap()
+        );
+        assert!(
+            retained
+                .image_matches_bytes(b"vite.config.ts", &vite_image, |_| Err::<(), _>("stopped"))
+                .is_err()
         );
         let mut corrupt = graph.as_bytes().to_vec();
         let node_offset = corrupt.len() - 64;

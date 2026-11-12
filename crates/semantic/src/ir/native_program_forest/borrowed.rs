@@ -115,7 +115,16 @@ impl RetainedProgramGraph {
         image: &[u8; 32],
         checkpoint: impl FnMut(u64) -> Result<(), E>,
     ) -> Result<bool, E> {
-        self.view().image_matches(path, image, checkpoint)
+        self.image_matches_bytes(path.as_bytes(), image, checkpoint)
+    }
+    /// Verify a producer-sealed image against borrowed path bytes with metered lookup.
+    pub fn image_matches_bytes<E>(
+        &self,
+        path: &[u8],
+        image: &[u8; 32],
+        checkpoint: impl FnMut(u64) -> Result<(), E>,
+    ) -> Result<bool, E> {
+        self.view().image_matches_bytes(path, image, checkpoint)
     }
 }
 
@@ -605,13 +614,22 @@ impl<'a, 's> BorrowedProgramGraph<'a, 's> {
         }
         Ok(())
     }
+    /// Verify a producer-sealed image against a UTF-8 path with metered lookup.
     pub fn image_matches<E>(
         &self,
         path: &str,
         image: &[u8; 32],
+        checkpoint: impl FnMut(u64) -> Result<(), E>,
+    ) -> Result<bool, E> {
+        self.image_matches_bytes(path.as_bytes(), image, checkpoint)
+    }
+    /// Verify a producer-sealed image against borrowed path bytes with metered lookup.
+    pub fn image_matches_bytes<E>(
+        &self,
+        path: &[u8],
+        image: &[u8; 32],
         mut checkpoint: impl FnMut(u64) -> Result<(), E>,
     ) -> Result<bool, E> {
-        let path = path.as_bytes();
         let mut low = 0;
         let mut high = self.rows.len() / 16;
         while low < high {
