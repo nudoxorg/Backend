@@ -2006,6 +2006,10 @@ impl BuiltinIntent {
         self.set_native_evidence_changes(plan.evidence_basis(), changes)?;
         self.native_evidence_proof = Some(NativeTsLiveProof(proof));
         revalidate_native_ts_intent(base, &self)?;
+        #[cfg(test)]
+        if TEST_CAPTURE_NATIVE_INTENT.load(std::sync::atomic::Ordering::Acquire) {
+            if let Ok(mut slot) = TEST_NATIVE_INTENT.lock() { *slot = Some(self.clone()); }
+        }
         Ok(self)
     }
 
@@ -9131,3 +9135,33 @@ mod membership_tests;
 #[cfg(test)]
 #[path = "profile_source_facts_tests.rs"]
 mod source_facts_tests;
+
+// Observation only: a real validated owner intent is retained for this
+// isolated test; this hook does not create or admit a native capability.
+#[cfg(test)]
+pub(super) static TEST_CAPTURE_NATIVE_INTENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+pub(super) static TEST_NATIVE_INTENT: std::sync::Mutex<Option<BuiltinIntent>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+pub(super) fn test_native_intent_budget_control() -> Result<(), BuiltinModelError> {
+    use backend_engine::queue::{BoundedQueue, QueueBudget, QueueError, QueueSized};
+    let intent = TEST_NATIVE_INTENT.lock().map_err(|_| BuiltinModelError("native intent observation poisoned".into()))?
+        .take().ok_or_else(|| BuiltinModelError("real native intent not observed".into()))?;
+    let proof = &intent.native_evidence_proof.as_ref().ok_or_else(|| BuiltinModelError("native proof missing".into()))?.0;
+    let plan = proof.plan();
+    let plan_bytes = plan.checked_retained_bytes().ok_or_else(|| BuiltinModelError("plan accounting overflow".into()))?;
+    let (maps, map_bytes) = super::native_ts_admission::test_plan_line_map_charge(plan)
+        .ok_or_else(|| BuiltinModelError("map accounting overflow".into()))?;
+    if maps < 2 || plan_bytes < map_bytes { return Err(BuiltinModelError("actual retained plan omitted line map allocations".into())); }
+    let proof_bytes = proof.checked_retained_bytes().ok_or_else(|| BuiltinModelError("proof accounting overflow".into()))?;
+    let charged = intent.checked_queue_bytes().map_err(|error| BuiltinModelError(format!("intent accounting: {error:?}")))?;
+    if charged < proof_bytes || proof_bytes < plan_bytes { return Err(BuiltinModelError("intent omitted retained native proof".into())); }
+    let exact = BoundedQueue::new(QueueBudget::new(1, charged));
+    exact.try_push(intent.clone()).map_err(|error| BuiltinModelError(format!("exact queue refused: {error:?}")))?;
+    let short = BoundedQueue::new(QueueBudget::new(1, charged - 1));
+    if !matches!(short.try_push(intent), Err(QueueError::Bytes)) {
+        return Err(BuiltinModelError("below-bound native intent was not refused".into()));
+    }
+    Ok(())
+}

@@ -1210,3 +1210,212 @@ fn native_ts_last_file_deletion_retires_selected_evidence() -> Result<(), Box<dy
     assert_eq!(owner.close()?.failures, 0);
     Ok(())
 }
+
+/// This is deliberately a real owner/index/cold-reopen fixture.  If the
+/// compiler emits an image for the recursive-alias input, the fixture must fail:
+/// it has not exercised the member-only case.
+#[test]
+#[ignore = "native owner journey; run alone with the frontend failpoint"]
+fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> {
+    fn index_member_fixture(session: &mut Session, project: &Path) -> Result<(), Box<dyn Error>> {
+        let package = PackageReference::parse(project.to_string_lossy().into_owned()).map_err(|e| io::Error::other(e.to_string()))?;
+        let key = IndexOperationKey::from_bytes([0x91; 32]).map_err(|e| io::Error::other(e.to_string()))?;
+        let mut status = session.start_index_operation(key, package, CompileExecutionIntent::Interactive)?;
+        let deadline = Instant::now() + Duration::from_secs(600);
+        loop {
+            let IndexOperationObservation::Known(known) = status else { return Err("unknown index operation".into()) };
+            match known.state {
+                IndexOperationState::Published(_) => return Ok(()),
+                IndexOperationState::PartiallyPublished { refused_profiles, .. } => {
+                    if refused_profiles.is_empty() { return Err("partial publication missing refused profiles".into()); }
+                    eprintln!("member fixture partial profiles: {refused_profiles:?}");
+                    return Ok(());
+                }
+                IndexOperationState::Accepted | IndexOperationState::Active { .. } => {}
+                state => return Err(io::Error::other(format!("index refused: {state:?}")).into()),
+            }
+            if Instant::now() >= deadline { return Err("index deadline".into()); }
+            thread::sleep(Duration::from_millis(30));
+            status = session.index_operation_status(key)?;
+        }
+    }
+    use backend_engine::builtin::{native_source_evidence_key, native_source_evidence_relation, NativeSourceEvidenceKind};
+    use backend_semantic::vocabulary::{LanguageProfile, TypeScriptSource};
+
+    struct IntentCaptureGuard;
+    impl Drop for IntentCaptureGuard {
+        fn drop(&mut self) {
+            super::profile::TEST_CAPTURE_NATIVE_INTENT.store(false, Ordering::Release);
+            super::ingest::TEST_CAPTURE_NATIVE_PROGRAMS.store(false, Ordering::Release);
+            if let Ok(mut slot) = super::profile::TEST_NATIVE_INTENT.lock() { *slot = None; }
+        }
+    }
+    let _intent_guard = IntentCaptureGuard;
+    *super::profile::TEST_NATIVE_INTENT.lock().map_err(|_| "intent lock")? = None;
+    super::profile::TEST_CAPTURE_NATIVE_INTENT.store(true, Ordering::Release);
+    super::ingest::TEST_NATIVE_PROGRAMS.lock().map_err(|_| "program lock")?.clear();
+    super::ingest::TEST_CAPTURE_NATIVE_PROGRAMS.store(true, Ordering::Release);
+
+    let _guard = FrontendFailpoint;
+    super::ingest::TEST_REJECT_STRUCTURAL_FRONTENDS.store(true, Ordering::Release);
+    let fixture = tempfile::Builder::new().prefix("nse-member-").tempdir_in("/tmp")?;
+    let project = fixture.path().join("project");
+    fs::create_dir_all(project.join("src/app"))?;
+    fs::create_dir_all(project.join("src/components"))?;
+    fs::create_dir_all(project.join("src/types"))?;
+    // Exact native TSZ source-local gap fixture used by
+    // application::compiler_coverage_tests::linked_tsz_tsx_cycle_is_an_exact_file_gap_while_navbar_and_caller_publish.
+    fs::write(project.join("tsconfig.json"), r#"{"compilerOptions":{"noLib":true,"types":[],"module":"ESNext","moduleResolution":"bundler","jsx":"preserve"},"files":["src/app/layout.tsx","src/app/page.tsx","src/components/NavBar.tsx","src/types/react-node.tsx"]}"#)?;
+    let member = "import type { ReactNode } from \"../types/react-node\";\nexport type Layout = ReactNode;\n";
+    let image = "export function NavBar() { return \"nav\"; }\n";
+    let changed_member = "import type { ReactNode } from \"../types/react-node\";\nexport type Layout = ReactNodf;\n";
+    let changed_image = "export function NavBar() { return \"nax\"; }\n";
+    fs::write(project.join("src/types/react-node.tsx"), "export type ReactNode = { readonly children?: ReactNode };\n")?;
+    fs::write(project.join("src/app/page.tsx"), "import { NavBar } from \"../components/NavBar\";\nexport function Page() { return NavBar(); }\n")?;
+    assert_eq!(member.len(), changed_member.len());
+    assert_eq!(image.len(), changed_image.len());
+    fs::write(project.join("src/app/layout.tsx"), member)?;
+    fs::write(project.join("src/components/NavBar.tsx"), image)?;
+    let paths = backend_runtime::WorkspacePaths::discover(
+        Some(fixture.path().join("owner")), Some(fixture.path().join("state")),
+        Some(fixture.path().join("owner.sock")),
+    )?;
+    paths.initialize()?;
+    let authority = backend_engine::read_authority_secret(paths.authority_secret())?;
+    let owner = start_owner(&paths)?;
+    let mut session = Session::connect(owner.endpoint())?;
+    index_member_fixture(&mut session, &project)?;
+    super::profile::test_native_intent_budget_control()?;
+    let (coordinate, document) = select_native_document(&mut session, &authority, "NavBar", "src/components/NavBar.tsx")?;
+    let warm_policy = serde_json::to_value(&document.source_policy)?;
+    assert_eq!(warm_policy["data"]["statement"]["policy_stability"], "unknown");
+    let membership: [u8; 32] = serde_json::from_value(warm_policy["data"]["statement"]["program_membership"].clone())?;
+    let binding: [u8; 32] = serde_json::from_value(warm_policy["data"]["statement"]["publication_binding"].clone())?;
+    {
+        let observed = super::ingest::TEST_NATIVE_PROGRAMS.lock().map_err(|_| "program lock")?;
+        let selected = observed.iter().find(|entry| entry.membership == membership && entry.binding == binding).ok_or("selected Program was not observed at admitted image join")?;
+        let digest = backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(member.as_bytes());
+        assert_eq!(selected.sources.iter().filter(|(path, id, len)| path.ends_with("src/app/layout.tsx") && id == digest.as_ref() && *len as usize == member.len()).count(), 1);
+    }
+    drop(session);
+    assert_eq!(owner.close()?.failures, 0);
+
+    // Reopen the durable relation separately from the listener. A Member row
+    // is created by the native capture from a real Program mapping, not by
+    // this test; it grants no image or declaration authority.
+    let profile = super::profile_descriptor(super::BuiltinProfile::Product)?;
+    let dispatcher = super::builtin_dispatcher(Some(super::ECHO_AUTHORITY_SECRET), profile, 60_000)?;
+    let daemon = crate::Locald::open_with_dispatcher_and_registry(
+        paths.data(), super::BuiltinModel, super::genesis()?, dispatcher,
+        backend_engine::DaemonConfig::default(), super::product_relation_registry()?,
+    )?;
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let project_key = backend_engine::PackageKey::from_value(project.canonicalize()?.to_str().ok_or("project path")?).to_bytes();
+    let relation = native_source_evidence_relation(&snapshot)?.ok_or("missing selected NSE")?;
+    let ts = LanguageProfile::TypeScript(TypeScriptSource::Tsx);
+    let member_row = relation.lookup(&native_source_evidence_key(project_key, ts, "src/app/layout.tsx")?)?.ok_or("missing ProgramMember")?;
+    let image_row = relation.lookup(&native_source_evidence_key(project_key, ts, "src/components/NavBar.tsx")?)?.ok_or("missing Image")?;
+    assert_eq!(member_row.kind, NativeSourceEvidenceKind::ProgramMember, "fixture did not produce an omitted image");
+    assert_eq!(image_row.kind, NativeSourceEvidenceKind::Image);
+    let member_id = backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(member.as_bytes());
+    let image_id = backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(image.as_bytes());
+    assert_eq!(member_row.source_digest.as_slice(), member_id.as_ref());
+    assert_eq!(image_row.source_digest.as_slice(), image_id.as_ref());
+    assert!(image_row.verify_host(image.as_bytes(), image_id).is_ok());
+    assert!(image_row.verify_host(changed_image.as_bytes(), image_id).is_err());
+    super::view_build::native_evidence_lookup_budget_control(
+        &relation, backend_engine::PackageKey::from_value(project.canonicalize()?.to_str().ok_or("project path")?), ts,
+        &[("src/app/layout.tsx", backend_semantic::ir::SourceIdentity::from_bytes(member.as_bytes()).ok_or("member source identity")?),
+          ("src/components/NavBar.tsx", backend_semantic::ir::SourceIdentity::from_bytes(image.as_bytes()).ok_or("image source identity")?)],
+    )?;
+    // Use the actual selected key and capture, then replay against the real
+    // persisted compiler history. The altered rows are inputs to production
+    // replay admission only; they do not replace the workspace relation.
+    let captures = backend_engine::builtin::semantic_capture_relation(&snapshot)?.ok_or("missing captures")?;
+    let capture_page = captures.page(None, backend_engine::MAX_SNAPSHOT_PAGE_ROWS)?;
+    assert!(capture_page.next().is_none(), "fixture capture page must be complete");
+    let (selected_key, selected_capture) = capture_page.entries().iter()
+        .find(|(key, capture)| key.package_key().to_bytes() == project_key
+            && key.profile() == ts && key.is_selected()
+            && matches!(capture.outcome(), backend_engine::builtin::ProductSemanticCaptureOutcome::Published { .. }))
+        .ok_or("published selected TS capture")?;
+    let publications = snapshot.relation::<super::BuiltinSemanticRelation>()?;
+    let backend_engine::builtin::ProductSemanticCaptureOutcome::Published { coverage, claim } = selected_capture.outcome() else { return Err("capture not published".into()) };
+    assert!(matches!(coverage, backend_engine::builtin::SemanticPublicationCoverage::Partial(_)), "omitted native source requires partial semantic coverage");
+    assert_eq!(publications.lookup(selected_key)?, Some(backend_engine::builtin::ProductSemanticPublicationRecord::Published { coverage, claim }));
+    {
+        use backend_semantic::ir::{SourceCoverageGapCause, SourceCoverageRow};
+        let selected_authority = super::semantic_authority::SemanticAuthority::open(paths.data())?;
+        let observed = selected_authority.selected_source_coverage(selected_key, claim)?
+            .ok_or("selected compiler coverage absent")?;
+        assert_eq!((observed.source_count(), observed.completed()), (4, 3));
+        let catalog = observed.catalog().ok_or("selected compiler gap catalog absent")?;
+        assert_eq!(catalog.rows().iter().filter(|row| matches!(row,
+            SourceCoverageRow::Gap { path, source, byte_len, cause, .. }
+                if path == "src/app/layout.tsx" && source.as_slice() == member_id.as_ref()
+                    && *byte_len as usize == member.len()
+                    && *cause == SourceCoverageGapCause::SourceNotRepresentable
+        )).count(), 1, "selected compiler must record this exact omitted source and cause");
+    }
+    let change = super::profile::BuiltinCaptureChange {
+        cargo_target: None, key: selected_key.clone(), expected: Some(selected_capture.clone()),
+        capture: selected_capture.capture(), outcome: selected_capture.outcome(), compiler_failure: None,
+    };
+    let store = backend_engine::FileStore::open(paths.data().join("objects"), 8 * 1024 * 1024)
+        .map_err(|error| io::Error::other(format!("open selected object store: {error:?}")))?;
+    let page = relation.page(None, backend_engine::MAX_SNAPSHOT_PAGE_ROWS)?;
+    assert!(page.next().is_none(), "fixture evidence page must be complete");
+    let rows = page.entries().iter().map(|(_, row)| row.clone())
+        .filter(|row| row.project == project_key && row.profile == ts).collect::<Vec<_>>();
+    assert!(rows.iter().any(|row| row == &member_row));
+    assert!(rows.iter().any(|row| row == &image_row));
+    let refs = rows.iter().collect::<Vec<_>>();
+    super::semantic_authority::admit_replayed_native_evidence(&store, std::slice::from_ref(&change), &refs, &[])?;
+    for (path, kind_only, expected) in [
+        ("src/app/layout.tsx", false, "native replay Program source differs from evidence"),
+        ("src/components/NavBar.tsx", false, "native replay Program source differs from evidence"),
+        ("src/app/layout.tsx", true, "native replay source lacks its claimed Program evidence"),
+        ("src/components/NavBar.tsx", true, "native replay Program member unexpectedly has an image"),
+    ] {
+        let mut altered = rows.clone();
+        let row = altered.iter_mut().find(|row| row.path == path).ok_or("tamper target")?;
+        if kind_only {
+            row.kind = if row.admits_image() { NativeSourceEvidenceKind::ProgramMember } else { NativeSourceEvidenceKind::Image };
+        } else {
+            row.source_digest[0] ^= 1;
+        }
+        let refs = altered.iter().collect::<Vec<_>>();
+        let error = super::semantic_authority::admit_replayed_native_evidence(&store, std::slice::from_ref(&change), &refs, &[]).err().ok_or("tampered replay unexpectedly admitted")?;
+        assert_eq!(error.0, expected, "tamper path {path}");
+    }
+    drop(relation);
+    drop(snapshot);
+    drop(daemon);
+
+    let owner = start_owner(&paths)?;
+    let mut session = Session::connect(owner.endpoint())?;
+    let (cold_coordinate, cold) = select_native_document(&mut session, &authority, "NavBar", "src/components/NavBar.tsx")?;
+    assert_eq!(coordinate, cold_coordinate);
+    assert_eq!(document.symbol, cold.symbol);
+    let cold_policy = serde_json::to_value(&cold.source_policy)?;
+    assert_eq!(cold_policy["data"]["statement"]["policy_stability"], "unknown");
+    assert_eq!(cold_policy["data"]["statement"]["program_membership"], warm_policy["data"]["statement"]["program_membership"]);
+    assert_eq!(cold_policy["data"]["statement"]["publication_binding"], warm_policy["data"]["statement"]["publication_binding"]);
+    fs::write(project.join("src/components/NavBar.tsx"), changed_image)?;
+    let request = SurfaceCommand::Read { locators: vec![ProductText::new(cold_coordinate).map_err(|e| io::Error::other(e.to_string()))?].into_boxed_slice() };
+    match session.surface(request) {
+        Ok(SurfaceReply::Read(records)) => {
+            let [record] = records.as_ref() else { return Err("stale Read result count".into()) };
+            assert!(record.source_policy.is_unknown());
+            assert!(record.extent.is_none());
+        }
+        Ok(_) => return Err("unexpected stale Read reply".into()),
+        Err(error) => return Err(error.into()),
+    }
+    fs::write(project.join("src/app/layout.tsx"), changed_member)?;
+    let changed_member_id = backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(&fs::read(project.join("src/app/layout.tsx"))?);
+    assert_ne!(member_row.source_digest.as_slice(), changed_member_id.as_ref());
+    drop(session);
+    assert_eq!(owner.close()?.failures, 0);
+    Ok(())
+}

@@ -1017,3 +1017,80 @@ pub(super) fn admit_native_ts_owner_candidate(
         evidence_work,
     })
 }
+
+#[cfg(test)]
+mod retained_line_map_budget_tests {
+    use super::{charge_allocation, charge_row_path};
+    use backend_engine::builtin::{NativeSourceEvidence, NativeSourceEvidenceKind};
+    use backend_engine::queue::{QueueBudget, QueueUsage};
+    use backend_semantic::vocabulary::{LanguageProfile, TypeScriptSource};
+
+    #[test]
+    fn aggregate_retained_maps_charge_capacity_and_cross_queue_boundary() {
+        let row = |path: &str, spare: usize| {
+            let mut lines = Vec::with_capacity(spare);
+            lines.extend([0, 2, 4]);
+            NativeSourceEvidence {
+                project: [1; 32],
+                profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+                path: path.to_owned(),
+                input_digest: [2; 32],
+                source_digest: [3; 32],
+                byte_length: 4,
+                kind: NativeSourceEvidenceKind::ProgramMember,
+                line_starts: Some(lines),
+                headers: None,
+            }
+        };
+        let a = row("a.ts", 1024);
+        let b = row("b.ts", 2048);
+        let header = 2 * std::mem::size_of::<usize>();
+        let mut a_charge = 0;
+        charge_row_path(&mut a_charge, &a).unwrap();
+        assert_eq!(a_charge, a.path.capacity() + header + a.line_starts.as_ref().unwrap().capacity() * 4 + header);
+        let mut combined = a_charge;
+        charge_row_path(&mut combined, &b).unwrap();
+        assert_eq!(combined, a_charge + b.path.capacity() + header + b.line_starts.as_ref().unwrap().capacity() * 4 + header);
+        assert!(combined > (a.line_starts.as_ref().unwrap().len() + b.line_starts.as_ref().unwrap().len()) * 4);
+        let mut at_limit = QueueUsage::default();
+        assert!(at_limit.admit(QueueBudget::new(2, combined), a_charge));
+        assert!(at_limit.admit(QueueBudget::new(2, combined), combined - a_charge));
+        assert_eq!(at_limit.bytes, combined);
+        let mut below = QueueUsage::default();
+        assert!(below.admit(QueueBudget::new(2, combined - 1), a_charge));
+        assert!(!below.admit(QueueBudget::new(2, combined - 1), combined - a_charge));
+        assert_eq!(below.bytes, a_charge);
+        let mut near_overflow = usize::MAX - 1;
+        assert!(charge_allocation(&mut near_overflow, 1).is_none());
+    }
+}
+
+/// Inspect the actual owner-admitted plan without constructing an authority.
+#[cfg(test)]
+pub(super) fn test_plan_line_map_charge(plan: &NativeTsEvidencePlan) -> Option<(usize, usize)> {
+    let mut maps = 0usize;
+    let mut bytes = 0usize;
+    for candidate in &plan.candidates {
+        for row in &candidate.evidence {
+            if row.line_starts.is_some() { maps += 1; }
+            charge_row_path(&mut bytes, row)?;
+        }
+        for change in &candidate.evidence_changes {
+            for row in change.expected.iter().chain(std::iter::once(&change.after)) {
+                if row.line_starts.is_some() { maps += 1; }
+                charge_row_path(&mut bytes, row)?;
+            }
+        }
+    }
+    for change in &plan.changes {
+        for row in change.expected.iter().chain(std::iter::once(&change.after)) {
+            if row.line_starts.is_some() { maps += 1; }
+            charge_row_path(&mut bytes, row)?;
+        }
+    }
+    for retirement in &plan.retirements {
+        if retirement.expected.line_starts.is_some() { maps += 1; }
+        charge_row_path(&mut bytes, &retirement.expected)?;
+    }
+    Some((maps, bytes))
+}

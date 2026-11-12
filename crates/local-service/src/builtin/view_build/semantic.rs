@@ -4739,3 +4739,49 @@ mod search_cancellation_tests {
         Ok(())
     }
 }
+
+/// Exercises the unmodified selected-relation lookup with a real reopened
+/// relation. This wrapper only observes admission; it mints no source proof.
+#[cfg(test)]
+pub(in crate::builtin) fn native_evidence_lookup_budget_control(
+    relation: &backend_engine::workspace::WorkspaceRelationHandle<backend_engine::builtin::NativeSourceEvidenceRelation>,
+    package: backend_engine::PackageKey,
+    profile: backend_semantic::vocabulary::LanguageProfile,
+    items: &[(&str, backend_semantic::ir::SourceIdentity)],
+) -> Result<(), BuiltinModelError> {
+    let mut measured = usize::MAX;
+    for (path, source) in items {
+        if lookup_native_evidence(relation, package, profile, path, *source, &mut measured)?.is_none() {
+            return Err(BuiltinModelError("fixture evidence absent".into()));
+        }
+    }
+    let charge = usize::MAX - measured;
+    if charge == 0 { return Err(BuiltinModelError("fixture evidence has zero retained allocation".into())); }
+    let scratch = backend_engine::builtin::NATIVE_EVIDENCE_READ_SCRATCH;
+    let mut exact = scratch.checked_add(charge).ok_or_else(|| BuiltinModelError("fixture lookup budget overflow".into()))?;
+    for (path, source) in items {
+        lookup_native_evidence(relation, package, profile, path, *source, &mut exact)?
+            .ok_or_else(|| BuiltinModelError("fixture evidence absent".into()))?;
+    }
+    if exact != scratch { return Err(BuiltinModelError("lookup allocation charge changed".into())); }
+    let mut short = scratch.checked_add(charge - 1).ok_or_else(|| BuiltinModelError("fixture lookup budget overflow".into()))?;
+    let mut refused = false;
+    for (path, source) in items {
+        match lookup_native_evidence(relation, package, profile, path, *source, &mut short) {
+            Ok(Some(_)) => {}
+            Err(error) if error.0 == "read native evidence: workspace relation store error: Bounds" => { refused = true; break; }
+            Ok(None) => return Err(BuiltinModelError("fixture evidence absent".into())),
+            Err(error) => return Err(error),
+        }
+    }
+    if !refused { return Err(BuiltinModelError("aggregate lookup budget did not refuse".into())); }
+    for (path, source) in items {
+        let mut changed = *source;
+        changed.identity = backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(b"tampered native source");
+        let mut budget = usize::MAX;
+        let error = lookup_native_evidence(relation, package, profile, path, changed, &mut budget)
+            .err().ok_or_else(|| BuiltinModelError("tampered lookup admitted".into()))?;
+        if error.0 != "selected native evidence does not match its key or image" { return Err(error); }
+    }
+    Ok(())
+}
