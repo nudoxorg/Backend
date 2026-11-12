@@ -223,7 +223,15 @@ impl<T> Slots<T> {
             charged: 0,
         }
     }
-    fn new(count: usize, remaining: &mut usize, bookkeeping: usize) -> Result<Self, String> {
+    fn new(
+        count: usize,
+        remaining: &mut usize,
+        bookkeeping: usize,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Self, String> {
+        if cancelled() {
+            return Err("SQL read cancelled".into());
+        }
         if count == 0 {
             return Ok(Self::empty());
         }
@@ -261,11 +269,17 @@ impl<T> Slots<T> {
             groups: std::array::from_fn(|_| None),
         });
         for group_index in 0..groups {
+            if cancelled() {
+                return Err("SQL read cancelled".into());
+            }
             let mut group = Box::new(SlotGroup {
                 chunks: std::array::from_fn(|_| None),
             });
             let group_chunks = (chunks - group_index * CHUNKS_PER_GROUP).min(CHUNKS_PER_GROUP);
             for i in 0..group_chunks {
+                if cancelled() {
+                    return Err("SQL read cancelled".into());
+                }
                 group.chunks[i] = Some(Box::new(SlotChunk {
                     values: std::array::from_fn(|_| None),
                 }));
@@ -748,9 +762,17 @@ pub(super) fn load_projects_bounded(
     use backend_engine::builtin::{sql_analysis_preflight_relation, sql_host_key};
     let mut remaining = max_bytes;
     let mut result = SqlProjects {
-        plans: Slots::new(projects.len(), &mut remaining, allocation_bookkeeping_bytes)?,
+        plans: Slots::new(
+            projects.len(),
+            &mut remaining,
+            allocation_bookkeeping_bytes,
+            cancelled,
+        )?,
     };
     for (i, key) in projects.iter().copied().enumerate() {
+        if cancelled() {
+            return Err("SQL read cancelled".into());
+        }
         result.plans.put(
             i,
             ProjectPlan {
@@ -863,6 +885,9 @@ pub(super) fn load_projects_bounded(
     )?;
     let mut total_hosts = 0usize;
     for i in 0..result.plans.capacity {
+        if cancelled() {
+            return Err("SQL read cancelled".into());
+        }
         let plan = result.plans.get_mut(i).ok_or("missing SQL project slot")?;
         if plan.attempt_seen
             && (plan.served_selection != plan.selection_digest
@@ -889,6 +914,7 @@ pub(super) fn load_projects_bounded(
             plan.counted_hosts,
             &mut remaining,
             allocation_bookkeeping_bytes,
+            cancelled,
         )?;
         plan.sql = Some(BoundedProjectSql {
             root: String::new(),
@@ -896,7 +922,7 @@ pub(super) fn load_projects_bounded(
             implicit: false,
             gaps: SqlGapCounts::default(),
             hosts,
-            facts: Slots::new(0, &mut remaining, allocation_bookkeeping_bytes)?,
+            facts: Slots::new(0, &mut remaining, allocation_bookkeeping_bytes, cancelled)?,
         });
     }
 
@@ -997,10 +1023,18 @@ pub(super) fn load_projects_bounded(
             Ok(())
         },
     )?;
-    let mut host_index = Slots::new(total_hosts, &mut remaining, allocation_bookkeeping_bytes)?;
+    let mut host_index = Slots::new(
+        total_hosts,
+        &mut remaining,
+        allocation_bookkeeping_bytes,
+        cancelled,
+    )?;
     let mut host_index_count = 0usize;
     let mut expected_fact_total = 0usize;
     for i in 0..result.plans.capacity {
+        if cancelled() {
+            return Err("SQL read cancelled".into());
+        }
         let plan = result.plans.get_mut(i).ok_or("missing SQL project slot")?;
         let Some(sql) = plan.sql.as_mut() else {
             continue;
@@ -1013,6 +1047,9 @@ pub(super) fn load_projects_bounded(
         let mut inventory = blake3::Hasher::new();
         inventory.update(b"nudox.sql-analysis.v1.inventory\0");
         for h in 0..sql.hosts.capacity {
+            if cancelled() {
+                return Err("SQL read cancelled".into());
+            }
             if h > 0 && sql.hosts[h - 1].path == sql.hosts[h].path {
                 return Err("duplicate SQL host path".into());
             }
@@ -1039,8 +1076,16 @@ pub(super) fn load_projects_bounded(
                 .filter(|n| *n <= MAX_ROWS)
                 .ok_or("SQL relation exceeds the read bound")?;
             let words = count.checked_add(63).ok_or("SQL fact count overflow")? / 64;
-            host.seen_ordinals = Slots::new(words, &mut remaining, allocation_bookkeeping_bytes)?;
+            host.seen_ordinals = Slots::new(
+                words,
+                &mut remaining,
+                allocation_bookkeeping_bytes,
+                cancelled,
+            )?;
             for word in 0..words {
+                if cancelled() {
+                    return Err("SQL read cancelled".into());
+                }
                 host.seen_ordinals.put(word, 0)?;
             }
         }
@@ -1054,6 +1099,9 @@ pub(super) fn load_projects_bounded(
     }
     host_index.sort_by(|a, b| a.key.cmp(&b.key), cancelled)?;
     for i in 1..host_index.capacity {
+        if cancelled() {
+            return Err("SQL read cancelled".into());
+        }
         if host_index[i - 1].key == host_index[i].key {
             return Err("duplicate SQL host identity".into());
         }
@@ -1063,6 +1111,7 @@ pub(super) fn load_projects_bounded(
         expected_fact_total,
         &mut remaining,
         allocation_bookkeeping_bytes,
+        cancelled,
     )?;
     let mut digest_count = 0usize;
     // Verify every selected host ordinal and count only the live definitions
@@ -1151,11 +1200,17 @@ pub(super) fn load_projects_bounded(
     )?;
     let mut digest_index = 0usize;
     for i in 0..result.plans.capacity {
+        if cancelled() {
+            return Err("SQL read cancelled".into());
+        }
         let plan = result.plans.get_mut(i).ok_or("missing SQL project slot")?;
         let Some(sql) = plan.sql.as_mut() else {
             continue;
         };
         for h in 0..sql.hosts.capacity {
+            if cancelled() {
+                return Err("SQL read cancelled".into());
+            }
             let host = sql.hosts.get_mut(h).ok_or("missing SQL host slot")?;
             let mut digest = blake3::Hasher::new();
             digest.update(b"nudox.sql.sqlite.host-facts.v1\0");
@@ -1196,6 +1251,7 @@ pub(super) fn load_projects_bounded(
             plan.counted_facts,
             &mut remaining,
             allocation_bookkeeping_bytes,
+            cancelled,
         )?;
     }
 
@@ -1247,6 +1303,9 @@ pub(super) fn load_projects_bounded(
         },
     )?;
     for i in 0..result.plans.capacity {
+        if cancelled() {
+            return Err("SQL read cancelled".into());
+        }
         let plan = result.plans.get_mut(i).ok_or("missing SQL project slot")?;
         let Some(sql) = plan.sql.as_mut() else {
             continue;
@@ -1257,6 +1316,9 @@ pub(super) fn load_projects_bounded(
         sql.facts
             .sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)), cancelled)?;
         for n in 1..sql.facts.capacity {
+            if cancelled() {
+                return Err("SQL read cancelled".into());
+            }
             if (sql.facts[n - 1].0, sql.facts[n - 1].1) == (sql.facts[n].0, sql.facts[n].1) {
                 return Err("duplicate SQL definition ordinal".into());
             }
@@ -1288,7 +1350,7 @@ mod bounded_catalog_tests {
             + 4 * HEADER;
         let mut short = expected - 1;
         let failed = allocation_counter::measure(|| {
-            assert!(Slots::<u64>::new(N, &mut short, HEADER).is_err());
+            assert!(Slots::<u64>::new(N, &mut short, HEADER, &|| false).is_err());
         });
         // Constructing the error String itself may allocate; no slot payload
         // or partial tree is admitted when the precharge fails.
@@ -1297,7 +1359,7 @@ mod bounded_catalog_tests {
         for initial in [expected, expected + 1] {
             let mut budget = initial;
             let measured = allocation_counter::measure(|| {
-                let slots = Slots::<u64>::new(N, &mut budget, HEADER).unwrap();
+                let slots = Slots::<u64>::new(N, &mut budget, HEADER, &|| false).unwrap();
                 assert_eq!(budget, initial - expected);
                 assert_eq!(slots.capacity, N);
                 std::hint::black_box(slots);
@@ -1313,7 +1375,7 @@ mod bounded_catalog_tests {
     #[test]
     fn chunked_sort_checks_completeness_duplicates_and_cancellation() {
         let mut budget = 8 * 1024 * 1024;
-        let mut slots = Slots::new(1025, &mut budget, 64).unwrap();
+        let mut slots = Slots::new(1025, &mut budget, 64, &|| false).unwrap();
         for i in 0..1025 {
             slots.put(i, 1024 - i).unwrap();
         }
@@ -1322,9 +1384,53 @@ mod bounded_catalog_tests {
         slots.sort_by(Ord::cmp, &|| false).unwrap();
         assert!(slots.iter().copied().eq(0..1025));
         assert!(slots.sort_by(Ord::cmp, &|| true).is_err());
-        let mut missing = Slots::<usize>::new(2, &mut budget, 64).unwrap();
+        let mut missing = Slots::<usize>::new(2, &mut budget, 64, &|| false).unwrap();
         missing.put(0, 1).unwrap();
         assert!(!missing.is_full());
+    }
+
+    #[test]
+    fn fixed_serializer_matches_owner_selection_and_fact_digests() {
+        let project = [1; 32];
+        let selection = SqlAnalysisRecord::Selection {
+            project,
+            source_root: "/tmp/a\"b".into(),
+            config_input: [2; 32],
+            config_source: [3; 32],
+            config_length: 1,
+            discovery: None,
+            policy_complete: false,
+            implicit: false,
+            gaps: SqlGapCounts::default(),
+            inventory: SqlInventory::Incomplete,
+            inventory_digest: backend_engine::builtin::sql_inventory_digest(&[]).unwrap(),
+            host_count: 0,
+        };
+        let mut scratch = [0u8; backend_engine::builtin::MAX_SQL_ROW_BYTES];
+        assert_eq!(
+            selection_digest(project, &selection, &mut scratch).unwrap(),
+            backend_engine::builtin::sql_selection_digest(project, &selection).unwrap()
+        );
+        let row = SqlAnalysisRecord::Fact {
+            host: [4; 32],
+            ordinal: 0,
+            fact: SqlFact::Diagnostic {
+                code: backend_semantic::sql_analysis::SqlDiagnostic::Other,
+                extent: None,
+            },
+        };
+        let key = [5; 32];
+        let len = encode_sql_json(&row, &mut scratch).unwrap();
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"nudox.sql.sqlite.host-facts.v1\0");
+        hash.update(&key);
+        hash.update(&(len as u64).to_be_bytes());
+        hash.update(&scratch[..len]);
+        hash.update(&1u32.to_be_bytes());
+        assert_eq!(
+            *hash.finalize().as_bytes(),
+            backend_engine::builtin::sql_host_fact_digest(&[(key, &row)]).unwrap()
+        );
     }
 
     #[test]
