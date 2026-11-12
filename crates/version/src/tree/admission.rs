@@ -207,7 +207,9 @@ pub fn admit_canonical_root<R: CanonicalRelation>(
         _ => return Err(NodeError::MalformedEncoding),
     };
 
-    let node = node_from_bytes::<R>(bytes.to_vec(), first_key, level, row_count);
+    // A boxed slice owns an exact-length wire allocation; converting it into
+    // Vec preserves that length without incremental capacity growth.
+    let node = node_from_bytes::<R>(Vec::from(Box::<[u8]>::from(bytes)), first_key, level, row_count);
     Ok(CheckedCanonicalRoot::from_parts(node.commitment(), node))
 }
 

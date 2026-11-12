@@ -600,7 +600,7 @@ impl FileStore {
         if file.read(&mut trailing).map_err(|error| io_error(&error))? != 0 { return Err(StoreError::Corrupt); }
         let object = verify_object_envelope(&envelope[..length], maximum, Some(claim))?;
         preflight(object)?;
-        admit_object_view(object, &self.relation_registry)?;
+        self.relation_registry.admit_relation_object_only(object.schema(), object.key(), object.version(), object.bytes())?;
         visit(object)
     }
 
