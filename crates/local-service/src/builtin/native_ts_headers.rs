@@ -68,3 +68,53 @@ pub(super) fn admit_image(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use backend_engine::builtin::{NativeHeaderEvidence, NativeSourceEvidenceKind};
+    use backend_semantic::ir::{DeclarationFamilyId, DeclarationIdentity, SourceIdentity, VariantFingerprint};
+    use backend_semantic::native_ts_headers::{NativeTsHeaderAggregate, NativeTsHeaderEntry, NativeTsHeaderFile};
+    use backend_semantic::vocabulary::{LanguageProfile, TypeScriptSource};
+
+    #[test]
+    fn closure_pointer_rejects_changed_header_and_missing_file() {
+        let source = SourceIdentity::from_bytes(b"export function run() { return 1; }").unwrap();
+        let entry = NativeTsHeaderEntry {
+            entity_id: 3,
+            identity: DeclarationIdentity { family: DeclarationFamilyId::from_raw([1; 16]), variant: VariantFingerprint::from_raw([2; 16]) },
+            compiler_extent: (7, source.byte_len), header_extent: (0, 21),
+        };
+        let aggregate = NativeTsHeaderAggregate { files: vec![NativeTsHeaderFile {
+            path: "src/run.ts".into(), source, image_identity: [3; 32], image_byte_len: 100,
+            producer_recipe: [4; 32], entries: vec![entry],
+        }] };
+        let object_for = |value: &NativeTsHeaderAggregate| {
+            let bytes = value.encode_checked().unwrap();
+            let mut budget = 1024 * 1024;
+            backend_extension_turso::compiler_native_headers_object(&bytes, &mut budget).unwrap()
+        };
+        let object = object_for(&aggregate);
+        let row = NativeSourceEvidence {
+            project: [5; 32], profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+            path: "src/run.ts".into(), input_digest: [6; 32], source_digest: *source.identity.as_ref(),
+            byte_length: source.byte_len, kind: NativeSourceEvidenceKind::Image, line_starts: None,
+            headers: Some(NativeHeaderEvidence { image_identity: [3; 32], image_byte_len: 100,
+                producer_recipe: [4; 32], aggregate_digest: *object.id().as_bytes() }),
+        };
+        assert!(witnessed_file(&row, &aggregate, *object.id().as_bytes()).is_ok());
+        let mut body_as_header = aggregate.clone();
+        body_as_header.files[0].entries[0].header_extent.1 = source.byte_len;
+        let forged = object_for(&body_as_header);
+        assert!(witnessed_file(&row, &body_as_header, *forged.id().as_bytes()).is_err());
+        let mut wrapper_changed = aggregate.clone();
+        wrapper_changed.files[0].entries[0].header_extent.0 = 1;
+        let forged = object_for(&wrapper_changed);
+        assert!(witnessed_file(&row, &wrapper_changed, *forged.id().as_bytes()).is_err());
+        let missing = NativeTsHeaderAggregate { files: Vec::new() };
+        assert!(witnessed_file(&row, &missing, *object.id().as_bytes()).is_err());
+        let mut foreign = aggregate.clone();
+        foreign.files[0].image_identity[0] ^= 1;
+        assert!(witnessed_file(&row, &foreign, *object.id().as_bytes()).is_err());
+    }
+}
