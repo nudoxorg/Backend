@@ -8,6 +8,7 @@
 mod authority;
 mod sql_receipt_index;
 pub use sql_receipt_index::*;
+mod sql_decode;
 mod sql_relation;
 pub use sql_relation::*;
 mod file_facts_relation;

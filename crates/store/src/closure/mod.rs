@@ -186,7 +186,7 @@ pub fn admit_backend_object_version(
         .map_err(|_| StoreError::Corrupt)
 }
 
-fn relation_key(schema: SchemaIdentity) -> Hash {
+pub(crate) fn relation_key(schema: SchemaIdentity) -> Hash {
     let mut bytes = Vec::with_capacity(4);
     bytes.push(schema.domain());
     bytes.extend_from_slice(&schema.ty().to_be_bytes());

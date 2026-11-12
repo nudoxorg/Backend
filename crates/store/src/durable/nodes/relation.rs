@@ -277,6 +277,40 @@ impl FileStore {
             .map(|(_, _, node)| node)
     }
 
+    /// Authenticates a relation object's envelope, schema, root claim and raw
+    /// node framing before invoking `preflight`, then performs the ordinary
+    /// registry and typed canonical admissions. The callback is an allocation
+    /// gate only; its borrowed fields never become an authority capability.
+    ///
+    /// The caller must reserve the bounded relation envelope before calling.
+    /// This path requires canonical key bytes to preserve the key order used by
+    /// the relation; raw framing rejects other encodings conservatively.
+    pub fn read_relation_node_claim_preflight<R, P>(
+        &self, claim: UntrustedId<R>, preflight: P,
+    ) -> Result<CheckedCanonicalRoot<R>, StoreError>
+    where
+        R: CanonicalRelation,
+        P: for<'a> FnOnce(&backend_version::CanonicalNodeView<'a>) -> Result<(), StoreError>,
+    {
+        let schema = SchemaIdentity::of_relation::<R>();
+        if claim.context() != IdContext::relation::<R>() || !self.relation_registry.contains_schema(schema) {
+            return Err(StoreError::Corrupt);
+        }
+        let object_id = self.read_relation_ref(schema, claim.as_bytes())?;
+        self.with_relation_object_preflight(
+            crate::UntrustedObjectId::from_bytes(*object_id.as_bytes()),
+            |object| {
+                if object.schema() != schema || object.version() != claim.as_bytes()
+                    || object.key() != &crate::closure::relation_key(schema)
+                { return Err(StoreError::Corrupt); }
+                StateRoot::<R>::admit_canonical_bytes(claim, object.bytes()).map_err(|_| StoreError::Corrupt)?;
+                let node = backend_version::CanonicalNodeView::parse(object.bytes(), schema).map_err(|_| StoreError::Corrupt)?;
+                preflight(&node)
+            },
+            |object| admit_canonical_root_claim(claim, object.bytes()).map_err(|_| StoreError::Corrupt),
+        )
+    }
+
     pub(super) fn read_relation_node_claim_parts<R: CanonicalRelation>(
         &self,
         claim: UntrustedId<R>,
@@ -286,13 +320,14 @@ impl FileStore {
             return Err(StoreError::Corrupt);
         }
         let object_id = self.read_relation_ref(schema, claim.as_bytes())?;
-        let object = self.read_object(object_id)?;
-        if object.schema() != schema || object.version() != claim.as_bytes() {
-            return Err(StoreError::Corrupt);
-        }
-        let node =
-            admit_canonical_root_claim(claim, object.bytes()).map_err(|_| StoreError::Corrupt)?;
-        Ok((object_id, object, node))
+        self.with_verified_relation_object(crate::UntrustedObjectId::from_bytes(*object_id.as_bytes()), |view| {
+            if view.schema() != schema || view.version() != claim.as_bytes() {
+                return Err(StoreError::Corrupt);
+            }
+            let node = admit_canonical_root_claim(claim, view.bytes()).map_err(|_| StoreError::Corrupt)?;
+            let object = TypedObject::from_wire_parts(view.schema(), *view.key(), *view.version(), view.bytes().to_vec().into_boxed_slice());
+            Ok((object_id, object, node))
+        })
     }
 
     /// Loads one authenticated relation node and resolves its direct child
@@ -695,6 +730,160 @@ mod tests {
     use backend_version::{ObjectKey, Schema};
     use std::fs::File;
     use std::path::PathBuf;
+
+    static PREFLIGHT_DECODE_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    struct PreflightTestRelation;
+    struct HighFanoutRelation;
+    impl backend_version::Relation for HighFanoutRelation {
+        const DOMAIN: u8 = 0xf7;
+        const TYPE: u16 = 0x5107;
+        type Key = [u8; 32];
+        type Value = Vec<u8>;
+        fn encode_key(value: &Self::Key, out: &mut Vec<u8>) { out.extend_from_slice(value); }
+        fn encode_value(value: &Self::Value, out: &mut Vec<u8>) { out.extend_from_slice(value); }
+    }
+    impl backend_version::CanonicalRelation for HighFanoutRelation {
+        fn decode_key(bytes: &[u8]) -> Result<Self::Key, backend_version::RelationDecodeError> {
+            bytes.try_into().map_err(|_| backend_version::RelationDecodeError::Malformed)
+        }
+        fn decode_value(bytes: &[u8]) -> Result<Self::Value, backend_version::RelationDecodeError> { Ok(bytes.to_vec()) }
+    }
+    impl backend_version::Relation for PreflightTestRelation {
+        const DOMAIN: u8 = 0xf4;
+        const TYPE: u16 = 0x5104;
+        type Key = [u8; 32];
+        type Value = Vec<u8>;
+        fn encode_key(value: &Self::Key, out: &mut Vec<u8>) { out.extend_from_slice(value); }
+        fn encode_value(value: &Self::Value, out: &mut Vec<u8>) { out.extend_from_slice(value); }
+    }
+    impl backend_version::CanonicalRelation for PreflightTestRelation {
+        fn decode_key(bytes: &[u8]) -> Result<Self::Key, backend_version::RelationDecodeError> {
+            bytes.try_into().map_err(|_| backend_version::RelationDecodeError::Malformed)
+        }
+        fn decode_value(bytes: &[u8]) -> Result<Self::Value, backend_version::RelationDecodeError> {
+            PREFLIGHT_DECODE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(bytes.to_vec())
+        }
+    }
+
+    #[test]
+    fn preflight_refusal_precedes_typed_relation_decode() {
+        use std::sync::atomic::Ordering;
+        let (_cleanup, initial, root) = test_store("preflight-order");
+        drop(initial);
+        let registry = crate::RelationAdmissionRegistry::new().with_relation::<PreflightTestRelation>().expect("register");
+        let store = FileStore::open_with_registry(&root, 1024 * 1024, registry).expect("store");
+        let state = backend_version::RelationState::<PreflightTestRelation>::from_entries(
+            [([1; 32], vec![7; 4096]), ([2; 32], vec![8; 4096])],
+            backend_version::CoverageWitness::Partial(backend_version::partial_coverage(1)),
+        ).expect("state");
+        store.write_relation_state(&state).expect("persist");
+        let claim = UntrustedId::<PreflightTestRelation>::from_wire(state.root().as_bytes(), IdContext::relation::<PreflightTestRelation>()).expect("claim");
+        PREFLIGHT_DECODE_CALLS.store(0, Ordering::Relaxed);
+        let denied = store.read_relation_node_claim_preflight(claim, |node| {
+            assert!(node.is_leaf());
+            assert_eq!(node.leaf_field_iter().expect("fields").count(), 2);
+            Err(StoreError::Bounds)
+        });
+        assert!(matches!(denied, Err(StoreError::Bounds)));
+        assert_eq!(PREFLIGHT_DECODE_CALLS.load(Ordering::Relaxed), 0);
+        store.read_relation_node_claim_preflight(claim, |_| Ok(())).expect("admit after preflight");
+        assert!(PREFLIGHT_DECODE_CALLS.load(Ordering::Relaxed) > 0);
+        let object = store.read_relation_node(state.root()).expect("root object");
+        let mut bytes = fs::read(store.object_path(object.id())).expect("envelope");
+        let last = bytes.len() - 1; bytes[last] ^= 1;
+        replace_object(&store, object.id(), &bytes);
+        let called = std::cell::Cell::new(false);
+        let corrupt = store.read_relation_node_claim_preflight(claim, |_| { called.set(true); Ok(()) });
+        assert!(corrupt.is_err());
+        assert!(!called.get(), "unauthenticated bytes must not reach preflight");
+        let _ = remove_store_fixture(root);
+    }
+
+    #[test]
+    fn read_only_registry_admission_preserves_raw_reference_validation() {
+        let (_cleanup, store, root) = test_store("admit-only-raw");
+        let referenced = bytes_object(b"referenced value".to_vec());
+        store.write_object(&referenced).expect("referenced object");
+        let reference = *referenced.id().as_bytes();
+        let state = backend_version::RelationState::<crate::RawRelation>::from_entries(
+            [(b"a".to_vec(), crate::StoredValue::new(vec![1], 1, vec![reference]))],
+            backend_version::CoverageWitness::Partial(backend_version::partial_coverage(1)),
+        ).expect("state");
+        store.write_relation_state(&state).expect("persist");
+        let object = store.read_relation_node(state.root()).expect("node");
+        let registry = &store.relation_registry;
+        let schema = object.schema();
+        let references = registry.admit_relation_object(schema, object.key(), object.version(), object.bytes()).expect("references");
+        assert_eq!(references.value_references, vec![reference]);
+        assert!(registry.admit_relation_object_only(schema, object.key(), object.version(), object.bytes()).is_ok());
+        let mut malformed = object.bytes().to_vec(); malformed.pop();
+        let version = backend_version::state_root_digest(schema, &malformed).expect("digest");
+        assert!(registry.admit_relation_object(schema, object.key(), &version, &malformed).is_err());
+        assert!(registry.admit_relation_object_only(schema, object.key(), &version, &malformed).is_err());
+        let _ = remove_store_fixture(root);
+    }
+
+    #[test]
+    fn preflight_high_fanout_requested_allocations_fit_node_and_path_credit() {
+        use backend_version::{ChildCommitment, CommittedChild, LazyTree, TreeNodeLoader};
+        use std::cell::Cell;
+        struct GateLoader<'a> {
+            store: &'a FileStore,
+            credit: Cell<usize>,
+            branches: Cell<usize>,
+            leaves: Cell<usize>,
+        }
+        impl TreeNodeLoader<HighFanoutRelation> for GateLoader<'_> {
+            type Error = StoreError;
+            fn load(&self, claim: UntrustedId<HighFanoutRelation>) -> Result<CheckedCanonicalRoot<HighFanoutRelation>, StoreError> {
+                self.store.read_relation_node_claim_preflight(claim, |node| {
+                    let charge = node.encoded_len().checked_mul(2).and_then(|n| n.checked_add(512)).ok_or(StoreError::Bounds)?;
+                    self.credit.set(self.credit.get().checked_sub(charge).ok_or(StoreError::Bounds)?);
+                    if node.is_leaf() { self.leaves.set(self.leaves.get()+1); }
+                    else { self.branches.set(self.branches.get()+1); }
+                    Ok(())
+                })
+            }
+        }
+        fn install(store: &FileStore, node: &backend_version::CanonicalNode<HighFanoutRelation>) {
+            let object = TypedObject::from_state_root(node.commitment(), node).expect("checked object");
+            let encoded = super::super::super::objects::encode_object(&object, 1024*1024).expect("envelope");
+            fs::write(store.object_path(object.id()), encoded).expect("fixture object");
+            write_reference(store, &object, object.id());
+        }
+        let (_cleanup, initial, root) = test_store("high-fanout-preflight");
+        drop(initial);
+        let registry = crate::RelationAdmissionRegistry::new().with_relation::<HighFanoutRelation>().expect("register");
+        let store = FileStore::open_with_registry(&root, 1024*1024, registry).expect("store");
+        let mut children = Vec::new();
+        let mut first = None;
+        for i in 0..740u16 {
+            let mut key=[0u8;32]; key[..2].copy_from_slice(&i.to_be_bytes());
+            let leaf=backend_version::canonical_leaf::<HighFanoutRelation>(&[(key,vec![7])]).expect("leaf");
+            if i==0 { first=Some(leaf.clone()); }
+            children.push(CommittedChild { first_key:key, commitment:ChildCommitment::from_state_root(leaf.commitment()), level:0, row_count:1 });
+        }
+        let branch=backend_version::canonical_branch_from_commitments::<HighFanoutRelation>(1,&children).expect("branch");
+        assert!(branch.as_bytes().len()>64_000);
+        install(&store,first.as_ref().expect("first leaf"));
+        install(&store,&branch);
+        let loader=GateLoader { store:&store, credit:Cell::new(1024*1024), branches:Cell::new(0), leaves:Cell::new(0) };
+        let claim=UntrustedId::from_wire(branch.commitment().as_bytes(),IdContext::relation::<HighFanoutRelation>()).expect("claim");
+        let mut result=None;
+        let measured=allocation_counter::measure(|| {
+            let tree=LazyTree::open(&loader,claim).expect("root");
+            assert!(tree.lookup_streaming_with_depth_limit(&[0;32],1).is_err());
+            assert_eq!(loader.leaves.get(),0);
+            result=Some(tree.lookup_streaming_with_depth_limit(&[0;32],2).expect("lookup"));
+        });
+        assert_eq!(result,Some(Some(vec![7])));
+        assert_eq!(loader.branches.get(),1);
+        assert_eq!(loader.leaves.get(),1);
+        let charged=1024*1024-loader.credit.get();
+        assert!(usize::try_from(measured.bytes_max).unwrap() <= charged + 256*1024);
+        let _ = remove_store_fixture(root);
+    }
 
     struct BytesSchema;
 

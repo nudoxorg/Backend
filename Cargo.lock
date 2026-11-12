@@ -1197,6 +1197,7 @@ dependencies = [
  "quick-xml 0.41.0",
  "rustix 1.1.4",
  "serde",
+ "serde-json-core",
  "serde_json",
  "sha1",
  "sha2 0.10.9",
@@ -13260,6 +13261,16 @@ version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3753ca04f350fa92d00b6146a3555e63c55388c9ef2e11e09bce2ff1c0b509c6"
 dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "serde-json-core"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d51e6795fbc00a1b26d78c7a0dbda143215d9dd0ee27c8a63ae0e1ccd6b83706"
+dependencies = [
+ "ryu 1.0.23",
  "serde",
 ]
 
