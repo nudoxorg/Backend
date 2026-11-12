@@ -902,6 +902,68 @@ mod tests {
         let _ = remove_store_fixture(root);
     }
 
+    #[test]
+    fn preflight_two_level_high_fanout_branch_peak() {
+        use backend_version::{ChildCommitment, CommittedChild, LazyTree, TreeNodeLoader};
+        use std::cell::Cell;
+        struct Loader<'a> { store: &'a FileStore, branches: Cell<usize>, leaves: Cell<usize> }
+        impl TreeNodeLoader<HighFanoutRelation> for Loader<'_> {
+            type Error = StoreError;
+            fn load(&self, claim: UntrustedId<HighFanoutRelation>) -> Result<CheckedCanonicalRoot<HighFanoutRelation>, StoreError> {
+                self.store.read_relation_node_claim_preflight(claim, |node| {
+                    if node.is_leaf() { self.leaves.set(self.leaves.get() + 1); }
+                    else { self.branches.set(self.branches.get() + 1); }
+                    Ok(())
+                })
+            }
+        }
+        fn install(store: &FileStore, node: &backend_version::CanonicalNode<HighFanoutRelation>) {
+            let object = TypedObject::from_state_root(node.commitment(), node).expect("object");
+            let encoded = super::super::super::objects::encode_object(&object, 1024 * 1024).expect("envelope");
+            fs::write(store.object_path(object.id()), encoded).expect("fixture");
+            write_reference(store, &object, object.id());
+        }
+        let (_cleanup, initial, root) = test_store("two-level-high-fanout");
+        drop(initial);
+        let registry = crate::RelationAdmissionRegistry::new().with_relation::<HighFanoutRelation>().expect("register");
+        let store = FileStore::open_with_registry(&root, 1024 * 1024, registry).expect("store");
+        let mut leaves = Vec::new();
+        let mut first = None;
+        for i in 0..740u16 {
+            let mut key = [0u8; 32]; key[..2].copy_from_slice(&i.to_be_bytes());
+            let leaf = backend_version::canonical_leaf::<HighFanoutRelation>(&[(key, vec![7])]).expect("leaf");
+            if i == 0 { first = Some(leaf.clone()); }
+            leaves.push(CommittedChild { first_key: key, commitment: ChildCommitment::from_state_root(leaf.commitment()), level: 0, row_count: 1 });
+        }
+        let child = backend_version::canonical_branch_from_commitments::<HighFanoutRelation>(1, &leaves).expect("child branch");
+        let mut branches = Vec::new();
+        for i in 0..740u16 {
+            let mut key = [0u8; 32]; key[..2].copy_from_slice(&i.to_be_bytes());
+            branches.push(CommittedChild { first_key: key, commitment: ChildCommitment::from_state_root(child.commitment()), level: 1, row_count: 740 });
+        }
+        let top = backend_version::canonical_branch_from_commitments::<HighFanoutRelation>(2, &branches).expect("root branch");
+        assert!(child.as_bytes().len() > 64_000 && top.as_bytes().len() > 64_000);
+        install(&store, first.as_ref().unwrap()); install(&store, &child); install(&store, &top);
+        let loader = Loader { store: &store, branches: Cell::new(0), leaves: Cell::new(0) };
+        let claim = UntrustedId::from_wire(top.commitment().as_bytes(), IdContext::relation::<HighFanoutRelation>()).expect("claim");
+        let mut result = None;
+        let measured = allocation_counter::measure(|| {
+            let tree = LazyTree::open(&loader, claim).expect("root");
+            assert!(tree.lookup_streaming_with_depth_limit(&[0; 32], 2).is_err());
+            assert_eq!(loader.leaves.get(), 0);
+            result = Some(tree.lookup_streaming_with_depth_limit(&[0; 32], 3).expect("lookup"));
+        });
+        assert_eq!(result, Some(Some(vec![7])));
+        assert_eq!(loader.branches.get(), 2);
+        assert_eq!(loader.leaves.get(), 1);
+        // Fixed wrapper/path credit and one SQL-style key allocation per branch;
+        // no per-node wire credit is added to this stress-test bound.
+        let bound = 256 * 1024 + loader.branches.get() * (32 + 64);
+        eprintln!("requested heap peak: {}; fixed-plus-key bound: {}", measured.bytes_max, bound);
+        assert!(usize::try_from(measured.bytes_max).unwrap() <= bound, "peak {} exceeds {}", measured.bytes_max, bound);
+        let _ = remove_store_fixture(root);
+    }
+
     struct BytesSchema;
 
     impl Schema for BytesSchema {
