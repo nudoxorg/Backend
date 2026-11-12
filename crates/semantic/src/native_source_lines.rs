@@ -119,52 +119,47 @@ impl NativeSourceLineFileView<'_> {
     /// Joins against exact UTF-8 host bytes and every newline position. The
     /// selected closure/source ownership must be independently revalidated.
     pub fn matches_source<E>(&self,bytes:&[u8],checkpoint:&mut impl FnMut(usize)->Result<(),E>)->Result<bool,E>{
-        if usize::try_from(self.source.byte_len).ok()!=Some(bytes.len()) {return Ok(false);}
-        let mut hash=backend_version::ContentPayloadHasher::<SourceFactDomain>::new(bytes.len() as u64);
-        for chunk in bytes.chunks(64*1024) {checkpoint(chunk.len())?; if hash.push_chunk(chunk).is_err(){return Ok(false);}}
-        let Ok(identity)=hash.finish() else {return Ok(false);}; if identity!=self.source.identity{return Ok(false);}
-        // Validate UTF-8 in bounded chunks while preserving incomplete codepoints.
-        let mut pos=0usize;
-        while pos<bytes.len() {
-            let end=(pos+64*1024).min(bytes.len()); checkpoint(end-pos)?;
-            match std::str::from_utf8(&bytes[pos..end]) {
-                Ok(_)=>pos=end,
-                Err(error) if error.error_len().is_none() && end<bytes.len() && error.valid_up_to()>0 => pos+=error.valid_up_to(),
-                Err(_)=>return Ok(false),
-            }
-        }
-        if self.line_start(0)!=Some(0){return Ok(false);}
-        let mut index=1usize;
-        for (chunk_index,chunk) in bytes.chunks(64*1024).enumerate(){
-            checkpoint(chunk.len())?; let base=chunk_index*64*1024;
-            for (i,byte) in chunk.iter().enumerate(){let at=base+i;
-                if *byte==b'\r' && bytes.get(at+1)!=Some(&b'\n'){return Ok(false);}
-                if *byte==0xe2 && bytes.get(at+1)==Some(&0x80) && matches!(bytes.get(at+2).copied(),Some(0xa8|0xa9)){return Ok(false);}
-                if *byte==b'\n' {let Some(expected)=u32::try_from(at+1).ok() else{return Ok(false);}; if self.line_start(index)!=Some(expected){return Ok(false);} index+=1;}
-            }
-        }
-        Ok(index==self.line_count())
+        source_lines_match(self.source,self.line_count(),|index|self.line_start(index),bytes,checkpoint)
     }
+}
+
+// Shared exact-source validation for borrowed and owned representations.
+fn source_lines_match<E>(source:SourceIdentity,count:usize,line_start:impl Fn(usize)->Option<u32>,bytes:&[u8],checkpoint:&mut impl FnMut(usize)->Result<(),E>)->Result<bool,E>{
+    if usize::try_from(source.byte_len).ok()!=Some(bytes.len()) {return Ok(false);}
+    let mut hash=backend_version::ContentPayloadHasher::<SourceFactDomain>::new(bytes.len() as u64);
+    for chunk in bytes.chunks(64*1024) {checkpoint(chunk.len())?; if hash.push_chunk(chunk).is_err(){return Ok(false);}}
+    let Ok(identity)=hash.finish() else {return Ok(false);}; if identity!=source.identity{return Ok(false);}
+    let mut pos=0usize;
+    while pos<bytes.len() {
+        let end=(pos+64*1024).min(bytes.len()); checkpoint(end-pos)?;
+        match std::str::from_utf8(&bytes[pos..end]) {
+            Ok(_)=>pos=end,
+            Err(error) if error.error_len().is_none() && end<bytes.len() && error.valid_up_to()>0 => pos+=error.valid_up_to(),
+            Err(_)=>return Ok(false),
+        }
+    }
+    if line_start(0)!=Some(0){return Ok(false);}
+    let mut index=1usize;
+    for (chunk_index,chunk) in bytes.chunks(64*1024).enumerate(){
+        checkpoint(chunk.len())?; let base=chunk_index*64*1024;
+        for (i,byte) in chunk.iter().enumerate(){let at=base+i;
+            let end=match *byte {
+                b'\r' => Some(if bytes.get(at+1)==Some(&b'\n'){at+2}else{at+1}),
+                b'\n' if at==0 || bytes[at-1]!=b'\r' => Some(at+1),
+                0xe2 if bytes.get(at+1)==Some(&0x80) && matches!(bytes.get(at+2).copied(),Some(0xa8|0xa9)) => Some(at+3),
+                _ => None,
+            };
+            if let Some(end)=end {let Some(expected)=u32::try_from(end).ok() else{return Ok(false);};if line_start(index)!=Some(expected){return Ok(false);}index+=1;}
+        }
+    }
+    Ok(index==count)
 }
 
 impl NativeSourceLineFile {
     /// Checks the complete map against independently supplied exact source bytes.
     /// Selected closure membership and source ownership must be proved separately.
     pub fn matches_source(&self, bytes: &[u8]) -> bool {
-        let Some(actual) = SourceIdentity::from_bytes(bytes) else { return false; };
-        if actual != self.source || self.line_starts.first() != Some(&0) { return false; }
-        let Ok(text) = std::str::from_utf8(bytes) else { return false; };
-        if text.contains('\u{2028}') || text.contains('\u{2029}') { return false; }
-        let mut index = 1usize;
-        for (at, byte) in bytes.iter().enumerate() {
-            if *byte == b'\r' && bytes.get(at + 1) != Some(&b'\n') { return false; }
-            if *byte == b'\n' {
-                let Some(expected) = u32::try_from(at + 1).ok() else { return false; };
-                if self.line_starts.get(index) != Some(&expected) { return false; }
-                index += 1;
-            }
-        }
-        index == self.line_starts.len()
+        source_lines_match(self.source,self.line_starts.len(),|index|self.line_starts.get(index).copied(),bytes,&mut |_|Ok::<(),()>(())).unwrap_or(false)
     }
 }
 impl NativeSourceLineAggregate {
@@ -263,6 +258,23 @@ where I:Iterator<Item=&'a NativeSourceLineFile>+Clone {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn all_typescript_line_terminators_match_at_chunk_boundaries() {
+        let source="a\rb\r\nc\nd\u{2028}e\u{2029}f".as_bytes();
+        let file=NativeSourceLineFile{path:"src/mixed.ts".into(),source:SourceIdentity::from_bytes(source).unwrap(),line_starts:vec![0,2,5,7,11,15]};
+        assert!(file.matches_source(source));
+        let aggregate=NativeSourceLineAggregate{files:vec![file]};
+        let mut budget=1024;let wire=aggregate.encode_budgeted(&mut budget).unwrap();
+        let view=NativeSourceLineAggregateView::parse(&wire,&mut |_|Ok::<(),()>(())).unwrap();
+        assert!(view.find_file("src/mixed.ts",&mut |_|Ok::<(),()>(())).unwrap().unwrap().matches_source(source,&mut |_|Ok::<(),()>(())).unwrap());
+        let mut boundary=vec![b'x';65_535];boundary.extend_from_slice("\r\n\u{2028}\u{2029}\r".as_bytes());
+        let file=NativeSourceLineFile{path:"src/boundary.ts".into(),source:SourceIdentity::from_bytes(&boundary).unwrap(),line_starts:vec![0,65_537,65_540,65_543,65_544]};
+        assert!(file.matches_source(&boundary));
+        let aggregate=NativeSourceLineAggregate{files:vec![file]};let mut budget=1024;let wire=aggregate.encode_budgeted(&mut budget).unwrap();
+        let view=NativeSourceLineAggregateView::parse(&wire,&mut |_|Ok::<(),()>(())).unwrap();
+        assert!(view.find_file("src/boundary.ts",&mut |_|Ok::<(),()>(())).unwrap().unwrap().matches_source(&boundary,&mut |_|Ok::<(),()>(())).unwrap());
+    }
+
     #[test]
     fn borrowed_iterator_encoder_rejects_inconsistent_clones() {
         struct Changing<'a>{current:Option<&'a NativeSourceLineFile>,other:&'a NativeSourceLineFile}
