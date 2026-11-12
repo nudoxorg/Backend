@@ -990,7 +990,7 @@ impl Fake {
         }
         Ok(ReplyDto::new(
             1,
-            CommandReply::ProjectionPage(ProjectionPage {
+            CommandReply::ProjectionPage(ProjectionPage { graph_alias_witness: None,
                 outline_order: None,
                 snapshot: snapshot(vec![declaration_row()]),
                 terminal: PageTerminal::Complete,

@@ -1132,6 +1132,8 @@ pub struct ProjectionPage {
     pub terminal: PageTerminal,
     /// Outline-only native ordering witness; other page families leave it absent.
     pub outline_order: Option<crate::OutlinePageOrder>,
+    /// Authenticated owner document binding a graph alias to its selected center.
+    pub graph_alias_witness: Option<crate::Document>,
 }
 
 impl GraphNeighborhoodQuery {

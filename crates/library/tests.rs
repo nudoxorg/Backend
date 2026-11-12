@@ -599,7 +599,7 @@ fn package_outline_and_graph_pages_share_root_and_query_bound_continuations() {
 
     let inconsistent_terminal = ReplyDto::new(
         42,
-        CommandReply::ProjectionPage(ProjectionPage {
+        CommandReply::ProjectionPage(ProjectionPage { graph_alias_witness: None,
             outline_order: None,
             snapshot: first.snapshot.clone(),
             terminal: PageTerminal::Complete,

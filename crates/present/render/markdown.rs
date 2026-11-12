@@ -724,16 +724,6 @@ fn records_with_cursor(
     for edge in list.related_edges() {
         lines.push(format!("related {} -> {}; relation {:?}; confidence {:?}", edge.from, edge.to, edge.relation, edge.confidence));
     }
-    for edge in list.graph_edges().iter().filter(|_| list.related_edges().is_empty()) {
-        lines.push(format!(
-            "graph edge {} -> {}; relation {:?}; confidence {:?}; availability {:?}",
-            list.graph_label(edge.from),
-            list.graph_label(edge.to),
-            edge.kind,
-            edge.provenance.confidence,
-            edge.availability,
-        ));
-    }
     let cursor_note = if list.has_more() && (list.continuation().is_some() || list.related_continuation().is_some()) {
         cursor.map(|cursor| continuation_note(target, cursor))
     } else {
@@ -749,10 +739,19 @@ fn records_with_cursor(
     }
     if list.is_empty() {
         lines.push(list.empty_explanation());
-        return lines.finish();
     }
     for record in list.records() {
         push_record(&mut lines, record, within);
+    }
+    for edge in list.graph_edges().iter().filter(|_| list.related_edges().is_empty()) {
+        lines.push(format!(
+            "graph edge {} -> {}; relation {:?}; confidence {:?}; availability {:?}",
+            list.graph_label(edge.from),
+            list.graph_label(edge.to),
+            edge.kind,
+            edge.provenance.confidence,
+            edge.availability,
+        ));
     }
     lines.finish()
 }

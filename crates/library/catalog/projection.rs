@@ -598,7 +598,7 @@ impl Library {
         let terminal = snapshot.next.map_or(PageTerminal::Complete, |cursor| {
             PageTerminal::More(crate::PageContinuation::from_cursor(cursor))
         });
-        Ok(ProjectionPage { snapshot, terminal, outline_order: Some(order) })
+        Ok(ProjectionPage { graph_alias_witness: None, snapshot, terminal, outline_order: Some(order) })
     }
 
     /// Pages one retained owner and its immediate members from the existing
@@ -1613,7 +1613,7 @@ impl Library {
         let terminal = snapshot.next.map_or(PageTerminal::Complete, |cursor| {
             PageTerminal::More(crate::PageContinuation::from_cursor(cursor))
         });
-        Ok(ProjectionPage { snapshot, terminal, outline_order: None })
+        Ok(ProjectionPage { graph_alias_witness: None, snapshot, terminal, outline_order: None })
     }
 
     fn projection_page(
@@ -1638,7 +1638,7 @@ impl Library {
         let terminal = snapshot.next.map_or(PageTerminal::Complete, |cursor| {
             PageTerminal::More(crate::PageContinuation::from_cursor(cursor))
         });
-        Ok(ProjectionPage { snapshot, terminal, outline_order: None })
+        Ok(ProjectionPage { graph_alias_witness: None, snapshot, terminal, outline_order: None })
     }
 }
 

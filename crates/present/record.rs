@@ -305,7 +305,7 @@ impl RecordList {
     #[must_use]
     pub fn graph_label(&self, id: backend_library::GraphNodeId) -> String {
         self.graph_labels.iter().find(|(key, _)| *key == id).map(|(_, label)| label.clone())
-            .unwrap_or_else(|| format!("node {}", &backend_library::encode_id(id.as_bytes())[..12]))
+            .unwrap_or_else(|| "<unlabelled node>".to_owned())
     }
 
     /// Returns unverified result-specific graph claims.
@@ -485,6 +485,13 @@ mod signature_preview_tests {
         Basis, Coverage, DeclarationKind, SourceExcerpt, SourceExcerptExtent, SourceLocation,
         package_key, symbol_key,
     };
+
+    #[test]
+    fn missing_graph_node_label_is_not_rendered_as_a_raw_identifier() {
+        let list = RecordList::new("caller", CoverageLine::new(&[Coverage::Complete], None), Vec::<Record>::new());
+        let id = backend_library::GraphNodeId::for_symbol(symbol_key("unlabelled"));
+        assert_eq!(list.graph_label(id), "<unlabelled node>");
+    }
 
     #[test]
     fn graph_gap_survives_json_and_text_without_claiming_empty_complete() {

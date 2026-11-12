@@ -169,8 +169,8 @@ def main():
         check(tail and tail.issubset(cli), "cold resumed frontier did not retain prior edges")
         rc, data, raw = j.cli("wrong-credit", ["related", alias, "--limit", str(LIMIT - 1), "--cursor", cli_cursor])
         check(rc != 0, f"CLI accepted changed issued credit: {data!r} {raw[:500]}")
-        with (project / "src" / "center.ts").open("a") as source:
-            source.write("\nexport const related_revision_marker = 1;\n")
+        with (project / "src" / "center.ts").open("a") as source_file:
+            source_file.write("\nexport const related_revision_marker = 1;\n")
         index(j, project, "changed-index")
         rc, data, raw = j.cli("stale-cli", ["related", alias, "--limit", str(LIMIT), "--cursor", cli_cursor])
         check(rc != 0, f"stale CLI cursor was accepted: {data!r} {raw[:500]}")

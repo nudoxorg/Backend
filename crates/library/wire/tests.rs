@@ -1213,7 +1213,7 @@ fn reply_round_trip_fixtures() -> (Basis, ViewStateRoot, Vec<CommandReply>) {
     let intent = crate::intent_id("add", b"pkg");
     let replies = [
         CommandReply::Packages(snapshot.clone()),
-        CommandReply::ProjectionPage(crate::ProjectionPage {
+        CommandReply::ProjectionPage(crate::ProjectionPage { graph_alias_witness: None,
             outline_order: None,
             snapshot: snapshot.clone(),
             terminal: crate::PageTerminal::Complete,
@@ -2961,7 +2961,7 @@ fn windowed_catalog_admission_checks_actual_delivery_offset_and_predecessor_span
     ] {
         let reply = |snapshot: ViewSnapshot| match &command {
             Command::Name(_) => CommandReply::Names(snapshot),
-            _ => CommandReply::ProjectionPage(crate::ProjectionPage {
+            _ => CommandReply::ProjectionPage(crate::ProjectionPage { graph_alias_witness: None,
                 outline_order: None,
                 terminal: snapshot
                     .next

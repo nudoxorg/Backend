@@ -391,12 +391,11 @@ pub(super) fn execute_semantic_related_page(
     let mut images = Vec::new();
     let mut origins = Vec::new();
     let mut center_binding = None;
-    let mut hash = blake3::Hasher::new();
-    hash.update(b"nudox.related.semantic-page.revision.v1\0");
-    hash.update(snapshot.root().as_bytes());
-    hash.update(snapshot.commit().id().as_bytes());
-    hash.update(&snapshot.sequence().to_be_bytes());
-    hash.update(&snapshot.owner_epoch().to_be_bytes());
+    let mut hash = related_revision_hasher(
+        b"nudox.related.semantic-page.revision.v2\0", snapshot.root().as_bytes(),
+        snapshot.commit().id().as_bytes(), snapshot.sequence(),
+    );
+
     for (activation, binding) in &activations {
         hash.update(binding.identity.as_ref());
         hash.update(&[u8::from(activation.has_excluded_images()), u8::from(activation.has_program_manifest())]);
@@ -571,12 +570,11 @@ pub(super) fn execute_structural_graph_edge_page(
     let source = view.row_ref(source_id).ok_or_else(|| BuiltinModelError("structural graph page center is absent".to_owned()))?;
     let package = source.package.ok_or_else(|| BuiltinModelError("structural graph page center has no selected package".to_owned()))?;
     let sources = read_package_sources(snapshot, package)?;
-    let mut hash = blake3::Hasher::new();
-    hash.update(b"nudox.related.structural-page.revision.v1\0");
-    hash.update(snapshot.root().as_bytes());
-    hash.update(snapshot.commit().id().as_bytes());
-    hash.update(&snapshot.sequence().to_be_bytes());
-    hash.update(&snapshot.owner_epoch().to_be_bytes());
+    let mut hash = related_revision_hasher(
+        b"nudox.related.structural-page.revision.v2\0", snapshot.root().as_bytes(),
+        snapshot.commit().id().as_bytes(), snapshot.sequence(),
+    );
+
     hash.update(&view.root().to_bytes());
     let revision = *hash.finalize().as_bytes();
     let verified = backend_library::VerifiedRelatedPageRequest::verify(request, revision, secret)
@@ -2649,6 +2647,17 @@ fn execute_observed_native_graph(
     }))
 }
 
+// Related continuations survive a clean owner restart. The lease epoch is a
+// process fence, while these values identify the selected durable snapshot.
+fn related_revision_hasher(domain: &[u8], root: &[u8], commit: &[u8], sequence: u64) -> blake3::Hasher {
+    let mut hash = blake3::Hasher::new();
+    hash.update(domain);
+    hash.update(root);
+    hash.update(commit);
+    hash.update(&sequence.to_be_bytes());
+    hash
+}
+
 /// Commit the checked workspace/source-evidence snapshot and every selected
 /// native image and program used by a related page. Program admission must
 /// still be revalidated against this snapshot before every page.
@@ -2657,12 +2666,11 @@ fn observed_graph_page_revision(
     snapshot: &backend_engine::WorkspaceSnapshot,
     publications: &[ObservedQueryPublication],
 ) -> Result<[u8; 32], BuiltinModelError> {
-    let mut hash = blake3::Hasher::new();
-    hash.update(b"nudox.related.observed-page.revision.v1\0");
-    hash.update(snapshot.root().as_bytes());
-    hash.update(snapshot.commit().id().as_bytes());
-    hash.update(&snapshot.sequence().to_be_bytes());
-    hash.update(&snapshot.owner_epoch().to_be_bytes());
+    let mut hash = related_revision_hasher(
+        b"nudox.related.observed-page.revision.v2\0", snapshot.root().as_bytes(),
+        snapshot.commit().id().as_bytes(), snapshot.sequence(),
+    );
+
     hash.update(&(publications.len() as u64).to_be_bytes());
     for publication in publications {
         hash.update(publication.claim.binding().identity.as_ref());
@@ -13325,6 +13333,19 @@ mod references_tests {
     }
 
     #[test]
+    fn related_revision_seed_binds_durable_snapshot_and_domain() {
+        let digest = |domain: &[u8], root: &[u8], commit: &[u8], sequence| {
+            *related_revision_hasher(domain, root, commit, sequence).finalize().as_bytes()
+        };
+        let selected = digest(b"related-a", &[1; 32], &[2; 32], 3);
+        assert_eq!(selected, digest(b"related-a", &[1; 32], &[2; 32], 3));
+        assert_ne!(selected, digest(b"related-b", &[1; 32], &[2; 32], 3));
+        assert_ne!(selected, digest(b"related-a", &[4; 32], &[2; 32], 3));
+        assert_ne!(selected, digest(b"related-a", &[1; 32], &[4; 32], 3));
+        assert_ne!(selected, digest(b"related-a", &[1; 32], &[2; 32], 4));
+    }
+
+    #[test]
     fn observed_page_node_origins_preserve_ambiguity_and_selected_membership() -> Result<(), String> {
         let package = backend_engine::package_key("fixture");
         let caller = backend_engine::RowId::Symbol(view_build::semantic_symbol(package, fixture_version(1).identity()));
@@ -13559,7 +13580,7 @@ mod references_tests {
             root: full_root, freshness: backend_engine::Freshness::Current, next: None,
             graph_relations: Some(vec![relation].into_boxed_slice()), rich_graph: Some(graph),
         };
-        let mut page = backend_library::ProjectionPage {
+        let mut page = backend_library::ProjectionPage { graph_alias_witness: None,
             snapshot: backend_engine::ViewSnapshot { root: page_root, freshness: backend_engine::Freshness::Current, next: None, graph_relations: None, rich_graph: None },
             terminal: backend_library::PageTerminal::Complete, outline_order: None,
         };

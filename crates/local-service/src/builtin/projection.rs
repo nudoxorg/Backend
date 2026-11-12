@@ -376,6 +376,10 @@ fn projection_page_certificate(
         Some(owner_root),
         base,
     )?;
+    if let Some(document) = &page.graph_alias_witness {
+        let witness = document_certificate(document, owner_root, None)?;
+        for claim in witness.claims { certificate = certificate.with_claim_once(claim); }
+    }
     if let PageTerminal::More(continuation) = page.terminal {
         append_cursor_claim(&mut certificate, continuation.cursor());
     }
