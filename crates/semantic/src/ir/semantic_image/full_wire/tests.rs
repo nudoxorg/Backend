@@ -2565,6 +2565,11 @@ fn bounded_reopen_charges_work_scratch_and_retained_backing() -> Result<(), crat
         core::hint::black_box(view);
     });
     assert_eq!(observed.bytes_max, scratch as u64);
+    let rejected_allocation = allocation_counter::measure(|| {
+        let meter = Meter::new(u64::MAX, scratch - 1, u64::MAX);
+        assert!(stopped(SemanticImageView::reopen_bounded(&bytes, &meter)));
+    });
+    assert_eq!(rejected_allocation.bytes_max, 0);
     let retained_allocations = allocation_counter::measure(|| {
         let meter = Meter::new(u64::MAX, bytes.len() + scratch, u64::MAX);
         let owner = SemanticImageProofOwner::copy_bounded(&bytes, &meter).expect("measured retention");
