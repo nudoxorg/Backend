@@ -340,6 +340,10 @@ impl CanonicalRelation for VariableRelation {
     }
 }
 
+impl BoundedCanonicalRelation for VariableRelation {
+    const NODE_DECODE_SCRATCH: usize = 4 * 1024 * 1024;
+}
+
 #[derive(Debug, Eq, PartialEq)]
 struct OtherRelation;
 
@@ -722,6 +726,31 @@ impl<R: CanonicalRelation> TreeNodeLoader<R> for MeasuredLoader<R> {
             CanonicalRootAdmissionError::Identity(_) => NodeError::MalformedEncoding,
         })
     }
+}
+
+#[test]
+fn bounded_decoder_small_and_near_cap_update_match_rebuild_at_exact_peak()
+    -> Result<(), Box<dyn std::error::Error>> {
+    for width in [8usize, 65_480] {
+        let mut rows = vec![(1u64, vec![1; width]), (2u64, vec![2; width])];
+        let tree = PersistentTree::<VariableRelation>::from_sorted_items(&rows)?;
+        let nodes = tree.node_closure().map(|n| (n.id().to_bytes(), n.canonical_bytes().to_vec())).collect();
+        let loader = MeasuredLoader::<VariableRelation>::new(nodes);
+        let claim = UntrustedId::from_wire(tree.root().commitment().as_bytes(), IdContext::relation::<VariableRelation>())?;
+        let lazy = LazyTree::open(&loader, claim)?;
+        rows[0].1[0] = 3;
+        let changes = [TreeChange::<VariableRelation> { key: 1, after: Some(rows[0].1.clone()) }];
+        let shape = LazyTreeMetadataShape::new(8, width, 3, 3, 5, 4);
+        let unlimited = LazyTreeUpdateBudget::new(1, usize::MAX, shape);
+        let baseline = lazy.prepare_update_decoded_bounded(&changes, unlimited)?;
+        let peak = baseline.work().peak_metadata_bytes;
+        assert!(peak >= VariableRelation::NODE_DECODE_SCRATCH);
+        assert!(lazy.prepare_update_decoded_bounded(&changes, LazyTreeUpdateBudget::new(1, peak - 1, shape)).is_err());
+        let exact = lazy.prepare_update_decoded_bounded(&changes, LazyTreeUpdateBudget::new(1, peak, shape))?;
+        let rebuilt = PersistentTree::<VariableRelation>::from_sorted_items(&rows)?;
+        assert_eq!(exact.target().root(), rebuilt.root().commitment());
+    }
+    Ok(())
 }
 
 #[test]
