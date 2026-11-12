@@ -87,7 +87,9 @@ def selected_candidate(page, require_description=True):
         value=c.get(key);check(isinstance(value,list) and len(value)==32 and all(type(i) is int and 0<=i<=255 for i in value),key+' must be 32 typed bytes')
     check(c.get('standing')=='published','incorrect source standing')
     check(c.get('metadata',{}).get('yanked')=={'state':'known','value':False},'exact NuGet listed state not preserved')
-    if require_description:check(DESCRIPTION in json.dumps(page),'fixture NuGet description is missing from public package payload')
+    if require_description:
+        for key,value in (('description',DESCRIPTION),('license','MIT'),('published_at','2026-11-01T00:00:00Z')):
+            check(c.get('metadata',{}).get(key)=={'state':'known','value':value},'exact source facet missing: '+key)
     check(isinstance(c.get('freshness'),dict) and c['freshness'].get('state') in ('current','historical','expired','unavailable'),'missing typed freshness')
     tags=[t for row in page.get('records',[]) if isinstance(row,dict) for t in row.get('tags',[]) if isinstance(t,str)]
     check(any('discovered' in t and 'unacquired' in t for t in tags),'discovery misrepresented as acquired')
@@ -166,9 +168,9 @@ def retire_group(proc):
 
 class Journey:
     """Private owner/project process plumbing based on csharp_public_route.Journey."""
-    def __init__(self,bins,out,fixture,timeout):
-        self.bins=bins;self.out=out;self.fixture=fixture;self.timeout=timeout;self.seq=0;self.owner=None;self.owner_count=0
-        self.root=pathlib.Path(tempfile.mkdtemp(prefix='ndx-nuget-',dir=os.environ.get('TMPDIR','/tmp')));os.chmod(self.root,0o700)
+    def __init__(self,bins,out,fixture,timeout,root,case):
+        self.bins=bins;self.out=out;self.fixture=fixture;self.timeout=timeout;self.seq=0;self.owner=None;self.owner_count=0;self.case=case
+        self.root=root
         self.workspace=self.root/'workspace';self.workspace.mkdir(mode=0o700);self.project=self.root/'project';self.project.mkdir(mode=0o700)
         self.endpoint=self.root/'owner.sock';check(len(os.fsencode(self.endpoint))<100,'TMPDIR produces an overlong Unix socket path');self.secret=self.root/'authority.secret';self.secret.write_bytes(os.urandom(32));os.chmod(self.secret,0o600)
         self.env={k:os.environ[k] for k in ('PATH','LANG','LC_ALL','TZ','NUDOX_ACCOUNT_GATE') if k in os.environ}
@@ -182,6 +184,7 @@ class Journey:
         cmd=[str(self.bins['backend-locald']),'--endpoint',str(self.endpoint),'--workspace',str(self.workspace),'--authority-secret-file',str(self.secret),'--registry-offline','--advisory-offline','--forge-offline','--registry-discovery-source','nuget='+self.fixture.base+'/v3/catalog0/index.json']
         if offline:cmd.append('--registry-discovery-offline')
         self.owner=subprocess.Popen(cmd,cwd=self.project,env=self.env,stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT,start_new_session=True);log.close()
+        self.case['processes'].append({'kind':'owner','pid':self.owner.pid,'retired':False})
         end=time.monotonic()+self.timeout
         while time.monotonic()<end:
             check(self.owner.poll() is None,'owner exited before socket: '+str(self.owner.returncode))
@@ -193,19 +196,23 @@ class Journey:
     def stop_owner(self):
         if self.owner is None:return
         retire_group(self.owner)
+        next(p for p in self.case['processes'] if p['pid']==self.owner.pid and not p['retired'])['retired']=True
         self.owner=None
     def call(self,argv,stdin=None):
         self.seq+=1;name=f'call-{self.seq:04d}';(self.out/(name+'.request.json')).write_text(json.dumps({'argv':[str(i) for i in argv],'stdin':stdin,'cwd':str(self.project)},indent=2)+'\n')
         with (self.out/(name+'.stdout')).open('wb') as stdout,(self.out/(name+'.stderr')).open('wb') as stderr:
             p=subprocess.Popen([str(i) for i in argv],cwd=self.project,env=self.env,stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,stdout=stdout,stderr=stderr,start_new_session=True)
-            if stdin is not None:
-                p.stdin.write(stdin.encode());p.stdin.close()
-            deadline=time.monotonic()+self.timeout
-            while p.poll() is None:
-                if time.monotonic()>=deadline or os.fstat(stdout.fileno()).st_size>MAX_OUTPUT or os.fstat(stderr.fileno()).st_size>MAX_OUTPUT:
-                    retire_group(p);raise Failure(name+' exceeded time/output bound')
-                time.sleep(.02)
-            retire_group(p)
+            record={'kind':'client','pid':p.pid,'retired':False};self.case['processes'].append(record)
+            try:
+                if stdin is not None:
+                    p.stdin.write(stdin.encode());p.stdin.close()
+                deadline=time.monotonic()+self.timeout
+                while p.poll() is None:
+                    if time.monotonic()>=deadline or os.fstat(stdout.fileno()).st_size>MAX_OUTPUT or os.fstat(stderr.fileno()).st_size>MAX_OUTPUT:
+                        raise Failure(name+' exceeded time/output bound')
+                    time.sleep(.02)
+            finally:
+                retire_group(p);record['retired']=True
         check((self.out/(name+'.stdout')).stat().st_size<=MAX_OUTPUT and (self.out/(name+'.stderr')).stat().st_size<=MAX_OUTPUT,name+' exceeded output bound')
         return p.returncode,(self.out/(name+'.stdout')).read_text(errors='replace'),(self.out/(name+'.stderr')).read_text(errors='replace')
     def cli(self,*words):
@@ -220,10 +227,10 @@ def parity(j,label):
     cp=selected_candidate(j.cli('package',PURL)); j_last_cli=j.cli('explore',NAME);ce=explore_candidates(j_last_cli)
     m=j.mcp([(31,'backend.package',{'package':PURL,'detail':'full'}),(32,'backend.explore',{'query':NAME,'detail':'full'})])
     mp=selected_candidate(m[31]['structuredContent']);j_last_mcp=m[32]['structuredContent'];me=explore_candidates(j_last_mcp)
-    for name,c in [('MCP package',mp)]:check(c['source']==cp['source'] and c['proof']==cp['proof'],label+' '+name+' source/proof mismatch')
-    for name,rows in [('CLI explore',ce),('MCP explore',me)]:check(any(r.get('source')==cp['source'] and r.get('proof')==cp['proof'] for r in rows),label+' '+name+' missing exact source/proof')
+    for name,c in [('MCP package',mp)]:check(c['source']==cp['source'] and c['proof']==cp['proof'] and c['metadata']==cp['metadata'],label+' '+name+' source/proof mismatch')
+    for name,rows in [('CLI explore',ce),('MCP explore',me)]:check(any(r.get('source')==cp['source'] and r.get('proof')==cp['proof'] and r.get('metadata')==cp['metadata'] for r in rows),label+' '+name+' missing exact source/proof')
     def scopes(page):return [r['package_group']['release_match_scope'] for r in page['records'] if isinstance(r,dict) and isinstance(r.get('package_group'),dict)]
-    return {'stage':label,'coordinate':PURL,'source':cp['source'],'proof':cp['proof'],'freshness':cp['freshness'],'cli_mcp_package_explore_parity':True,'cli_explore_match_scopes':scopes(j_last_cli),'mcp_explore_match_scopes':scopes(j_last_mcp)}
+    return {'stage':label,'coordinate':PURL,'source':cp['source'],'proof':cp['proof'],'metadata':cp['metadata'],'freshness':cp['freshness'],'cli_mcp_package_explore_parity':True,'cli_explore_match_scopes':scopes(j_last_cli),'mcp_explore_match_scopes':scopes(j_last_mcp)}
 
 def poll(j,seconds):
     end=time.monotonic()+seconds;last=None;original_timeout=j.timeout
@@ -297,12 +304,12 @@ def self_check():
     except Failure:pass
     else:raise Failure('long proof input should fail closed')
     # Validate typed product projection checks without running a product.
-    candidate={'coordinate':PURL,'standing':'published','source':[1]*32,'proof':[2]*32,'metadata':{'yanked':{'state':'known','value':False}},'freshness':{'state':'current','observed_at_millis':10,'valid_until_millis':20}}
+    candidate={'coordinate':PURL,'standing':'published','source':[1]*32,'proof':[2]*32,'metadata':{'yanked':{'state':'known','value':False},'description':{'state':'known','value':DESCRIPTION},'license':{'state':'known','value':'MIT'},'published_at':{'state':'known','value':'2026-11-01T00:00:00Z'}},'freshness':{'state':'current','observed_at_millis':10,'valid_until_millis':20}}
     good={'package_discovery':{'package':PURL,'observation':{'state':'observed','candidates':[candidate]}},'records':[{'tags':['discovered · unacquired']}],'note':DESCRIPTION}
     selected_candidate(good)
     for case in ('description','proof','yanked','acquired'):
         malformed=json.loads(json.dumps(good))
-        if case=='description':malformed.pop('note')
+        if case=='description':malformed['package_discovery']['observation']['candidates'][0]['metadata'].pop('description')
         if case=='proof':malformed['package_discovery']['observation']['candidates'][0]['proof']=[2]
         if case=='yanked':malformed['package_discovery']['observation']['candidates'][0]['metadata']['yanked']={'state':'unknown'}
         if case=='acquired':malformed['records'][0]['tags']=['acquired']
@@ -352,8 +359,10 @@ def main():
     try:
         for scenario in ('positive','cross-origin','escape','encoded-separator','cycle','missing-page','wrong-id','count-mismatch','resource-limit'):
             caseout=out/scenario;caseout.mkdir(mode=0o700);fixture=Fixture(scenario);j=None
+            case={'scenario':scenario,'fixture_root':None,'processes':[],'status':'running'};receipt['cases'].append(case)
             try:
-                j=Journey(bins,caseout,fixture,args.timeout);j.start_owner()
+                root=pathlib.Path(tempfile.mkdtemp(prefix='ndx-nuget-',dir=os.environ.get('TMPDIR','/tmp')));case['fixture_root']=str(root);os.chmod(root,0o700)
+                j=Journey(bins,caseout,fixture,args.timeout,root,case);j.start_owner()
                 if scenario=='positive':
                     candidate=poll(j,args.timeout);expected=['/v3/index.json','/v3/registrations/microsoft.entityframeworkcore/index.json','/v3/page-'+fixture.nonce,'/v3/item-'+fixture.nonce]
                     paths=[x['path'] for x in fixture.events];check(all(p in paths for p in expected),'required advertised link was not fetched: '+repr(paths))
@@ -364,13 +373,18 @@ def main():
                     expected_proof=blake3_short(bytes(proof_input));endpoint=(fixture.base+'/v3/catalog0/index.json').encode();expected_source=blake3_short(b'backend.registry.source.v1\0'+bytes([5])+endpoint)
                     check(first['proof']==list(expected_proof),'source proof does not match actual fetched service/page/catalog bytes');check(first['source']==list(expected_source),'source identity does not match exact configured endpoint')
                     first['source_proof_input_sha256']=hashlib.sha256(proof_input).hexdigest();first['source_proof_input_bytes']=len(proof_input)
-                    before_requests=len(fixture.events);j.stop_owner();j.start_owner(offline=True);second=parity(j,'offline-reopen');check(first['source']==second['source'] and first['proof']==second['proof'],'reopened source/proof changed');check(len(fixture.events)==before_requests,'offline reopen accessed fixture')
-                    receipt['cases'].append({'scenario':scenario,'checks':[first,second],'required_paths':expected})
-                else:receipt['cases'].append(negative(j,fixture))
+                    before_requests=len(fixture.events);j.stop_owner();j.start_owner(offline=True);second=parity(j,'offline-reopen');check(first['source']==second['source'] and first['proof']==second['proof'] and first['metadata']==second['metadata'],'reopened source/proof/metadata changed');check(len(fixture.events)==before_requests,'offline reopen accessed fixture')
+                    case.update({'checks':[first,second],'required_paths':expected})
+                else:case.update(negative(j,fixture))
                 check(not any(any(token in event['path'].lower() for token in ('.nupkg','archive','download','packagecontent')) for event in fixture.events),'metadata-only journey attempted archive/download')
             finally:
-                if j is not None:j.stop_owner()
-                fixture.close();(caseout/'request-receipts.json').write_text(json.dumps({'source_requests':fixture.events,'cross_origin_trap_requests':fixture.trap_events},indent=2)+'\n')
+                try:
+                    if j is not None:j.stop_owner()
+                    check(all(p['retired'] for p in case['processes']),'owned process group not retired')
+                    case['status']='retired'
+                finally:
+                    fixture.close()
+                    (caseout/'request-receipts.json').write_text(json.dumps({'source_requests':fixture.events,'cross_origin_trap_requests':fixture.trap_events},indent=2)+'\n')
         receipt['result']='pass'
     except Exception as exc:
         receipt['error']=repr(exc);raise
