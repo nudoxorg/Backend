@@ -169,7 +169,8 @@ pub(super) fn append(
             let identity = identity.allocate(format_args!("{}::{path}::{prefix}{coordinate_sep}{name}\0sql:{ordinal}", indexed.label)).map_err(|e| BuiltinModelError(e.into()))?;
             let signature = signature.allocate(format_args!("SQL {kind} {prefix}{display_sep}{name}")).map_err(|e| BuiltinModelError(e.into()))?;
             let document = document.allocate(format_args!("SQL {kind} in {path}; use sql-query for binding, migration history and checked source")).map_err(|e| BuiltinModelError(e.into()))?;
-            let id = RowId::Symbol(backend_engine::symbol_key(&identity));
+            let id = RowId::Symbol(backend_library::symbol_key_borrowed(&identity)
+                .map_err(|e| BuiltinModelError(e.to_string()))?);
             let row = plan.build(id, initial.basis(), indexed.package,
                 if definition.kind == SqlObjectKind::Column { DeclarationKind::Field } else { DeclarationKind::Unknown },
                 ProjectedRowTexts { label, identity, signature, document }).map_err(|e| BuiltinModelError(e.into()))?;
@@ -316,7 +317,8 @@ pub(super) fn append_query(
             let documentation = document.allocate(format_args!("SQL {kind} in {}; use sql-query for binding, migration history and checked source", host.path)).map_err(|e| BuiltinModelError(e.into()))?;
             let name = name_plan.allocate(format_args!("{name}")).map_err(|e| BuiltinModelError(e.into()))?;
             let row_kind = kind_plan.allocate(format_args!("{row_kind}")).map_err(|e| BuiltinModelError(e.into()))?;
-            let symbol = backend_engine::symbol_key(&preimage);
+            let symbol = backend_library::symbol_key_borrowed(&preimage)
+                .map_err(|e| BuiltinModelError(e.to_string()))?;
             let id = exact_query_id("symbol", symbol.as_bytes())?;
             let project = exact_query_id("package", indexed.package.as_bytes())?;
             facts.push(SemanticQueryFact::new(
