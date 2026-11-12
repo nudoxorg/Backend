@@ -23,6 +23,9 @@ use futures_util::StreamExt as _;
 use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use std::collections::BTreeMap;
 
+#[path = "corpus_admission_tests.rs"]
+mod corpus_admission_tests;
+
 struct FixtureCoverageVerifier {
     producer: [u8; 32],
     scope: ScopeRoot,

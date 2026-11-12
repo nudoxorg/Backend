@@ -1269,6 +1269,7 @@ dependencies = [
  "backend-semantic",
  "backend-version",
  "blake3",
+ "bytemuck",
  "futures-core",
  "futures-executor",
  "futures-util",
