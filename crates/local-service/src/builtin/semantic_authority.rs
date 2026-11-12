@@ -3858,7 +3858,10 @@ impl SemanticAuthority {
             runtime_admission,
             &self.store,
         )?;
-        self.select_verified_closure(key, admitted, admit_before_select)
+        self.select_verified_closure(key, admitted, move |candidate| {
+            if stopped() { return Err(BuiltinModelError("compiler publication cancelled".into())); }
+            admit_before_select(candidate)
+        })
     }
 
     /// Admits a remote result after the coordinator has reopened and typed its
