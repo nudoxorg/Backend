@@ -501,6 +501,24 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_preserves_parser_owned_async_token() {
+        let source = "export async function run() {}";
+        let lib = parse_and_bind("async.ts", source);
+        let snapshot = LibSnapshot {
+            file_name: "async.ts".to_string(), content_hash: 0,
+            arena: (*lib.arena).clone(), binder: (*lib.binder).clone(),
+            root_index: lib.root_index,
+        };
+        let bytes = encode_snapshot(&snapshot).expect("snapshot encode");
+        let reopened = decode_snapshot(&bytes).expect("snapshot decode");
+        let offsets: Vec<_> = reopened.arena.nodes.iter().filter_map(|node| {
+            reopened.arena.get_function(node).and_then(|function| function.async_start)
+        }).collect();
+        assert_eq!(offsets, vec![source.find("async").unwrap() as u32]);
+        assert!(decode_snapshot(&bytes[..8]).is_err());
+    }
+
+    #[test]
     fn old_header_cold_misses_then_nonempty_retained_rows_rebind_and_reopen() {
         let dir = tempfile::TempDir::new().expect("private cache directory");
         let name = "retained-café.d.ts";
