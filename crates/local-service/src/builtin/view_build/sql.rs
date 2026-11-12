@@ -27,8 +27,10 @@ fn projection_bound(
         .and_then(|n| n.checked_add(name.len()))
         .and_then(|n| n.checked_add(parent.len()))
         .and_then(|n| n.checked_add(32))
-        .and_then(|n| n.checked_mul(5))
-        .and_then(|n| n.checked_add(512))
+        // Cover the projection and the subsequently retained presentation
+        // strings, including formatting growth and allocation quota credits.
+        .and_then(|n| n.checked_mul(16))
+        .and_then(|n| n.checked_add(1024))
         .ok_or_else(|| BuiltinModelError("SQL projection byte overflow".into()))
 }
 
@@ -38,17 +40,18 @@ pub(super) fn projection(
     path: &str,
     ordinal: u32,
     definition: &backend_semantic::sql_analysis::SqlDefinition,
-) -> (String, String, String, &'static str) {
+) -> Result<(String, String, String, &'static str), BuiltinModelError> {
     let name = definition.head_name.as_deref().unwrap_or(&definition.name);
     let parent = definition
         .head_parent
         .as_deref()
         .or(definition.parent.as_deref());
-    let display = if definition.kind == SqlObjectKind::Column {
-        parent.map_or_else(|| name.to_owned(), |parent| format!("{parent}.{name}"))
-    } else {
-        name.to_owned()
-    };
+    let column_parent = (definition.kind == SqlObjectKind::Column).then_some(parent).flatten();
+    let display_len = name.len().checked_add(column_parent.map_or(0, |p| p.len().saturating_add(1)))
+        .ok_or_else(|| BuiltinModelError("SQL projection byte overflow".into()))?;
+    let mut display = String::with_capacity(display_len);
+    if let Some(parent) = column_parent { display.push_str(parent); display.push('.'); }
+    display.push_str(name);
     let kind = match definition.kind {
         SqlObjectKind::Column => "column",
         SqlObjectKind::Table => "table",
@@ -60,16 +63,20 @@ pub(super) fn projection(
         SqlObjectKind::Type => "type",
         SqlObjectKind::Sequence => "sequence",
     };
-    let coordinate = if definition.kind == SqlObjectKind::Column {
-        parent.map_or_else(
-            || format!("{label}::{path}::{name}"),
-            |parent| format!("{label}::{path}::{parent}::{name}"),
-        )
-    } else {
-        format!("{label}::{path}::{name}")
-    };
-    let preimage = format!("{coordinate}\0sql:{ordinal}");
-    (coordinate, preimage, display, kind)
+    let coordinate_len = label.len().checked_add(path.len()).and_then(|n| n.checked_add(name.len()))
+        .and_then(|n| n.checked_add(4))
+        .and_then(|n| n.checked_add(column_parent.map_or(0, |p| p.len().saturating_add(2))))
+        .ok_or_else(|| BuiltinModelError("SQL projection byte overflow".into()))?;
+    let mut coordinate = String::with_capacity(coordinate_len);
+    coordinate.push_str(label); coordinate.push_str("::"); coordinate.push_str(path); coordinate.push_str("::");
+    if let Some(parent) = column_parent { coordinate.push_str(parent); coordinate.push_str("::"); }
+    coordinate.push_str(name);
+    let mut preimage = String::with_capacity(coordinate_len.checked_add(15)
+        .ok_or_else(|| BuiltinModelError("SQL projection byte overflow".into()))?);
+    preimage.push_str(&coordinate); preimage.push_str("\0sql:");
+    use std::fmt::Write as _;
+    write!(&mut preimage, "{ordinal}").map_err(|_| BuiltinModelError("SQL projection formatting failed".into()))?;
+    Ok((coordinate, preimage, display, kind))
 }
 
 pub(super) fn append(
@@ -120,7 +127,7 @@ pub(super) fn append(
                 .ok_or_else(|| BuiltinModelError("SQL projection byte overflow".into()))?;
             super::super::finish_admitted_bytes(prospective)?;
             let (coordinate, preimage, display, kind) =
-                projection(&indexed.label, path, *ordinal, definition);
+                projection(&indexed.label, path, *ordinal, definition)?;
             let row = Row::in_package(RowId::Symbol(backend_engine::symbol_key(&preimage)), initial.basis(), indexed.package, coordinate)
                 .try_with_identity_preimage(&preimage)
                 .map_err(|error| BuiltinModelError(format!("SQL discovery identity: {error}")))?
@@ -239,7 +246,7 @@ pub(super) fn append_query(
                 .filter(|n| *n <= remaining_bytes)
                 .ok_or_else(|| BuiltinModelError("SQL query facts exceed byte bound".into()))?;
             let (coordinate, preimage, display, kind) =
-                projection(&indexed.label, &host.path, *ordinal, definition);
+                projection(&indexed.label, &host.path, *ordinal, definition)?;
             let row_id = RowId::Symbol(backend_engine::symbol_key(&preimage));
             let name = definition
                 .head_name
@@ -255,4 +262,38 @@ pub(super) fn append_query(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use backend_semantic::sql_analysis::{SqlByteRange, SqlDefinition};
+
+    #[test]
+    fn long_parent_projection_fits_precharged_quota() {
+        let definition = SqlDefinition {
+            kind: SqlObjectKind::Column,
+            action: SqlDefinitionAction::Create,
+            conditional: false,
+            schema: None,
+            name: "x".into(),
+            parent: Some("p".repeat(4096)),
+            parent_schema: None,
+            name_extent: SqlByteRange { start: 0, end: 1 },
+            extent: SqlByteRange { start: 0, end: 1 },
+            detail: None,
+            statement: 0,
+            entity: None,
+            parent_entity: None,
+            live_at_head: true,
+            head_name: None,
+            head_parent: None,
+        };
+        let bound = projection_bound("p", "s", &definition).unwrap();
+        let (coordinate, preimage, display, _) = projection("p", "s", u32::MAX, &definition).unwrap();
+        let requested = coordinate.capacity() + preimage.capacity() + display.capacity()
+            + 3 * SQL_ALLOCATION_QUOTA_PER_ALLOCATION;
+        assert!(requested <= bound, "projection requested {requested}, quota {bound}");
+        assert!(preimage.ends_with("\0sql:4294967295"));
+    }
 }
