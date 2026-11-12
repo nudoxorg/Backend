@@ -571,6 +571,7 @@ impl SemanticQueryCorpus {
                     max_total_bytes: storage_limit,
                     ..limits
                 },
+                budget.allocation_quota_per_allocation,
                 cancelled,
             )?;
             extra
@@ -593,10 +594,11 @@ impl SemanticQueryCorpus {
             }
         }
         if let Some(budget) = budget {
-            let retained = measure_semantic_query_facts_controlled(
+            let retained = measure_semantic_query_facts_with_quota_controlled(
                 &facts,
                 facts.capacity(),
                 limits,
+                budget.allocation_quota_per_allocation,
                 cancelled,
             )?;
             if retained
@@ -776,8 +778,28 @@ pub fn measure_semantic_query_facts_controlled(
     limits: crate::Limits,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<usize, QueryError> {
-    let mut bytes =
-        measure_semantic_query_storage_controlled(facts, reserved_rows, limits, cancelled)?;
+    measure_semantic_query_facts_with_quota_controlled(facts, reserved_rows, limits, 0, cancelled)
+}
+
+/// Measures wire envelopes and retained allocation layouts, plus an explicit
+/// policy credit per retained allocation owner. The fact Vec backing is one
+/// owner regardless of its capacity; its cells are charged by requested size.
+/// Each related/alias box, boxed text and nonempty-capacity String is counted
+/// once. No allocator metadata or RSS bound is inferred from this credit.
+pub fn measure_semantic_query_facts_with_quota_controlled(
+    facts: &[SemanticQueryFact],
+    reserved_rows: usize,
+    limits: crate::Limits,
+    allocation_quota_per_allocation: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<usize, QueryError> {
+    let mut bytes = measure_semantic_query_storage_controlled(
+        facts,
+        reserved_rows,
+        limits,
+        allocation_quota_per_allocation,
+        cancelled,
+    )?;
     for fact in facts {
         check_cancelled(cancelled)?;
         // Keep the historical wire-envelope charge in addition to storage.
@@ -790,18 +812,23 @@ fn measure_semantic_query_storage_controlled(
     facts: &[SemanticQueryFact],
     reserved_rows: usize,
     limits: crate::Limits,
+    allocation_quota_per_allocation: usize,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<usize, QueryError> {
     check_cancelled(cancelled)?;
     if facts.len() > limits.max_rows || reserved_rows < facts.len() {
         return Err(QueryError::InvalidLimit);
     }
-    let mut bytes = reserved_rows
+    let buffer_bytes = reserved_rows
         .checked_mul(std::mem::size_of::<SemanticQueryFact>())
         .ok_or(QueryError::InvalidLimit)?;
-    if bytes > limits.max_total_bytes {
-        return Err(QueryError::InvalidLimit);
-    }
+    let mut bytes = 0;
+    charge_retained_allocation(
+        buffer_bytes,
+        allocation_quota_per_allocation,
+        limits,
+        &mut bytes,
+    )?;
     for fact in facts {
         check_cancelled(cancelled)?;
         let row = fact.presentation();
@@ -812,7 +839,12 @@ fn measure_semantic_query_storage_controlled(
             row.name.capacity(),
             row.documentation.capacity(),
         ] {
-            charge_bytes(capacity, limits, &mut bytes)?;
+            charge_retained_allocation(
+                capacity,
+                allocation_quota_per_allocation,
+                limits,
+                &mut bytes,
+            )?;
         }
         for value in [
             row.signature.as_ref(),
@@ -822,34 +854,64 @@ fn measure_semantic_query_storage_controlled(
         .into_iter()
         .flatten()
         {
-            charge_bytes(value.capacity(), limits, &mut bytes)?;
+            charge_retained_allocation(
+                value.capacity(),
+                allocation_quota_per_allocation,
+                limits,
+                &mut bytes,
+            )?;
         }
-        charge_bytes(
+        charge_retained_allocation(
             row.related
                 .len()
                 .checked_mul(std::mem::size_of::<String>())
                 .ok_or(QueryError::InvalidLimit)?,
+            allocation_quota_per_allocation,
             limits,
             &mut bytes,
         )?;
         for value in row.related.iter() {
             check_cancelled(cancelled)?;
-            charge_bytes(value.capacity(), limits, &mut bytes)?;
+            charge_retained_allocation(
+                value.capacity(),
+                allocation_quota_per_allocation,
+                limits,
+                &mut bytes,
+            )?;
         }
         match fact.evidence() {
-            SemanticQueryEvidence::Compiler(value) => {
-                charge_bytes(value.coordinate().as_str().len(), limits, &mut bytes)?
-            }
-            SemanticQueryEvidence::CompilerExternalTarget(value) => {
-                charge_bytes(value.coordinate().as_str().len(), limits, &mut bytes)?
-            }
-            SemanticQueryEvidence::SqlNative(value) => {
-                charge_bytes(value.identity_preimage.capacity(), limits, &mut bytes)?
-            }
+            SemanticQueryEvidence::Compiler(value) => charge_retained_allocation(
+                value.coordinate().as_str().len(),
+                allocation_quota_per_allocation,
+                limits,
+                &mut bytes,
+            )?,
+            SemanticQueryEvidence::CompilerExternalTarget(value) => charge_retained_allocation(
+                value.coordinate().as_str().len(),
+                allocation_quota_per_allocation,
+                limits,
+                &mut bytes,
+            )?,
+            SemanticQueryEvidence::SqlNative(value) => charge_retained_allocation(
+                value.identity_preimage.capacity(),
+                allocation_quota_per_allocation,
+                limits,
+                &mut bytes,
+            )?,
             SemanticQueryEvidence::Package(value) => {
                 if let Some(aliases) = value.cargo_aliases() {
-                    charge_bytes(aliases.aliases().len().checked_mul(std::mem::size_of::<backend_library::CargoPackageAliasV1>()).ok_or(QueryError::InvalidLimit)?, limits, &mut bytes)?;
-                    charge_bytes(
+                    let alias_cells = aliases
+                        .aliases()
+                        .len()
+                        .checked_mul(size_of::<backend_library::CargoPackageAliasV1>())
+                        .ok_or(QueryError::InvalidLimit)?;
+                    charge_retained_allocation(
+                        alias_cells,
+                        allocation_quota_per_allocation,
+                        limits,
+                        &mut bytes,
+                    )?;
+                    charge_retained_allocation(
                         aliases
                             .observations()
                             .len()
@@ -857,16 +919,27 @@ fn measure_semantic_query_storage_controlled(
                                 backend_library::CargoPackageAliasObservationV1,
                             >())
                             .ok_or(QueryError::InvalidLimit)?,
+                        allocation_quota_per_allocation,
                         limits,
                         &mut bytes,
                     )?;
                     for alias in aliases.aliases() {
                         check_cancelled(cancelled)?;
-                        charge_bytes(alias.as_str().len(), limits, &mut bytes)?;
+                        charge_retained_allocation(
+                            alias.as_str().len(),
+                            allocation_quota_per_allocation,
+                            limits,
+                            &mut bytes,
+                        )?;
                     }
                     for observation in aliases.observations() {
                         check_cancelled(cancelled)?;
-                        charge_bytes(observation.alias_indices().len(), limits, &mut bytes)?;
+                        charge_retained_allocation(
+                            observation.alias_indices().len(),
+                            allocation_quota_per_allocation,
+                            limits,
+                            &mut bytes,
+                        )?;
                     }
                 }
             }
@@ -874,6 +947,22 @@ fn measure_semantic_query_storage_controlled(
         }
     }
     Ok(bytes)
+}
+
+fn charge_retained_allocation(
+    requested_bytes: usize,
+    allocation_quota_per_allocation: usize,
+    limits: crate::Limits,
+    bytes: &mut usize,
+) -> Result<(), QueryError> {
+    let charge = requested_bytes
+        .checked_add(if requested_bytes == 0 {
+            0
+        } else {
+            allocation_quota_per_allocation
+        })
+        .ok_or(QueryError::InvalidLimit)?;
+    charge_bytes(charge, limits, bytes)
 }
 
 fn admit_fact_envelope(

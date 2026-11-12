@@ -23,8 +23,14 @@ fn exact_admission_moves_buffer(facts: Vec<SemanticQueryFact>) {
         SemanticQueryCorpus::admit_with_limits(workspace(), facts.clone(), limits)
             .expect("legacy envelope")
             .evidence_digest();
-    let retained =
-        measure_semantic_query_facts(&facts, facts.capacity(), limits).expect("retained facts");
+    let retained = measure_semantic_query_facts_with_quota_controlled(
+        &facts,
+        facts.capacity(),
+        limits,
+        64,
+        &|| false,
+    )
+    .expect("retained facts");
     let extra = semantic_query_corpus_admission_overhead(count, 64).expect("admission layout");
     let mut admitted = None;
     let measured = allocation_counter::measure(|| {
@@ -139,7 +145,14 @@ fn corpus_admission_validates_all_compiler_identities_without_scratch_strings() 
 fn corpus_admission_one_byte_short_refuses_before_new_allocations() {
     let facts = sql_facts(32, "migrations/schema.sql");
     let limits = limits_for(&facts);
-    let required = measure_semantic_query_facts(&facts, facts.capacity(), limits).expect("facts")
+    let required = measure_semantic_query_facts_with_quota_controlled(
+        &facts,
+        facts.capacity(),
+        limits,
+        64,
+        &|| false,
+    )
+    .expect("facts")
         + semantic_query_corpus_admission_overhead(facts.len(), 64).expect("index");
     let measured = allocation_counter::measure(|| {
         assert!(matches!(
@@ -224,6 +237,20 @@ fn corpus_admission_zero_credit_alias_envelope_is_checked_without_allocation() {
         SemanticQueryEvidence::Package(PackageScopeEvidence::with_cargo_aliases(package, aliases)),
         presentation,
     );
+    let ordinary_limits = limits_for(&facts);
+    let retained = measure_semantic_query_facts(&facts, facts.capacity(), ordinary_limits)
+        .expect("retained aliases");
+    let with_policy = measure_semantic_query_facts_with_quota_controlled(
+        &facts,
+        facts.capacity(),
+        ordinary_limits,
+        64,
+        &|| false,
+    )
+    .expect("alias policy");
+    // One fact buffer, four presentation strings, alias/observation boxes,
+    // one alias text box and one observation's index box.
+    assert_eq!(with_policy - retained, 9 * 64);
     let limits = Limits {
         max_field_bytes: 256,
         ..limits_for(&facts)
@@ -345,4 +372,22 @@ fn corpus_admission_sorted_index_retains_identity_and_scope_refusals() {
 fn corpus_admission_overhead_checks_layout_and_policy_overflow() {
     assert!(semantic_query_corpus_admission_overhead(usize::MAX, 0).is_err());
     assert!(semantic_query_corpus_admission_overhead(1, usize::MAX).is_err());
+}
+
+#[test]
+fn corpus_admission_retained_policy_counts_owners_instead_of_vec_cells() {
+    let facts = sql_facts(3, "schema.sql");
+    let limits = limits_for(&facts);
+    let base = measure_semantic_query_facts(&facts, facts.capacity(), limits).expect("facts");
+    let with_policy = measure_semantic_query_facts_with_quota_controlled(
+        &facts,
+        facts.capacity(),
+        limits,
+        64,
+        &|| false,
+    )
+    .expect("facts with policy");
+    // One vector allocation, four project strings and eight owned text
+    // allocations per SQL fact. Vec slots are already included by capacity.
+    assert_eq!(with_policy - base, (1 + 4 + 3 * 8) * 64);
 }
