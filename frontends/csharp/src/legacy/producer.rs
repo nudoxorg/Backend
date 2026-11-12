@@ -2521,7 +2521,7 @@ mod tests {
         bytes[240..248].copy_from_slice(b"/ld.so\0\0");
         // Exact PT_INTERP length includes a single NUL terminator.
         bytes[208..216].copy_from_slice(&7u64.to_le_bytes());
-        let entries = [(5u64, 0x1000 + 336), (10, 21), (1, 1), (29, 11), (0, 0)];
+        let entries: [(u64, u64); 5] = [(5, 0x1000 + 336), (10, 21), (1, 1), (29, 11), (0, 0)];
         for (index, (tag, value)) in entries.into_iter().enumerate() {
             let offset = 256 + index * 16;
             bytes[offset..offset + 8].copy_from_slice(&tag.to_le_bytes());
