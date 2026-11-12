@@ -1596,6 +1596,11 @@ fn omitted_program_member_cold_replay(mixed: bool) -> Result<(), Box<dyn Error>>
         Err(error) => error,
     };
     assert!(error.to_string().contains("native replay stopped: owner shutdown"), "unexpected cold refusal: {error}");
+    struct ColdReplayPauseGuard;
+    impl Drop for ColdReplayPauseGuard {
+        fn drop(&mut self) { super::semantic_authority::TEST_COLD_REPLAY_PAUSE.store(false, Ordering::Release); }
+    }
+    let _pause_guard = ColdReplayPauseGuard;
     let shutdown = crate::listener::ListenerShutdown::new();
     let worker_shutdown = shutdown.clone();
     super::semantic_authority::TEST_COLD_REPLAY_REACHED.store(false, Ordering::Release);
