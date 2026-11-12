@@ -845,6 +845,8 @@ pub(super) fn versioned_decode_allocation_bound(bytes: &[u8]) -> Result<usize, V
     };
     add(artifacts.checked_mul(std::mem::size_of::<VersionedPlaneArtifactMetadata>()).ok_or(VersionedPlaneError::Allocation)?)?;
     add(artifacts.checked_mul(std::mem::size_of::<SemanticPlaneCatalogEntry>()).ok_or(VersionedPlaneError::Allocation)?)?;
+    // Outer metadata construction also sorts/deduplicates these physical IDs.
+    add(artifacts.checked_mul(32).ok_or(VersionedPlaneError::Allocation)?)?;
     let catalog = artifacts.checked_mul(4 + 32 + 32 + 4).and_then(|n| n.checked_add(7 + 4)).ok_or(VersionedPlaneError::Allocation)?;
     add(catalog.checked_mul(2).ok_or(VersionedPlaneError::Allocation)?)?; // construction + retained canonical catalog
     for _ in 0..artifacts {
@@ -857,6 +859,7 @@ pub(super) fn versioned_decode_allocation_bound(bytes: &[u8]) -> Result<usize, V
         add(len)?; // semantic manifest canonical comparison
         add(SemanticPlaneManifest::decode_allocation_bound(manifest)?)?;
         add(members.checked_mul(std::mem::size_of::<VersionedPlaneMember>()).ok_or(VersionedPlaneError::Allocation)?)?;
+        add(members.checked_mul(32).ok_or(VersionedPlaneError::Allocation)?)?;
         add(members.checked_mul(std::mem::size_of::<(UntrustedSemanticSegmentId, u64)>()).ok_or(VersionedPlaneError::Allocation)?)?;
     }
     Ok(bound)
