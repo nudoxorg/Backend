@@ -40,6 +40,29 @@ fn native_incoming_graph_edge_uses_producing_publication() -> Result<(), Box<dyn
     project_fixture(false, true)
 }
 
+#[test]
+fn compiler_worker_captures_five_thousand_function_headers() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestRoot(std::env::temp_dir().join(format!(
+        "nudox-native-header-many-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+    )));
+    let package = root.0.join("package");
+    fs::create_dir_all(&package)?;
+    let source = (0..5000).map(|i| format!("export function f{i}() {{ return {i}; }}\n")).collect::<String>();
+    fs::write(package.join("many.ts"), &source)?;
+    fs::write(package.join("tsconfig.json"), r#"{"compilerOptions":{"noLib":true,"types":[]},"files":["many.ts"]}"#)?;
+    let client = LocalCompilerHost::new(Environment(root.0.join("data")), LocalHostDiscovery::ExplicitOnly).open()?;
+    let request = PackageCompileRequest::new(GenerateTarget {
+        correlation: CorrelationId(415), profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript), stage: Stage::LowerIr,
+    }, PackageUrl::parse("pkg:npm/header-many@1.0.0".to_owned()).map_err(|e| format!("package: {e:?}"))?)
+        .map_err(|e| format!("request: {e:?}"))?;
+    let staged = client.compile_package_sources_staged(OwnedPackageSourceSet::new(request, package,
+        vec![OwnedPackageSource::new("many.ts", &source)?].into_boxed_slice())?)?;
+    let file = staged.native_typescript_headers().iter().find(|file| file.path == "many.ts").ok_or("headers absent")?;
+    assert_eq!(file.entries.len(), 5000);
+    assert!(file.entries.iter().any(|entry| source.get(entry.header_extent.0 as usize..entry.header_extent.1 as usize) == Some("export function f4999()")));
+    Ok(())
+}
+
 fn project_fixture(private: bool, graph_origin: bool) -> Result<(), Box<dyn std::error::Error>> {
     let root = TestRoot(std::env::temp_dir().join(format!(
         "nudox-native-reference-projection-{}-{}",
