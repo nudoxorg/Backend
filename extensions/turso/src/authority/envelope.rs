@@ -4607,7 +4607,7 @@ mod tests {
             CompilerNativeLinesMember { object_id: *bad_object.id().as_bytes(), byte_length: bad_object.bytes().len() as u32 },
         ] {
             let (bad_image, bad_image_object) = compiler_image();
-            let bad_metadata = metadata(bad_image).with_native_program_sources(program_member).unwrap().with_native_lines(bad_member).unwrap();
+            let bad_metadata = self::metadata(bad_image).with_native_program_sources(program_member).unwrap().with_native_lines(bad_member).unwrap();
             let bad_envelope = CompilerPublicationEnvelope::new(&attempt, &bad_metadata).unwrap();
             let mut payloads = vec![bad_image_object, program_object.clone(), bad_metadata.typed_object(), bad_envelope.typed_object()];
             if bad_member.object_id == *bad_object.id().as_bytes() { payloads.push(bad_object.clone()); }
