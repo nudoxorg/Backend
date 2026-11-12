@@ -369,6 +369,7 @@ pub(super) fn capture_source_lines(
     remaining: &mut usize,
 ) -> Result<Option<backend_semantic::native_source_lines::NativeSourceLineFile>, String> {
     use backend_semantic::native_source_lines::{NativeSourceLineFile, MAX_NATIVE_SOURCE_LINES_PER_FILE};
+    checkpoint.checkpoint(0).map_err(|e| format!("source lines stopped: {e:?}"))?;
     if path.len() > 4096 || text.len() > 64 * 1024 * 1024 { return Ok(None); }
     let bytes = text.as_bytes();
     let mut count = 1usize;
@@ -403,5 +404,6 @@ pub(super) fn capture_source_lines(
     let mut path_bytes = backend_store::try_allocate_exact_zeroed_bytes_budgeted(path.len(), remaining).map_err(|e| format!("source line path capacity: {e:?}"))?;
     path_bytes.copy_from_slice(path.as_bytes());
     let path = String::from_utf8(path_bytes.into_vec()).map_err(|_| "source line path is not UTF-8")?;
+    checkpoint.checkpoint(0).map_err(|e| format!("source lines stopped: {e:?}"))?;
     Ok(Some(NativeSourceLineFile { path, source, line_starts }))
 }
