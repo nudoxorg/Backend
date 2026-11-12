@@ -241,6 +241,7 @@ fn copy_pack_layout(
         target: &Path,
         total: &mut usize,
         entries: &mut usize,
+        admitted: &std::collections::HashSet<PathBuf>,
         depth: usize,
         deadline: Instant,
         cancelled: &AtomicBool,
@@ -270,7 +271,13 @@ fn copy_pack_layout(
                 return Err("SDK pack snapshot symlink");
             }
             if file_type.is_dir() {
-                copy_dir(&from, &to, total, entries, depth + 1, deadline, cancelled)?;
+                copy_dir(&from, &to, total, entries, admitted, depth + 1, deadline, cancelled)?;
+            } else if admitted.contains(&from) {
+                // This admitted DLL was already captured directly into the
+                // private layout; do not reread and overwrite those bytes.
+                if !file_type.is_file() || !to.is_file() {
+                    return Err("SDK pack candidate unavailable");
+                }
             } else {
                 let bytes =
                     backend_platform::durable::read_regular_bounded_stable(&from, 32 * 1024 * 1024)
@@ -302,10 +309,17 @@ fn copy_pack_layout(
         }
         versions.insert(PathBuf::from(pack.as_os_str()).join(version.as_os_str()));
     }
+    let admitted = pack_snapshots.iter().map(|snapshot| snapshot.canonical.clone())
+        .collect::<std::collections::HashSet<_>>();
+    // Account for the DLL bytes already retained in this same layout.
+    for snapshot in &pack_snapshots {
+        total = total.checked_add(snapshot.length).ok_or("SDK pack snapshot limit")?;
+        if total > 256 * 1024 * 1024 { return Err("SDK pack snapshot limit"); }
+    }
     let mut entries = 0;
     for version in versions {
         copy_dir(&source.join(&version), &target.join(&version), &mut total,
-            &mut entries, 0, deadline, cancelled)?;
+            &mut entries, &admitted, 0, deadline, cancelled)?;
     }
     Ok(target)
 }
@@ -509,6 +523,10 @@ pub fn resolve_references_with_sdk(
         captured_global_json.map(|text| sha2::Sha256::digest(text.as_bytes()).into());
     let candidate_root = scratch.path().join("candidates");
     fs::create_dir(&candidate_root).map_err(|_| "SDK snapshot unavailable")?;
+    let first_pack = fs::canonicalize(&pack_candidates[0]).map_err(|_| "SDK pack candidate unavailable")?;
+    let original_pack_root = first_pack.ancestors()
+        .find(|path| path.file_name().is_some_and(|name| name == "packs"))
+        .map(Path::to_path_buf).ok_or("SDK pack layout unavailable")?;
     let mut captured_candidates = Vec::with_capacity(candidates.len());
     let mut snapshots = Vec::with_capacity(candidates.len());
     let mut by_original = std::collections::HashMap::with_capacity(candidates.len());
@@ -533,9 +551,16 @@ pub fn resolve_references_with_sdk(
             return Err("SDK snapshot limit");
         }
         let name = source.file_name().ok_or("SDK candidate filename")?;
-        let slot = candidate_root.join(index.to_string());
-        fs::create_dir(&slot).map_err(|_| "SDK snapshot unavailable")?;
-        let destination = slot.join(name);
+        let destination = if index < pack_candidates.len() {
+            let relative = canonical.strip_prefix(&original_pack_root)
+                .map_err(|_| "SDK pack roots differ")?;
+            scratch.path().join("packs").join(relative)
+        } else {
+            candidate_root.join(index.to_string()).join(name)
+        };
+        fs::create_dir_all(destination.parent().ok_or("SDK candidate filename")?)
+            .map_err(|_| "SDK snapshot unavailable")?;
+        if destination.exists() { return Err("SDK candidate duplicate path"); }
         fs::write(&destination, bytes).map_err(|_| "SDK snapshot unavailable")?;
         let destination = fs::canonicalize(&destination).map_err(|_| "SDK snapshot unavailable")?;
         if by_original.insert(canonical.clone(), index).is_some() {
@@ -553,12 +578,6 @@ pub fn resolve_references_with_sdk(
     }
     let candidates = captured_candidates.as_slice();
     let private_pack_root = copy_pack_layout(&snapshots[..pack_candidates.len()], scratch.path(), deadline, cancelled)?;
-    let original_pack_root = snapshots[..pack_candidates.len()]
-        .iter()
-        .flat_map(|snapshot| snapshot.canonical.ancestors())
-        .find(|path| path.file_name().is_some_and(|name| name == "packs"))
-        .map(Path::to_path_buf)
-        .ok_or("SDK pack layout unavailable")?;
     // Every admitted pack candidate must be exactly the bytes the SDK sees
     // in its private pack layout; restored candidates never become pack inputs.
     for snapshot in &snapshots[..pack_candidates.len()] {
@@ -1517,6 +1536,30 @@ pub fn observe_csharp_sdk_with(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pack_layout_retains_admitted_bytes_without_overwriting_them() {
+        let source = tempfile::tempdir().unwrap();
+        let pack = source.path().join("packs/Example.Ref/1.0");
+        let original = pack.join("ref/net10.0/Example.dll");
+        fs::create_dir_all(original.parent().unwrap()).unwrap();
+        fs::create_dir_all(pack.join("data")).unwrap();
+        fs::write(pack.join("data/FrameworkList.xml"), b"metadata").unwrap();
+        fs::write(&original, b"changed origin").unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let owned = scratch.path().join("packs/Example.Ref/1.0/ref/net10.0/Example.dll");
+        fs::create_dir_all(owned.parent().unwrap()).unwrap();
+        fs::write(&owned, b"admitted bytes").unwrap();
+        let snapshot = CandidateSnapshot {
+            original: original.clone(), canonical: original.canonicalize().unwrap(),
+            owned: owned.clone(), digest: sha2::Sha256::digest(b"admitted bytes").into(),
+            length: b"admitted bytes".len(), name: "Example.dll".into(),
+        };
+        copy_pack_layout(&[snapshot], scratch.path(), Instant::now() + Duration::from_secs(10),
+            &AtomicBool::new(false)).unwrap();
+        assert_eq!(fs::read(&owned).unwrap(), b"admitted bytes");
+        assert_eq!(fs::read(scratch.path().join("packs/Example.Ref/1.0/data/FrameworkList.xml")).unwrap(), b"metadata");
+    }
+
     #[cfg(unix)]
     #[test]
     fn resolver_child_environment_is_private_without_home_override() {
