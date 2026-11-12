@@ -92,17 +92,6 @@ const MAX_COMPILER_NATIVE_LINES_BYTES: usize = 64 * 1024 * 1024;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CompilerNativeLinesMember { object_id: AuthorityHash, byte_length: u32 }
 impl CompilerNativeLinesMember {
-    /// Admits only an authenticated typed object whose complete canonical wire validates.
-    pub fn from_verified_object(object: VerifiedObjectEnvelope, bytes: &[u8], checkpoint: &mut impl FnMut(usize) -> Result<(), CompilerEnvelopeError>) -> Result<Self, CompilerEnvelopeError> {
-        backend_semantic::native_source_lines::NativeSourceLineAggregateView::parse(bytes, checkpoint)
-            .map_err(|e| match e { backend_semantic::native_source_lines::BorrowedSourceLinesError::Invalid => CompilerEnvelopeError::NativeHeaders, backend_semantic::native_source_lines::BorrowedSourceLinesError::Stopped(e) => e })?;
-        let mut key = backend_version::ObjectKeyHasher::new(COMPILER_NATIVE_LINES_SCHEMA, bytes.len()).map_err(|_| CompilerEnvelopeError::NativeHeaders)?;
-        for chunk in bytes.chunks(64 * 1024) { checkpoint(chunk.len())?; key.update(chunk).map_err(|_| CompilerEnvelopeError::NativeHeaders)?; }
-        let key = key.finish().map_err(|_| CompilerEnvelopeError::NativeHeaders)?;
-        if bytes.is_empty() || bytes.len() > MAX_COMPILER_NATIVE_LINES_BYTES || object.schema() != COMPILER_NATIVE_LINES_SCHEMA
-            || object.key() != &key || object.payload_len() != bytes.len() as u64 { return Err(CompilerEnvelopeError::NativeHeaders); }
-        Ok(Self { object_id: *object.id().as_bytes(), byte_length: u32::try_from(bytes.len()).map_err(|_| CompilerEnvelopeError::NativeHeaders)? })
-    }
     /// Admits a bounded, authenticated view without allocating another copy.
     pub fn from_verified_view(view: backend_store::VerifiedObjectView<'_>, checkpoint: &mut impl FnMut(usize) -> Result<(), CompilerEnvelopeError>) -> Result<Self, CompilerEnvelopeError> {
         let bytes = view.bytes();
@@ -118,24 +107,6 @@ impl CompilerNativeLinesMember {
     }
     pub const fn object_id(&self) -> &AuthorityHash { &self.object_id }
     pub const fn byte_length(&self) -> u32 { self.byte_length }
-}
-
-/// Creates the canonical line aggregate object after precharging all copies.
-pub fn compiler_native_lines_object(bytes: &[u8], budget: &mut usize, checkpoint: &mut impl FnMut(usize) -> Result<(), CompilerEnvelopeError>) -> Result<TypedObject, CompilerEnvelopeError> {
-    if bytes.is_empty() || bytes.len() > MAX_COMPILER_NATIVE_LINES_BYTES { return Err(CompilerEnvelopeError::NativeHeaders); }
-    let copies = bytes.len().checked_mul(3).and_then(|n| n.checked_add(2 * std::mem::size_of::<usize>())).ok_or(CompilerEnvelopeError::NativeHeaders)?;
-    *budget = budget.checked_sub(copies).ok_or(CompilerEnvelopeError::NativeHeaders)?;
-    backend_semantic::native_source_lines::NativeSourceLineAggregateView::parse(bytes, checkpoint).map_err(|e| match e {
-        backend_semantic::native_source_lines::BorrowedSourceLinesError::Invalid => CompilerEnvelopeError::NativeHeaders,
-        backend_semantic::native_source_lines::BorrowedSourceLinesError::Stopped(e) => e,
-    })?;
-    let mut key = backend_version::ObjectKeyHasher::new(COMPILER_NATIVE_LINES_SCHEMA, bytes.len()).map_err(|_| CompilerEnvelopeError::NativeHeaders)?;
-    for chunk in bytes.chunks(64 * 1024) { checkpoint(chunk.len())?; key.update(chunk).map_err(|_| CompilerEnvelopeError::NativeHeaders)?; }
-    let key = key.finish_key::<CompilerNativeLinesBytesSchema>().map_err(|_| CompilerEnvelopeError::NativeHeaders)?;
-    checkpoint(0)?;
-    let object = TypedObject::from_value(&key, bytes);
-    checkpoint(0)?;
-    Ok(object)
 }
 
 pub const COMPILER_NATIVE_HEADERS_SCHEMA: SchemaIdentity = SchemaIdentity::new(0x7a, 0xc00e, 1);
@@ -3286,13 +3257,6 @@ impl Schema for CompilerTypeScriptSnapshotMetadataSchema {
     fn encode(value: &Self::Value, output: &mut Vec<u8>) {
         output.extend_from_slice(&value.canonical_bytes());
     }
-}
-
-struct CompilerNativeLinesBytesSchema;
-impl Schema for CompilerNativeLinesBytesSchema {
-    const DOMAIN: u8 = 0x7a; const TYPE: u16 = 0xc00f; const VERSION: u8 = 1;
-    type Value = [u8];
-    fn encode(value: &Self::Value, output: &mut Vec<u8>) { output.extend_from_slice(value); }
 }
 
 struct CompilerNativeLinesMetadataSchema;
