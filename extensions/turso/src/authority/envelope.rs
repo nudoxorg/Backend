@@ -5548,6 +5548,11 @@ mod tests {
         verifier
             .verify_closure(&claim)
             .expect("verify exact stored envelope and members");
+        let stopped = || true;
+        let stopped_verifier = FileStoreCompilerPublicationVerifier::new(
+            &store, ArtifactBudget::new(8, 64, 1024 * 1024, 1024 * 1024, 8), &envelope, &metadata,
+        ).with_stop(&stopped);
+        assert!(stopped_verifier.verify_closure(&claim).unwrap_err().contains("verification stopped"));
         let selected = SelectedGeneration::new(
             attempt.namespace().clone(),
             1,
