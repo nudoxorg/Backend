@@ -5291,8 +5291,15 @@ mod tests {
 
     #[test]
     fn native_header_admission_reserves_reader_and_writer_costs() {
-        let bytes = backend_semantic::native_ts_headers::NativeTsHeaderAggregate { files: vec![] }
-            .encode_checked().expect("canonical aggregate");
+        use backend_semantic::native_ts_headers::{NativeTsHeaderAggregate, NativeTsHeaderEntry, NativeTsHeaderFile};
+        use backend_semantic::ir::{DeclarationFamilyId, DeclarationIdentity, SourceIdentity, VariantFingerprint};
+        let bytes = NativeTsHeaderAggregate { files: vec![NativeTsHeaderFile {
+            path: "src/main.ts".into(), source: SourceIdentity::from_bytes(b"function f() {}\n").unwrap(),
+            image_identity: [7; 32], image_byte_len: 123, producer_recipe: [8; 32],
+            entries: vec![NativeTsHeaderEntry { entity_id: 7,
+                identity: DeclarationIdentity { family: DeclarationFamilyId::from_raw([1; 16]), variant: VariantFingerprint::from_raw([2; 16]) },
+                compiler_extent: (0, 15), header_extent: (0, 12) }],
+        }] }.encode_checked().expect("canonical aggregate");
         let mut credit = usize::MAX;
         backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical_budgeted(&bytes, &mut credit).expect("decode aggregate");
         let decoded = usize::MAX - credit;
