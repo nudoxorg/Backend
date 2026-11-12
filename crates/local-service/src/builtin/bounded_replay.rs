@@ -71,6 +71,7 @@ fn build_index(
         sift(&mut index, rows, 0, end, budget, stopped)?;
     }
     for i in 1..count {
+        step(budget, stopped, 1)?;
         if cmp(rows[index_at(&index, i - 1)].path.as_bytes(), rows[index_at(&index, i)].path.as_bytes(), budget, stopped)?.is_eq() {
             return Err(duplicate_error.into());
         }
@@ -159,6 +160,7 @@ fn admit_inner(
     let (retired_index, retired_count) = build_index(capture.key.profile(), retirements, &project, "duplicate native replay retirement path", budget, stopped)?;
     if count == 0 { return Err("native replay retirement requires a nonempty selected Program".into()); }
     for i in 0..count {
+        step(budget, stopped, 1)?;
         let ordinal = index_at(&source_index, i);
         flags[ordinal] = 1;
         if find_index(retirements, &retired_index, retired_count, rows[ordinal].path.as_bytes(), budget, stopped)?.is_some() {
@@ -337,6 +339,7 @@ fn admit_inner(
         }
     }
     for (i, row) in rows.iter().enumerate() {
+        step(budget, stopped, 1)?;
         if plan.flags[i] & 1 == 0 { continue; }
         if plan.flags[i] & 2 == 0 || (row.admits_image() && plan.flags[i] & 4 == 0) {
             return Err("native replay source lacks its claimed Program evidence".into());
