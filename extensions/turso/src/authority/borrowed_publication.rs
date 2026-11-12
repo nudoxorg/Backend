@@ -10,6 +10,7 @@ use super::*;
 pub enum SelectedPublicationWire<'a> {
     Program { member: CompilerProgramSourceMember, schema: SchemaIdentity, bytes: &'a [u8] },
     Image { member: CompilerImageMember, bytes: &'a [u8] },
+    Headers { member: CompilerNativeHeadersMember, bytes: &'a [u8] },
 }
 
 /// Verifies the selected envelope, exact metadata/member inventory and physical
@@ -20,7 +21,10 @@ pub enum SelectedPublicationWire<'a> {
 /// The callback must separately reserve and validate every retained Program,
 /// image, source and auxiliary allocation against `budget` before allocating;
 /// it must use the live request's cancellation/deadline for semantic decoding.
-/// Its output must be discarded on any error. Successful return means wire
+/// The callback must build a detached plan and discard it on any error; later
+/// objects have not yet been authenticated when an earlier callback executes.
+/// Membership work tokens bound worst-shape nodes; payload tokens bound chunks.
+/// Successful return means wire
 /// transport only; no semantic decode or source authority is asserted here.
 /// `max_payload_bytes` and `max_images` apply to declared Program+image
 /// inventory before any of those payloads are read.
@@ -43,13 +47,13 @@ where F: for<'a> FnMut(SelectedPublicationWire<'a>, &mut SelectedNativeHeaderBud
     let metadata_id=envelope.metadata_id;
     header_member_bounded(store,&pin,closure,metadata_id,budget,cancelled)?;
     let metadata_max=MAX_MANIFEST_BYTES+64*1024*1024+MAX_MEMBER_IDS*72+1024;
-    let schemas=[COMPILER_PUBLICATION_METADATA_SCHEMA,COMPILER_PROGRAM_METADATA_SCHEMA,COMPILER_COVERAGE_METADATA_SCHEMA,COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA,COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA,COMPILER_NATIVE_HEADERS_METADATA_SCHEMA,COMPILER_NATIVE_LINES_METADATA_SCHEMA];
+    let schemas=[COMPILER_PUBLICATION_METADATA_SCHEMA,COMPILER_PROGRAM_METADATA_SCHEMA,COMPILER_COVERAGE_METADATA_SCHEMA,COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA,COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA,COMPILER_NATIVE_HEADERS_METADATA_SCHEMA ];
     let (metadata_wire,schema,key)=header_object_bounded(store,&pin,metadata_id,&schemas,metadata_max,budget,cancelled)?;
     verified_payload_key_checkpointed(schema,&metadata_wire,&key,budget,cancelled)?;
     let version_at=METADATA_MAGIC.len();
     let raw=metadata_wire.get(version_at..version_at+2).ok_or("truncated metadata version")?;
     let version=u16::from_le_bytes([raw[0],raw[1]]);
-    let expected=match version { METADATA_VERSION=>COMPILER_PUBLICATION_METADATA_SCHEMA,PROGRAM_METADATA_VERSION=>COMPILER_PROGRAM_METADATA_SCHEMA,COVERAGE_METADATA_VERSION=>COMPILER_COVERAGE_METADATA_SCHEMA,TYPESCRIPT_SNAPSHOT_METADATA_VERSION=>COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA,CSHARP_EVIDENCE_METADATA_VERSION=>COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA,NATIVE_HEADERS_METADATA_VERSION=>COMPILER_NATIVE_HEADERS_METADATA_SCHEMA,NATIVE_LINES_METADATA_VERSION=>COMPILER_NATIVE_LINES_METADATA_SCHEMA,_=>return Err("invalid compiler metadata version".into()) };
+    let expected=match version { METADATA_VERSION=>COMPILER_PUBLICATION_METADATA_SCHEMA,PROGRAM_METADATA_VERSION=>COMPILER_PROGRAM_METADATA_SCHEMA,COVERAGE_METADATA_VERSION=>COMPILER_COVERAGE_METADATA_SCHEMA,TYPESCRIPT_SNAPSHOT_METADATA_VERSION=>COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA,CSHARP_EVIDENCE_METADATA_VERSION=>COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA,NATIVE_HEADERS_METADATA_VERSION=>COMPILER_NATIVE_HEADERS_METADATA_SCHEMA ,_=>return Err("invalid compiler metadata version".into()) };
     if schema!=expected{return Err("compiler metadata schema differs".into());}
     let bitmap_len=(MAX_MEMBER_IDS+7)/8;
     let mut bitmap=backend_store::try_allocate_exact_zeroed_bytes_budgeted(bitmap_len,&mut budget.memory).map_err(|e|format!("allocate metadata bitmap: {e:?}"))?;
@@ -63,6 +67,7 @@ where F: for<'a> FnMut(SelectedPublicationWire<'a>, &mut SelectedNativeHeaderBud
         payload_total=payload_total.checked_add(image.byte_length() as usize).ok_or("selected payload length overflow")?;
         if payload_total>max_payload_bytes{return Err("selected payload exceeds residence limit".into());}
     }
+    drop(images);
     if payload_total>max_payload_bytes{return Err("selected payload exceeds residence limit".into());}
     for id in envelope.members(){if header_member_bounded(store,&pin,closure,id,budget,cancelled)?!=count{return Err("selected closure count changed".into());}}
     let frame_charge=frame_before.checked_sub(budget.memory).ok_or("selected frame charge underflow")?;
@@ -87,6 +92,17 @@ where F: for<'a> FnMut(SelectedPublicationWire<'a>, &mut SelectedNativeHeaderBud
         if identity.finalize().as_ref()!=member.semantic_image_identity(){return Err("selected image identity differs".into());}
         visit(SelectedPublicationWire::Image{member,bytes:&wire},budget)?;
         drop(wire);budget.memory=budget.memory.checked_add(temporary).ok_or("image refund overflow")?;
+    }
+    drop(images);
+    if let Some(member)=metadata.native_headers {
+        let before=budget.memory;
+        let (wire,schema,key)=header_object_bounded(store,&pin,*member.object_id(),&[COMPILER_NATIVE_HEADERS_SCHEMA],member.byte_length() as usize,budget,cancelled)?;
+        let temporary=before.checked_sub(budget.memory).ok_or("header temporary underflow")?;
+        if wire.len()!=member.byte_length() as usize{return Err("selected header extent differs".into());}
+        verified_payload_key_checkpointed(schema,&wire,&key,budget,cancelled)?;
+        backend_semantic::native_ts_headers::NativeTsHeaderAggregateView::parse_canonical_checkpointed(&wire,&mut |_|header_checkpoint(&budget.work,cancelled)).map_err(|e|format!("selected header scan: {e:?}"))?;
+        visit(SelectedPublicationWire::Headers{member,bytes:&wire},budget)?;
+        drop(wire);budget.memory=budget.memory.checked_add(temporary).ok_or("header refund overflow")?;
     }
     drop(metadata);drop(metadata_wire);drop(envelope);drop(envelope_wire);drop(pin);
     budget.memory=budget.memory.checked_add(frame_charge).ok_or("selected frame refund overflow")?;

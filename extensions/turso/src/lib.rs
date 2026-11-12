@@ -38,6 +38,7 @@ pub use authority::{
     COMPILER_NATIVE_HEADERS_METADATA_SCHEMA, COMPILER_NATIVE_HEADERS_SCHEMA, MAX_COMPILER_NATIVE_HEADERS_BYTES,
     CompilerNativeHeadersMember, VerifiedNativeHeadersWitness, compiler_native_headers_object, reopen_selected_native_headers,
     SelectedNativeHeaderBudget, reopen_selected_native_headers_budgeted,
+    SelectedPublicationWire, visit_selected_publication_wire,
     VerifiedNativeHeadersView, reopen_selected_native_headers_in_scratch,
     COMPILER_PUBLICATION_ENVELOPE_SCHEMA, COMPILER_PUBLICATION_METADATA_SCHEMA,
     COMPILER_SEMANTIC_IMAGE_SCHEMA, COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA,
