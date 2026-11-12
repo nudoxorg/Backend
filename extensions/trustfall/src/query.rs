@@ -667,6 +667,96 @@ impl SemanticQueryCorpus {
     }
 }
 
+/// Measures retained query fact envelopes against the same limits used by
+/// corpus admission, without cloning them. This permits a producer to reserve
+/// the remaining shared budget before constructing additional facts.
+pub fn measure_semantic_query_facts(
+    facts: &[SemanticQueryFact],
+    reserved_rows: usize,
+    limits: crate::Limits,
+) -> Result<usize, QueryError> {
+    if facts.len() > limits.max_rows || reserved_rows < facts.len() {
+        return Err(QueryError::InvalidLimit);
+    }
+    let mut bytes = reserved_rows
+        .checked_mul(std::mem::size_of::<SemanticQueryFact>())
+        .ok_or(QueryError::InvalidLimit)?;
+    if bytes > limits.max_total_bytes {
+        return Err(QueryError::InvalidLimit);
+    }
+    for fact in facts {
+        // Existing wire charges are retained as well as a conservative heap
+        // charge, including String capacity and boxed related-row cells.
+        admit_fact_envelope(fact, limits, &mut bytes)?;
+        let row = fact.presentation();
+        for capacity in [
+            row.id.capacity(),
+            row.kind.capacity(),
+            row.coordinate.capacity(),
+            row.name.capacity(),
+            row.documentation.capacity(),
+        ] {
+            charge_bytes(capacity, limits, &mut bytes)?;
+        }
+        for value in [
+            row.signature.as_ref(),
+            row.project.as_ref(),
+            row.parent.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            charge_bytes(value.capacity(), limits, &mut bytes)?;
+        }
+        charge_bytes(
+            row.related
+                .len()
+                .checked_mul(std::mem::size_of::<String>())
+                .ok_or(QueryError::InvalidLimit)?,
+            limits,
+            &mut bytes,
+        )?;
+        for value in row.related.iter() {
+            charge_bytes(value.capacity(), limits, &mut bytes)?;
+        }
+        match fact.evidence() {
+            SemanticQueryEvidence::Compiler(value) => {
+                charge_bytes(value.coordinate().as_str().len(), limits, &mut bytes)?
+            }
+            SemanticQueryEvidence::CompilerExternalTarget(value) => {
+                charge_bytes(value.coordinate().as_str().len(), limits, &mut bytes)?
+            }
+            SemanticQueryEvidence::SqlNative(value) => {
+                charge_bytes(value.identity_preimage.capacity(), limits, &mut bytes)?
+            }
+            SemanticQueryEvidence::Package(value) => {
+                if let Some(aliases) = value.cargo_aliases() {
+                    charge_bytes(aliases.aliases().len().checked_mul(std::mem::size_of::<backend_library::CargoPackageAliasV1>()).ok_or(QueryError::InvalidLimit)?, limits, &mut bytes)?;
+                    charge_bytes(
+                        aliases
+                            .observations()
+                            .len()
+                            .checked_mul(std::mem::size_of::<
+                                backend_library::CargoPackageAliasObservationV1,
+                            >())
+                            .ok_or(QueryError::InvalidLimit)?,
+                        limits,
+                        &mut bytes,
+                    )?;
+                    for alias in aliases.aliases() {
+                        charge_bytes(alias.as_str().len(), limits, &mut bytes)?;
+                    }
+                    for observation in aliases.observations() {
+                        charge_bytes(observation.alias_indices().len(), limits, &mut bytes)?;
+                    }
+                }
+            }
+            SemanticQueryEvidence::StructuralFallback(_) => {}
+        }
+    }
+    Ok(bytes)
+}
+
 fn admit_fact_envelope(
     fact: &SemanticQueryFact,
     limits: crate::Limits,

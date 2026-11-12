@@ -38,7 +38,7 @@ pub use query::{
     SemanticQueryCancellation, SemanticQueryCorpus, SemanticQueryEvent, SemanticQueryEvidence,
     SemanticQueryFact, SemanticQueryIdentity, SemanticQueryPresentation, SemanticQueryRequest,
     SemanticQueryStream, SemanticQueryTerminal, SqlNativeQueryEvidence, StructuralFallbackEvidence,
-    execute_semantic_query, schema as semantic_query_schema,
+    execute_semantic_query, measure_semantic_query_facts, schema as semantic_query_schema,
 };
 pub use trustfall::{FieldValue, QueryResult as SemanticQueryRow, TransparentValue};
 

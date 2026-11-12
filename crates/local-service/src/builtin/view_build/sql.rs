@@ -5,6 +5,29 @@ use super::super::{BuiltinModelError, IndexedSources, MAX_REBUILD_PACKAGES};
 use backend_engine::{DeclarationKind, Fragment, Row, RowId, ViewRoot, WorkspaceSnapshot};
 use backend_semantic::sql_analysis::{SqlDefinitionAction, SqlFact, SqlObjectKind};
 
+/// Conservative byte precharge before projection allocates owned strings.
+fn projection_bound(
+    label: &str,
+    path: &str,
+    definition: &backend_semantic::sql_analysis::SqlDefinition,
+) -> Result<usize, BuiltinModelError> {
+    let name = definition.head_name.as_deref().unwrap_or(&definition.name);
+    let parent = definition
+        .head_parent
+        .as_deref()
+        .or(definition.parent.as_deref())
+        .unwrap_or("");
+    label
+        .len()
+        .checked_add(path.len())
+        .and_then(|n| n.checked_add(name.len()))
+        .and_then(|n| n.checked_add(parent.len()))
+        .and_then(|n| n.checked_add(32))
+        .and_then(|n| n.checked_mul(5))
+        .and_then(|n| n.checked_add(512))
+        .ok_or_else(|| BuiltinModelError("SQL projection byte overflow".into()))
+}
+
 /// Shared projection identity for the view row and native query evidence.
 pub(super) fn projection(
     label: &str,
@@ -52,10 +75,16 @@ pub(super) fn append(
     rows: &mut Vec<Row>,
 ) -> Result<(), BuiltinModelError> {
     let mut bytes = super::super::admitted_view_bytes(rows)?;
+    let projects = sources.projects.keys().copied().collect();
+    let (selected, catalog_bytes) = super::super::sql_catalog::load_projects_bounded(
+        snapshot,
+        &projects,
+        &|| false,
+        super::super::MAX_REBUILD_BYTES,
+    )
+    .map_err(BuiltinModelError)?;
     for (project, indexed) in &sources.projects {
-        let Some(sql) = super::super::sql_catalog::load_project(snapshot, *project, &|| false)
-            .map_err(BuiltinModelError)?
-        else {
+        let Some(sql) = selected.get(project) else {
             continue;
         };
         for (host, ordinal, fact) in &sql.facts {
@@ -76,6 +105,13 @@ pub(super) fn append(
                 ));
             }
             let path = &sql.hosts[*host].path;
+            let prospective = bytes
+                .checked_add(catalog_bytes)
+                .and_then(|n| {
+                    n.checked_add(projection_bound(&indexed.label, path, definition).ok()?)
+                })
+                .ok_or_else(|| BuiltinModelError("SQL projection byte overflow".into()))?;
+            super::super::finish_admitted_bytes(prospective)?;
             let (coordinate, preimage, display, kind) =
                 projection(&indexed.label, path, *ordinal, definition);
             let row = Row::in_package(RowId::Symbol(backend_engine::symbol_key(&preimage)), initial.basis(), indexed.package, coordinate)
@@ -104,18 +140,59 @@ pub(super) fn append_query(
     sources: &IndexedSources,
     facts: &mut Vec<backend_extension_trustfall::SemanticQueryFact>,
     cancelled: Option<&std::sync::atomic::AtomicBool>,
+    remaining_bytes: usize,
 ) -> Result<(), BuiltinModelError> {
     use backend_extension_trustfall::{
         SemanticQueryEvidence, SemanticQueryFact, SemanticQueryPresentation, SqlNativeQueryEvidence,
     };
-    let mut projected_bytes = 0usize;
+    let projects = sources.projects.keys().copied().collect();
+    let (selected, catalog_bytes) = super::super::sql_catalog::load_projects_bounded(
+        snapshot,
+        &projects,
+        &|| cancelled.is_some_and(|c| c.load(std::sync::atomic::Ordering::Acquire)),
+        remaining_bytes,
+    )
+    .map_err(BuiltinModelError)?;
+    let mut projected_bytes = catalog_bytes;
+    let added_rows = selected.values().try_fold(0usize, |count, sql| {
+        let rows = sql.facts.iter().filter(|(_, _, fact)| matches!(fact, SqlFact::Definition(definition) if definition.live_at_head && matches!(definition.action, SqlDefinitionAction::Create | SqlDefinitionAction::AddColumn))).count();
+        count.checked_add(rows).ok_or_else(|| BuiltinModelError("SQL query row overflow".into()))
+    })?;
+    let needed = facts
+        .len()
+        .checked_add(added_rows)
+        .filter(|n| *n <= MAX_REBUILD_PACKAGES)
+        .ok_or_else(|| BuiltinModelError("SQL query facts exceed row bound".into()))?;
+    if needed > facts.capacity() {
+        // During reserve both old and new buffers can coexist; the previous
+        // buffer was charged by the caller, so charge the entire new one.
+        let new_buffer = needed
+            .checked_mul(std::mem::size_of::<
+                backend_extension_trustfall::SemanticQueryFact,
+            >())
+            .ok_or_else(|| BuiltinModelError("SQL query allocation overflow".into()))?;
+        projected_bytes = projected_bytes
+            .checked_add(new_buffer)
+            .filter(|n| *n <= remaining_bytes)
+            .ok_or_else(|| BuiltinModelError("SQL query facts exceed byte bound".into()))?;
+        facts
+            .try_reserve_exact(added_rows)
+            .map_err(|_| BuiltinModelError("SQL query allocation failed".into()))?;
+        if facts.capacity() > needed {
+            let extra = (facts.capacity() - needed)
+                .checked_mul(std::mem::size_of::<
+                    backend_extension_trustfall::SemanticQueryFact,
+                >())
+                .ok_or_else(|| BuiltinModelError("SQL query allocation overflow".into()))?;
+            projected_bytes = projected_bytes
+                .checked_add(extra)
+                .filter(|n| *n <= remaining_bytes)
+                .ok_or_else(|| BuiltinModelError("SQL query facts exceed byte bound".into()))?;
+        }
+    }
     for (project, indexed) in &sources.projects {
         super::super::check_search_preparation(cancelled, "sql-query-project")?;
-        let Some(sql) = super::super::sql_catalog::load_project(snapshot, *project, &|| {
-            cancelled.is_some_and(|c| c.load(std::sync::atomic::Ordering::Acquire))
-        })
-        .map_err(BuiltinModelError)?
-        else {
+        let Some(sql) = selected.get(project) else {
             continue;
         };
         for (host_index, ordinal, fact) in &sql.facts {
@@ -150,22 +227,12 @@ pub(super) fn append_query(
                     "selected SQL fact lacks parsed host terminal".into(),
                 ));
             }
+            projected_bytes = projected_bytes
+                .checked_add(projection_bound(&indexed.label, &host.path, definition)?)
+                .filter(|n| *n <= remaining_bytes)
+                .ok_or_else(|| BuiltinModelError("SQL query facts exceed byte bound".into()))?;
             let (coordinate, preimage, display, kind) =
                 projection(&indexed.label, &host.path, *ordinal, definition);
-            // Charge retained strings and a conservative fixed evidence/row
-            // allowance before allocating each query fact.
-            let row_bytes = coordinate
-                .len()
-                .checked_mul(2)
-                .and_then(|n| n.checked_add(preimage.len()))
-                .and_then(|n| n.checked_add(display.len()))
-                .and_then(|n| n.checked_add(host.path.len()))
-                .and_then(|n| n.checked_add(512))
-                .ok_or_else(|| BuiltinModelError("SQL query bytes overflow".into()))?;
-            projected_bytes = projected_bytes
-                .checked_add(row_bytes)
-                .filter(|n| *n <= super::super::MAX_REBUILD_BYTES)
-                .ok_or_else(|| BuiltinModelError("SQL query facts exceed byte bound".into()))?;
             let row_id = RowId::Symbol(backend_engine::symbol_key(&preimage));
             let name = definition
                 .head_name

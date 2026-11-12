@@ -194,3 +194,181 @@ pub(super) fn progress(
     }
     Ok(has_hosts.then_some(summary))
 }
+
+/// Read selected SQL projects in two bounded passes, without cloning facts for
+/// other projects. The shared byte budget is charged before each retained row.
+pub(super) fn load_projects_bounded(
+    snapshot: &WorkspaceSnapshot,
+    projects: &std::collections::BTreeSet<[u8; 32]>,
+    cancelled: &dyn Fn() -> bool,
+    max_bytes: usize,
+) -> Result<(std::collections::BTreeMap<[u8; 32], ProjectSql>, usize), String> {
+    use std::collections::BTreeMap;
+    use std::io::{self, Write};
+    struct Counter {
+        bytes: usize,
+        limit: usize,
+    }
+    impl Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.bytes = self
+                .bytes
+                .checked_add(bytes.len())
+                .filter(|n| *n <= self.limit)
+                .ok_or_else(|| io::Error::other("SQL catalog byte bound"))?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    fn charge(row: &SqlAnalysisRecord, used: &mut usize, max: usize) -> Result<(), String> {
+        let mut counter = Counter {
+            bytes: used
+                .checked_add(256)
+                .filter(|n| *n <= max)
+                .ok_or("SQL catalog byte bound")?,
+            limit: max,
+        };
+        serde_json::to_writer(&mut counter, row)
+            .map_err(|_| "SQL catalog byte bound".to_owned())?;
+        *used = counter.bytes;
+        Ok(())
+    }
+    let Some(relation) = sql_analysis_relation(snapshot).map_err(|e| e.to_string())? else {
+        return Ok((BTreeMap::new(), 0));
+    };
+    let mut result = BTreeMap::new();
+    let mut pending_hosts: BTreeMap<[u8; 32], Vec<SqlHost>> = BTreeMap::new();
+    let mut used = 0usize;
+    let mut after = None;
+    let mut rows = 0usize;
+    loop {
+        if cancelled() {
+            return Err("SQL read cancelled".into());
+        }
+        let page = relation
+            .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+            .map_err(|e| e.to_string())?;
+        for (key, row) in page.entries() {
+            rows = rows.checked_add(1).ok_or("SQL relation row bound")?;
+            if rows > MAX_ROWS {
+                return Err("SQL relation exceeds the read bound".into());
+            }
+            match row {
+                SqlAnalysisRecord::Selection {
+                    project,
+                    source_root,
+                    inventory,
+                    implicit,
+                    gaps,
+                    ..
+                } if projects.contains(project) => {
+                    charge(row, &mut used, max_bytes)?;
+                    if result
+                        .insert(
+                            *project,
+                            ProjectSql {
+                                root: source_root.clone(),
+                                inventory_complete: matches!(inventory, SqlInventory::Complete),
+                                implicit: *implicit,
+                                gaps: *gaps,
+                                hosts: Vec::new(),
+                                facts: Vec::new(),
+                            },
+                        )
+                        .is_some()
+                    {
+                        return Err("duplicate SQL selection".into());
+                    }
+                }
+                SqlAnalysisRecord::Host {
+                    project,
+                    path,
+                    dialect,
+                    input,
+                    source,
+                    producer,
+                    settings,
+                    fact_digest,
+                    length,
+                    terminal,
+                    ..
+                } if projects.contains(project) => {
+                    charge(row, &mut used, max_bytes)?;
+                    pending_hosts.entry(*project).or_default().push(SqlHost {
+                        key: *key,
+                        path: path.clone(),
+                        dialect: *dialect,
+                        input: *input,
+                        source: *source,
+                        producer: *producer,
+                        settings: *settings,
+                        fact_digest: *fact_digest,
+                        length: *length,
+                        terminal: *terminal,
+                    });
+                }
+                _ => {}
+            }
+        }
+        match page.next().copied() {
+            Some(next) if after != Some(next) => after = Some(next),
+            Some(_) => return Err("SQL relation page did not advance".into()),
+            None => break,
+        }
+    }
+    let mut host_index = BTreeMap::new();
+    for (project, mut hosts) in pending_hosts {
+        let Some(sql) = result.get_mut(&project) else {
+            return Err("SQL hosts lack selected project".into());
+        };
+        hosts.sort_by(|a, b| a.path.cmp(&b.path));
+        for (index, host) in hosts.iter().enumerate() {
+            if host_index.insert(host.key, (project, index)).is_some() {
+                return Err("duplicate SQL host identity".into());
+            }
+        }
+        sql.hosts = hosts;
+    }
+    after = None;
+    rows = 0;
+    loop {
+        if cancelled() {
+            return Err("SQL read cancelled".into());
+        }
+        let page = relation
+            .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+            .map_err(|e| e.to_string())?;
+        for (_, row) in page.entries() {
+            rows = rows.checked_add(1).ok_or("SQL relation row bound")?;
+            if rows > MAX_ROWS {
+                return Err("SQL relation exceeds the read bound".into());
+            }
+            if let SqlAnalysisRecord::Fact {
+                host,
+                ordinal,
+                fact,
+            } = row
+                && let Some((project, index)) = host_index.get(host)
+            {
+                charge(row, &mut used, max_bytes)?;
+                result
+                    .get_mut(project)
+                    .ok_or("SQL fact lacks selected project")?
+                    .facts
+                    .push((*index, *ordinal, fact.clone()));
+            }
+        }
+        match page.next().copied() {
+            Some(next) if after != Some(next) => after = Some(next),
+            Some(_) => return Err("SQL relation page did not advance".into()),
+            None => break,
+        }
+    }
+    for sql in result.values_mut() {
+        sql.facts
+            .sort_by_key(|(host, ordinal, _)| (*host, *ordinal));
+    }
+    Ok((result, used))
+}
