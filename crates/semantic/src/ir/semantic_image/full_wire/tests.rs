@@ -2587,3 +2587,28 @@ fn bounded_reopen_charges_work_scratch_and_retained_backing() -> Result<(), crat
         Err(FullSemanticImageError::Full(FullSemanticImageFault::Magic { .. }))));
     Ok(())
 }
+
+#[test]
+fn metered_edge_sort_preserves_key_and_ordinal_order_and_stops() {
+    use core::cell::Cell;
+    struct Meter(Cell<usize>);
+    impl super::SemanticImageAdmissionMeter for Meter {
+        fn work(&self, _: u64) -> bool {
+            let Some(left) = self.0.get().checked_sub(1) else { return false; };
+            self.0.set(left);
+            true
+        }
+        fn reserve(&self, _: usize) -> bool { true }
+        fn release(&self, _: usize) {}
+    }
+    let original: Vec<_> = (0..1024_u32).rev().map(|i| (u64::from(i % 13), i)).collect();
+    let mut expected = original.clone();
+    expected.sort_unstable();
+    let mut actual = original.clone();
+    super::typed_decode::metered_heap_sort(&mut actual, &Meter(Cell::new(100_000)))
+        .expect("sort stays within budget");
+    assert_eq!(actual, expected);
+    let mut cancelled = original;
+    assert!(matches!(super::typed_decode::metered_heap_sort(&mut cancelled, &Meter(Cell::new(5))),
+        Err(FullSemanticImageFault::AdmissionStopped)));
+}

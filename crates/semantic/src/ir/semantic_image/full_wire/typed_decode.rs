@@ -910,7 +910,7 @@ impl<'a> GroupedEdges<'a> {
 
 // Sort by `(key, ordinal)` without hidden allocations, checking cancellation
 // and work on each heap step. The ordinal preserves stored edge order.
-fn metered_heap_sort(
+pub(super) fn metered_heap_sort(
     values: &mut [(u64, u32)],
     meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<(), FullSemanticImageFault> {
