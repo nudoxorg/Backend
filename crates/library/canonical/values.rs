@@ -1,8 +1,8 @@
 //! Constructors for accepted logical product values.
 
 use super::schema::{
-    ActorKey, BranchKey, IntentId, LogKey, PackageKey, SemanticObject, SymbolKey, ViewRecipeId,
-    ViewVersion,
+    ActorKey, BranchKey, IntentId, LogKey, PackageKey, SemanticObject, SymbolKey, SymbolSchema,
+    ViewRecipeId, ViewVersion,
 };
 
 /// Constructs a package key from its canonical logical coordinate.
