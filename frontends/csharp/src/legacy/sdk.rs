@@ -820,7 +820,7 @@ pub fn resolve_references_with_sdk(
                 .into_boxed_str()
         })
         .collect::<Box<[_]>>();
-    let selected_fusion_names = owned.iter().map(|(_, fusion)| fusion.clone()).collect();
+    let selected_fusion_names: Vec<Box<str>> = owned.iter().map(|(_, fusion)| fusion.clone()).collect();
     Ok(CSharpResolvedReferenceSnapshot {
         directory: scratch,
         references: owned.iter().map(|(path, _)| path.clone()).collect(),

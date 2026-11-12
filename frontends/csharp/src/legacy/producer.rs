@@ -799,11 +799,16 @@ impl CSharpOracle {
     /// reference snapshot for publication-time replay custody.
     pub fn produce_with_owned_reference_snapshot<'request, 'config, 'cancel>(
         &self,
-        mut request: CSharpAuthorityRequest<'request, 'config, 'cancel>,
+        request: CSharpAuthorityRequest<'request, 'config, 'cancel>,
         snapshot: Arc<crate::legacy::sdk::CSharpResolvedReferenceSnapshot>,
     ) -> Result<CSharpAuthorityImage, CSharpAuthorityError> {
-        request.resolved_reference_snapshot = Some(snapshot.as_ref());
-        let mut image = self.produce(request)?;
+        // Reconstruct the covariant request with a lifetime scoped to this
+        // invocation; the incoming configuration can outlive this Arc.
+        let scoped_request = CSharpAuthorityRequest {
+            resolved_reference_snapshot: Some(snapshot.as_ref()),
+            ..request
+        };
+        let mut image = self.produce(scoped_request)?;
         image.resolved_reference_snapshot = Some(snapshot);
         Ok(image)
     }
