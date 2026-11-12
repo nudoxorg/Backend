@@ -3,7 +3,7 @@ use std::cell::Cell;
 
 use backend_engine::builtin::{NativeSourceEvidence, ProductSemanticCaptureOutcome, ProductSemanticPublicationRecord, SemanticPublicationClaim};
 use backend_extension_turso::{SelectedGeneration, SelectedNativeHeaderBudget, SelectedPublicationWire, visit_selected_publication_wire};
-use backend_semantic::ir::{BorrowedNativeProgramSourceManifest, BorrowedNativeProgramSourceRef, BorrowedProgramGraph, ImageProvenance, RetainedNativeProgramSourceManifest, RetainedProgramGraph, SemanticCoreReader, SemanticImageAdmissionMeter, SemanticImageView};
+use backend_semantic::ir::{BorrowedNativeProgramSourceManifest, BorrowedNativeProgramSourceRef, BorrowedProgramGraph, ImageProvenance, RetainedIndexedNativeProgramSourceManifest, RetainedProgramGraph, SemanticCoreReader, SemanticImageAdmissionMeter, SemanticImageView};
 use backend_store::FileStore;
 
 use super::{charge_native_header_work, recovered_publication_coverage};
@@ -107,7 +107,7 @@ fn copy(bytes: &[u8], budget: &mut SelectedNativeHeaderBudget, stopped: &dyn Fn(
 }
 
 enum Program {
-    Single { value: RetainedNativeProgramSourceManifest, _scratch: Box<[u8]> },
+    Single { value: RetainedIndexedNativeProgramSourceManifest },
     Forest { value: RetainedProgramGraph, _nodes: Box<[u8]>, _leaf: Box<[u8]> },
 }
 impl Program {
@@ -117,6 +117,12 @@ impl Program {
         match self {
             Self::Single { value, .. } => value.visit_sources(|n| step(budget, stopped, n), &mut visit),
             Self::Forest { value, .. } => value.visit_sources(|n| step(budget, stopped, n), |row| visit(row.row)),
+        }
+    }
+    fn source_for_package_bytes(&self, path: &[u8], budget: &SelectedNativeHeaderBudget, stopped: &dyn Fn() -> bool) -> Result<Option<backend_semantic::ir::SourceIdentity>> {
+        match self {
+            Self::Single { value } => value.source_for_package_bytes(path, |n| step(budget, stopped, n)),
+            Self::Forest { value, .. } => value.source_for_package_bytes(path, |n| step(budget, stopped, n)),
         }
     }
     fn image_matches_bytes(&self, path: &[u8], identity: &[u8; 32], budget: &SelectedNativeHeaderBudget, stopped: &dyn Fn() -> bool) -> Result<bool> {
@@ -186,9 +192,9 @@ fn admit_inner(
                 let retained = copy(bytes, budget, stopped)?;
                 let program = if schema == backend_version::SchemaIdentity::new(0x7a, 0xc009, 1) {
                     let size = BorrowedNativeProgramSourceManifest::scratch_bytes(&retained).map_err(|e| format!("native Program scratch: {e:?}"))?;
-                    let mut scratch = allocate(size, budget, stopped)?;
-                    let value = RetainedNativeProgramSourceManifest::admit(retained, &mut scratch, |n| step(budget, stopped, n)).map_err(|e| format!("native Program: {e:?}"))?;
-                    Program::Single { value, _scratch: scratch }
+                    let scratch = allocate(size, budget, stopped)?;
+                    let value = RetainedIndexedNativeProgramSourceManifest::admit(retained, scratch, |n| step(budget, stopped, n)).map_err(|e| format!("native Program: {e:?}"))?;
+                    Program::Single { value }
                 } else if schema == backend_version::SchemaIdentity::new(0x7a, 0xc009, 2) {
                     let shape = BorrowedProgramGraph::scratch(&retained, |n| step(budget, stopped, n)).map_err(|e| format!("native Program shape: {e:?}"))?;
                     let mut nodes = allocate(shape.node_bytes(), budget, stopped)?;
@@ -291,17 +297,9 @@ fn admit_inner(
                 let view = SemanticImageView::reopen_bounded(bytes, &meter).map_err(|e| format!("native replay image: {e:?}"))?;
                 let ImageProvenance::Captured { source, recipe, scope, .. } = view.image_facts().provenance else { return Err("selected program image has no provenance".into()); };
                 let path = view.atom(scope.path).ok_or("native replay image path absent")?;
-                let mut member_found = false;
-                program.visit(budget, stopped, |entry| {
-                    if let Some(package) = entry.package_path {
-                        if eq(package, path, budget, stopped)? {
-                            if member_found || entry.source != source { return Err("selected program differs from image source".into()); }
-                            member_found = true;
-                        }
-                    }
-                    Ok(())
-                })?;
-                if !member_found || recipe.profile.language() != backend_semantic::vocabulary::Language::TypeScript || recipe.toolchain != program.toolchain() {
+                if program.source_for_package_bytes(path, budget, stopped)? != Some(source)
+                    || recipe.profile.language() != backend_semantic::vocabulary::Language::TypeScript
+                    || recipe.toolchain != program.toolchain() {
                     return Err("selected program differs from image source or recipe".into());
                 }
                 if !program.image_matches_bytes(path, member.semantic_image_identity(), budget, stopped)? { return Err("native replay image differs from sealed Program".into()); }
