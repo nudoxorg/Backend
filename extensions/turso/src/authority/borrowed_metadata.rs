@@ -197,6 +197,17 @@ impl<'a> BorrowedCompilerMetadata<'a> {
         let _ = format;
         Ok(Self { binding_identity, semantic_catalog_root: versioned.as_ref().map(|v|*v.catalog_root().as_bytes()), native_program_sources: program, native_headers: headers, native_lines: lines, image_rows, versioned })
     }
+    pub(super) fn image_count(&self) -> usize { self.image_rows.len()/72 }
+    /// Iterates fixed-size claims only; caller checkpoints before each `next`.
+    pub(super) fn images(&self) -> impl ExactSizeIterator<Item=CompilerImageMember> + '_ {
+        self.image_rows.chunks_exact(72).map(|row| {
+            let mut ordinal=[0u8;4]; ordinal.copy_from_slice(&row[..4]);
+            let mut object_id=[0u8;32]; object_id.copy_from_slice(&row[4..36]);
+            let mut identity=[0u8;32]; identity.copy_from_slice(&row[36..68]);
+            let mut length=[0u8;4]; length.copy_from_slice(&row[68..72]);
+            CompilerImageMember {artifact_ordinal:u32::from_le_bytes(ordinal),object_id,semantic_image_identity:identity,byte_length:u32::from_le_bytes(length)}
+        })
+    }
     pub(super) fn visit_image_ids<E>(&self, visit: &mut impl FnMut([u8;32])->Result<(),E>) -> Result<(),E> {
         for row in self.image_rows.chunks_exact(72) { let mut id=[0;32]; id.copy_from_slice(&row[4..36]); visit(id)?; } Ok(())
     }
