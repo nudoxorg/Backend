@@ -3451,17 +3451,22 @@ pub(super) fn finish_deferred_index_for_snapshot(
             return Err(BuiltinModelError("native TypeScript has no complete fresh compiler outcomes".into()));
         }
         let mut candidates = Vec::new();
+        let mut header_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(
+            backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES,
+            super::super::semantic_authority::NATIVE_HEADER_WORK_UNITS,
+        );
+        let header_deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
         for publication in &job.capture_publications {
             let expected = job.captures.get(publication.key()).ok_or_else(|| BuiltinModelError("native completion missing capture".into()))?;
             let candidate = super::super::native_ts_admission::admit_native_ts_owner_candidate(
-                snapshot, Arc::clone(&capture), publication.clone(), *expected, &job.compiler, semantic,
+                snapshot, Arc::clone(&capture), publication.clone(), *expected, &job.compiler, semantic, &mut header_budget, header_deadline,
             )?;
             candidates.push(Arc::new(candidate));
         }
         let plan = Arc::new(super::super::native_ts_admission::plan_native_ts_evidence(snapshot, candidates)?);
         let mut bytes_read = 0usize;
         Some(Arc::new(super::super::native_ts_admission::refresh_native_ts_evidence_plan(
-            snapshot, plan, &job.compiler, semantic, &mut bytes_read,
+            snapshot, plan, &job.compiler, semantic, &mut bytes_read, &mut header_budget, header_deadline,
         )?))
     } else { None };
     if native_proof.is_some() && job.source_changes.is_empty()
