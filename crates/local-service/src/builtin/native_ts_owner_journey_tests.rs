@@ -1571,6 +1571,9 @@ fn native_ts_large_crlf_line_map_source_show_read_and_cold() -> Result<(), Box<d
     let mut source = "// padding\r\n".repeat(20_000);
     source.push_str("export function Greeting() { return 'before'; }\r\n");
     fs::write(project.join("view.ts"), &source)?;
+    for (path, text) in [("bare.ts", "// one\rexport function Bare() { return 1; }"), ("sep.ts", "// one\u{2028}export function Sep() { return 2; }"), ("para.ts", "// one\u{2029}export function Para() { return 3; }")] {
+        fs::write(project.join(path), text)?;
+    }
     let paths = backend_runtime::WorkspacePaths::discover(Some(fixture.path().join("owner")), Some(fixture.path().join("state")), Some(fixture.path().join("owner.sock")))?;
     paths.initialize()?;
     let authority_secret = backend_engine::read_authority_secret(paths.authority_secret())?;
@@ -1581,6 +1584,10 @@ fn native_ts_large_crlf_line_map_source_show_read_and_cold() -> Result<(), Box<d
     assert_eq!(document.location.captured().ok_or("warm source location")?.start_line(), 20_001);
     let CommandReply::Document(shown) = session.document(&coordinate)?.reply else { return Err("Show reply".into()) };
     assert_eq!(shown.location.captured().ok_or("warm Show location")?.start_line(), 20_001);
+    for (name, path) in [("Bare", "bare.ts"), ("Sep", "sep.ts"), ("Para", "para.ts")] {
+        let (_, unsupported) = select_native_document(&mut session, &authority_secret, name, path)?;
+        assert!(unsupported.location.captured().is_none(), "unsupported terminator must not claim a line location");
+    }
     let request = || -> Result<SurfaceCommand, io::Error> { Ok(SurfaceCommand::Read { locators: vec![ProductText::new(coordinate.clone()).map_err(|e| io::Error::other(e.to_string()))?].into_boxed_slice() }) };
     let SurfaceReply::Read(records) = session.surface(request()?)? else { return Err("Read reply".into()) };
     assert!(records.first().and_then(|record| record.extent.as_ref()).is_some(), "fresh native Read extent");
@@ -1606,6 +1613,9 @@ fn native_ts_large_crlf_line_map_source_show_read_and_cold() -> Result<(), Box<d
     let mut budget = backend_extension_turso::SelectedNativeHeaderBudget::new(64 * 1024 * 1024, 10_000_000);
     let witness = authority.selected_native_lines(key, claim, &mut budget, &|| false)?.ok_or("selected compiler line map")?;
     let view = backend_semantic::native_source_lines::NativeSourceLineAggregateView::parse(witness.as_bytes(), &mut |_| Ok::<(), ()>(())).map_err(|_| "line map decode")?;
+    for path in ["bare.ts", "sep.ts", "para.ts"] {
+        assert!(view.find_file(path, &mut |_| Ok::<(), ()>(())).map_err(|_| "unsupported line lookup")?.is_none());
+    }
     let file = view.find_file("view.ts", &mut |_| Ok::<(), ()>(())).map_err(|_| "line lookup")?.ok_or("line map file")?;
     assert!(file.matches_source(source.as_bytes(), &mut |_| Ok::<(), ()>(())).map_err(|_| "line verification")?);
     assert_eq!(file.line_count(), 20_002);
