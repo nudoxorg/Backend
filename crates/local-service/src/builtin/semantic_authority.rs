@@ -6029,24 +6029,28 @@ mod tests {
         ).is_ok(), "a fresh Program may retire an omitted path");
         let mut unbound_row = current.clone();
         unbound_row.project = [0xa5; 32];
-        assert!(admit_replayed_native_evidence(
+        let error = admit_replayed_native_evidence(
             &workspace_store, std::slice::from_ref(&capture), &[&current, &unbound_row], &[&removed],
-        ).is_err(), "a row from an uncaptured project must not pass replay");
+        ).expect_err("a row from an uncaptured project must not pass replay");
+        assert_eq!(error.0, "native replay evidence has no selected Program proof");
         let mut unbound_retirement = removed.clone();
         unbound_retirement.project = [0xa5; 32];
-        assert!(admit_replayed_native_evidence(
+        let error = admit_replayed_native_evidence(
             &workspace_store, std::slice::from_ref(&capture), &[&current], &[&removed, &unbound_retirement],
-        ).is_err(), "a retirement from an uncaptured project must not pass replay");
+        ).expect_err("a retirement from an uncaptured project must not pass replay");
+        assert_eq!(error.0, "native replay evidence has no selected Program proof");
         let mut wrong_profile_image = current.clone();
         wrong_profile_image.profile = LanguageProfile::TypeScript(TypeScriptSource::Tsx);
-        assert!(admit_replayed_native_evidence(
+        let error = admit_replayed_native_evidence(
             &workspace_store, std::slice::from_ref(&capture), &[&current, &wrong_profile_image], &[&removed],
-        ).is_err(), "a different-profile image cannot borrow Program membership");
+        ).expect_err("a different-profile image cannot borrow Program membership");
+        assert_eq!(error.0, "native replay evidence has no selected Program proof");
         let mut wrong_profile_retirement = removed.clone();
         wrong_profile_retirement.profile = LanguageProfile::TypeScript(TypeScriptSource::Tsx);
-        assert!(admit_replayed_native_evidence(
+        let error = admit_replayed_native_evidence(
             &workspace_store, std::slice::from_ref(&capture), &[&current], &[&removed, &wrong_profile_retirement],
-        ).is_err(), "a different-profile retirement cannot borrow absence from this Program");
+        ).expect_err("a different-profile retirement cannot borrow absence from this Program");
+        assert_eq!(error.0, "native replay evidence has no selected Program proof");
         let mut with_lines = current.clone();
         with_lines.line_starts = Some(main_line_starts.clone());
         let mut legacy_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(super::super::MAX_REBUILD_BYTES, NATIVE_HEADER_WORK_UNITS);
