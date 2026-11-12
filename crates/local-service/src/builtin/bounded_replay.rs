@@ -433,6 +433,9 @@ mod tests {
         let stopped_budget = SelectedNativeHeaderBudget::new(1024, 100_000);
         assert!(merge_proofs(&refs, &flags, &retirement_index, 1, &mut row_proofs, &mut retirement_proofs, &stopped_budget, &|| true).is_err());
         assert!(row_proofs.iter().all(|proof| *proof == 0) && retirement_proofs == [0], "late stop leaves proof buffers unchanged");
+        let short_budget = SelectedNativeHeaderBudget::new(1024, (refs.len() + 1) as u64);
+        assert!(merge_proofs(&refs, &flags, &retirement_index, 1, &mut row_proofs, &mut retirement_proofs, &short_budget, &|| false).is_err());
+        assert!(row_proofs.iter().all(|proof| *proof == 0) && retirement_proofs == [0], "late work exhaustion leaves proof buffers unchanged");
         let mut budget = SelectedNativeHeaderBudget::new(64 * 1024 * 1024, super::super::NATIVE_HEADER_WORK_UNITS);
         let retained = copy(manifest.as_bytes(), &mut budget, &|| false).expect("Program bytes");
         let scratch_len = BorrowedNativeProgramSourceManifest::scratch_bytes(&retained).expect("Program scratch");
