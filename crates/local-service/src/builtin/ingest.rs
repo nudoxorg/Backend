@@ -6028,6 +6028,11 @@ mod tests {
         assert_eq!(check(&root, &evidence, bytes.len(), &|| false), Ok(true));
         assert!(check(&root, &evidence, bytes.len() - 1, &|| false).is_err());
         assert!(check(&root, &evidence, 0, &|| true).is_err());
+        let mut changed = bytes.to_vec();
+        changed[0] ^= 1;
+        std::fs::write(root.join("a.ts"), &changed).expect("same-length source change");
+        assert_eq!(check(&root, &evidence, bytes.len(), &|| false), Ok(false));
+        std::fs::write(root.join("a.ts"), bytes).expect("restore source");
         let root_link = root.join("root-link");
         symlink(&root, &root_link).expect("root link");
         assert_eq!(check(&root_link, &evidence, bytes.len(), &|| false), Ok(false));
