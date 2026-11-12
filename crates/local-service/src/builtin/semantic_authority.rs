@@ -5598,6 +5598,11 @@ mod tests {
         let attempt = authority
             .begin_candidate_attempt(&key, &observation)
             .expect("begin exact compiler attempt");
+        let stops = std::cell::Cell::new(0usize);
+        let stopped = || { let next = stops.get() + 1; stops.set(next); next > 3 };
+        assert!(authority.publish_staged_with_stop(&key, attempt.clone(), &staged, &stopped, |_| Ok(())).is_err());
+        assert!(stops.get() > 3, "stop must occur after staged publication began");
+        assert!(authority.read_selected_pair(&key).is_err(), "cancelled publication must not select a generation");
         let (claim, selected) = authority
             .publish_staged(&key, attempt, &staged, |_| Ok(()))
             .expect("real admission counts the declared accelerator in the exact payload set");
