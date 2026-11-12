@@ -3730,6 +3730,58 @@ impl SemanticAuthority {
             }
         } else { None };
 
+        // The line map is computed by the same compiler attempt from exact
+        // selected source bytes. Its typed member joins this closure before seal.
+        let native_lines_member = if staged.native_typescript_lines().next().is_some() {
+            if staged.profile().language() != backend_semantic::vocabulary::Language::TypeScript || program_member.is_none() {
+                return Err(BuiltinModelError("native source lines require the selected TypeScript program".into()));
+            }
+            let mut budget = 128usize * 1024 * 1024;
+            let slots = staged.native_typescript_line_slots();
+            let mut order = backend_store::try_allocate_exact_zeroed_u32_budgeted(slots, &mut budget)
+                .map_err(|e| BuiltinModelError(format!("native line order allocation: {e:?}")))?;
+            let mut count = 0usize;
+            for ordinal in 0..slots {
+                if staged.native_typescript_line_at(ordinal).is_some() {
+                    order[count] = u32::try_from(ordinal).map_err(|_| BuiltinModelError("native line ordinal overflow".into()))?;
+                    count += 1;
+                }
+            }
+            order[..count].sort_unstable_by(|a, b| {
+                let left = staged.native_typescript_line_at(*a as usize).map(|f| f.path.as_str()).unwrap_or("");
+                let right = staged.native_typescript_line_at(*b as usize).map(|f| f.path.as_str()).unwrap_or("");
+                left.cmp(right)
+            });
+            let files = || order[..count].iter().filter_map(|ordinal| staged.native_typescript_line_at(*ordinal as usize));
+            let deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
+            let mut work = 128usize * 1024 * 1024;
+            let mut checkpoint = |_: usize| -> Result<(), backend_extension_turso::CompilerEnvelopeError> {
+                if std::time::Instant::now() >= deadline { return Err(backend_extension_turso::CompilerEnvelopeError::Stopped); }
+                work = work.checked_sub(1).ok_or(backend_extension_turso::CompilerEnvelopeError::Stopped)?;
+                Ok(())
+            };
+            let (length, observed_count) = backend_semantic::native_source_lines::encoded_len_files(files(), &mut checkpoint)
+                .map_err(|e| BuiltinModelError(format!("plan native source lines: {e:?}")))?;
+            if observed_count != count { return Err(BuiltinModelError("native line inventory changed".into())); }
+            let mut bytes = backend_store::try_allocate_exact_zeroed_bytes_budgeted(length, &mut budget)
+                .map_err(|e| BuiltinModelError(format!("native line wire allocation: {e:?}")))?;
+            backend_semantic::native_source_lines::encode_files_into(files(), &mut bytes, &mut checkpoint)
+                .map_err(|e| BuiltinModelError(format!("encode native source lines: {e:?}")))?;
+            if !payload_ids.len().checked_add(2).is_some_and(|n| n <= backend_extension_turso::MAX_COMPILER_PUBLICATION_MEMBER_IDS)
+                || !u64::try_from(bytes.len()).is_ok_and(|len| streamed_payload_bytes.checked_add(len).is_some_and(|total| total <= MAX_PAYLOAD_BYTES)) {
+                return Err(BuiltinModelError("native source lines exceed compiler closure budget".into()));
+            }
+            let object = backend_extension_turso::compiler_native_lines_object(&bytes, &mut budget, &mut checkpoint)
+                .map_err(|e| BuiltinModelError(format!("construct native source lines: {e}")))?;
+            let object_id = stream_typed_object(&mut builder, &object)?;
+            account_streamed_payload(&mut streamed_payload_bytes, &bytes);
+            payload_ids.insert(object_id);
+            let verified = self.store.verify_object_claim(UntrustedObjectId::from_bytes(*object_id.as_bytes()))
+                .map_err(|e| BuiltinModelError(format!("verify native source lines: {e:?}")))?;
+            Some(backend_extension_turso::CompilerNativeLinesMember::from_verified_object(verified, &bytes, &mut checkpoint)
+                .map_err(|e| BuiltinModelError(format!("admit native source lines: {e}")))?)
+        } else { None };
+
         // A C# captured-input attempt must retain its complete checked
         // invocation aggregate in the same compiler closure. Missing or
         // over-budget evidence is a refusal, never a silent completeness claim.
@@ -3812,6 +3864,10 @@ impl SemanticAuthority {
         if let Some(member) = native_header_member {
             metadata = metadata.with_native_headers(member)
                 .map_err(|error| BuiltinModelError(format!("bind native header metadata: {error}")))?;
+        }
+        if let Some(member) = native_lines_member {
+            metadata = metadata.with_native_lines(member)
+                .map_err(|error| BuiltinModelError(format!("bind native source lines: {error}")))?;
         }
         if let Some(member) = csharp_evidence_member {
             metadata = metadata.with_csharp_evidence(member)
