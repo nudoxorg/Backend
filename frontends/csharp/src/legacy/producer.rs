@@ -74,6 +74,9 @@ type SnapshotManifest = Vec<(PathBuf, [u8; 32], usize)>;
 #[derive(Debug, Eq, PartialEq)]
 struct ElfRuntimeRequirements {
     machine: u16,
+    abi: (u8, u8, u32),
+    object_type: u16,
+    unsupported_loader_directives: bool,
     interpreter: Option<Box<str>>,
     needed: Box<[Box<str>]>,
     rpath: Option<Box<str>>,
@@ -108,6 +111,8 @@ fn elf_runtime_requirements(bytes: &[u8]) -> Result<ElfRuntimeRequirements, CSha
         ))
     };
     let machine = u16_at(18).ok_or_else(invalid)?;
+    let abi = (bytes[7], bytes[8], u32_at(48).ok_or_else(invalid)?);
+    let object_type = u16_at(16).ok_or_else(invalid)?;
     let phoff = usize::try_from(u64_at(32).ok_or_else(invalid)?).map_err(|_| invalid())?;
     let phentsize = usize::from(u16_at(54).ok_or_else(invalid)?);
     let phnum = usize::from(u16_at(56).ok_or_else(invalid)?);
@@ -161,6 +166,7 @@ fn elf_runtime_requirements(bytes: &[u8]) -> Result<ElfRuntimeRequirements, CSha
     let mut runpath_offset = None;
     let mut strtab = None;
     let mut strsz = None;
+    let mut unsupported_loader_directives = false;
     if let Some((offset, length)) = dynamic {
         if length % 16 != 0 || length / 16 > 8192 {
             return Err(invalid());
@@ -194,6 +200,11 @@ fn elf_runtime_requirements(bytes: &[u8]) -> Result<ElfRuntimeRequirements, CSha
                     if runpath_offset.replace(value).is_some() {
                         return Err(invalid());
                     }
+                }
+                // DT_CONFIG, DT_DEPAUDIT, DT_AUDIT, DT_AUXILIARY and
+                // DT_FILTER can introduce other loader-controlled objects.
+                0x6ffffefa..=0x6ffffefc | 0x7ffffffd | 0x7fffffff => {
+                    unsupported_loader_directives = true;
                 }
                 _ => {}
             }
@@ -249,6 +260,9 @@ fn elf_runtime_requirements(bytes: &[u8]) -> Result<ElfRuntimeRequirements, CSha
         .collect::<Result<Vec<_>, _>>()?;
     Ok(ElfRuntimeRequirements {
         machine,
+        abi,
+        object_type,
+        unsupported_loader_directives,
         interpreter,
         needed: needed.into_boxed_slice(),
         rpath: rpath_offset.map(get_string).transpose()?,
@@ -354,8 +368,11 @@ fn snapshot_elf_dependencies(
 ) -> Result<ElfDependencySnapshot, CSharpAuthorityError> {
     use std::collections::{BTreeSet, VecDeque};
     let invalid = || CSharpAuthorityError::Configuration;
+    checkpoint(control, CSharpAuthorityPhase::Spawn)?;
     let root = elf_runtime_requirements(host)?;
-    if root.interpreter.is_none()
+    if root.interpreter.as_deref() != interpreter_source.to_str()
+        || !matches!(root.object_type, 2 | 3)
+        || root.unsupported_loader_directives
         || root.rpath.is_some()
         || root.runpath.is_some()
         || !interpreter_source.is_absolute()
@@ -371,8 +388,9 @@ fn snapshot_elf_dependencies(
     let mut total = 0usize;
     let mut queue: VecDeque<Box<str>> = root.needed.into_vec().into();
     let mut seen = BTreeSet::<Box<str>>::new();
-    // The interpreter is an explicit input; callers must independently prove
-    // it corresponds to the selected host's PT_INTERP before using this data.
+    // Exact path equality ties this input to PT_INTERP. The stable reader
+    // rejects a symlink as the final component; symlink resolution requires
+    // a separately verified path walk before it can be supported.
     let loader_bytes = backend_platform::durable::read_regular_bounded_stable(
         interpreter_source,
         64 * 1024 * 1024,
@@ -380,6 +398,9 @@ fn snapshot_elf_dependencies(
     .map_err(|_| invalid())?;
     let loader = elf_runtime_requirements(&loader_bytes)?;
     if loader.machine != root.machine
+        || loader.abi != root.abi
+        || loader.object_type != 3
+        || loader.unsupported_loader_directives
         || loader.interpreter.is_some()
         || loader.rpath.is_some()
         || loader.runpath.is_some()
@@ -425,6 +446,9 @@ fn snapshot_elf_dependencies(
             .ok_or_else(invalid)?;
         let requirements = elf_runtime_requirements(&content)?;
         if requirements.machine != root.machine
+            || requirements.abi != root.abi
+            || requirements.object_type != 3
+            || requirements.unsupported_loader_directives
             || requirements.interpreter.is_some()
             || requirements.rpath.is_some()
             || requirements.runpath.is_some()
@@ -2204,6 +2228,7 @@ mod tests {
         library[176..180].copy_from_slice(&0u32.to_le_bytes());
         let loader = directory.path().join("loader");
         let lib = directory.path().join("library");
+        host = relocate_elf_interpreter(&host, &loader).unwrap();
         fs::write(&loader, &library).unwrap();
         fs::write(&lib, &library).unwrap();
         let mut selected = BTreeMap::from([("libfoo.so".to_owned(), lib.clone())]);
@@ -2219,6 +2244,19 @@ mod tests {
             library
         );
         assert_eq!(snapshot.manifest.len(), 2);
+        assert!(snapshot_elf_dependencies(&host, &lib, &selected, control).is_err());
+        let mut audited = host.clone();
+        audited[304..312].copy_from_slice(&0x6ffffefcu64.to_le_bytes());
+        assert!(snapshot_elf_dependencies(&audited, &loader, &selected, control).is_err());
+        let cancelled = AtomicBool::new(true);
+        let cancelled_control = CSharpAuthorityControl {
+            cancelled: &cancelled,
+            ..control
+        };
+        assert!(matches!(
+            snapshot_elf_dependencies(&host, &loader, &selected, cancelled_control),
+            Err(CSharpAuthorityError::Cancelled { .. })
+        ));
         selected.clear();
         assert!(snapshot_elf_dependencies(&host, &loader, &selected, control).is_err());
         selected.insert("libfoo.so".to_owned(), lib.clone());
