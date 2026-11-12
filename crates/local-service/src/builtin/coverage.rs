@@ -231,9 +231,9 @@ impl SemanticTally {
             }
         }
         if let Some(capture) = capture
-            && cancelled_selection_is_current(source, key, selected, capture, generations)?
+            && retained_selection_is_current(source, key, selected, capture, generations)?
         {
-            // The cancelled attempt selected nothing new. Its exact current
+            // The in-flight or cancelled attempt selected nothing new. Its exact current
             // retained publication is still what reads serve, with its own
             // complete/partial coverage and activation status. Cancellation
             // remains in the capture/operation receipt, not this served lane.
@@ -365,23 +365,27 @@ pub(super) fn capture_matches_source(
         .is_some_and(|project| &project.source_version == capture.capture().source_version()))
 }
 
-/// Cancellation describes an attempt, not the freshness of a retained image.
+/// Pending work and cancellation describe an attempt, not the freshness of a retained image.
 /// Both the package frontier and the native selected compiler-input proof must
 /// agree with that attempt's capture before the selected coverage can stand in
 /// for the served lane. Neither a prior claim nor process activation proves it.
-fn cancelled_selection_is_current(
+pub(super) fn retained_selection_is_current(
     source: &backend_engine::WorkspaceRelationHandle<super::BuiltinWorkspaceRelation>,
     key: &ProductSemanticPublicationKey,
     selected: Option<&ProductSemanticPublicationRecord>,
     capture: &ProductSemanticCaptureRecord,
     generations: &super::generation_residence::SemanticGenerationResidence,
 ) -> Result<bool, BuiltinModelError> {
-    let ProductSemanticCaptureOutcome::Failed {
-        prior,
-        reason: SemanticUnavailableReason::Cancelled,
-    } = capture.outcome()
-    else {
+    if !key.is_selected() {
         return Ok(false);
+    }
+    let prior = match capture.outcome() {
+        ProductSemanticCaptureOutcome::Pending { prior: Some(prior) }
+        | ProductSemanticCaptureOutcome::Failed {
+            prior,
+            reason: SemanticUnavailableReason::Cancelled,
+        } => prior,
+        _ => return Ok(false),
     };
     let Some(ProductSemanticPublicationRecord::Published { coverage, claim }) = selected else {
         return Ok(false);
@@ -422,7 +426,7 @@ fn captured_package_state(
     selected: Option<&ProductSemanticPublicationRecord>,
     generations: &super::generation_residence::SemanticGenerationResidence,
 ) -> Result<backend_engine::RowState, BuiltinModelError> {
-    Ok(if cancelled_selection_is_current(source, key, selected, capture, generations)? {
+    Ok(if retained_selection_is_current(source, key, selected, capture, generations)? {
         backend_engine::RowState::Ready
     } else if capture_matches_source(source, key, capture)? {
         capture_row_state(capture.outcome())

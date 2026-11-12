@@ -300,9 +300,7 @@ fn admitted_native_source(
             else {
                 continue;
             };
-            if !matches!(capture.outcome(), ProductSemanticCaptureOutcome::Published { coverage: current_coverage, claim: current_claim }
-                if current_coverage == *coverage && current_claim == *claim)
-            {
+            if !capture_admits_selected(snapshot, key, &capture, *coverage, *claim, generations)? {
                 continue;
             }
             let activated =
@@ -539,8 +537,7 @@ pub(in crate::builtin) fn admitted_native_evidence<'a>(
             else {
                 continue;
             };
-            if !matches!(capture.outcome(), ProductSemanticCaptureOutcome::Published { coverage: actual_coverage, claim: actual_claim } if actual_coverage == *coverage && actual_claim == *claim)
-            {
+            if !capture_admits_selected(snapshot, key, &capture, *coverage, *claim, generations)? {
                 continue;
             }
             let activated =
@@ -741,6 +738,27 @@ impl NseProgramProof {
     }
 }
 
+/// Accept a retained generation only with the source and selected-input proofs.
+fn capture_admits_selected(
+    snapshot: &WorkspaceSnapshot,
+    key: &backend_engine::builtin::ProductSemanticPublicationKey,
+    capture: &backend_engine::builtin::ProductSemanticCaptureRecord,
+    coverage: backend_engine::builtin::SemanticPublicationCoverage,
+    claim: backend_engine::builtin::SemanticPublicationClaim,
+    generations: &super::super::generation_residence::SemanticGenerationResidence,
+) -> Result<bool, BuiltinModelError> {
+    if matches!(capture.outcome(), ProductSemanticCaptureOutcome::Published { coverage: c, claim: p } if c == coverage && p == claim) {
+        return Ok(true);
+    }
+    let source = snapshot
+        .relation::<super::super::BuiltinWorkspaceRelation>()
+        .map_err(|error| BuiltinModelError(format!("open retained source project: {error}")))?;
+    let selected = ProductSemanticPublicationRecord::Published { coverage, claim };
+    super::super::coverage::retained_selection_is_current(
+        &source, key, Some(&selected), capture, generations,
+    )
+}
+
 /// Strictly validates the selected Program and every admitted image, then
 /// returns only positive per-file NSE claims. No inventory completeness follows.
 pub(super) fn selected_nse_program_files(
@@ -805,8 +823,7 @@ pub(super) fn selected_nse_program_files(
     else {
         return Ok(None);
     };
-    if !matches!(capture.outcome(), ProductSemanticCaptureOutcome::Published { coverage: current_coverage, claim: current_claim } if current_coverage == coverage && current_claim == claim)
-    {
+    if !capture_admits_selected(snapshot, key, &capture, coverage, claim, generations)? {
         return Ok(None);
     }
     let source = snapshot.relation::<super::super::BuiltinWorkspaceRelation>()
@@ -1112,8 +1129,7 @@ pub(in crate::builtin) fn load_selected_nse_program(
     else {
         return Ok(NseProgramAdmission::Unavailable);
     };
-    if !matches!(capture.outcome(), ProductSemanticCaptureOutcome::Published { coverage: current_coverage, claim: current_claim } if current_coverage == coverage && current_claim == claim)
-    {
+    if !capture_admits_selected(snapshot, key, &capture, coverage, claim, generations)? {
         return Ok(NseProgramAdmission::Unavailable);
     }
     let mut image_budget = MAX_REBUILD_BYTES;
@@ -2269,13 +2285,10 @@ fn semantic_rows(
                 // structural complete result or a legacy fallback.
                 decision.invalidate_selected_context();
             }
-            if capture.as_ref().is_some_and(|capture| {
-                matches!(
-                    capture.outcome(),
-                    ProductSemanticCaptureOutcome::Pending { .. }
-                        | ProductSemanticCaptureOutcome::Failed { .. }
-                )
-            }) {
+            if let Some(capture) = capture.as_ref()
+                && matches!(capture.outcome(), ProductSemanticCaptureOutcome::Pending { .. } | ProductSemanticCaptureOutcome::Failed { .. })
+                && !capture_admits_selected(snapshot, key, capture, *coverage, *claim, generations)?
+            {
                 // Source bytes alone cannot make the prior generation current:
                 // the latest capture has not published its result. This also
                 // covers an unselected request replacing an explicit target.

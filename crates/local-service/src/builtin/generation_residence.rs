@@ -2542,6 +2542,17 @@ mod tests {
             .test_value()?;
             super::super::commands::commit_builtin_intent(&mut daemon, request, &intent)
                 .test_value()?;
+            let snapshot = daemon.engine().daemon().owner().snapshot();
+            let mut resident = super::SemanticGenerationResidence::default();
+            authority.install_image_loader(&mut resident);
+            let source = snapshot.relation::<super::super::BuiltinWorkspaceRelation>().test_value()?;
+            let marker = semantic_capture_relation(&snapshot).test_value()?.test_value()?
+                .lookup(key).test_value()?.test_value()?;
+            assert!(super::super::coverage::retained_selection_is_current(
+                &source, key, Some(&selected), &marker, &resident,
+            ).test_value()?, "pending and cancelled attempts retain only the proven selected generation");
+            assert_eq!(super::super::coverage::package_row_state(&snapshot, key.package(), &resident)
+                .test_value()?, Some(backend_engine::RowState::Ready));
         }
         let cancelled = daemon.engine().daemon().owner().snapshot();
         let mut generations = super::SemanticGenerationResidence::default();
@@ -2616,6 +2627,10 @@ mod tests {
             .test_value()?
             .test_value()?;
         assert_eq!(unchanged_capture.capture().input_digest(), &input_digest);
+        let changed_source = changed.relation::<super::super::BuiltinWorkspaceRelation>().test_value()?;
+        assert!(!super::super::coverage::retained_selection_is_current(
+            &changed_source, key, Some(&selected), &unchanged_capture, &generations,
+        ).test_value()?, "a selected input digest cannot certify a different source frontier");
         assert_eq!(
             changed
                 .relation::<super::super::BuiltinSemanticRelation>()
