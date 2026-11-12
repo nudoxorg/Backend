@@ -159,8 +159,10 @@ impl VersionedPlaneArtifactMetadata {
     ) -> Result<Self, VersionedPlaneError> {
         let manifest = decode_manifest(manifest_bytes)?;
         let mut expected = Vec::new();
+        expected.try_reserve_exact(members.len()).map_err(|_| VersionedPlaneError::Allocation)?;
         for plane in manifest.planes() {
             for segment in plane.segments() {
+                if expected.len() == members.len() { return Err(VersionedPlaneError::MemberCount); }
                 expected.push((segment.id_claim(), segment.byte_length()));
             }
         }
@@ -397,7 +399,7 @@ impl VersionedPlaneMetadata {
             if total_manifest_bytes > MAX_TOTAL_MANIFEST_BYTES {
                 return Err(VersionedPlaneError::ManifestLength);
             }
-            let manifest_bytes = decoder.take(manifest_length)?.to_vec();
+            let manifest_bytes = decoder.take(manifest_length)?;
             let member_count =
                 usize::try_from(decoder.u32()?).map_err(|_| VersionedPlaneError::MemberCount)?;
             if member_count == 0 || member_count > MAX_SEGMENTS {
@@ -437,7 +439,7 @@ impl VersionedPlaneMetadata {
                 }
                 members.push(member);
             }
-            let artifact = VersionedPlaneArtifactMetadata::new(ordinal, &manifest_bytes, members)?;
+            let artifact = VersionedPlaneArtifactMetadata::new(ordinal, manifest_bytes, members)?;
             if artifact.image.semantic_generation() != generation
                 || artifact.manifest_root() != manifest_root
             {
