@@ -637,7 +637,7 @@ impl CompilerPublicationMetadata {
 
     /// Binds the aggregate to this exact compiler publication before sealing.
     pub fn with_native_headers(mut self, member: CompilerNativeHeadersMember) -> Result<Self, CompilerEnvelopeError> {
-        if self.native_headers.is_some() || self.typescript_snapshot.is_none() || self.csharp_evidence.is_some() || metadata_member_ids(&self).len() >= MAX_MEMBER_IDS { return Err(CompilerEnvelopeError::NativeHeaders); }
+        if self.native_headers.is_some() || self.native_program_sources.is_none() || self.csharp_evidence.is_some() || metadata_member_ids(&self).len() >= MAX_MEMBER_IDS { return Err(CompilerEnvelopeError::NativeHeaders); }
         self.native_headers = Some(member);
         Ok(self)
     }
@@ -796,7 +796,7 @@ impl CompilerPublicationMetadata {
                 output.extend_from_slice(&bytes);
             }
         }
-        if self.typescript_snapshot.is_some() {
+        if self.typescript_snapshot.is_some() || self.native_headers.is_some() {
             output.push(u8::from(self.native_program_sources.is_some()));
             if let Some(member) = self.native_program_sources {
                 output.extend_from_slice(&member.object_id);
@@ -809,6 +809,7 @@ impl CompilerPublicationMetadata {
                 output.extend_from_slice(&member.identity);
                 output.extend_from_slice(&member.byte_length.to_le_bytes());
             }
+            if self.native_headers.is_some() { output.push(u8::from(self.typescript_snapshot.is_some())); }
             if let Some(member) = self.typescript_snapshot {
                 output.extend_from_slice(&member.object_id);
                 output.extend_from_slice(&member.byte_length.to_le_bytes());
@@ -979,7 +980,15 @@ impl CompilerPublicationMetadata {
         } else {
             None
         };
-        let typescript_snapshot = if matches!(version, TYPESCRIPT_SNAPSHOT_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION) {
+        let has_snapshot = match version {
+            TYPESCRIPT_SNAPSHOT_METADATA_VERSION => true,
+            NATIVE_HEADERS_METADATA_VERSION => match input.u8()? {
+                0 => false, 1 => true,
+                _ => return Err(CompilerEnvelopeError::TypeScriptSnapshotWitness),
+            },
+            _ => false,
+        };
+        let typescript_snapshot = if has_snapshot {
             let member = CompilerTypeScriptSnapshotMember {
                 object_id: input.array::<32>()?,
                 byte_length: input.u32()?,
@@ -3407,6 +3416,8 @@ mod tests {
         let verified = store.verify_object_claim(UntrustedObjectId::from_bytes(*object.id().as_bytes())).unwrap();
         let header_member = CompilerNativeHeadersMember::from_verified_object(verified, bytes, &mut 1024).unwrap();
         let current = legacy.clone().with_native_headers(header_member).unwrap();
+        let without_snapshot = metadata(compiler_image().0).with_native_program_sources(program).unwrap().with_native_headers(header_member).unwrap();
+        assert_eq!(CompilerPublicationMetadata::decode(&without_snapshot.canonical_bytes()).unwrap(), without_snapshot);
         assert_eq!(legacy.canonical_bytes(), legacy_bytes);
         assert_eq!(CompilerPublicationMetadata::decode(&current.canonical_bytes()).unwrap(), current);
         assert_eq!(current.typed_object().schema(), COMPILER_NATIVE_HEADERS_METADATA_SCHEMA);
