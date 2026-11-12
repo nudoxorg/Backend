@@ -1985,7 +1985,7 @@ fn selected_borrowed_metadata_member(
     wire: &[u8], schema: SchemaIdentity, metadata_id: AuthorityHash,
     envelope: &BorrowedSelectedEnvelope<'_>, budget: &mut SelectedNativeHeaderBudget,
     cancelled: &dyn Fn() -> bool,
-) -> Result<Option<CompilerNativeHeadersMember>, String> {
+) -> Result<(Option<CompilerNativeHeadersMember>, Option<CompilerNativeLinesMember>), String> {
     let version_at = METADATA_MAGIC.len();
     let version = wire.get(version_at..version_at + 2).ok_or("truncated metadata version")?;
     let version = u16::from_le_bytes([version[0], version[1]]);
@@ -2009,7 +2009,7 @@ fn selected_borrowed_metadata_member(
     if envelope.logical_generation != metadata.binding_identity || envelope.semantic_root != metadata.semantic_catalog_root {
         return Err("selected compiler metadata differs from envelope".into());
     }
-    let member = metadata.native_headers;
+    let member = (metadata.native_headers, metadata.native_lines);
     drop(bitmap);
     budget.memory = budget.memory.checked_add(bitmap_len).ok_or("metadata bitmap refund overflow")?;
     Ok(member)
@@ -2046,7 +2046,7 @@ pub fn reopen_selected_native_headers_budgeted(
     let (wire, schema, key) = header_object_bounded(store, &pin, metadata_id, &schemas, metadata_max, budget, cancelled)?;
     header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected metadata stopped: {e:?}"))?;
     verified_payload_key_checkpointed(schema, &wire, &key, budget, cancelled)?;
-    let member = selected_borrowed_metadata_member(&wire, schema, metadata_id, &envelope, budget, cancelled)?;
+    let (member, _) = selected_borrowed_metadata_member(&wire, schema, metadata_id, &envelope, budget, cancelled)?;
     for id in envelope.members() {
         if header_member_bounded(store, &pin, closure, id, budget, cancelled)? != count { return Err("selected closure count changed".into()); }
     }
@@ -2066,6 +2066,63 @@ pub fn reopen_selected_native_headers_budgeted(
     let bytes = wire;
     budget.memory = initial.checked_sub(retained).ok_or("header retained budget exceeded")?;
     Ok(Some(VerifiedNativeHeadersWitness { bytes, object_id: id }))
+}
+
+/// Line-map wire authenticated by the exact selected compiler closure.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifiedNativeLinesWitness { bytes: Box<[u8]>, object_id: AuthorityHash }
+impl VerifiedNativeLinesWitness {
+    pub fn as_bytes(&self) -> &[u8] { &self.bytes }
+    pub const fn object_id(&self) -> &AuthorityHash { &self.object_id }
+}
+
+pub fn reopen_selected_native_lines_budgeted(
+    store: &FileStore, selected: &SelectedGeneration, budget: &mut SelectedNativeHeaderBudget,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Option<VerifiedNativeLinesWitness>, String> {
+    let initial = budget.memory;
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
+    let pin = store.pin_garbage_collection_bounded(&mut budget.memory, |_| header_checkpoint(&budget.work, cancelled))
+        .map_err(|e| format!("pin selected compiler closure: {e:?}"))?;
+    let closure = backend_store::ClosureId::from_bytes(*selected.closure_id());
+    let count = header_member_bounded(store, &pin, closure, *selected.candidate_id(), budget, cancelled)?;
+    if count == 0 || count > (MAX_MEMBER_IDS as u64 + 1) { return Err("selected compiler closure count exceeds limit".into()); }
+    let envelope_max = MAGIC.len() + 2 + 5 * 4 + 4 * 4096 + MAX_PROFILE_BYTES + 1 + 16 + 8 + 32 * 6 + 1 + 4 + MAX_MEMBER_IDS * 32;
+    let (envelope_wire, schema, key) = header_object_bounded(store, &pin, *selected.candidate_id(), &[COMPILER_PUBLICATION_ENVELOPE_SCHEMA], envelope_max, budget, cancelled)?;
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected envelope stopped: {e:?}"))?;
+    verified_payload_key_checkpointed(schema, &envelope_wire, &key, budget, cancelled)?;
+    let envelope = borrowed_selected_envelope(&envelope_wire, selected, selected.candidate_id(), &|| {
+        header_checkpoint(&budget.work, cancelled).map_err(|_| CompilerEnvelopeError::Stopped)
+    }).map_err(|e| e.to_string())?;
+    if count != u64::try_from(envelope.member_wire.len() / 32).map_err(|_| "member count overflow")? + 1 { return Err("selected compiler closure count differs".into()); }
+    let metadata_id = envelope.metadata_id;
+    header_member_bounded(store, &pin, closure, metadata_id, budget, cancelled)?;
+    let metadata_max = MAX_MANIFEST_BYTES + 64 * 1024 * 1024 + MAX_MEMBER_IDS * 72 + 1024;
+    let schemas = [COMPILER_PUBLICATION_METADATA_SCHEMA, COMPILER_PROGRAM_METADATA_SCHEMA, COMPILER_COVERAGE_METADATA_SCHEMA,
+        COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA, COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA, COMPILER_NATIVE_HEADERS_METADATA_SCHEMA, COMPILER_NATIVE_LINES_METADATA_SCHEMA];
+    let (wire, schema, key) = header_object_bounded(store, &pin, metadata_id, &schemas, metadata_max, budget, cancelled)?;
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected metadata stopped: {e:?}"))?;
+    verified_payload_key_checkpointed(schema, &wire, &key, budget, cancelled)?;
+    let (_, member) = selected_borrowed_metadata_member(&wire, schema, metadata_id, &envelope, budget, cancelled)?;
+    for id in envelope.members() {
+        if header_member_bounded(store, &pin, closure, id, budget, cancelled)? != count { return Err("selected closure count changed".into()); }
+    }
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
+    let Some(member) = member else { budget.memory = initial; return Ok(None) };
+    let id = *member.object_id();
+    let length = member.byte_length() as usize;
+    let (wire, schema, key) = header_object_bounded(store, &pin, id, &[COMPILER_NATIVE_LINES_SCHEMA], length, budget, cancelled)?;
+    if schema != COMPILER_NATIVE_LINES_SCHEMA || wire.len() != length { return Err("selected header extent differs".into()); }
+    verified_payload_key_checkpointed(schema, &wire, &key, budget, cancelled)?;
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
+    // Validate all canonical NHA1 framing without materializing decoded rows.
+    let _view = backend_semantic::native_source_lines::NativeSourceLineAggregateView::parse(&wire, &mut |_| header_checkpoint(&budget.work, cancelled))
+        .map_err(|e| format!("selected header scan: {e:?}"))?;
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
+    let retained = wire.len().checked_add(2 * std::mem::size_of::<usize>()).ok_or("header retained budget overflow")?;
+    let bytes = wire;
+    budget.memory = initial.checked_sub(retained).ok_or("header retained budget exceeded")?;
+    Ok(Some(VerifiedNativeLinesWitness { bytes, object_id: id }))
 }
 
 /// Selected-closure authenticated header claims borrowed from caller scratch.
@@ -2122,7 +2179,7 @@ pub fn reopen_selected_native_headers_in_scratch<'a>(
     let (wire, _, schema, key) = header_object_into_scratch(store, &pin, metadata_id, &schemas, metadata_max, budget, cancelled, &mut *remaining_scratch)?;
     header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected metadata stopped: {e:?}"))?;
     verified_payload_key_checkpointed(schema, &wire, &key, budget, cancelled)?;
-    let member = selected_borrowed_metadata_member(&wire, schema, metadata_id, &envelope, budget, cancelled)?;
+    let (member, _) = selected_borrowed_metadata_member(&wire, schema, metadata_id, &envelope, budget, cancelled)?;
     for id in envelope.members() {
         if header_member_bounded(store, &pin, closure, id, budget, cancelled)? != count { return Err("selected closure count changed".into()); }
     }
