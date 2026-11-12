@@ -1844,16 +1844,14 @@ fn header_member_bounded(store: &FileStore, pin: &backend_store::GcPinGuard, clo
 }
 fn header_object_bounded(store: &FileStore, pin: &backend_store::GcPinGuard, id: AuthorityHash,
     schemas: &[SchemaIdentity], maximum: usize, budget: &mut SelectedNativeHeaderBudget,
-    cancelled: &dyn Fn() -> bool) -> Result<(Vec<u8>, SchemaIdentity, AuthorityHash), String> {
+    cancelled: &dyn Fn() -> bool) -> Result<(Box<[u8]>, SchemaIdentity, AuthorityHash), String> {
     let work = &budget.work;
     let reader = store.open_bounded_nonrelation_object(pin, UntrustedObjectId::from_bytes(id), schemas, None, maximum,
         &mut budget.memory, |_| header_checkpoint(work, cancelled)).map_err(|e| format!("open bounded compiler object: {e:?}"))?;
     let len = reader.payload_len();
-    // Reserve a possible Vec-to-box copy as well as the requested buffer.
-    header_reserve(&mut budget.memory, len.checked_mul(2).ok_or("compiler payload budget overflow")?)?;
-    let mut bytes = Vec::new();
-    bytes.try_reserve_exact(len).map_err(|_| "compiler payload allocation failed")?;
-    bytes.resize(len, 0);
+    // Exact requested-layout, fallible allocation; no intermediate Vec.
+    let mut bytes = backend_store::try_allocate_exact_zeroed_bytes_budgeted(len, &mut budget.memory)
+        .map_err(|e| format!("compiler payload allocation: {e:?}"))?;
     let (schema, key, checked_id) = reader.read_into(&mut bytes, &mut budget.memory,
         |_, _| header_checkpoint(work, cancelled),
         |view, _| Ok((view.schema(), *view.key(), *view.id().as_bytes())))
@@ -1924,7 +1922,7 @@ pub fn reopen_selected_native_headers_budgeted(
     let _view = backend_semantic::native_ts_headers::NativeTsHeaderAggregateView::parse_canonical(&wire).map_err(|e| e.to_owned())?;
     header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
     let retained = wire.len().checked_add(2 * std::mem::size_of::<usize>()).ok_or("header retained budget overflow")?;
-    let bytes = wire.into_boxed_slice();
+    let bytes = wire;
     budget.memory = initial.checked_sub(retained).ok_or("header retained budget exceeded")?;
     Ok(Some(VerifiedNativeHeadersWitness { bytes, object_id: id }))
 }
