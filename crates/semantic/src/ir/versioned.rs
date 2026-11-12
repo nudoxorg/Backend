@@ -1158,6 +1158,37 @@ impl SemanticPlaneManifest {
         Ok(value)
     }
 
+    /// Preflights wire extents and returns the owned plane/segment allocation
+    /// required by `decode`, plus its one temporary coverage-scope encoding.
+    /// The input and any subsequent canonical re-encoding are separate charges.
+    pub fn decode_allocation_bound(bytes: &[u8]) -> Result<usize, SemanticManifestError> {
+        if bytes.len() > MAX_MANIFEST_BYTES {
+            return Err(SemanticManifestError::ManifestTooLarge { observed: bytes.len(), maximum: MAX_MANIFEST_BYTES });
+        }
+        let mut reader = Reader::new(bytes);
+        if reader.take(4)? != MAGIC.as_slice() { return Err(SemanticManifestError::BadMagic); }
+        let version = reader.u8()?;
+        if version != WIRE_VERSION { return Err(SemanticManifestError::UnsupportedVersion(version)); }
+        let _ = decode_build(&mut reader)?;
+        reader.take(32 * 3)?;
+        let _ = decode_coverage(&mut reader)?;
+        let planes = usize::from(reader.u16()?);
+        if planes > MAX_PLANES { return Err(SemanticManifestError::TooManyPlanes { observed: planes, maximum: MAX_PLANES }); }
+        let mut bytes_required = planes.checked_mul(std::mem::size_of::<SemanticPlane>()).ok_or(SemanticManifestError::CountOverflow)?;
+        for _ in 0..planes {
+            let _ = decode_plane_kind(&mut reader)?;
+            let _ = decode_coverage(&mut reader)?;
+            let segments = usize::try_from(reader.u32()?).map_err(|_| SemanticManifestError::CountOverflow)?;
+            if segments > MAX_SEGMENTS_PER_PLANE { return Err(SemanticManifestError::TooManySegments { observed: segments, maximum: MAX_SEGMENTS_PER_PLANE }); }
+            reader.take(segments.checked_mul(SEGMENT_WIRE_BYTES).ok_or(SemanticManifestError::CountOverflow)?)?;
+            bytes_required = bytes_required.checked_add(segments.checked_mul(std::mem::size_of::<SemanticPlaneSegment>()).ok_or(SemanticManifestError::CountOverflow)?).ok_or(SemanticManifestError::CountOverflow)?;
+        }
+        if !reader.is_empty() { return Err(SemanticManifestError::TrailingBytes(reader.remaining())); }
+        // Each plane derives its coverage scope from one 32-byte schema value;
+        // those temporary encodings occur sequentially, never concurrently.
+        bytes_required.checked_add(if planes == 0 { 0 } else { 32 }).ok_or(SemanticManifestError::CountOverflow)
+    }
+
     /// Reopens canonical bounded metadata. Coverage bytes remain claims only;
     /// callers must independently admit the exact witnesses before reuse.
     pub fn decode(bytes: &[u8]) -> Result<Self, SemanticManifestError> {
