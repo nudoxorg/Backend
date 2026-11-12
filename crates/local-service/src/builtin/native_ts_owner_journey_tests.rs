@@ -1599,6 +1599,7 @@ fn omitted_program_member_cold_replay(mixed: bool) -> Result<(), Box<dyn Error>>
     let shutdown = crate::listener::ListenerShutdown::new();
     let worker_shutdown = shutdown.clone();
     super::semantic_authority::TEST_COLD_REPLAY_REACHED.store(false, Ordering::Release);
+    super::semantic_authority::TEST_COLD_REPLAY_IMAGE_PHASE.store(false, Ordering::Release);
     super::semantic_authority::TEST_COLD_REPLAY_PAUSE.store(true, Ordering::Release);
     let worker = thread::spawn(move || EmbeddedLocalService::start_with_shutdown(stopped_config, worker_shutdown));
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -1607,7 +1608,7 @@ fn omitted_program_member_cold_replay(mixed: bool) -> Result<(), Box<dyn Error>>
     shutdown.request();
     super::semantic_authority::TEST_COLD_REPLAY_PAUSE.store(false, Ordering::Release);
     let result = worker.join().map_err(|_| "cold owner worker panicked")?;
-    assert!(reached, "cold replay did not reach its live checkpoint");
+    assert!(reached, "cold replay did not reach image admission");
     let error = match result { Ok(owner) => { drop(owner); return Err("mid-replay shutdown unexpectedly started owner".into()); }, Err(error) => error };
     assert!(error.to_string().contains("native replay stopped"), "unexpected live cold refusal: {error}");
     let owner = start_owner(&paths)?;

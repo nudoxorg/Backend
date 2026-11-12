@@ -1153,6 +1153,8 @@ pub(super) fn admit_replayed_native_evidence(
 pub(super) static TEST_COLD_REPLAY_PAUSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 #[cfg(test)]
 pub(super) static TEST_COLD_REPLAY_REACHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+pub(super) static TEST_COLD_REPLAY_IMAGE_PHASE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub(super) fn admit_replayed_native_evidence_with_shutdown(
     workspace_store: &FileStore,
@@ -1186,7 +1188,8 @@ pub(super) fn admit_replayed_native_evidence_with_shutdown(
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(900);
     let stopped = || {
         #[cfg(test)]
-        if TEST_COLD_REPLAY_PAUSE.load(std::sync::atomic::Ordering::Acquire) {
+        if TEST_COLD_REPLAY_PAUSE.load(std::sync::atomic::Ordering::Acquire)
+            && TEST_COLD_REPLAY_IMAGE_PHASE.load(std::sync::atomic::Ordering::Acquire) {
             TEST_COLD_REPLAY_REACHED.store(true, std::sync::atomic::Ordering::Release);
             while TEST_COLD_REPLAY_PAUSE.load(std::sync::atomic::Ordering::Acquire)
                 && !shutdown.is_some_and(crate::listener::ListenerShutdown::is_requested)

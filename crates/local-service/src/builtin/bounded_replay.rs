@@ -140,7 +140,11 @@ impl Program {
 }
 struct Meter<'a> { budget: &'a SelectedNativeHeaderBudget, stopped: &'a dyn Fn() -> bool, free: Cell<usize> }
 impl SemanticImageAdmissionMeter for Meter<'_> {
-    fn work(&self, units: u64) -> bool { self.budget.checkpoint(units, self.stopped).is_ok() }
+    fn work(&self, units: u64) -> bool {
+        #[cfg(test)]
+        super::TEST_COLD_REPLAY_IMAGE_PHASE.store(true, std::sync::atomic::Ordering::Release);
+        self.budget.checkpoint(units, self.stopped).is_ok()
+    }
     fn reserve(&self, bytes: usize) -> bool { match self.free.get().checked_sub(bytes) { Some(left) => { self.free.set(left); true }, None => false } }
     fn release(&self, bytes: usize) { self.free.set(self.free.get().checked_add(bytes).expect("bounded scratch reservation")); }
 }
