@@ -1920,8 +1920,8 @@ pub fn reopen_selected_native_headers_budgeted(
     if schema != COMPILER_NATIVE_HEADERS_SCHEMA || wire.len() != length { return Err("selected header extent differs".into()); }
     verified_payload_key(schema, &wire, &key)?;
     header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
-    let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical_budgeted(&wire, &mut budget.memory).map_err(|e| e.to_owned())?;
-    drop(aggregate);
+    // Validate all canonical NHA1 framing without materializing decoded rows.
+    let _view = backend_semantic::native_ts_headers::NativeTsHeaderAggregateView::parse_canonical(&wire).map_err(|e| e.to_owned())?;
     header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
     let retained = wire.len().checked_add(2 * std::mem::size_of::<usize>()).ok_or("header retained budget overflow")?;
     let bytes = wire.into_boxed_slice();
