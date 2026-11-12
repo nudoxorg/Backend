@@ -3754,11 +3754,16 @@ impl CapturedCSharpUnitAdmission {
     /// source and configuration custody. This is necessary but does not prove
     /// SDK, helper, runtime or reference execution custody.
     pub(in crate::builtin) fn matches_staged_invocation(&self, staged: &StagedSemanticPackage, input: [u8; 32]) -> bool {
-        use sha2::Digest;
         if self.cancellation.load(Ordering::Acquire) { return false; }
         let Some(bytes) = staged.csharp_invocation_evidence_object(input) else { return false; };
         if self.cancellation.load(Ordering::Acquire) { return false; }
         let Some(claim) = backend_engine::application::decode_csharp_evidence(&bytes) else { return false; };
+        self.matches_invocation_claim(&claim, input)
+    }
+
+    fn matches_invocation_claim(&self, claim: &backend_engine::application::CSharpEvidenceClaim<'_>, input: [u8; 32]) -> bool {
+        use sha2::Digest;
+        if self.cancellation.load(Ordering::Acquire) { return false; }
         if claim.target != *self.target.target().as_ref() || claim.input != input
             || claim.profile != self.key.profile() || claim.project_path != self.project.project_path
             || claim.sources.len() != self.sources.len() { return false; }

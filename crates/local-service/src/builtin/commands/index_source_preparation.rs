@@ -1969,10 +1969,67 @@ mod csharp_project_discovery_tests {
             workspace_snapshot: None, route: None, execution_intent: CompileExecutionIntent::Interactive,
         };
         plan.prepare_csharp_source_only_for_park().map_err(|e| e.to_string())?;
-        let (_plan, witness) = plan.capture_csharp_admission(&snapshot, receipt).map_err(|e| e.to_string())?;
+        let (_plan, mut witness) = plan.capture_csharp_admission(&snapshot, receipt).map_err(|e| e.to_string())?;
         assert!(witness.revalidate(&snapshot, &cancellation).map_err(|e| e.to_string())?);
         let attempt = authority.begin_candidate_attempt(witness.key(), &observed_for_attempt).map_err(|e| e.to_string())?;
         assert!(crate::builtin::csharp_admission::validate_selected_attempt(&snapshot, &witness, &attempt, &authority, &cancellation).is_ok());
+        // The bytes here are a synthetic compiler claim, not compiler or SDK
+        // authority. Decode the actual CSE1 grammar before testing its join to
+        // the real selected source and configuration witness.
+        use sha2::{Digest, Sha256};
+        fn frame(out: &mut Vec<u8>, data: &[u8]) { out.extend_from_slice(&(data.len() as u32).to_be_bytes()); out.extend_from_slice(data); }
+        let config = witness.config_probes().map(|(path, text)| backend_frontend_csharp::legacy::CSharpCapturedConfig {
+            path, text: text.map(|text| std::str::from_utf8(text).unwrap()),
+        }).collect::<Vec<_>>();
+        let config_hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&config).map_err(|e| e.to_string())?));
+        let source_sha = format!("{:x}", Sha256::digest(&bytes));
+        let sidecar = serde_json::to_vec(&serde_json::json!({
+            "format": 1, "nonce": "0".repeat(32), "sourceBinding": "App.cs", "imageSha256": "a".repeat(64), "imageLength": 123,
+            "configSha256": config_hash, "sources": [{"path": "App.cs", "length": bytes.len(), "sha256": source_sha}],
+            "references": [{"Name": "System.Runtime", "Length": 1, "Sha256": "b".repeat(64)}],
+            "assembly": "App", "framework": "net10.0", "language": "CSharp14", "outputKind": "DynamicallyLinkedLibrary",
+            "defines": [], "usings": [], "generators": "unknown", "inputClosure": "unknown", "errors": 0
+        })).map_err(|e| e.to_string())?;
+        let image = backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(b"image");
+        let mut encoded = Vec::new();
+        for part in [b"CSE1".as_slice(), witness.target().target().as_ref(), &[0x52; 32], &<[u8; 2]>::from(profile), b"App.csproj", &(config.len() as u32).to_be_bytes()] { frame(&mut encoded, part); }
+        for probe in config {
+            frame(&mut encoded, probe.path.as_bytes());
+            if let Some(text) = probe.text { frame(&mut encoded, &[1]); frame(&mut encoded, text.as_bytes()); }
+            else { frame(&mut encoded, &[0]); }
+        }
+        frame(&mut encoded, &1u32.to_be_bytes());
+        frame(&mut encoded, b"App.cs"); frame(&mut encoded, fact.as_ref());
+        frame(&mut encoded, &(bytes.len() as u32).to_be_bytes()); frame(&mut encoded, &content);
+        frame(&mut encoded, &Sha256::digest(&bytes)); frame(&mut encoded, image.as_ref());
+        frame(&mut encoded, &5u32.to_be_bytes()); frame(&mut encoded, &sidecar);
+        let mut claim = backend_engine::application::decode_csharp_evidence(&encoded).ok_or("fixture CSE1 did not decode")?;
+        assert!(witness.matches_invocation_claim(&claim, [0x52; 32]));
+        assert!(!witness.matches_invocation_claim(&claim, [0x53; 32]));
+        claim.target[0] ^= 1; assert!(!witness.matches_invocation_claim(&claim, [0x52; 32])); claim.target[0] ^= 1;
+        claim.project_path = "Other.csproj"; assert!(!witness.matches_invocation_claim(&claim, [0x52; 32])); claim.project_path = "App.csproj";
+        let original_text = claim.config[0].text; claim.config[0].text = Some(r#"<Project Changed="true"/>"#);
+        assert!(!witness.matches_invocation_claim(&claim, [0x52; 32])); claim.config[0].text = original_text;
+        claim.sources[0].source_sha256[0] ^= 1; assert!(!witness.matches_invocation_claim(&claim, [0x52; 32]));
+        claim.sources[0].source_sha256[0] ^= 1;
+        claim.sources[0].input_content[0] ^= 1; assert!(!witness.matches_invocation_claim(&claim, [0x52; 32]));
+        claim.sources[0].input_content[0] ^= 1;
+        claim.sources[0].source_fact[0] ^= 1; assert!(!witness.matches_invocation_claim(&claim, [0x52; 32]));
+        claim.sources[0].source_fact[0] ^= 1;
+        claim.sources[0].path = "Other.cs"; assert!(!witness.matches_invocation_claim(&claim, [0x52; 32]));
+        claim.sources[0].path = "App.cs";
+        claim.profile = LanguageProfile::CSharp(backend_semantic::vocabulary::CSharpVersion::CSharp13);
+        assert!(!witness.matches_invocation_claim(&claim, [0x52; 32])); claim.profile = profile;
+        claim.sources[0].byte_length += 1; assert!(!witness.matches_invocation_claim(&claim, [0x52; 32]));
+        claim.sources[0].byte_length -= 1;
+        assert!(witness.matches_invocation_claim(&claim, [0x52; 32]));
+
+        let wrong_operation = backend_library::IndexOperationKey::from_bytes([0x42; 32]).map_err(|e| e.to_string())?;
+        let wrong_receipt = super::super::super::adapter::SelectedCSharpSourceCommit::from_selected_test(&snapshot, Some(wrong_operation)).map_err(|e| e.to_string())?;
+        let correct_receipt = std::mem::replace(&mut witness.receipt, wrong_receipt);
+        assert!(crate::builtin::csharp_admission::validate_selected_attempt(&snapshot, &witness, &attempt, &authority, &cancellation).is_err());
+        witness.receipt = correct_receipt;
+
         assert!(!witness.revalidate(&snapshot, &Arc::new(AtomicBool::new(false))).map_err(|e| e.to_string())?);
         let stale = crate::builtin::genesis().map_err(|e| e.to_string())?.snapshot();
         assert!(!witness.revalidate(&stale, &cancellation).map_err(|e| e.to_string())?);
