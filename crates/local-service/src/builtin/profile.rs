@@ -4767,7 +4767,10 @@ fn native_evidence_update_budget(
     changes: &[NativeEvidenceChange], available: usize,
 ) -> Result<backend_version::LazyTreeUpdateBudget, BuiltinModelError> {
     let shape = native_evidence_shape(rows, changes, usize::from(relation.root_handle().evidence().node().level()))?;
-    Ok(backend_version::LazyTreeUpdateBudget::new(changes.len(), available / 2, shape))
+    let scratch = backend_engine::builtin::NATIVE_EVIDENCE_READ_SCRATCH;
+    let remaining = available.checked_sub(scratch).ok_or_else(|| BuiltinModelError("native update scratch budget exceeded".into()))?;
+    let metadata = scratch.checked_add(remaining / 2).ok_or_else(|| BuiltinModelError("native update budget overflow".into()))?;
+    Ok(backend_version::LazyTreeUpdateBudget::new(changes.len(), metadata, shape))
 }
 
 fn charge_native_change_clones(changes: &[NativeEvidenceChange], budget: &mut usize) -> Result<(), BuiltinModelError> {
@@ -4840,8 +4843,6 @@ fn prepare_native_evidence_relation_update(
         })
         .collect::<Vec<_>>();
     if let Some(relation) = selected {
-        let scratch = backend_engine::builtin::NATIVE_EVIDENCE_READ_SCRATCH;
-        read_budget = read_budget.checked_sub(scratch).ok_or_else(|| BuiltinModelError("native update scratch budget exceeded".into()))?;
         let update_budget = native_evidence_update_budget(&relation, &target_rows, &intent.native_evidence_changes, read_budget)?;
         let update = relation.prepare_update_bounded(&changes, update_budget).map_err(|error| {
             BuiltinModelError(format!("prepare native evidence delta: {error}"))
@@ -6720,8 +6721,6 @@ fn validate_persisted_native_evidence(
             })
             .collect::<Vec<_>>();
         let computed = if let Some(relation) = &base {
-            let scratch = backend_engine::builtin::NATIVE_EVIDENCE_READ_SCRATCH;
-            read_budget = read_budget.checked_sub(scratch).ok_or_else(|| BuiltinModelError("native replay update scratch budget exceeded".into()))?;
             let update_budget = native_evidence_update_budget(relation, &bounded_target, &intent.native_evidence_changes, read_budget)?;
             *relation
                 .prepare_update_bounded(&changes, update_budget)
@@ -6753,10 +6752,6 @@ fn validate_persisted_native_evidence(
             .root()
             .as_bytes()
         };
-        if base.is_some() {
-            read_budget = read_budget.checked_add(backend_engine::builtin::NATIVE_EVIDENCE_READ_SCRATCH)
-                .ok_or_else(|| BuiltinModelError("native replay budget overflow".into()))?;
-        }
         if computed != root {
             return Err(BuiltinModelError(
                 "native evidence target differs from exact delta".into(),

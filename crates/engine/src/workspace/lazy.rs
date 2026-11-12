@@ -809,8 +809,12 @@ impl<R: CanonicalRelation> WorkspaceRelationHandle<R> {
     /// Prepares a delta under the caller's explicit metadata envelope.
     pub fn prepare_update_bounded(
         &self, changes: &[TreeChange<R>], budget: backend_version::LazyTreeUpdateBudget,
-    ) -> Result<LazyPreparedUpdate<R>, WorkspaceRelationError> {
-        self.tree().prepare_update_bounded(changes, budget)
+    ) -> Result<LazyPreparedUpdate<R>, WorkspaceRelationError>
+    where R: backend_version::BoundedCanonicalRelation {
+        if budget.max_metadata_bytes < R::NODE_DECODE_SCRATCH {
+            return Err(map_tree_error::<R>(LazyTreeError::MetadataBudgetExceeded { required_bytes: R::NODE_DECODE_SCRATCH, max_bytes: budget.max_metadata_bytes }, None));
+        }
+        self.tree().prepare_update_decoded_bounded(changes, budget)
             .map_err(|error| refine_rejection::<R>(map_tree_error::<R>(error, None), changes))
     }
 

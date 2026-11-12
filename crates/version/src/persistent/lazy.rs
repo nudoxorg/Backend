@@ -989,6 +989,21 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
         self.prepare_update_bounded_with_mode(changes, budget, false)
     }
 
+    /// Reserves decoder scratch before any shape validation or node decoding.
+    /// Only relations with an explicit bounded decoder contract can use this API.
+    pub fn prepare_update_decoded_bounded(
+        &self, changes: &[TreeChange<R>], mut budget: LazyTreeUpdateBudget,
+    ) -> Result<LazyPreparedUpdate<R>, LazyTreeError<L::Error>>
+    where R: crate::BoundedCanonicalRelation {
+        let scratch = R::NODE_DECODE_SCRATCH;
+        budget.max_metadata_bytes = budget.max_metadata_bytes.checked_sub(scratch)
+            .ok_or(LazyTreeError::MetadataBudgetExceeded { required_bytes: scratch, max_bytes: budget.max_metadata_bytes })?;
+        let mut update = self.prepare_update_bounded(changes, budget)?;
+        update.work.peak_metadata_bytes = update.work.peak_metadata_bytes.checked_add(scratch)
+            .ok_or(LazyTreeError::MetadataBudgetExceeded { required_bytes: usize::MAX, max_bytes: budget.max_metadata_bytes })?;
+        Ok(update)
+    }
+
     /// Prepares sorted replacements for existing keys using a shared-path
     /// batch rewrite when encoded widths and canonical leaf cuts stay stable.
     /// Width changes or a changed leaf cut fall back to the regular bounded

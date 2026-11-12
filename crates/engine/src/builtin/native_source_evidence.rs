@@ -236,6 +236,13 @@ impl Relation for NativeSourceEvidenceRelation {
         }
     }
 }
+// The decoder preflights all declared counts against the complete bounded wire
+// row before allocation. Native row heap is bounded by encoded path, line-map
+// and fixed header bytes; the scratch bound includes a whole 64 KiB node and
+// its decoded row cells plus traversal copies.
+impl backend_version::BoundedCanonicalRelation for NativeSourceEvidenceRelation {
+    const NODE_DECODE_SCRATCH: usize = NATIVE_EVIDENCE_READ_SCRATCH;
+}
 impl CanonicalRelation for NativeSourceEvidenceRelation {
     fn decode_key(bytes: &[u8]) -> Result<Self::Key, RelationDecodeError> {
         bytes.try_into().map_err(|_| RelationDecodeError::Malformed)

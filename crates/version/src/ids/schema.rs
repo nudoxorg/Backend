@@ -85,6 +85,15 @@ pub trait CanonicalRelation: Relation {
         Self::encode_key(key, output);
     }
 }
+/// Explicit contract for relations whose decoder preflights lengths/counts
+/// before allocation and whose retained key/value heap is bounded by encoded
+/// bytes plus fixed per-row overhead already included in tree metadata charges.
+/// Implementors must also bound temporary whole-node decoding and encoding by
+/// `NODE_DECODE_SCRATCH` for a canonical node under the standard cut policy.
+pub trait BoundedCanonicalRelation: CanonicalRelation {
+    const NODE_DECODE_SCRATCH: usize;
+}
+
 use core::fmt;
 
 use super::CANONICAL_VERSION;

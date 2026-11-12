@@ -68,7 +68,7 @@ pub use delta::{
     prepare_internal_update_with_work,
 };
 pub use ids::{
-    CANONICAL_CUT_POLICY_VERSION, CANONICAL_TREE_ABI, CANONICAL_VERSION, CanonicalRelation,
+    CANONICAL_CUT_POLICY_VERSION, CANONICAL_TREE_ABI, CANONICAL_VERSION, BoundedCanonicalRelation, CanonicalRelation,
     CommitId, DeltaId, ID_BYTES, IdAdmissionError, IdContext, IdDecodeError, ObjectKey,
     ObjectKeyHasher, ObjectVersion, ObjectVersionHasher, Relation, RelationDecodeError,
     RuntimeIdentityError, Schema, StateRoot, UntrustedId, WireId, WorkspaceRoot,
