@@ -1168,6 +1168,8 @@ pub(super) fn admit_replayed_native_evidence(
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(900);
     let stopped = || std::time::Instant::now() >= deadline;
     let mut header_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(super::MAX_REBUILD_BYTES, NATIVE_HEADER_WORK_UNITS);
+    let mut row_proofs = bounded_replay::proof_buffer(rows.len(), &mut header_budget, &stopped)?;
+    let mut retirement_proofs = bounded_replay::proof_buffer(retirements.len(), &mut header_budget, &stopped)?;
     for capture in captures {
         let project = capture.key.package_key().to_bytes();
         let mut has_matching = false;
@@ -1191,7 +1193,11 @@ pub(super) fn admit_replayed_native_evidence(
             &namespace, &binding, capture.capture.input_digest(),
         )).map_err(|error| BuiltinModelError(format!("read native replay history: {error}")))?
             .ok_or_else(|| BuiltinModelError("native replay compiler generation is absent".into()))?;
-        bounded_replay::admit(&store, &selected, capture, rows, retirements, &mut header_budget, &stopped)?;
+        bounded_replay::admit_with_proofs(&store, &selected, capture, rows, retirements, &mut row_proofs, &mut retirement_proofs, &mut header_budget, &stopped)?;
+    }
+    for proof in row_proofs.iter().chain(retirement_proofs.iter()) {
+        header_budget.checkpoint(1, &stopped).map_err(|e| BuiltinModelError(format!("native replay stopped: {e:?}")))?;
+        if *proof == 0 { return Err(BuiltinModelError("native replay evidence has no selected Program proof".into())); }
     }
     Ok(())
 }

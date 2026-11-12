@@ -38,7 +38,7 @@ fn swap_index(index: &mut [u8], a: usize, b: usize) {
     for offset in 0..4 { index.swap(a * 4 + offset, b * 4 + offset); }
 }
 fn build_index(
-    profile: backend_semantic::vocabulary::LanguageProfile, rows: &[&NativeSourceEvidence], project: &[u8; 32], duplicate_error: &'static str,
+    profile: backend_semantic::vocabulary::LanguageProfile, rows: &[&NativeSourceEvidence], project: &[u8; 32], duplicate_error: &'static str, cross_program_members: bool,
     budget: &mut SelectedNativeHeaderBudget, stopped: &dyn Fn() -> bool,
 ) -> Result<(Box<[u8]>, usize)> {
     let bytes = rows.len().checked_mul(4).ok_or("native replay index overflow")?;
@@ -46,7 +46,7 @@ fn build_index(
     let mut count = 0usize;
     for (ordinal, row) in rows.iter().enumerate() {
         step(budget, stopped, 1)?;
-        if &row.project == project && row.profile == profile {
+        if &row.project == project && (row.profile == profile || (cross_program_members && !row.admits_image())) {
             let value = u32::try_from(ordinal).map_err(|_| "native replay row overflow")?;
             index[count * 4..count * 4 + 4].copy_from_slice(&value.to_le_bytes());
             count += 1;
@@ -160,24 +160,41 @@ pub(super) fn admit(
     rows: &[&NativeSourceEvidence], retirements: &[&NativeSourceEvidence],
     budget: &mut SelectedNativeHeaderBudget, stopped: &dyn Fn() -> bool,
 ) -> std::result::Result<(), BuiltinModelError> {
-    admit_inner(store, selected, capture, rows, retirements, budget, stopped).map_err(BuiltinModelError)
+    let mut row_proofs = allocate(rows.len(), budget, stopped).map_err(BuiltinModelError)?;
+    let mut retirement_proofs = allocate(retirements.len(), budget, stopped).map_err(BuiltinModelError)?;
+    admit_with_proofs(store, selected, capture, rows, retirements, &mut row_proofs, &mut retirement_proofs, budget, stopped)
+}
+pub(super) fn proof_buffer(len: usize, budget: &mut SelectedNativeHeaderBudget, stopped: &dyn Fn() -> bool) -> std::result::Result<Box<[u8]>, BuiltinModelError> {
+    allocate(len, budget, stopped).map_err(BuiltinModelError)
+}
+pub(super) fn admit_with_proofs(
+    store: &FileStore, selected: &SelectedGeneration, capture: &BuiltinCaptureChange,
+    rows: &[&NativeSourceEvidence], retirements: &[&NativeSourceEvidence],
+    row_proofs: &mut [u8], retirement_proofs: &mut [u8],
+    budget: &mut SelectedNativeHeaderBudget, stopped: &dyn Fn() -> bool,
+) -> std::result::Result<(), BuiltinModelError> {
+    if row_proofs.len() != rows.len() || retirement_proofs.len() != retirements.len() {
+        return Err(BuiltinModelError("native replay proof buffer differs".into()));
+    }
+    admit_inner(store, selected, capture, rows, retirements, row_proofs, retirement_proofs, budget, stopped).map_err(BuiltinModelError)
 }
 fn admit_inner(
     store: &FileStore, selected: &SelectedGeneration, capture: &BuiltinCaptureChange,
     rows: &[&NativeSourceEvidence], retirements: &[&NativeSourceEvidence],
+    row_proofs: &mut [u8], retirement_proofs: &mut [u8],
     budget: &mut SelectedNativeHeaderBudget, stopped: &dyn Fn() -> bool,
 ) -> Result<()> {
     let ProductSemanticCaptureOutcome::Published { coverage, claim } = capture.outcome else { return Err("native replay capture is not published".into()); };
     if selected.input_digest() != capture.capture.input_digest() { return Err("native replay selected input differs".into()); }
     let project = capture.key.package_key().to_bytes();
     let mut flags = allocate(rows.len(), budget, stopped)?;
-    let (source_index, count) = build_index(capture.key.profile(), rows, &project, "duplicate native replay source path", budget, stopped)?;
-    let (retired_index, retired_count) = build_index(capture.key.profile(), retirements, &project, "duplicate native replay retirement path", budget, stopped)?;
+    let (source_index, count) = build_index(capture.key.profile(), rows, &project, "duplicate native replay source path", true, budget, stopped)?;
+    let (retired_index, retired_count) = build_index(capture.key.profile(), retirements, &project, "duplicate native replay retirement path", false, budget, stopped)?;
     if count == 0 { return Err("native replay retirement requires a nonempty selected Program".into()); }
     for i in 0..count {
         step(budget, stopped, 1)?;
         let ordinal = index_at(&source_index, i);
-        flags[ordinal] = 1;
+        if rows[ordinal].profile == capture.key.profile() { flags[ordinal] = 1; }
         if find_index(retirements, &retired_index, retired_count, rows[ordinal].path.as_bytes(), budget, stopped)?.is_some() {
             return Err("duplicate native replay retirement path".into());
         }
@@ -369,6 +386,15 @@ fn admit_inner(
             return Err("native replay source lacks its claimed Program evidence".into());
         }
     }
+    // Only publish proof flags after every selected member and final check passed.
+    for (i, row) in rows.iter().enumerate() {
+        step(budget, stopped, 1)?;
+        if plan.flags[i] & 2 != 0 && (!row.admits_image() || plan.flags[i] & 4 != 0) { row_proofs[i] = 1; }
+    }
+    for i in 0..retired_count {
+        step(budget, stopped, 1)?;
+        retirement_proofs[index_at(&retired_index, i)] = 1;
+    }
     step(budget, stopped, 1)?;
     Ok(())
 }
@@ -403,7 +429,7 @@ mod tests {
         let scratch_len = BorrowedNativeProgramSourceManifest::scratch_bytes(&retained).expect("Program scratch");
         let scratch = allocate(scratch_len, &mut budget, &|| false).expect("Program index");
         let program = RetainedIndexedNativeProgramSourceManifest::admit(retained, scratch, |n| step(&budget, &|| false, n)).expect("admit Program");
-        let (index, count) = build_index(profile, &refs, &project, "duplicate", &mut budget, &|| false).expect("evidence index");
+        let (index, count) = build_index(profile, &refs, &project, "duplicate", false, &mut budget, &|| false).expect("evidence index");
         for i in 0..4096 {
             let path = format!("src/{i:05}.ts");
             let ordinal = find_index(&refs, &index, count, path.as_bytes(), &budget, &|| false).expect("evidence lookup").expect("image evidence");
@@ -425,7 +451,7 @@ mod tests {
         let refs: Vec<_> = rows.iter().collect();
         let bytes = refs.len() * 4;
         let mut budget = SelectedNativeHeaderBudget::new(bytes, 2_000_000);
-        let (index, count) = build_index(profile, &refs, &project, "duplicate", &mut budget, &|| false).expect("bounded index");
+        let (index, count) = build_index(profile, &refs, &project, "duplicate", false, &mut budget, &|| false).expect("bounded index");
         assert_eq!(count, refs.len());
         assert_eq!(budget.remaining_memory(), 0);
         for value in [0, 1, 1024, 4095] {
@@ -435,14 +461,14 @@ mod tests {
         }
         assert!(find_index(&refs, &index, count, b"src/9999.ts", &budget, &|| false).unwrap().is_none());
         let mut short = SelectedNativeHeaderBudget::new(bytes - 1, 2_000_000);
-        assert!(build_index(profile, &refs, &project, "duplicate", &mut short, &|| false).is_err());
+        assert!(build_index(profile, &refs, &project, "duplicate", false, &mut short, &|| false).is_err());
         let calls = Cell::new(0usize);
         let stop = || { let next = calls.get() + 1; calls.set(next); next >= 10 };
         let mut cancelled = SelectedNativeHeaderBudget::new(bytes, 2_000_000);
-        assert!(build_index(profile, &refs, &project, "duplicate", &mut cancelled, &stop).is_err());
+        assert!(build_index(profile, &refs, &project, "duplicate", false, &mut cancelled, &stop).is_err());
         assert_eq!(calls.get(), 10);
         let duplicate = [&rows[0], &rows[0]];
         let mut budget = SelectedNativeHeaderBudget::new(8, 100);
-        assert_eq!(build_index(profile, &duplicate, &project, "duplicate", &mut budget, &|| false).err().as_deref(), Some("duplicate"));
+        assert_eq!(build_index(profile, &duplicate, &project, "duplicate", false, &mut budget, &|| false).err().as_deref(), Some("duplicate"));
     }
 }
