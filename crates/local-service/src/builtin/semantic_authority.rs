@@ -293,6 +293,35 @@ fn test_wait_before_local_selection() {
     }
 }
 
+// In-place heap sort permits cancellation at every bounded path comparison.
+fn sort_native_line_ordinals(
+    order: &mut [u32], staged: &backend_engine::application::StagedSemanticPackage,
+    check: &impl Fn() -> Result<(), backend_extension_turso::CompilerEnvelopeError>,
+) -> Result<(), BuiltinModelError> {
+    fn sift(order: &mut [u32], mut root: usize, end: usize, staged: &backend_engine::application::StagedSemanticPackage,
+        check: &impl Fn() -> Result<(), backend_extension_turso::CompilerEnvelopeError>) -> Result<(), BuiltinModelError> {
+        while root < end / 2 {
+            let left = root * 2 + 1;
+            let mut child = left;
+            let compare = |a: u32, b: u32| -> Result<std::cmp::Ordering, BuiltinModelError> {
+                check().map_err(|e| BuiltinModelError(format!("native line sorting stopped: {e}")))?;
+                let a = staged.native_typescript_line_at(a as usize).ok_or_else(|| BuiltinModelError("native line ordinal missing".into()))?;
+                let b = staged.native_typescript_line_at(b as usize).ok_or_else(|| BuiltinModelError("native line ordinal missing".into()))?;
+                Ok(a.path.cmp(&b.path))
+            };
+            if left + 1 < end && compare(order[left], order[left + 1])?.is_lt() { child = left + 1; }
+            if !compare(order[root], order[child])?.is_lt() { break; }
+            order.swap(root, child);
+            root = child;
+        }
+        Ok(())
+    }
+    let n = order.len();
+    for root in (0..n / 2).rev() { sift(order, root, n, staged, check)?; }
+    for end in (1..n).rev() { order.swap(0, end); sift(order, 0, end, staged, check)?; }
+    Ok(())
+}
+
 fn closure_composition_budget(
     changes: usize,
 ) -> Result<ClosureCompositionBudget, BuiltinModelError> {
@@ -2157,6 +2186,21 @@ impl SemanticAuthority {
         self.native_header_aggregate_for_admitted(&selected, budget, stopped)
     }
 
+    /// Reopens the exact selected compiler's bounded source-line claim.
+    /// Consumers must independently join the returned map to exact host bytes.
+    pub(super) fn selected_native_lines(
+        &self, key: &ProductSemanticPublicationKey, claim: SemanticPublicationClaim,
+        budget: &mut backend_extension_turso::SelectedNativeHeaderBudget, stopped: &dyn Fn() -> bool,
+    ) -> Result<Option<backend_extension_turso::VerifiedNativeLinesWitness>, BuiltinModelError> {
+        if !key.is_selected() || !matches!(key.profile(), LanguageProfile::TypeScript(_)) {
+            return Err(BuiltinModelError("native line publication is not selected TypeScript".into()));
+        }
+        let (actual, selected) = self.read_selected_pair(key)?;
+        if actual != claim { return Err(BuiltinModelError("native line selected claim differs".into())); }
+        backend_extension_turso::reopen_selected_native_lines_budgeted(&self.store, &selected, budget, stopped)
+            .map_err(|error| BuiltinModelError(format!("reopen selected native lines: {error}")))
+    }
+
     /// Caller must have admitted this exact generation against the pending
     /// capture, publication claim and compiler input before invoking this.
     pub(super) fn native_header_aggregate_for_admitted(
@@ -3773,6 +3817,95 @@ impl SemanticAuthority {
             }
         } else { None };
 
+        // The line map is computed by the same compiler attempt from exact
+        // selected source bytes. Its typed member joins this closure before seal.
+        let deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
+        let work = std::cell::Cell::new(128usize * 1024 * 1024);
+        let check = || -> Result<(), backend_extension_turso::CompilerEnvelopeError> {
+            if stopped() || std::time::Instant::now() >= deadline { return Err(backend_extension_turso::CompilerEnvelopeError::Stopped); }
+            work.set(work.get().checked_sub(1).ok_or(backend_extension_turso::CompilerEnvelopeError::Stopped)?);
+            Ok(())
+        };
+        let slots = staged.native_typescript_line_slots();
+        let mut retained = 0usize;
+        let mut line_count = 0usize;
+        if staged.profile().language() == backend_semantic::vocabulary::Language::TypeScript {
+            for ordinal in 0..slots {
+                check().map_err(|e| BuiltinModelError(format!("native line inventory stopped: {e}")))?;
+                if let Some(file) = staged.native_typescript_line_at(ordinal) {
+                    retained = retained.checked_add(file.path.capacity()).and_then(|n| n.checked_add(file.line_starts.capacity().checked_mul(std::mem::size_of::<u32>())?))
+                        .ok_or_else(|| BuiltinModelError("native line retained size overflow".into()))?;
+                    line_count = line_count.checked_add(1).ok_or_else(|| BuiltinModelError("native line count overflow".into()))?;
+                }
+            }
+        }
+        let native_lines_member = if line_count != 0 {
+            if staged.profile().language() != backend_semantic::vocabulary::Language::TypeScript || program_member.is_none() {
+                return Err(BuiltinModelError("native source lines require the selected TypeScript program".into()));
+            }
+            let mut budget = (128usize * 1024 * 1024).checked_sub(retained)
+                .ok_or_else(|| BuiltinModelError("native line staging budget exceeded".into()))?;
+            check().map_err(|e| BuiltinModelError(format!("native line allocation stopped: {e}")))?;
+            let mut order = backend_store::try_allocate_exact_zeroed_u32_budgeted(slots, &mut budget)
+                .map_err(|e| BuiltinModelError(format!("native line order allocation: {e:?}")))?;
+            let mut count = 0usize;
+            for ordinal in 0..slots {
+                check().map_err(|e| BuiltinModelError(format!("native line ordering stopped: {e}")))?;
+                if staged.native_typescript_line_at(ordinal).is_some() {
+                    order[count] = u32::try_from(ordinal).map_err(|_| BuiltinModelError("native line ordinal overflow".into()))?;
+                    count += 1;
+                }
+            }
+            if count != line_count { return Err(BuiltinModelError("native line inventory changed".into())); }
+            sort_native_line_ordinals(&mut order[..count], staged, &check)?;
+            let files = || order[..count].iter().filter_map(|ordinal| staged.native_typescript_line_at(*ordinal as usize));
+            let mut checkpoint = |_: usize| check();
+            let (length, observed_count) = backend_semantic::native_source_lines::encoded_len_files(files(), &mut checkpoint)
+                .map_err(|e| BuiltinModelError(format!("plan native source lines: {e:?}")))?;
+            if observed_count != count { return Err(BuiltinModelError("native line inventory changed".into())); }
+            check().map_err(|e| BuiltinModelError(format!("native line wire allocation stopped: {e}")))?;
+            let mut bytes = backend_store::try_allocate_exact_zeroed_bytes_budgeted(length, &mut budget)
+                .map_err(|e| BuiltinModelError(format!("native line wire allocation: {e:?}")))?;
+            backend_semantic::native_source_lines::encode_files_into(files(), &mut bytes, &mut checkpoint)
+                .map_err(|e| BuiltinModelError(format!("encode native source lines: {e:?}")))?;
+            if !payload_ids.len().checked_add(2).is_some_and(|n| n <= backend_extension_turso::MAX_COMPILER_PUBLICATION_MEMBER_IDS)
+                || !u64::try_from(bytes.len()).is_ok_and(|len| streamed_payload_bytes.checked_add(len).is_some_and(|total| total <= MAX_PAYLOAD_BYTES)) {
+                return Err(BuiltinModelError("native source lines exceed compiler closure budget".into()));
+            }
+            let schema = backend_extension_turso::COMPILER_NATIVE_LINES_SCHEMA;
+            let mut key = backend_version::ObjectKeyHasher::new(schema, bytes.len()).map_err(|e| BuiltinModelError(format!("native line key: {e:?}")))?;
+            let mut version = backend_version::ObjectVersionHasher::new(schema, bytes.len()).map_err(|e| BuiltinModelError(format!("native line version: {e:?}")))?;
+            for chunk in bytes.chunks(64 * 1024) {
+                checkpoint(chunk.len()).map_err(|e| BuiltinModelError(format!("native line hashing: {e}")))?;
+                key.update(chunk).map_err(|e| BuiltinModelError(format!("native line key: {e:?}")))?;
+                version.update(chunk).map_err(|e| BuiltinModelError(format!("native line version: {e:?}")))?;
+            }
+            let claim = ArtifactObjectClaim::new(schema,
+                key.finish().map_err(|e| BuiltinModelError(format!("native line key: {e:?}")))?,
+                version.finish().map_err(|e| BuiltinModelError(format!("native line version: {e:?}")))?, bytes.len() as u64);
+            let mut stream = builder.begin_object(claim).map_err(|e| BuiltinModelError(format!("begin native line object: {e:?}")))?;
+            for chunk in bytes.chunks(MAX_CHUNK_BYTES) {
+                checkpoint(chunk.len()).map_err(|e| BuiltinModelError(format!("native line write stopped: {e}")))?;
+                stream.write(chunk).map_err(|e| BuiltinModelError(format!("write native line object: {e:?}")))?;
+            }
+            let object_id = stream.finish().map_err(|e| BuiltinModelError(format!("finish native line object: {e:?}")))?;
+            account_streamed_payload(&mut streamed_payload_bytes, &bytes);
+            payload_ids.insert(object_id);
+            let pin = self.store.pin_garbage_collection_bounded(&mut budget, |_| check().map_err(|_| backend_store::StoreError::Bounds))
+                .map_err(|e| BuiltinModelError(format!("pin native line object: {e:?}")))?;
+            let reader = self.store.open_bounded_nonrelation_object(&pin, UntrustedObjectId::from_bytes(*object_id.as_bytes()), &[schema], None, bytes.len(), &mut budget,
+                |_| check().map_err(|_| backend_store::StoreError::Bounds))
+                .map_err(|e| BuiltinModelError(format!("open native line object: {e:?}")))?;
+            let member = reader.read_into(&mut bytes, &mut budget,
+                |_, _| check().map_err(|_| backend_store::StoreError::Bounds),
+                |view, _| backend_extension_turso::CompilerNativeLinesMember::from_verified_view(view, &mut checkpoint).map_err(|e| match e {
+                    backend_extension_turso::CompilerEnvelopeError::Stopped => backend_store::StoreError::Bounds,
+                    _ => backend_store::StoreError::Corrupt,
+                }))
+                .map_err(|e| BuiltinModelError(format!("verify native source lines: {e:?}")))?;
+            Some(member)
+        } else { None };
+
         // A C# captured-input attempt must retain its complete checked
         // invocation aggregate in the same compiler closure. Missing or
         // over-budget evidence is a refusal, never a silent completeness claim.
@@ -3856,6 +3989,10 @@ impl SemanticAuthority {
             metadata = metadata.with_native_headers(member)
                 .map_err(|error| BuiltinModelError(format!("bind native header metadata: {error}")))?;
         }
+        if let Some(member) = native_lines_member {
+            metadata = metadata.with_native_lines(member)
+                .map_err(|error| BuiltinModelError(format!("bind native source lines: {error}")))?;
+        }
         if let Some(member) = csharp_evidence_member {
             metadata = metadata.with_csharp_evidence(member)
                 .map_err(|error| BuiltinModelError(format!("bind C# invocation evidence: {error}")))?;
@@ -3877,7 +4014,7 @@ impl SemanticAuthority {
         )?;
         #[cfg(test)]
         test_wait_before_local_selection();
-        self.select_verified_closure(key, admitted, move |candidate| {
+        self.select_verified_closure(key, admitted, stopped, move |candidate| {
             if stopped() { return Err(BuiltinModelError("compiler publication cancelled".into())); }
             admit_before_select(candidate)?;
             if stopped() { return Err(BuiltinModelError("compiler publication cancelled".into())); }
@@ -4231,7 +4368,9 @@ impl SemanticAuthority {
             input_manifest.environment(),
             input_manifest.target_platform(),
         );
-        self.select_verified_closure(key, admitted_compilation, move |candidate| {
+        let deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
+        let stopped = || std::time::Instant::now() >= deadline;
+        self.select_verified_closure(key, admitted_compilation, &stopped, move |candidate| {
             if !Self::authorizes_remote_scope_at(&policy_path, scope)? {
                 return Err(BuiltinModelError(
                     "remote compiler peer trust changed before semantic selection".to_owned(),
@@ -4297,10 +4436,12 @@ impl SemanticAuthority {
         &mut self,
         key: &ProductSemanticPublicationKey,
         admitted: AdmittedCompilation,
+        stopped: &dyn Fn() -> bool,
         admit_before_select: impl FnOnce(
             &backend_extension_turso::CandidateGeneration,
         ) -> Result<(), BuiltinModelError>,
     ) -> Result<(SemanticPublicationClaim, SelectedGeneration), BuiltinModelError> {
+        if stopped() { return Err(BuiltinModelError("compiler publication stopped".into())); }
         let AdmittedCompilation {
             attempt,
             metadata,
@@ -4378,19 +4519,21 @@ impl SemanticAuthority {
         let receipt = verify_then_publish_selected_closure(
             || {
                 self.writer_authority()?
-                    .verify_compiler_publication(
+                    .verify_compiler_publication_with_stop(
                         &candidate,
                         &admitted_attempt,
                         &self.store,
                         artifact_budget(),
                         &envelope,
                         &metadata,
+                        stopped,
                     )
                     .map_err(|error| {
                         BuiltinModelError(format!("verify semantic publication closure: {error}"))
                     })
             },
             |_| {
+                if stopped() { return Err(BuiltinModelError("compiler publication stopped".into())); }
                 self.publish_selected_closure(
                     selected_pin.receipt().closure(),
                     closure_id,
@@ -4400,7 +4543,9 @@ impl SemanticAuthority {
                 )
             },
         )?;
+        if stopped() { return Err(BuiltinModelError("compiler publication stopped".into())); }
         admit_before_select(&candidate)?;
+        if stopped() { return Err(BuiltinModelError("compiler publication stopped".into())); }
         let frontier = futures_executor::block_on(
             self.writer_authority_mut()?
                 .compare_and_select(candidate, receipt),

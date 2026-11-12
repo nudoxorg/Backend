@@ -35,6 +35,7 @@ pub use authority::{
     AuthorityNamespace, AuthorityPlane, AuthoritySnapshotBudget, AuthoritySnapshotError,
     AuthoritySnapshotFailure, AuthoritySnapshotOperation, AuthoritySnapshotReceipt,
     COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA, COMPILER_CSHARP_EVIDENCE_SCHEMA,
+    COMPILER_NATIVE_LINES_METADATA_SCHEMA, COMPILER_NATIVE_LINES_SCHEMA, CompilerNativeLinesMember, VerifiedNativeLinesWitness, reopen_selected_native_lines_budgeted,
     COMPILER_NATIVE_HEADERS_METADATA_SCHEMA, COMPILER_NATIVE_HEADERS_SCHEMA, MAX_COMPILER_NATIVE_HEADERS_BYTES,
     CompilerNativeHeadersMember, VerifiedNativeHeadersWitness, compiler_native_headers_object, reopen_selected_native_headers,
     SelectedNativeHeaderBudget, reopen_selected_native_headers_budgeted,

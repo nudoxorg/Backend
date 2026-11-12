@@ -47,6 +47,7 @@ const COVERAGE_METADATA_VERSION: u16 = 6;
 const TYPESCRIPT_SNAPSHOT_METADATA_VERSION: u16 = 7;
 const CSHARP_EVIDENCE_METADATA_VERSION: u16 = 8;
 const NATIVE_HEADERS_METADATA_VERSION: u16 = 9;
+const NATIVE_LINES_METADATA_VERSION: u16 = 10;
 const MAX_PROFILE_BYTES: usize = 256;
 /// Maximum number of members in one authenticated compiler publication closure.
 pub const MAX_COMPILER_PUBLICATION_MEMBER_IDS: usize = 100_000;
@@ -85,6 +86,32 @@ pub const COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA: SchemaIdentity =
 pub const COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA: SchemaIdentity = SchemaIdentity::new(0x7a, 0xc002, 8);
 /// Metadata and typed object schemas for compiler-attested native TypeScript headers.
 pub const COMPILER_NATIVE_HEADERS_METADATA_SCHEMA: SchemaIdentity = SchemaIdentity::new(0x7a, 0xc002, 9);
+/// Metadata binding an exact native source line aggregate.
+pub const COMPILER_NATIVE_LINES_METADATA_SCHEMA: SchemaIdentity = SchemaIdentity::new(0x7a, 0xc002, 10);
+pub const COMPILER_NATIVE_LINES_SCHEMA: SchemaIdentity = SchemaIdentity::new(0x7a, 0xc00f, 1);
+const MAX_COMPILER_NATIVE_LINES_BYTES: usize = 64 * 1024 * 1024;
+
+/// A typed, bounded source-line member; selected closure admission supplies authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CompilerNativeLinesMember { object_id: AuthorityHash, byte_length: u32 }
+impl CompilerNativeLinesMember {
+    /// Admits a bounded, authenticated view without allocating another copy.
+    pub fn from_verified_view(view: backend_store::VerifiedObjectView<'_>, checkpoint: &mut impl FnMut(usize) -> Result<(), CompilerEnvelopeError>) -> Result<Self, CompilerEnvelopeError> {
+        let bytes = view.bytes();
+        if bytes.is_empty() || bytes.len() > MAX_COMPILER_NATIVE_LINES_BYTES || view.schema() != COMPILER_NATIVE_LINES_SCHEMA { return Err(CompilerEnvelopeError::NativeHeaders); }
+        backend_semantic::native_source_lines::NativeSourceLineAggregateView::parse(bytes, checkpoint).map_err(|e| match e {
+        backend_semantic::native_source_lines::BorrowedSourceLinesError::Invalid => CompilerEnvelopeError::NativeHeaders,
+        backend_semantic::native_source_lines::BorrowedSourceLinesError::Stopped(e) => e,
+    })?;
+        let mut key = backend_version::ObjectKeyHasher::new(COMPILER_NATIVE_LINES_SCHEMA, bytes.len()).map_err(|_| CompilerEnvelopeError::NativeHeaders)?;
+        for chunk in bytes.chunks(64 * 1024) { checkpoint(chunk.len())?; key.update(chunk).map_err(|_| CompilerEnvelopeError::NativeHeaders)?; }
+        if &key.finish().map_err(|_| CompilerEnvelopeError::NativeHeaders)? != view.key() { return Err(CompilerEnvelopeError::NativeHeaders); }
+        Ok(Self { object_id: *view.id().as_bytes(), byte_length: u32::try_from(bytes.len()).map_err(|_| CompilerEnvelopeError::NativeHeaders)? })
+    }
+    pub const fn object_id(&self) -> &AuthorityHash { &self.object_id }
+    pub const fn byte_length(&self) -> u32 { self.byte_length }
+}
+
 pub const COMPILER_NATIVE_HEADERS_SCHEMA: SchemaIdentity = SchemaIdentity::new(0x7a, 0xc00e, 1);
 pub const MAX_COMPILER_NATIVE_HEADERS_BYTES: usize = 32 * 1024 * 1024;
 
@@ -466,6 +493,7 @@ pub struct CompilerPublicationMetadata {
     typescript_snapshot: Option<CompilerTypeScriptSnapshotMember>,
     csharp_evidence: Option<CompilerCSharpEvidenceMember>,
     native_headers: Option<CompilerNativeHeadersMember>,
+    native_lines: Option<CompilerNativeLinesMember>,
 }
 
 impl CompilerPublicationMetadata {
@@ -552,6 +580,7 @@ impl CompilerPublicationMetadata {
             typescript_snapshot: None,
             csharp_evidence: None,
             native_headers: None,
+            native_lines: None,
         })
     }
 
@@ -639,8 +668,20 @@ impl CompilerPublicationMetadata {
     }
     pub const fn native_headers(&self) -> Option<&CompilerNativeHeadersMember> { self.native_headers.as_ref() }
 
+    /// Binds the exact line-map member to the selected compiler attempt.
+    pub fn with_native_lines(mut self, member: CompilerNativeLinesMember) -> Result<Self, CompilerEnvelopeError> {
+        if self.native_lines.is_some() || self.native_program_sources.is_none() || self.csharp_evidence.is_some()
+            || member.byte_length == 0 || member.byte_length as usize > MAX_COMPILER_NATIVE_LINES_BYTES
+            || metadata_member_ids_checked(&self)?.len() >= MAX_MEMBER_IDS { return Err(CompilerEnvelopeError::NativeHeaders); }
+        self.native_lines = Some(member);
+        Ok(self)
+    }
+    pub const fn native_lines(&self) -> Option<&CompilerNativeLinesMember> { self.native_lines.as_ref() }
+
     fn schema(&self) -> SchemaIdentity {
-        if self.native_headers.is_some() {
+        if self.native_lines.is_some() {
+            COMPILER_NATIVE_LINES_METADATA_SCHEMA
+        } else if self.native_headers.is_some() {
             COMPILER_NATIVE_HEADERS_METADATA_SCHEMA
         } else if self.csharp_evidence.is_some() {
             COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA
@@ -741,7 +782,7 @@ impl CompilerPublicationMetadata {
         let mut capacity = METADATA_MAGIC.len() + 2 + 4 + self.manifest_bytes.len()
             + COMPILATION_BINDING_BYTES + 4 + self.images.len() * 72 + 1;
         if let Some(planes) = &self.versioned_planes { capacity += 4 + planes.canonical_bytes().len(); }
-        if self.typescript_snapshot.is_some() || self.native_headers.is_some() {
+        if self.typescript_snapshot.is_some() || self.native_headers.is_some() || self.native_lines.is_some() {
             capacity += 2 + usize::from(self.native_program_sources.is_some()) * 68
                 + usize::from(self.source_coverage.is_some()) * 68
                 + usize::from(self.typescript_snapshot.is_some()) * 36
@@ -752,10 +793,13 @@ impl CompilerPublicationMetadata {
                 + usize::from(self.source_coverage.is_some()) * 68
                 + usize::from(self.csharp_evidence.is_some()) * 36;
         }
+        if self.native_lines.is_some() { capacity += 38; }
         let mut output = Vec::with_capacity(capacity);
         output.extend_from_slice(METADATA_MAGIC);
         output.extend_from_slice(
-            &if self.native_headers.is_some() {
+            &if self.native_lines.is_some() {
+                NATIVE_LINES_METADATA_VERSION
+            } else if self.native_headers.is_some() {
                 NATIVE_HEADERS_METADATA_VERSION
             } else if self.csharp_evidence.is_some() {
                 CSHARP_EVIDENCE_METADATA_VERSION
@@ -792,7 +836,7 @@ impl CompilerPublicationMetadata {
                 output.extend_from_slice(&bytes);
             }
         }
-        if self.typescript_snapshot.is_some() || self.native_headers.is_some() {
+        if self.typescript_snapshot.is_some() || self.native_headers.is_some() || self.native_lines.is_some() {
             output.push(u8::from(self.native_program_sources.is_some()));
             if let Some(member) = self.native_program_sources {
                 output.extend_from_slice(&member.object_id);
@@ -805,7 +849,7 @@ impl CompilerPublicationMetadata {
                 output.extend_from_slice(&member.identity);
                 output.extend_from_slice(&member.byte_length.to_le_bytes());
             }
-            if self.native_headers.is_some() { output.push(u8::from(self.typescript_snapshot.is_some())); }
+            if self.native_headers.is_some() || self.native_lines.is_some() { output.push(u8::from(self.typescript_snapshot.is_some())); }
             if let Some(member) = self.typescript_snapshot {
                 output.extend_from_slice(&member.object_id);
                 output.extend_from_slice(&member.byte_length.to_le_bytes());
@@ -829,7 +873,12 @@ impl CompilerPublicationMetadata {
             output.extend_from_slice(&member.object_id);
             output.extend_from_slice(&member.byte_length.to_le_bytes());
         }
+        if self.native_lines.is_some() { output.push(u8::from(self.native_headers.is_some())); }
         if let Some(member) = self.native_headers {
+            output.extend_from_slice(&member.object_id);
+            output.extend_from_slice(&member.byte_length.to_le_bytes());
+        }
+        if let Some(member) = self.native_lines {
             output.extend_from_slice(&member.object_id);
             output.extend_from_slice(&member.byte_length.to_le_bytes());
         }
@@ -839,7 +888,10 @@ impl CompilerPublicationMetadata {
     /// Returns the typed FileStore metadata object.
     #[must_use]
     pub fn typed_object(&self) -> TypedObject {
-        if self.native_headers.is_some() {
+        if self.native_lines.is_some() {
+            let key = ObjectKey::<CompilerNativeLinesMetadataSchema>::from_value(self);
+            TypedObject::from_value(&key, self)
+        } else if self.native_headers.is_some() {
             let key = ObjectKey::<CompilerNativeHeadersMetadataSchema>::from_value(self);
             TypedObject::from_value(&key, self)
         } else if self.csharp_evidence.is_some() {
@@ -886,6 +938,7 @@ impl CompilerPublicationMetadata {
                 | TYPESCRIPT_SNAPSHOT_METADATA_VERSION
                 | CSHARP_EVIDENCE_METADATA_VERSION
                 | NATIVE_HEADERS_METADATA_VERSION
+                | NATIVE_LINES_METADATA_VERSION
         ) {
             return Err(CompilerEnvelopeError::MetadataVersion);
         }
@@ -916,23 +969,24 @@ impl CompilerPublicationMetadata {
             },
             _ => return Err(CompilerEnvelopeError::VersionedPlaneMetadata),
         }
-        let has_program = if matches!(version, COVERAGE_METADATA_VERSION | TYPESCRIPT_SNAPSHOT_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION) {
+        let has_program = if matches!(version, COVERAGE_METADATA_VERSION | TYPESCRIPT_SNAPSHOT_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION | NATIVE_LINES_METADATA_VERSION) {
             match scan.u8()? { 0 => false, 1 => true, _ => return Err(CompilerEnvelopeError::NativeProgramSources) }
         } else { version == PROGRAM_METADATA_VERSION };
         if has_program { scan.take(68)?; }
         let has_coverage = match version {
             COVERAGE_METADATA_VERSION => true,
-            TYPESCRIPT_SNAPSHOT_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION => match scan.u8()? { 0 => false, 1 => true, _ => return Err(CompilerEnvelopeError::SourceCoverage) },
+            TYPESCRIPT_SNAPSHOT_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION | NATIVE_LINES_METADATA_VERSION => match scan.u8()? { 0 => false, 1 => true, _ => return Err(CompilerEnvelopeError::SourceCoverage) },
             _ => false,
         };
         if has_coverage { scan.take(68)?; }
         let has_snapshot = match version {
             TYPESCRIPT_SNAPSHOT_METADATA_VERSION => true,
-            NATIVE_HEADERS_METADATA_VERSION => match scan.u8()? { 0 => false, 1 => true, _ => return Err(CompilerEnvelopeError::TypeScriptSnapshotWitness) },
+            NATIVE_HEADERS_METADATA_VERSION | NATIVE_LINES_METADATA_VERSION => match scan.u8()? { 0 => false, 1 => true, _ => return Err(CompilerEnvelopeError::TypeScriptSnapshotWitness) },
             _ => false,
         };
         if has_snapshot { scan.take(36)?; }
         if version == CSHARP_EVIDENCE_METADATA_VERSION || version == NATIVE_HEADERS_METADATA_VERSION { scan.take(36)?; }
+        if version == NATIVE_LINES_METADATA_VERSION { match scan.u8()? { 0 => {}, 1 => { scan.take(36)?; }, _ => return Err(CompilerEnvelopeError::NativeHeaders) }; scan.take(36)?; }
         if !scan.is_empty() { return Err(CompilerEnvelopeError::TrailingBytes); }
         let mut images = Vec::new();
         images.try_reserve_exact(count).map_err(|_| CompilerEnvelopeError::MemberCount)?;
@@ -959,7 +1013,7 @@ impl CompilerPublicationMetadata {
         };
         let has_program = if matches!(
             version,
-            COVERAGE_METADATA_VERSION | TYPESCRIPT_SNAPSHOT_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION
+            COVERAGE_METADATA_VERSION | TYPESCRIPT_SNAPSHOT_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION | NATIVE_LINES_METADATA_VERSION
         ) {
             match input.u8()? {
                 0 => false,
@@ -987,7 +1041,7 @@ impl CompilerPublicationMetadata {
         };
         let has_coverage = match version {
             COVERAGE_METADATA_VERSION => true,
-            TYPESCRIPT_SNAPSHOT_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION => match input.u8()? {
+            TYPESCRIPT_SNAPSHOT_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION | NATIVE_LINES_METADATA_VERSION => match input.u8()? {
                 0 => false,
                 1 => true,
                 _ => return Err(CompilerEnvelopeError::SourceCoverage),
@@ -1011,7 +1065,7 @@ impl CompilerPublicationMetadata {
         };
         let has_snapshot = match version {
             TYPESCRIPT_SNAPSHOT_METADATA_VERSION => true,
-            NATIVE_HEADERS_METADATA_VERSION => match input.u8()? {
+            NATIVE_HEADERS_METADATA_VERSION | NATIVE_LINES_METADATA_VERSION => match input.u8()? {
                 0 => false, 1 => true,
                 _ => return Err(CompilerEnvelopeError::TypeScriptSnapshotWitness),
             },
@@ -1039,9 +1093,15 @@ impl CompilerPublicationMetadata {
             }
             Some(member)
         } else { None };
-        let native_headers = if version == NATIVE_HEADERS_METADATA_VERSION {
+        let has_headers = if version == NATIVE_LINES_METADATA_VERSION { match input.u8()? { 0 => false, 1 => true, _ => return Err(CompilerEnvelopeError::NativeHeaders) } } else { version == NATIVE_HEADERS_METADATA_VERSION };
+        let native_headers = if has_headers {
             let member = CompilerNativeHeadersMember { object_id: input.array::<32>()?, byte_length: input.u32()? };
             if member.byte_length == 0 || member.byte_length as usize > MAX_COMPILER_NATIVE_HEADERS_BYTES { return Err(CompilerEnvelopeError::NativeHeaders); }
+            Some(member)
+        } else { None };
+        let native_lines = if version == NATIVE_LINES_METADATA_VERSION {
+            let member = CompilerNativeLinesMember { object_id: input.array::<32>()?, byte_length: input.u32()? };
+            if member.byte_length == 0 || member.byte_length as usize > MAX_COMPILER_NATIVE_LINES_BYTES { return Err(CompilerEnvelopeError::NativeHeaders); }
             Some(member)
         } else { None };
         if !input.is_empty() {
@@ -1070,6 +1130,7 @@ impl CompilerPublicationMetadata {
         }
         if let Some(member) = csharp_evidence { metadata = metadata.with_csharp_evidence(member)?; }
         if let Some(member) = native_headers { metadata = metadata.with_native_headers(member)?; }
+        if let Some(member) = native_lines { metadata = metadata.with_native_lines(member)?; }
         if metadata.canonical_bytes() != bytes {
             return Err(CompilerEnvelopeError::NonCanonical);
         }
@@ -1083,7 +1144,7 @@ fn compiler_metadata_decode_bound(bytes: &[u8]) -> Result<usize, CompilerEnvelop
     let mut input = Decoder::new(bytes);
     if input.take(METADATA_MAGIC.len())? != METADATA_MAGIC { return Err(CompilerEnvelopeError::MetadataMagic); }
     let version = input.u16()?;
-    if !matches!(version, METADATA_VERSION | PROGRAM_METADATA_VERSION | COVERAGE_METADATA_VERSION | TYPESCRIPT_SNAPSHOT_METADATA_VERSION | CSHARP_EVIDENCE_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION) { return Err(CompilerEnvelopeError::MetadataVersion); }
+    if !matches!(version, METADATA_VERSION | PROGRAM_METADATA_VERSION | COVERAGE_METADATA_VERSION | TYPESCRIPT_SNAPSHOT_METADATA_VERSION | CSHARP_EVIDENCE_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION | NATIVE_LINES_METADATA_VERSION) { return Err(CompilerEnvelopeError::MetadataVersion); }
     let manifest_len = input.u32()? as usize;
     if manifest_len < SEMANTIC_MANIFEST_HEADER_BYTES || manifest_len > MAX_MANIFEST_BYTES { return Err(CompilerEnvelopeError::ManifestFacts); }
     input.take(manifest_len)?;
@@ -1114,31 +1175,32 @@ fn compiler_metadata_decode_bound(bytes: &[u8]) -> Result<usize, CompilerEnvelop
     }
     // The ordinary decoder performs the full optional-tail preflight before
     // materialization. This scan checks the same flags and extents here.
-    let has_program = if matches!(version, COVERAGE_METADATA_VERSION | TYPESCRIPT_SNAPSHOT_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION) {
+    let has_program = if matches!(version, COVERAGE_METADATA_VERSION | TYPESCRIPT_SNAPSHOT_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION | NATIVE_LINES_METADATA_VERSION) {
         match input.u8()? { 0 => false, 1 => true, _ => return Err(CompilerEnvelopeError::NativeProgramSources) }
     } else { version == PROGRAM_METADATA_VERSION };
     if has_program { input.take(68)?; }
     let has_coverage = match version {
         COVERAGE_METADATA_VERSION => true,
-        TYPESCRIPT_SNAPSHOT_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION => match input.u8()? { 0 => false, 1 => true, _ => return Err(CompilerEnvelopeError::SourceCoverage) },
+        TYPESCRIPT_SNAPSHOT_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION | NATIVE_LINES_METADATA_VERSION => match input.u8()? { 0 => false, 1 => true, _ => return Err(CompilerEnvelopeError::SourceCoverage) },
         _ => false,
     };
     if has_coverage { input.take(68)?; }
     let has_snapshot = match version {
         TYPESCRIPT_SNAPSHOT_METADATA_VERSION => true,
-        NATIVE_HEADERS_METADATA_VERSION => match input.u8()? { 0 => false, 1 => true, _ => return Err(CompilerEnvelopeError::TypeScriptSnapshotWitness) },
+        NATIVE_HEADERS_METADATA_VERSION | NATIVE_LINES_METADATA_VERSION => match input.u8()? { 0 => false, 1 => true, _ => return Err(CompilerEnvelopeError::TypeScriptSnapshotWitness) },
         _ => false,
     };
     if has_snapshot { input.take(36)?; }
     if version == CSHARP_EVIDENCE_METADATA_VERSION || version == NATIVE_HEADERS_METADATA_VERSION { input.take(36)?; }
+    if version == NATIVE_LINES_METADATA_VERSION { match input.u8()? { 0 => {}, 1 => { input.take(36)?; }, _ => return Err(CompilerEnvelopeError::NativeHeaders) }; input.take(36)?; }
     if !input.is_empty() { return Err(CompilerEnvelopeError::TrailingBytes); }
     // Each optional setter checks an exact member inventory. Its canonical
     // metadata object ID is streamed from one temporary canonical encoding;
     // The inventory reserves raw image/plane/optional slots before deduping.
     let setters = usize::from(has_program) + usize::from(has_coverage) + usize::from(has_snapshot)
         + usize::from(version == CSHARP_EVIDENCE_METADATA_VERSION)
-        + usize::from(version == NATIVE_HEADERS_METADATA_VERSION);
-    let inventory_slots = count.checked_add(nested_physical_slots).and_then(|v| v.checked_add(6)).ok_or(CompilerEnvelopeError::MemberCount)?;
+        + usize::from(version == NATIVE_HEADERS_METADATA_VERSION) + 2 * usize::from(version == NATIVE_LINES_METADATA_VERSION);
+    let inventory_slots = count.checked_add(nested_physical_slots).and_then(|v| v.checked_add(7)).ok_or(CompilerEnvelopeError::MemberCount)?;
     let per_setter = bytes.len().checked_add(nested_wire_len.checked_mul(2).ok_or(CompilerEnvelopeError::MemberCount)?)
         .and_then(|v| v.checked_add(inventory_slots.checked_mul(32)?)).ok_or(CompilerEnvelopeError::MemberCount)?;
     bound = bound.checked_add(setters.checked_mul(per_setter).ok_or(CompilerEnvelopeError::MemberCount)?).ok_or(CompilerEnvelopeError::MemberCount)?;
@@ -1512,6 +1574,7 @@ pub(super) struct FileStoreCompilerPublicationVerifier<'store, 'envelope, 'metad
     budget: ArtifactBudget,
     expected: &'envelope CompilerPublicationEnvelope,
     expected_metadata: &'metadata CompilerPublicationMetadata,
+    stopped: Option<&'store dyn Fn() -> bool>,
 }
 
 impl<'store, 'envelope, 'metadata>
@@ -1530,7 +1593,13 @@ impl<'store, 'envelope, 'metadata>
             budget,
             expected,
             expected_metadata,
+            stopped: None,
         }
+    }
+
+    pub(super) fn with_stop(mut self, stopped: &'store dyn Fn() -> bool) -> Self {
+        self.stopped = Some(stopped);
+        self
     }
 }
 
@@ -1615,6 +1684,7 @@ pub fn reopen_selected_compiler_publication(
             | COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA
             | COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA
             | COMPILER_NATIVE_HEADERS_METADATA_SCHEMA
+            | COMPILER_NATIVE_LINES_METADATA_SCHEMA
     ) {
         return Err("selected compiler metadata has the wrong schema".to_owned());
     }
@@ -1702,6 +1772,7 @@ pub fn reopen_selected_compiler_metadata(
             | COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA
             | COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA
             | COMPILER_NATIVE_HEADERS_METADATA_SCHEMA
+            | COMPILER_NATIVE_LINES_METADATA_SCHEMA
     ) {
         return Err("selected compiler metadata has the wrong schema".to_owned());
     }
@@ -1913,7 +1984,7 @@ fn selected_borrowed_metadata_member(
     wire: &[u8], schema: SchemaIdentity, metadata_id: AuthorityHash,
     envelope: &BorrowedSelectedEnvelope<'_>, budget: &mut SelectedNativeHeaderBudget,
     cancelled: &dyn Fn() -> bool,
-) -> Result<Option<CompilerNativeHeadersMember>, String> {
+) -> Result<(Option<CompilerNativeHeadersMember>, Option<CompilerNativeLinesMember>), String> {
     let version_at = METADATA_MAGIC.len();
     let version = wire.get(version_at..version_at + 2).ok_or("truncated metadata version")?;
     let version = u16::from_le_bytes([version[0], version[1]]);
@@ -1924,6 +1995,7 @@ fn selected_borrowed_metadata_member(
         TYPESCRIPT_SNAPSHOT_METADATA_VERSION => COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA,
         CSHARP_EVIDENCE_METADATA_VERSION => COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA,
         NATIVE_HEADERS_METADATA_VERSION => COMPILER_NATIVE_HEADERS_METADATA_SCHEMA,
+        NATIVE_LINES_METADATA_VERSION => COMPILER_NATIVE_LINES_METADATA_SCHEMA,
         _ => return Err("invalid compiler metadata version".into()),
     };
     if schema != expected { return Err("compiler metadata schema differs".into()); }
@@ -1936,7 +2008,7 @@ fn selected_borrowed_metadata_member(
     if envelope.logical_generation != metadata.binding_identity || envelope.semantic_root != metadata.semantic_catalog_root {
         return Err("selected compiler metadata differs from envelope".into());
     }
-    let member = metadata.native_headers;
+    let member = (metadata.native_headers, metadata.native_lines);
     drop(bitmap);
     budget.memory = budget.memory.checked_add(bitmap_len).ok_or("metadata bitmap refund overflow")?;
     Ok(member)
@@ -1969,11 +2041,11 @@ pub fn reopen_selected_native_headers_budgeted(
     header_member_bounded(store, &pin, closure, metadata_id, budget, cancelled)?;
     let metadata_max = MAX_MANIFEST_BYTES + 64 * 1024 * 1024 + MAX_MEMBER_IDS * 72 + 1024;
     let schemas = [COMPILER_PUBLICATION_METADATA_SCHEMA, COMPILER_PROGRAM_METADATA_SCHEMA, COMPILER_COVERAGE_METADATA_SCHEMA,
-        COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA, COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA, COMPILER_NATIVE_HEADERS_METADATA_SCHEMA];
+        COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA, COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA, COMPILER_NATIVE_HEADERS_METADATA_SCHEMA, COMPILER_NATIVE_LINES_METADATA_SCHEMA];
     let (wire, schema, key) = header_object_bounded(store, &pin, metadata_id, &schemas, metadata_max, budget, cancelled)?;
     header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected metadata stopped: {e:?}"))?;
     verified_payload_key_checkpointed(schema, &wire, &key, budget, cancelled)?;
-    let member = selected_borrowed_metadata_member(&wire, schema, metadata_id, &envelope, budget, cancelled)?;
+    let (member, _) = selected_borrowed_metadata_member(&wire, schema, metadata_id, &envelope, budget, cancelled)?;
     for id in envelope.members() {
         if header_member_bounded(store, &pin, closure, id, budget, cancelled)? != count { return Err("selected closure count changed".into()); }
     }
@@ -1993,6 +2065,63 @@ pub fn reopen_selected_native_headers_budgeted(
     let bytes = wire;
     budget.memory = initial.checked_sub(retained).ok_or("header retained budget exceeded")?;
     Ok(Some(VerifiedNativeHeadersWitness { bytes, object_id: id }))
+}
+
+/// Line-map wire authenticated by the exact selected compiler closure.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifiedNativeLinesWitness { bytes: Box<[u8]>, object_id: AuthorityHash }
+impl VerifiedNativeLinesWitness {
+    pub fn as_bytes(&self) -> &[u8] { &self.bytes }
+    pub const fn object_id(&self) -> &AuthorityHash { &self.object_id }
+}
+
+pub fn reopen_selected_native_lines_budgeted(
+    store: &FileStore, selected: &SelectedGeneration, budget: &mut SelectedNativeHeaderBudget,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Option<VerifiedNativeLinesWitness>, String> {
+    let initial = budget.memory;
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
+    let pin = store.pin_garbage_collection_bounded(&mut budget.memory, |_| header_checkpoint(&budget.work, cancelled))
+        .map_err(|e| format!("pin selected compiler closure: {e:?}"))?;
+    let closure = backend_store::ClosureId::from_bytes(*selected.closure_id());
+    let count = header_member_bounded(store, &pin, closure, *selected.candidate_id(), budget, cancelled)?;
+    if count == 0 || count > (MAX_MEMBER_IDS as u64 + 1) { return Err("selected compiler closure count exceeds limit".into()); }
+    let envelope_max = MAGIC.len() + 2 + 5 * 4 + 4 * 4096 + MAX_PROFILE_BYTES + 1 + 16 + 8 + 32 * 6 + 1 + 4 + MAX_MEMBER_IDS * 32;
+    let (envelope_wire, schema, key) = header_object_bounded(store, &pin, *selected.candidate_id(), &[COMPILER_PUBLICATION_ENVELOPE_SCHEMA], envelope_max, budget, cancelled)?;
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected envelope stopped: {e:?}"))?;
+    verified_payload_key_checkpointed(schema, &envelope_wire, &key, budget, cancelled)?;
+    let envelope = borrowed_selected_envelope(&envelope_wire, selected, selected.candidate_id(), &|| {
+        header_checkpoint(&budget.work, cancelled).map_err(|_| CompilerEnvelopeError::Stopped)
+    }).map_err(|e| e.to_string())?;
+    if count != u64::try_from(envelope.member_wire.len() / 32).map_err(|_| "member count overflow")? + 1 { return Err("selected compiler closure count differs".into()); }
+    let metadata_id = envelope.metadata_id;
+    header_member_bounded(store, &pin, closure, metadata_id, budget, cancelled)?;
+    let metadata_max = MAX_MANIFEST_BYTES + 64 * 1024 * 1024 + MAX_MEMBER_IDS * 72 + 1024;
+    let schemas = [COMPILER_PUBLICATION_METADATA_SCHEMA, COMPILER_PROGRAM_METADATA_SCHEMA, COMPILER_COVERAGE_METADATA_SCHEMA,
+        COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA, COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA, COMPILER_NATIVE_HEADERS_METADATA_SCHEMA, COMPILER_NATIVE_LINES_METADATA_SCHEMA];
+    let (wire, schema, key) = header_object_bounded(store, &pin, metadata_id, &schemas, metadata_max, budget, cancelled)?;
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected metadata stopped: {e:?}"))?;
+    verified_payload_key_checkpointed(schema, &wire, &key, budget, cancelled)?;
+    let (_, member) = selected_borrowed_metadata_member(&wire, schema, metadata_id, &envelope, budget, cancelled)?;
+    for id in envelope.members() {
+        if header_member_bounded(store, &pin, closure, id, budget, cancelled)? != count { return Err("selected closure count changed".into()); }
+    }
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
+    let Some(member) = member else { budget.memory = initial; return Ok(None) };
+    let id = *member.object_id();
+    let length = member.byte_length() as usize;
+    let (wire, schema, key) = header_object_bounded(store, &pin, id, &[COMPILER_NATIVE_LINES_SCHEMA], length, budget, cancelled)?;
+    if schema != COMPILER_NATIVE_LINES_SCHEMA || wire.len() != length { return Err("selected header extent differs".into()); }
+    verified_payload_key_checkpointed(schema, &wire, &key, budget, cancelled)?;
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
+    // Validate all canonical NHA1 framing without materializing decoded rows.
+    let _view = backend_semantic::native_source_lines::NativeSourceLineAggregateView::parse(&wire, &mut |_| header_checkpoint(&budget.work, cancelled))
+        .map_err(|e| format!("selected header scan: {e:?}"))?;
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
+    let retained = wire.len().checked_add(2 * std::mem::size_of::<usize>()).ok_or("header retained budget overflow")?;
+    let bytes = wire;
+    budget.memory = initial.checked_sub(retained).ok_or("header retained budget exceeded")?;
+    Ok(Some(VerifiedNativeLinesWitness { bytes, object_id: id }))
 }
 
 /// Selected-closure authenticated header claims borrowed from caller scratch.
@@ -2045,11 +2174,11 @@ pub fn reopen_selected_native_headers_in_scratch<'a>(
     header_member_bounded(store, &pin, closure, metadata_id, budget, cancelled)?;
     let metadata_max = MAX_MANIFEST_BYTES + 64 * 1024 * 1024 + MAX_MEMBER_IDS * 72 + 1024;
     let schemas = [COMPILER_PUBLICATION_METADATA_SCHEMA, COMPILER_PROGRAM_METADATA_SCHEMA, COMPILER_COVERAGE_METADATA_SCHEMA,
-        COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA, COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA, COMPILER_NATIVE_HEADERS_METADATA_SCHEMA];
+        COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA, COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA, COMPILER_NATIVE_HEADERS_METADATA_SCHEMA, COMPILER_NATIVE_LINES_METADATA_SCHEMA];
     let (wire, _, schema, key) = header_object_into_scratch(store, &pin, metadata_id, &schemas, metadata_max, budget, cancelled, &mut *remaining_scratch)?;
     header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected metadata stopped: {e:?}"))?;
     verified_payload_key_checkpointed(schema, &wire, &key, budget, cancelled)?;
-    let member = selected_borrowed_metadata_member(&wire, schema, metadata_id, &envelope, budget, cancelled)?;
+    let (member, _) = selected_borrowed_metadata_member(&wire, schema, metadata_id, &envelope, budget, cancelled)?;
     for id in envelope.members() {
         if header_member_bounded(store, &pin, closure, id, budget, cancelled)? != count { return Err("selected closure count changed".into()); }
     }
@@ -2152,6 +2281,7 @@ impl DurableClosureVerifier for FileStoreCompilerPublicationVerifier<'_, '_, '_>
     type Error = String;
 
     fn verify_closure(&self, claim: &ClosureClaim) -> Result<(), Self::Error> {
+        if self.stopped.is_some_and(|stop| stop()) { return Err("compiler candidate verification stopped".into()); }
         if !self.expected.matches_claim(claim) || self.expected.object_id() != *claim.candidate_id()
         {
             return Err("compiler envelope differs from the exact candidate claim".to_owned());
@@ -2208,6 +2338,7 @@ impl DurableClosureVerifier for FileStoreCompilerPublicationVerifier<'_, '_, '_>
                 | COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA
                 | COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA
             | COMPILER_NATIVE_HEADERS_METADATA_SCHEMA
+            | COMPILER_NATIVE_LINES_METADATA_SCHEMA
         ) {
             return Err("compiler metadata object has the wrong schema".to_owned());
         }
@@ -2229,6 +2360,7 @@ impl DurableClosureVerifier for FileStoreCompilerPublicationVerifier<'_, '_, '_>
         {
             return Err("compiler coverage input differs from admitted attempt".to_owned());
         }
+        verify_native_lines_for_admission(self.store, &manifest, &observed_metadata, self.budget, self.stopped)?;
         verify_semantic_image_members(self.store, &manifest, &observed_metadata)?;
         verify_versioned_plane_members(&manifest, &observed_metadata)?;
         verify_exact_member_set(
@@ -2237,8 +2369,47 @@ impl DurableClosureVerifier for FileStoreCompilerPublicationVerifier<'_, '_, '_>
             observed.member_ids(),
             stored.object_count(),
         )?;
+        if self.stopped.is_some_and(|stop| stop()) { return Err("compiler candidate verification stopped".into()); }
         Ok(())
     }
+}
+
+/// The candidate verifier admits c00f as a typed member before selection.
+/// This operation is distinct from metadata-only reopen and does not make
+/// line claims authoritative for a host source.
+fn verify_native_lines_for_admission(
+    store: &FileStore, manifest: &backend_store::DurableManifest,
+    metadata: &CompilerPublicationMetadata, policy: ArtifactBudget,
+    external_stop: Option<&dyn Fn() -> bool>,
+) -> Result<(), String> {
+    let Some(member) = metadata.native_lines() else { return Ok(()) };
+    let length = member.byte_length() as usize;
+    if length == 0 || length > MAX_COMPILER_NATIVE_LINES_BYTES || length as u64 > policy.max_payload_bytes {
+        return Err("native line member extent exceeds candidate budget".into());
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let stopped = || external_stop.is_some_and(|stop| stop()) || std::time::Instant::now() >= deadline;
+    if stopped() { return Err("candidate line verification stopped".into()); }
+    manifest.admit_claim(UntrustedObjectId::from_bytes(*member.object_id()))
+        .map_err(|e| format!("admit candidate line member: {e:?}"))?
+        .ok_or("candidate line member absent from closure")?;
+    if stopped() { return Err("candidate line verification stopped".into()); }
+    let mut budget = SelectedNativeHeaderBudget::new(MAX_COMPILER_NATIVE_LINES_BYTES + 4 * 1024 * 1024, 128 * 1024 * 1024);
+    let pin = store.pin_garbage_collection_bounded(&mut budget.memory, |_| header_checkpoint(&budget.work, &stopped))
+        .map_err(|e| format!("pin candidate line member: {e:?}"))?;
+    let reader = store.open_bounded_nonrelation_object(&pin, UntrustedObjectId::from_bytes(*member.object_id()),
+        &[COMPILER_NATIVE_LINES_SCHEMA], None, length, &mut budget.memory, |_| header_checkpoint(&budget.work, &stopped))
+        .map_err(|e| format!("open candidate line member: {e:?}"))?;
+    if reader.payload_len() != length { return Err("candidate line member extent differs".into()); }
+    let mut bytes = backend_store::try_allocate_exact_zeroed_bytes_budgeted(length, &mut budget.memory)
+        .map_err(|e| format!("allocate candidate line member: {e:?}"))?;
+    let admitted = reader.read_into(&mut bytes, &mut budget.memory,
+        |_, _| header_checkpoint(&budget.work, &stopped),
+        |view, _| CompilerNativeLinesMember::from_verified_view(view, &mut |_| header_checkpoint(&budget.work, &stopped).map_err(|_| CompilerEnvelopeError::Stopped))
+            .map_err(|e| match e { CompilerEnvelopeError::Stopped => backend_store::StoreError::Bounds, _ => backend_store::StoreError::Corrupt }))
+        .map_err(|e| format!("verify candidate line member: {e:?}"))?;
+    if &admitted != member { return Err("candidate line member differs".into()); }
+    Ok(())
 }
 
 fn metadata_member_ids(metadata: &CompilerPublicationMetadata) -> Vec<AuthorityHash> {
@@ -2266,7 +2437,8 @@ fn metadata_member_ids_with_id(metadata: &CompilerPublicationMetadata, metadata_
         + usize::from(metadata.source_coverage.is_some())
         + usize::from(metadata.typescript_snapshot.is_some())
         + usize::from(metadata.csharp_evidence.is_some())
-        + usize::from(metadata.native_headers.is_some());
+        + usize::from(metadata.native_headers.is_some())
+        + usize::from(metadata.native_lines.is_some());
     let mut members = Vec::with_capacity(metadata.images.len() + plane_count + artifact_count + optional_count + 1);
     members.push(metadata_id);
     if let Some(member) = metadata.native_program_sources() {
@@ -2280,6 +2452,7 @@ fn metadata_member_ids_with_id(metadata: &CompilerPublicationMetadata, metadata_
     }
     if let Some(member) = metadata.csharp_evidence() { members.push(*member.object_id()); }
     if let Some(member) = metadata.native_headers() { members.push(*member.object_id()); }
+    if let Some(member) = metadata.native_lines() { members.push(*member.object_id()); }
     members.extend(metadata.images.iter().map(|image| image.object_id));
     if let Some(planes) = &metadata.versioned_planes {
         members.extend(
@@ -3139,6 +3312,13 @@ impl Schema for CompilerTypeScriptSnapshotMetadataSchema {
     }
 }
 
+struct CompilerNativeLinesMetadataSchema;
+impl Schema for CompilerNativeLinesMetadataSchema {
+    const DOMAIN: u8 = 0x7a; const TYPE: u16 = 0xc002; const VERSION: u8 = 10;
+    type Value = CompilerPublicationMetadata;
+    fn encode(value: &Self::Value, output: &mut Vec<u8>) { output.extend_from_slice(&value.canonical_bytes()); }
+}
+
 struct CompilerNativeHeadersMetadataSchema;
 impl Schema for CompilerNativeHeadersMetadataSchema {
     const DOMAIN: u8 = 0x7a; const TYPE: u16 = 0xc002; const VERSION: u8 = 9;
@@ -3770,7 +3950,7 @@ mod tests {
             Err(CompilerEnvelopeError::NativeProgramSources)
         );
         let mut future = bytes;
-        future[METADATA_MAGIC.len()..METADATA_MAGIC.len() + 2].copy_from_slice(&10u16.to_le_bytes());
+        future[METADATA_MAGIC.len()..METADATA_MAGIC.len() + 2].copy_from_slice(&12u16.to_le_bytes());
         assert_eq!(
             CompilerPublicationMetadata::decode(&future),
             Err(CompilerEnvelopeError::MetadataVersion)
@@ -3967,6 +4147,23 @@ mod tests {
             assert!(peak.bytes_max as usize <= bound, "metadata v{expected_version} allocation peak {peak:?}, bound {bound}");
             assert!(compiler_metadata_decode_bound(&bytes[..bytes.len()-1]).is_err());
             assert!(CompilerPublicationMetadata::decode(&bytes[..bytes.len()-1]).is_err());
+        }
+    }
+
+    #[test]
+    fn native_lines_metadata_v10_roundtrips_optional_header() {
+        let base = metadata(compiler_image().0).with_native_program_sources(CompilerProgramSourceMember {
+            object_id: [0x11; 32], program: [0x22; 32], byte_length: 8,
+        }).unwrap();
+        let header = CompilerNativeHeadersMember { object_id: [0x33; 32], byte_length: 8 };
+        let lines = CompilerNativeLinesMember { object_id: [0x44; 32], byte_length: 8 };
+        for value in [base.clone().with_native_lines(lines).unwrap(), base.with_native_headers(header).unwrap().with_native_lines(lines).unwrap()] {
+            let wire = value.canonical_bytes();
+            assert_eq!(u16::from_le_bytes(wire[METADATA_MAGIC.len()..METADATA_MAGIC.len()+2].try_into().unwrap()), 10);
+            assert_eq!(value.typed_object().schema(), COMPILER_NATIVE_LINES_METADATA_SCHEMA);
+            assert_eq!(CompilerPublicationMetadata::decode(&wire).unwrap(), value);
+            assert!(metadata_member_ids_checked(&value).unwrap().contains(lines.object_id()));
+            assert!(CompilerPublicationMetadata::decode(&wire[..wire.len()-1]).is_err());
         }
     }
 
@@ -4332,6 +4529,131 @@ mod tests {
         }
         assert!(reopen_selected_native_headers_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(high, 100_000), &|| false).is_ok());
         assert!(reopen_selected_native_headers_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(high - 1, 100_000), &|| false).is_err());
+        drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn native_lines_selected_cold_reopen_checks_member_budget_and_source() {
+        use backend_semantic::ir::{NativeProgramSource, NativeProgramSourceManifest, NativeProgramSourceManifestSchema, SourceIdentity};
+        use backend_semantic::native_source_lines::{NativeSourceLineAggregate, NativeSourceLineAggregateSchema, NativeSourceLineFile, NativeSourceLineAggregateView};
+        let source_bytes = b"a\r\nb\nc";
+        let source = SourceIdentity::from_bytes(source_bytes).unwrap();
+        let aggregate = NativeSourceLineAggregate { files: vec![NativeSourceLineFile { path: "src/main.ts".into(), source, line_starts: vec![0, 3, 5] }] };
+        let object = TypedObject::from_value(&ObjectKey::<NativeSourceLineAggregateSchema>::from_value(&aggregate), &aggregate);
+        let line_member = CompilerNativeLinesMember { object_id: *object.id().as_bytes(), byte_length: object.bytes().len() as u32 };
+        let program = NativeProgramSourceManifest::from_sources(ContentId::from_canonical_bytes(b"compiler"), vec![NativeProgramSource {
+            program_path: "src/main.ts".into(), package_path: Some("src/main.ts".into()), source,
+        }]).unwrap();
+        let program_object = TypedObject::from_value(&ObjectKey::<NativeProgramSourceManifestSchema>::from_value(program.as_bytes()), program.as_bytes());
+        let directory = scratch_store();
+        let store = FileStore::open(&directory, 8 * 1024 * 1024).unwrap();
+        store.write_object(&program_object).unwrap();
+        let program_member = CompilerProgramSourceMember::from_verified_object(store.verify_object_claim(UntrustedObjectId::from_bytes(*program_object.id().as_bytes())).unwrap(), &program).unwrap();
+        let (image, image_object) = compiler_image();
+        let metadata = metadata(image).with_native_program_sources(program_member).unwrap().with_native_lines(line_member).unwrap();
+        let attempt = attempt();
+        let envelope = CompilerPublicationEnvelope::new(&attempt, &metadata).unwrap();
+        let mut objects = vec![image_object.clone(), program_object.clone(), object.clone(), metadata.typed_object(), envelope.typed_object()];
+        objects.sort_by_key(|o| (o.schema(), *o.key(), *o.version()));
+        let closure = store.write_closure(&ClosureManifest::new(objects).unwrap()).unwrap();
+        let selected = selected_generation(&attempt, &envelope.candidate(attempt.clone(), *closure.as_bytes()).unwrap(), 1);
+        let mut scratch_credit = 8 * 1024 * 1024;
+        let pin = store.pin_garbage_collection_bounded(&mut scratch_credit, |_| Ok(())).unwrap();
+        let reader = store.open_bounded_nonrelation_object(&pin, UntrustedObjectId::from_bytes(*object.id().as_bytes()), &[COMPILER_NATIVE_LINES_SCHEMA], None, object.bytes().len(), &mut scratch_credit, |_| Ok(())).unwrap();
+        let mut wire = vec![0; object.bytes().len()];
+        let admitted = reader.read_into(&mut wire, &mut scratch_credit, |_, _| Ok(()), |view, _| {
+            CompilerNativeLinesMember::from_verified_view(view, &mut |_| Ok(())).map_err(|_| backend_store::StoreError::Corrupt)
+        }).unwrap();
+        assert_eq!(admitted, line_member);
+        drop(pin);
+        drop(store);
+        let store = FileStore::open(&directory, 8 * 1024 * 1024).unwrap();
+        let mut delivered = (0usize, 0usize, 0usize);
+        let mut visitor_budget = SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000);
+        visit_selected_publication_wire(&store, &selected, &mut visitor_budget, &|| false, 8 * 1024 * 1024, 1, |wire, budget| {
+            match wire {
+                SelectedPublicationWire::Program { bytes, .. } => { assert!(!bytes.is_empty()); delivered.0 += 1; }
+                SelectedPublicationWire::Image { bytes, .. } => { assert!(!bytes.is_empty()); delivered.1 += 1; }
+                SelectedPublicationWire::Lines { bytes, .. } => { assert!(!bytes.is_empty()); delivered.2 += 1; }
+                SelectedPublicationWire::Headers { .. } => panic!("unexpected header member"),
+            }
+            budget.reserve_retained(1).map_err(|e| format!("{e:?}"))?;
+            Ok(())
+        }).unwrap();
+        assert_eq!(delivered, (1, 1, 1));
+        assert_eq!(visitor_budget.remaining_memory(), 8 * 1024 * 1024 - 3);
+        let stopped = std::cell::Cell::new(false);
+        let mut detached = Vec::new();
+        let late = visit_selected_publication_wire(&store, &selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000), &|| stopped.get(), 8 * 1024 * 1024, 1, |wire, _| {
+            if let SelectedPublicationWire::Program { .. } = wire { detached.push(1); stopped.set(true); }
+            Ok(())
+        });
+        assert!(late.is_err());
+        assert_eq!(detached, [1]); // This partial plan is never published after failure.
+        let visitor_work = 100_000 - visitor_budget.remaining_work();
+        assert!(visit_selected_publication_wire(&store, &selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, visitor_work - 1), &|| false, 8 * 1024 * 1024, 1, |_, _| Ok(())).is_err());
+        assert!(visit_selected_publication_wire(&store, &selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000), &|| true, 8 * 1024 * 1024, 1, |_, _| Ok(())).is_err());
+        assert!(visit_selected_publication_wire(&store, &selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000), &|| false, 0, 1, |_, _| Ok(())).is_err());
+        let mut credit = SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000);
+        let witness = reopen_selected_native_lines_budgeted(&store, &selected, &mut credit, &|| false).unwrap().unwrap();
+        assert_eq!(witness.object_id(), line_member.object_id());
+        let view = NativeSourceLineAggregateView::parse(witness.as_bytes(), &mut |_| Ok::<(), ()>(())).unwrap();
+        let file = view.find_file("src/main.ts", &mut |_| Ok::<(), ()>(())).unwrap().unwrap();
+        assert!(file.matches_source(source_bytes, &mut |_| Ok::<(), ()>(())).unwrap());
+        assert!(!file.matches_source(b"z\r\nb\nc", &mut |_| Ok::<(), ()>(())).unwrap());
+        let used = 100_000 - credit.remaining_work();
+        assert!(reopen_selected_native_lines_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, used - 1), &|| false).is_err());
+        assert!(reopen_selected_native_lines_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, used), &|| false).is_ok());
+        assert!(reopen_selected_native_lines_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(0, 100_000), &|| false).is_err());
+        let mut low = 0usize;
+        let mut high = 8 * 1024 * 1024;
+        while low + 1 < high {
+            let mid = low + (high - low) / 2;
+            if reopen_selected_native_lines_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(mid, 100_000), &|| false).is_ok() { high = mid; } else { low = mid; }
+        }
+        assert!(reopen_selected_native_lines_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(high, 100_000), &|| false).is_ok());
+        assert!(reopen_selected_native_lines_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(high - 1, 100_000), &|| false).is_err());
+        assert!(reopen_selected_native_lines_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000), &|| true).is_err());
+        let mut missing = vec![image_object, program_object.clone(), metadata.typed_object(), envelope.typed_object()];
+        missing.sort_by_key(|o| (o.schema(), *o.key(), *o.version()));
+        let policy = ArtifactBudget::new(16, 64, 8 * 1024 * 1024, 1024 * 1024, 64);
+        let verifier = FileStoreCompilerPublicationVerifier::new(&store, policy, &envelope, &metadata);
+        let valid_manifest = store.open_closure(closure).unwrap();
+        verify_native_lines_for_admission(&store, &valid_manifest, &metadata, policy, None).unwrap();
+        drop(valid_manifest);
+        // These physically valid object IDs are not sufficient to admit an
+        // incorrectly typed or malformed line member before selection.
+        struct TestLineBytes;
+        impl Schema for TestLineBytes {
+            const DOMAIN: u8 = 0x7a; const TYPE: u16 = 0xc00f; const VERSION: u8 = 1;
+            type Value = [u8];
+            fn encode(value: &Self::Value, out: &mut Vec<u8>) { out.extend_from_slice(value); }
+        }
+        let bad_wire: &[u8] = b"NLM1\0\0\0\x01";
+        let bad_object = TypedObject::from_value(&ObjectKey::<TestLineBytes>::from_value(bad_wire), bad_wire);
+        for bad_member in [
+            CompilerNativeLinesMember { object_id: *program_object.id().as_bytes(), byte_length: program_object.bytes().len() as u32 },
+            CompilerNativeLinesMember { object_id: *bad_object.id().as_bytes(), byte_length: bad_object.bytes().len() as u32 },
+        ] {
+            let (bad_image, bad_image_object) = compiler_image();
+            let bad_metadata = self::metadata(bad_image).with_native_program_sources(program_member).unwrap().with_native_lines(bad_member).unwrap();
+            let bad_envelope = CompilerPublicationEnvelope::new(&attempt, &bad_metadata).unwrap();
+            let mut payloads = vec![bad_image_object, program_object.clone(), bad_metadata.typed_object(), bad_envelope.typed_object()];
+            if bad_member.object_id == *bad_object.id().as_bytes() { payloads.push(bad_object.clone()); }
+            payloads.sort_by_key(|o| (o.schema(), *o.key(), *o.version()));
+            let bad_closure = store.write_closure(&ClosureManifest::new(payloads).unwrap()).unwrap();
+            let bad_candidate = bad_envelope.candidate(attempt.clone(), *bad_closure.as_bytes()).unwrap();
+            let bad_verifier = FileStoreCompilerPublicationVerifier::new(&store, policy, &bad_envelope, &bad_metadata);
+            let error = bad_verifier.verify_closure(&ClosureClaim::for_candidate(&bad_candidate)).unwrap_err();
+            assert!(error.contains("candidate line member"), "must reach typed line validation: {error}");
+        }
+        let missing_closure = store.write_closure(&ClosureManifest::new(missing).unwrap()).unwrap();
+        let missing_selected = selected_generation(&attempt, &envelope.candidate(attempt.clone(), *missing_closure.as_bytes()).unwrap(), 2);
+        let missing_candidate = envelope.candidate(attempt.clone(), *missing_closure.as_bytes()).unwrap();
+        assert!(verifier.verify_closure(&ClosureClaim::for_candidate(&missing_candidate)).is_err());
+        assert!(reopen_selected_native_lines_budgeted(&store, &missing_selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000), &|| false).is_err());
+        assert!(visit_selected_publication_wire(&store, &missing_selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000), &|| false, 8 * 1024 * 1024, 1, |_, _| Ok(())).is_err());
         drop(store);
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -5254,6 +5576,11 @@ mod tests {
         verifier
             .verify_closure(&claim)
             .expect("verify exact stored envelope and members");
+        let stopped = || true;
+        let stopped_verifier = FileStoreCompilerPublicationVerifier::new(
+            &store, ArtifactBudget::new(8, 64, 1024 * 1024, 1024 * 1024, 8), &envelope, &metadata,
+        ).with_stop(&stopped);
+        assert!(stopped_verifier.verify_closure(&claim).unwrap_err().contains("verification stopped"));
         let selected = SelectedGeneration::new(
             attempt.namespace().clone(),
             1,

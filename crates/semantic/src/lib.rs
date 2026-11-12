@@ -36,6 +36,8 @@ pub mod ir;
 pub mod ir_vocabulary;
 /// Bounded canonical native TypeScript header aggregate claims.
 pub mod native_ts_headers;
+/// Bounded native source-line map claims.
+pub mod native_source_lines;
 /// Static dispatch from closed language-stage requests to concrete native compiler tools.
 pub mod registry;
 /// Native SQL analysis vocabulary without a shared binder.

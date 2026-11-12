@@ -33,6 +33,7 @@ mod snapshot_tests;
 use envelope::FileStoreCompilerPublicationVerifier;
 pub use envelope::{
     COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA, COMPILER_CSHARP_EVIDENCE_SCHEMA,
+    COMPILER_NATIVE_LINES_METADATA_SCHEMA, COMPILER_NATIVE_LINES_SCHEMA, CompilerNativeLinesMember, VerifiedNativeLinesWitness, reopen_selected_native_lines_budgeted,
     COMPILER_NATIVE_HEADERS_METADATA_SCHEMA, COMPILER_NATIVE_HEADERS_SCHEMA, MAX_COMPILER_NATIVE_HEADERS_BYTES,
     CompilerNativeHeadersMember, VerifiedNativeHeadersWitness, compiler_native_headers_object, reopen_selected_native_headers,
     SelectedNativeHeaderBudget, reopen_selected_native_headers_budgeted,
@@ -1515,6 +1516,17 @@ impl TursoAuthority {
             return Err(AuthorityError::AdmittedInputMismatch);
         }
         let verifier = FileStoreCompilerPublicationVerifier::new(store, budget, envelope, metadata);
+        self.verify_closure(candidate, &verifier)
+    }
+
+    /// Verifies a compiler candidate while observing its live operation stop.
+    pub fn verify_compiler_publication_with_stop(
+        &self, candidate: &CandidateGeneration, admitted_attempt: &CandidateAttempt,
+        store: &FileStore, budget: ArtifactBudget, envelope: &CompilerPublicationEnvelope,
+        metadata: &CompilerPublicationMetadata, stopped: &dyn Fn() -> bool,
+    ) -> Result<ClosureReceipt, AuthorityError> {
+        if candidate.attempt() != admitted_attempt { return Err(AuthorityError::AdmittedInputMismatch); }
+        let verifier = FileStoreCompilerPublicationVerifier::new(store, budget, envelope, metadata).with_stop(stopped);
         self.verify_closure(candidate, &verifier)
     }
 

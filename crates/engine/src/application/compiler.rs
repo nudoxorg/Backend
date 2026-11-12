@@ -1863,6 +1863,17 @@ impl StagedSemanticPackage {
         &self.staged.native_typescript_headers
     }
 
+    /// Source-line claims captured from selected TypeScript compiler inputs.
+    pub fn native_typescript_lines(&self) -> impl Iterator<Item = &backend_semantic::native_source_lines::NativeSourceLineFile> + Clone {
+        self.staged.artifacts.iter().filter_map(|artifact| artifact.native_lines.as_ref())
+    }
+    /// Number of staged artifact slots, used to budget canonical line ordering.
+    pub fn native_typescript_line_slots(&self) -> usize { self.staged.artifacts.len() }
+    /// Returns a line claim for one exact staged artifact ordinal.
+    pub fn native_typescript_line_at(&self, ordinal: usize) -> Option<&backend_semantic::native_source_lines::NativeSourceLineFile> {
+        self.staged.artifacts.get(ordinal)?.native_lines.as_ref()
+    }
+
     /// Exact full native program membership, including libraries and dependencies.
     /// This is not a complete-fact or complete-read certificate.
     #[must_use]
@@ -3601,6 +3612,7 @@ struct StagedPythonProjectWitness {
 }
 
 struct StagedPackageArtifact {
+    native_lines: Option<backend_semantic::native_source_lines::NativeSourceLineFile>,
     source: backend_semantic::ir::SourceIdentity,
     recipe: backend_semantic::vocabulary::CompileRecipeFact,
     fragment: Box<[u8]>,
@@ -4966,6 +4978,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         let mut semantic_images = Vec::new();
         let mut native_typescript_headers = Vec::new();
         let mut native_header_budget = 32 * 1024 * 1024usize;
+        let mut native_lines_budget = 64 * 1024 * 1024usize;
         let mut csharp_evidence = Vec::new();
         let csharp_config = package.csharp_config.map_or_else(Vec::new, |probes| {
             probes.iter().map(|probe| StagedCSharpConfigProbe {
@@ -5942,7 +5955,25 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     byte_length,
                 ),
             );
+            let native_lines = if tsz_package_membership.contains_key(source.relative_path()) {
+                let budget = tsz_budget.as_ref().ok_or(PackageSemanticError::Capacity { lane: "TypeScript source lines budget" })?;
+                super::typescript_program_lane::capture_source_lines(source.source, source.relative_path(), compiled.source, budget, &mut native_lines_budget)
+                    .map_err(|_| {
+                        if let Some(cause) = budget.stop_reason() {
+                            PackageSemanticError::Compile {
+                                path: source.relative_path.into(),
+                                terminal: Box::new(package_authority_terminal(
+                                    package.package_target.target(), application_request, source_authority,
+                                    self.toolchain_for_package(application_request, typescript_toolchain)
+                                        .unwrap_or(ToolchainSelection::ExplicitlyUnavailable { tool: NativeTool::TypeScriptCompiler }),
+                                    PackageAuthorityError::TypeScriptTsz(backend_frontend_typescript::TszAuthorityError::ExecutionStopped(cause)),
+                                )),
+                            }
+                        } else { PackageSemanticError::Capacity { lane: "TypeScript source lines capture" } }
+                    })?
+            } else { None };
             artifacts.push(StagedPackageArtifact {
+                native_lines,
                 source: compiled.source,
                 recipe: compiled.recipe,
                 fragment: compiled.fragment,
