@@ -1656,7 +1656,7 @@ fn native_ts_large_crlf_line_map_source_show_read_and_cold() -> Result<(), Box<d
     let file = view.find_file("view.ts", &mut |_| Ok::<(), ()>(())).map_err(|_| "line lookup")?.ok_or("line map file")?;
     assert!(file.matches_source(source.as_bytes(), &mut |_| Ok::<(), ()>(())).map_err(|_| "line verification")?);
     assert_eq!(file.line_count(), 20_002);
-    assert_eq!(file.line_start(20_000), Some(("// padding\r\n".len() * 20_000) as u32));
+    assert_eq!(file.line_start(20_000), Some(u32::try_from(source.find("export function Greeting").ok_or("declaration offset")?)?));
     drop(snapshot);
     drop(authority);
     drop(daemon);
