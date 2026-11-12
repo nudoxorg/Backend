@@ -48,6 +48,7 @@ pub struct CSharpExecutionClosure {
     digest: [u8; 32],
 }
 
+#[derive(Debug)]
 struct CSharpExecutionSnapshot {
     _directory: tempfile::TempDir,
     toolchain: PathBuf,
@@ -63,7 +64,7 @@ pub struct CSharpExecutionLease(Arc<CSharpExecutionSnapshot>);
 
 impl CSharpExecutionLease {
     #[must_use]
-    pub const fn digest(&self) -> [u8; 32] {
+    pub fn digest(&self) -> [u8; 32] {
         self.0.digest
     }
 }
@@ -549,7 +550,7 @@ fn snapshot_execution(
     let directory = tempfile::tempdir().map_err(|_| CSharpAuthorityError::Configuration)?;
     let copied_root = directory.path().join("dotnet");
     let mut files = 0;
-    let mut bytes = 0;
+    let mut bytes: usize = 0;
     let mut manifest = SnapshotManifest::new();
     // `dotnet exec` only needs the hostfxr and shared runtime trees. SDK packs,
     // templates, and workload caches are excluded from this execution closure.
