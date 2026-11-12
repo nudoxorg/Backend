@@ -178,6 +178,25 @@ mod tests {
     }
 
     #[test]
+    fn source_line_capture_handles_million_lines_and_stop() {
+        struct Check(bool);
+        impl backend_frontend_typescript::TszExecutionCheckpoint for Check {
+            fn checkpoint(&self, _: u64) -> Result<(), backend_frontend_typescript::TszProjectExecutionStop> {
+                if self.0 { Err(backend_frontend_typescript::TszProjectExecutionStop::Cancelled) } else { Ok(()) }
+            }
+        }
+        let text = "x\n".repeat(999_999);
+        let identity = backend_semantic::ir::SourceIdentity::from_bytes(text.as_bytes()).unwrap();
+        let mut budget = 8 * 1024 * 1024;
+        let file = super::capture_source_lines(&text, "src/main.ts", identity, &Check(false), &mut budget).unwrap().unwrap();
+        assert_eq!(file.line_starts.len(), 1_000_000);
+        assert_eq!(file.line_starts.last().copied(), Some(text.len() as u32));
+        assert!(super::capture_source_lines(&text, "src/main.ts", identity, &Check(true), &mut budget).is_err());
+        let mut empty = 0;
+        assert!(super::capture_source_lines(&text, "src/main.ts", identity, &Check(false), &mut empty).unwrap().is_none());
+    }
+
+    #[test]
     fn duplicate_nodes_cannot_alias_one_mutable_authority() {
         let mut lane = TypeScriptProgramAuthorityLane::default();
         lane.prepare(Path::new("/a"), &[None]).unwrap();
