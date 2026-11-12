@@ -1809,6 +1809,13 @@ impl SelectedNativeHeaderBudget {
     pub fn new(memory_bytes: usize, work_units: u64) -> Self { Self { memory: memory_bytes, work: std::cell::Cell::new(work_units) } }
     pub const fn remaining_memory(&self) -> usize { self.memory }
     pub fn remaining_work(&self) -> u64 { self.work.get() }
+    /// Debits bounded consumer operations against the same selected-admission ledger.
+    /// The callback must represent the live operation's cancellation or deadline.
+    pub fn checkpoint(&self, units: u64, cancelled: &dyn Fn() -> bool) -> Result<(), backend_store::StoreError> {
+        if cancelled() { return Err(backend_store::StoreError::Bounds); }
+        self.work.set(self.work.get().checked_sub(units).ok_or(backend_store::StoreError::Bounds)?);
+        Ok(())
+    }
 }
 fn verify_metadata_member_bitmap(
     envelope: &BorrowedSelectedEnvelope<'_>, metadata: &CompilerPublicationMetadata,
