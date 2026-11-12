@@ -1476,6 +1476,7 @@ impl AdmittedCompilation {
         claim: SemanticPublicationClaim,
         runtime_admission: CompilerRuntimeAdmission,
         store: &FileStore,
+        stopped: &dyn Fn() -> bool,
     ) -> Result<Self, BuiltinModelError> {
         let namespace =
             SemanticAuthority::namespace(key.package(), key.coordinate(), key.profile())?;
@@ -1617,6 +1618,36 @@ impl AdmittedCompilation {
             if verified.id() != id || verified.schema() != backend_extension_turso::COMPILER_NATIVE_HEADERS_SCHEMA
                 || verified.payload_len() != u64::from(member.byte_length()) {
                 return Err(BuiltinModelError("native header member schema or extent mismatch".to_owned()));
+            }
+            expected_members.insert(id);
+        }
+        if let Some(member) = metadata.native_lines() {
+            let id = payload_index.admit_claim(UntrustedObjectId::from_bytes(*member.object_id()))
+                .map_err(|error| BuiltinModelError(format!("admit native line membership: {error:?}")))?
+                .ok_or_else(|| BuiltinModelError("native source lines are absent from their output closure".into()))?;
+            let length = member.byte_length() as usize;
+            let mut credit = 68usize * 1024 * 1024;
+            let work = std::cell::Cell::new(128usize * 1024 * 1024);
+            let check = || -> Result<(), backend_store::StoreError> {
+                if stopped() { return Err(backend_store::StoreError::Bounds); }
+                work.set(work.get().checked_sub(1).ok_or(backend_store::StoreError::Bounds)?);
+                Ok(())
+            };
+            let reader = store.open_bounded_nonrelation_object(&gc_pin, UntrustedObjectId::from_bytes(*member.object_id()),
+                &[backend_extension_turso::COMPILER_NATIVE_LINES_SCHEMA], None, length, &mut credit, |_| check())
+                .map_err(|error| BuiltinModelError(format!("open native line member: {error:?}")))?;
+            if reader.payload_len() != length { return Err(BuiltinModelError("native line member extent differs".into())); }
+            let mut wire = backend_store::try_allocate_exact_zeroed_bytes_budgeted(length, &mut credit)
+                .map_err(|error| BuiltinModelError(format!("allocate native line member: {error:?}")))?;
+            let admitted = reader.read_into(&mut wire, &mut credit, |_, _| check(), |view, _| {
+                backend_extension_turso::CompilerNativeLinesMember::from_verified_view(view, &mut |_| check().map_err(|_| backend_extension_turso::CompilerEnvelopeError::Stopped))
+                    .map_err(|error| match error {
+                        backend_extension_turso::CompilerEnvelopeError::Stopped => backend_store::StoreError::Bounds,
+                        _ => backend_store::StoreError::Corrupt,
+                    })
+            }).map_err(|error| BuiltinModelError(format!("verify native line member: {error:?}")))?;
+            if admitted != *member || id.as_bytes() != member.object_id() {
+                return Err(BuiltinModelError("native line member identity differs".into()));
             }
             expected_members.insert(id);
         }
@@ -4011,6 +4042,7 @@ impl SemanticAuthority {
             claim,
             runtime_admission,
             &self.store,
+            stopped,
         )?;
         #[cfg(test)]
         test_wait_before_local_selection();
@@ -4345,6 +4377,8 @@ impl SemanticAuthority {
             environment: input_manifest.environment(),
             target_platform: input_manifest.target_platform(),
         };
+        let deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
+        let stopped = || std::time::Instant::now() >= deadline;
         let admitted_compilation = AdmittedCompilation::new(
             key,
             attempt,
@@ -4356,6 +4390,7 @@ impl SemanticAuthority {
             claim,
             runtime_admission,
             &self.store,
+            &stopped,
         )?;
         let policy_path = self.compiler_trust_policy.clone();
         let scope = (
@@ -4368,8 +4403,6 @@ impl SemanticAuthority {
             input_manifest.environment(),
             input_manifest.target_platform(),
         );
-        let deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
-        let stopped = || std::time::Instant::now() >= deadline;
         self.select_verified_closure(key, admitted_compilation, &stopped, move |candidate| {
             if !Self::authorizes_remote_scope_at(&policy_path, scope)? {
                 return Err(BuiltinModelError(
