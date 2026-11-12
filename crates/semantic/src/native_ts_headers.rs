@@ -67,7 +67,7 @@ impl<'a> Reader<'a> {
     fn u32(&mut self)->Option<u32>{Some(u32::from_be_bytes(self.take(4)?.try_into().ok()?))}
     fn u64(&mut self)->Option<u64>{Some(u64::from_be_bytes(self.take(8)?.try_into().ok()?))}
 }
-fn parse(bytes: &[u8], materialize: bool) -> Option<(NativeTsHeaderAggregate, usize)> {
+fn parse_with(bytes: &[u8], materialize: bool, checkpoint: &mut impl FnMut(usize) -> bool) -> Option<(NativeTsHeaderAggregate, usize)> {
     if bytes.len() > MAX_NATIVE_TS_HEADER_AGGREGATE_BYTES { return None; }
     let mut r=Reader {bytes,at:0}; if r.take(4)? != b"NHA1" {return None;}
     let count=r.u32()? as usize;
@@ -76,7 +76,8 @@ fn parse(bytes: &[u8], materialize: bool) -> Option<(NativeTsHeaderAggregate, us
     let mut files=if materialize {Vec::with_capacity(count)} else {Vec::new()};
     let mut previous: Option<&str>=None;
     for _ in 0..count {
-        let n=r.u16()? as usize; let path=std::str::from_utf8(r.take(n)?).ok()?;
+        if !checkpoint(0) { return None; }
+        let n=r.u16()? as usize; if !checkpoint(n) { return None; } let path=std::str::from_utf8(r.take(n)?).ok()?;
         if n==0 || n>4096 || path.starts_with('/') || path.contains('\\') || (path.as_bytes().get(1) == Some(&b':') && path.as_bytes()[0].is_ascii_alphabetic()) || path.bytes().any(|b| b.is_ascii_control()) || path.split('/').any(|p| p.is_empty() || p=="." || p=="..") || previous.is_some_and(|p| p>=path) {return None;}
         previous=Some(path);
         let source=SourceIdentity {identity:ContentId::<SourceFactDomain>::try_from(<[u8;32]>::try_from(r.take(32)?).ok()?).ok()?, byte_len:r.u32()?};
@@ -88,6 +89,7 @@ fn parse(bytes: &[u8], materialize: bool) -> Option<(NativeTsHeaderAggregate, us
         let mut entries=if materialize {Vec::with_capacity(entries_count)} else {Vec::new()};
         let mut prior=None;
         for _ in 0..entries_count {
+            if !checkpoint(ENTRY_BYTES) { return None; }
             let entity_id=r.u32()?; if prior.is_some_and(|p| p>=entity_id){return None;} prior=Some(entity_id);
             let family=DeclarationFamilyId::from_raw(r.take(16)?.try_into().ok()?); let variant=VariantFingerprint::from_raw(r.take(16)?.try_into().ok()?);
             let start=r.u32()?; let end=r.u32()?; let hs=r.u32()?; let he=r.u32()?;
@@ -98,6 +100,14 @@ fn parse(bytes: &[u8], materialize: bool) -> Option<(NativeTsHeaderAggregate, us
     }
     if r.at != bytes.len(){return None;} Some((NativeTsHeaderAggregate{files}, retained))
 }
+
+fn parse(bytes: &[u8], materialize: bool) -> Option<(NativeTsHeaderAggregate, usize)> {
+    parse_with(bytes, materialize, &mut |_| true)
+}
+
+/// Canonical failure or caller work/cancellation refusal.
+#[derive(Debug)]
+pub enum BorrowedNativeHeadersError<E> { Invalid, Stopped(E) }
 
 /// A fully canonical-validated aggregate borrowing its original immutable wire.
 /// This is a claim, not selected-closure or compiler-source authority.
@@ -126,11 +136,33 @@ impl<'a> NativeTsHeaderAggregateView<'a> {
         let count = u32::from_be_bytes(bytes[4..8].try_into().map_err(|_| "invalid native header aggregate")?) as usize;
         Ok(Self { bytes, count })
     }
+    /// Fully validates the wire while checking finite work before every file
+    /// and entry. A stopped scan exposes no view.
+    pub fn parse_canonical_checkpointed<E>(bytes: &'a [u8], checkpoint: &mut impl FnMut(usize) -> Result<(), E>) -> Result<Self, BorrowedNativeHeadersError<E>> {
+        let mut stopped = None;
+        let parsed = parse_with(bytes, false, &mut |work| match checkpoint(work) {
+            Ok(()) => true,
+            Err(error) => { stopped = Some(error); false }
+        });
+        if let Some(error) = stopped { return Err(BorrowedNativeHeadersError::Stopped(error)); }
+        parsed.ok_or(BorrowedNativeHeadersError::Invalid)?;
+        let count = u32::from_be_bytes(bytes[4..8].try_into().map_err(|_| BorrowedNativeHeadersError::Invalid)?) as usize;
+        Ok(Self { bytes, count })
+    }
     pub const fn len(&self) -> usize { self.count }
     pub const fn is_empty(&self) -> bool { self.count == 0 }
     /// Sequential scan; caller accounts for each scan against its work ledger.
     pub fn files(&self) -> NativeTsHeaderFileIter<'a> {
         NativeTsHeaderFileIter { reader: Reader { bytes: self.bytes, at: 8 }, remaining: self.count }
+    }
+    /// Scans file headers with a work/cancellation checkpoint per file.
+    pub fn find_file_checkpointed<E>(&self, path: &str, checkpoint: &mut impl FnMut(usize) -> Result<(), E>) -> Result<Option<NativeTsHeaderFileView<'a>>, E> {
+        for file in self.files() {
+            checkpoint(file.path.len())?;
+            if file.path == path { return Ok(Some(file)); }
+            if file.path > path { break; }
+        }
+        Ok(None)
     }
     /// Finds a path without allocating; caller accounts for the scanned bytes.
     pub fn file(&self, path: &str) -> Option<NativeTsHeaderFileView<'a>> {
@@ -265,6 +297,11 @@ mod tests {
             assert!(view.file("src/missing.ts").is_none());
         });
         assert_eq!(allocation.bytes_max, 0);
+        let mut calls = 0;
+        let stopped = NativeTsHeaderAggregateView::parse_canonical_checkpointed(&bytes, &mut |_| { calls += 1; if calls == 4 { Err(()) } else { Ok(()) } });
+        assert!(matches!(stopped, Err(BorrowedNativeHeadersError::Stopped(()))));
+        let view = NativeTsHeaderAggregateView::parse_canonical_checkpointed(&bytes, &mut |_| Ok::<(), ()>(())).unwrap();
+        assert!(view.find_file_checkpointed("src/main.ts", &mut |_| Ok::<(), ()>(())).unwrap().is_some());
         for cutoff in [0, 7, bytes.len() - 1] {
             assert!(NativeTsHeaderAggregateView::parse_canonical(&bytes[..cutoff]).is_err());
         }
