@@ -1352,6 +1352,7 @@ dependencies = [
 name = "backend-frontend-csharp"
 version = "0.2.0"
 dependencies = [
+ "allocation-counter",
  "backend-compile",
  "backend-platform",
  "backend-semantic",
