@@ -20,6 +20,7 @@ export NUDOX_BUILD_SQLITE_WORKER_ID=$anchor
 export NUDOX_TEST_SQLITE_WORKER="$output/bundle/backend-sqlite-worker"
 # Compile every focused test target and public binary first. Compilation is a
 # prerequisite, so a compiler failure exits before independent behavior checks.
+cargo test -p backend-extension-trustfall --lib --locked --offline --no-run
 cargo test -p backend-library --lib --locked --offline --no-run
 cargo test -p backend-present --lib --locked --offline --no-run
 cargo test --manifest-path frontends/sqlite/Cargo.toml --test outline --locked --offline --no-run
@@ -40,6 +41,7 @@ check() {
         failed=1
     fi
 }
+check sql-native-evidence cargo test -p backend-extension-trustfall --lib --locked --offline sql_native_evidence_binds_projection_and_host_basis -- --nocapture
 check status-wire cargo test -p backend-library --lib --locked --offline sql_analysis_progress_round_trips_and_rejects_empty_or_overflow -- --nocapture
 check status-render cargo test -p backend-present --lib --locked --offline status_exposes_selected_sql_analysis_at_every_detail -- --nocapture
 check native-upsert cargo test --manifest-path frontends/sqlite/Cargo.toml --test outline --locked --offline excluded_upsert_without_update_where_has_valid_native_outline -- --nocapture
