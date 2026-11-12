@@ -732,9 +732,21 @@ fn append_structural_query_facts_controlled(
         // structural evidence to either, so it contributes no query facts.
         // Skipping one odd file is the whole point: failing here is what made
         // a single unprofiled file refuse the entire rebuild.
-        let Some(profile) =
-            super::super::ingest::source_record_profile(file).map_err(BuiltinModelError)?
-        else {
+        let profile = super::super::ingest::source_record_profile(file).map_err(BuiltinModelError)?;
+        // Vue hosts are deliberately not TypeScript compiler members. Their
+        // independently captured Verter/TSZ script declarations still need
+        // structural query evidence when they appear in the selected view.
+        // Bind this exception to the exact native Vue projection recipe; it
+        // must not change profile source sets or confer compiler authority.
+        let profile = profile.or_else(|| {
+            (file.language == backend_compile::SourceLanguage::TypeScript
+                && std::path::Path::new(file.path).extension().and_then(|s| s.to_str()).is_some_and(|s| s.eq_ignore_ascii_case("vue"))
+                && file.analysis_version == super::super::ingest::vue_analysis_version())
+                .then_some(backend_semantic::vocabulary::LanguageProfile::TypeScript(
+                    backend_semantic::vocabulary::TypeScriptSource::TypeScript,
+                ))
+        });
+        let Some(profile) = profile else {
             continue;
         };
         if structural_plan.file(*file_key).is_none() {
