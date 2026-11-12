@@ -3622,6 +3622,36 @@ mod tests {
     }
 
     #[test]
+    fn dense_v9_metadata_allocation_bound_covers_nested_planes_and_all_tails() {
+        use backend_semantic::ir::{LanguageProfile, RustEdition, SemanticBuildIdentity, SemanticInputWitness, SemanticIrPlane, SemanticPlane, SemanticPlaneKind, SemanticPlaneManifest, SemanticPlaneSegment};
+        use backend_semantic::vocabulary::Stage;
+        use backend_version::{Coverage, ScopeRoot};
+        let (image, image_object) = compiler_image();
+        let generation = backend_semantic::ir::GenerationId::from_canonical_bytes(image_object.bytes());
+        let kind = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
+        let payloads = (0..=255u8).map(|i| vec![i, 42]).collect::<Vec<_>>();
+        let segments = payloads.iter().enumerate().map(|(i, payload)| SemanticPlaneSegment::from_payload(kind, [i as u8; 32], [i as u8; 32], 1, payload).unwrap()).collect::<Vec<_>>();
+        let ids = segments.iter().zip(&payloads).map(|(segment, payload)| (segment.admit(kind, payload).unwrap(), payload.as_slice())).collect::<Vec<_>>();
+        let plane = SemanticPlane::claimed(kind, segments, Coverage::Partial).unwrap();
+        let manifest = SemanticPlaneManifest::new(generation,
+            SemanticBuildIdentity::new([1; 32], [2; 32], LanguageProfile::Rust(RustEdition::Rust2024), Stage::LowerIr, [3; 32], [4; 32], [5; 32], [6; 32]),
+            SemanticInputWitness::claimed([7; 32], ScopeRoot::from_bytes([8; 32])), vec![plane]).unwrap();
+        let encoded = manifest.encode().unwrap();
+        let planes = VersionedPlanePublication::from_payloads(&encoded, ids).unwrap();
+        let metadata = metadata_with_versioned_planes(image, Some(planes.metadata().clone()))
+            .with_native_program_sources(CompilerProgramSourceMember { object_id: [0x11; 32], program: [0x22; 32], byte_length: 8 }).unwrap()
+            .with_source_coverage(CompilerSourceCoverageMember { object_id: [0x33; 32], identity: [0x44; 32], byte_length: 8 }).unwrap()
+            .with_typescript_snapshot_witness(CompilerTypeScriptSnapshotMember { object_id: [0x55; 32], byte_length: 8 }).unwrap()
+            .with_native_headers(CompilerNativeHeadersMember { object_id: [0x77; 32], byte_length: 8 }).unwrap();
+        let bytes = metadata.canonical_bytes();
+        let bound = compiler_metadata_decode_bound(&bytes).unwrap();
+        let mut decoded = None;
+        let peak = allocation_counter::measure(|| decoded = Some(CompilerPublicationMetadata::decode(&bytes).unwrap()));
+        assert_eq!(decoded.unwrap(), metadata);
+        assert!(peak.bytes_max as usize <= bound, "dense nested v9 peak {peak:?}, bound {bound}");
+    }
+
+    #[test]
     fn truncated_maximum_inventories_refuse_before_count_sized_allocation() {
         use allocation_counter::measure;
         let record = metadata(compiler_image().0);
