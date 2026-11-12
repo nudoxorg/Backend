@@ -1452,6 +1452,10 @@ fn omitted_program_member_cold_replay(mixed: bool) -> Result<(), Box<dyn Error>>
         let selected = observed.iter().find(|entry| entry.membership == membership && entry.binding == binding).ok_or("selected Program was not observed at admitted image join")?;
         let digest = backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(member.as_bytes());
         assert_eq!(selected.sources.iter().filter(|(path, id, len)| path.ends_with("src/app/layout.tsx") && id == digest.as_ref() && *len as usize == member.len()).count(), 1);
+        if mixed {
+            let digest = backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(shared.as_bytes());
+            assert_eq!(selected.sources.iter().filter(|(path, id, len)| path.ends_with("src/types/shared.ts") && id == digest.as_ref() && *len as usize == shared.len()).count(), 1, "TSX selected Program must include exact imported TS source");
+        }
     }
     drop(session);
     assert_eq!(owner.close()?.failures, 0);
@@ -1505,7 +1509,8 @@ fn omitted_program_member_cold_replay(mixed: bool) -> Result<(), Box<dyn Error>>
         use backend_semantic::ir::{SourceCoverageGapCause, SourceCoverageRow};
         let observed = selected_authority.selected_source_coverage(selected_key, claim)?
             .ok_or("selected compiler coverage absent")?;
-        assert_eq!((observed.source_count(), observed.completed()), (if mixed { 6 } else { 4 }, if mixed { 4 } else { 3 }));
+        // Coverage is per selected profile: TS files have their own capture.
+        assert_eq!((observed.source_count(), observed.completed()), (4, 3));
         let catalog = observed.catalog().ok_or("selected compiler gap catalog absent")?;
         assert_eq!(catalog.rows().iter().filter(|row| matches!(row,
             SourceCoverageRow::Gap { path, source, byte_len, cause, .. }
