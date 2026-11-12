@@ -422,8 +422,12 @@ def verified_build(receipt, checkout, bundle, script):
         target = (bundle / name).resolve(strict=True)
         if not target.is_file() or digest(target) != item["sha256"]:
             raise RuntimeError(f"bundle {name} differs from Root build receipt")
+    # source_snapshot intentionally returns a Path for internal filesystem
+    # checks; journey receipts must retain its canonical spelling as JSON.
+    source = dict(verified["source"])
+    source["path"] = str(source["path"])
     return {"receipt": verified["receipt_path"], "receipt_sha256": verified["receipt_sha256"],
-            "source": verified["source"], "artifacts": verified["artifacts"],
+            "source": source, "artifacts": verified["artifacts"],
             "harness_sha256": digest(script), "helper_sha256": digest(__file__)}
 
 
