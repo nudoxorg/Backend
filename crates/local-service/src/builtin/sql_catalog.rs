@@ -195,8 +195,8 @@ pub(super) fn progress(
     Ok(has_hosts.then_some(summary))
 }
 
-/// Allocation-free failure from the bounded SQL catalog. Storage errors retain
-/// their typed cause; local validation and quota refusals use static messages.
+/// Failure from the bounded SQL catalog. Local validation and quota refusals
+/// use static messages; storage errors retain their existing typed cause.
 #[derive(Debug)]
 pub(super) enum SqlCatalogError {
     Reason(&'static str),
