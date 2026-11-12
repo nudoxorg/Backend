@@ -1879,6 +1879,12 @@ pub struct SelectedNativeHeaderBudget { memory: usize, work: std::cell::Cell<u64
 impl SelectedNativeHeaderBudget {
     pub fn new(memory_bytes: usize, work_units: u64) -> Self { Self { memory: memory_bytes, work: std::cell::Cell::new(work_units) } }
     pub const fn remaining_memory(&self) -> usize { self.memory }
+    /// Reserves retained caller allocations on the same admission ledger.
+    /// Credit remains spent while the allocation or any derived owner is alive.
+    pub fn reserve_retained(&mut self, bytes: usize) -> Result<(), backend_store::StoreError> {
+        self.memory = self.memory.checked_sub(bytes).ok_or(backend_store::StoreError::Bounds)?;
+        Ok(())
+    }
     pub fn remaining_work(&self) -> u64 { self.work.get() }
     /// Debits bounded consumer operations against the same selected-admission ledger.
     /// The callback must represent the live operation's cancellation or deadline.
