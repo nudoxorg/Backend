@@ -262,6 +262,8 @@ if a.expect_no_worker:
                 fail(f"{label}: MCP {method} response timed out")
             reply = json.loads(mcp.stdout.readline())
             records.append({"label": label + ":" + method, "reply": reply})
+            if reply.get("id") != seq or "error" in reply or not isinstance(reply.get("result"), dict):
+                fail(f"{label}: uncorrelated or failed MCP response: {reply}")
             return reply
         exchange(1, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "sql-public-journey", "version": "1"}})
         mcp.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
@@ -300,6 +302,27 @@ if a.expect_no_worker:
     (out / "journey.json").write_text(json.dumps(records, indent=1))
     print("PASS: SQL without worker publishes with named gaps and survives cold restart")
     sys.exit(0)
+
+def check_worker_status(label):
+    code, raw = cli(label + "-status", ["status"])
+    if code != 0:
+        fail(f"{label}: status failed: {raw[:800]}")
+    summary = json.loads(raw).get("sql_analysis")
+    body, _ = query(label + "-gap-basis", "--role", "gap", "--limit", "128")
+    semantic = body.get("semantic_data", {})
+    if semantic.get("kind") != "sql-query":
+        fail(f"{label}: missing typed SQL gap page")
+    page = semantic["value"]
+    if page.get("terminal", {}).get("state") != "complete":
+        fail(f"{label}: incomplete SQL gap page")
+    gaps = page["basis"]["gaps"]
+    expected_total = sum(1 for path in project.rglob("*.sql") if path.is_file())
+    if not isinstance(summary, dict) or summary.get("no_worker_files") != 0 or summary.get("unsupported_dialect_files") != 0 or summary.get("other_unavailable_files") != 0 or summary.get("rejected_files") != gaps["native_error_hosts"] or gaps["unavailable_hosts"] != 0 or sum(summary.values()) != expected_total:
+        fail(f"{label}: selected status and SQL gaps disagree: {summary}, {gaps}, {expected_total}")
+    return summary
+
+
+check_worker_status("worker")
 
 # 1. Definitions across files, through the CLI.
 _, text = query("tables", "--role", "definition", "--kind", "table")
@@ -462,6 +485,8 @@ def rpc(seq, method, params):
     line = mcp.stdout.readline()
     reply = json.loads(line)
     records.append({"label": "mcp:" + method, "reply": reply})
+    if reply.get("id") != seq or "error" in reply or not isinstance(reply.get("result"), dict):
+        fail(f"MCP {method}: uncorrelated or failed response: {reply}")
     return reply
 
 
@@ -533,6 +558,7 @@ before = query("pre-kill", "--role", "definition", "--kind", "column", "--parent
 os.killpg(owner.pid, signal.SIGKILL)
 owner.wait(timeout=10)
 start_owner()
+check_worker_status("worker-cold")
 after = query("post-kill", "--role", "definition", "--kind", "column", "--parent", "accounts")[1]
 if before != after:
     fail("definitions differ after a cold restart:\nBEFORE\n%s\nAFTER\n%s" % (before[:800], after[:800]))

@@ -50,6 +50,7 @@ for name in backend-locald backend-cli backend-mcp; do
     cp "$target/debug/$name" "$output/bundle/$name"
 done
 sha256sum "$output/bundle/"*
+check public-sql-only python3 "$here/sql_public_journey.py" --bundle "$output/bundle" --output "$output/sql-only" --sql-only
 check public-python python3 "$here/sql_public_journey.py" --bundle "$output/bundle" --output "$output/python" --python
 check public-flat python3 "$here/sql_public_journey.py" --bundle "$output/bundle" --output "$output/flat" --python --flat
 check minimal-worker python3 "$here/sql_minimal_publication.py" --bundle "$output/bundle" --output "$output/minimal-worker"
@@ -59,4 +60,6 @@ for name in backend-locald backend-cli backend-mcp; do
     cp "$output/bundle/$name" "$output/no-worker-bundle/$name"
 done
 check public-no-worker python3 "$here/sql_public_journey.py" --bundle "$output/no-worker-bundle" --output "$output/no-worker" --python --expect-no-worker
+check public-no-worker-sql-only python3 "$here/sql_public_journey.py" --bundle "$output/no-worker-bundle" --output "$output/no-worker-sql-only" --sql-only --expect-no-worker
+check public-no-worker-flat python3 "$here/sql_public_journey.py" --bundle "$output/no-worker-bundle" --output "$output/no-worker-flat" --python --flat --expect-no-worker
 exit "$failed"
