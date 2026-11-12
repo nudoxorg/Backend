@@ -254,7 +254,7 @@ pub(super) fn append_query(
                 .unwrap_or(&definition.name)
                 .to_owned();
             facts.push(SemanticQueryFact::new(
-                SemanticQueryEvidence::SqlNative(SqlNativeQueryEvidence::new(indexed.package, host.key, input, source, producer, settings, host.fact_digest, *ordinal, preimage)),
+                SemanticQueryEvidence::SqlNative(SqlNativeQueryEvidence::new(indexed.package, sql.selection_digest, sql.inventory_digest, host.key, input, source, producer, settings, host.fact_digest, *ordinal, preimage)),
                 SemanticQueryPresentation { id: row_id.stable_key(), kind: if definition.kind == SqlObjectKind::Column { "field" } else { "unknown" }.to_owned(), coordinate, name,
                     signature: Some(format!("SQL {kind} {display}")), documentation: format!("SQL {kind} in {}; use sql-query for binding, migration history and checked source", host.path),
                     score: None, project: Some(super::identity::query_package_id(indexed.package)), parent: None, related: Box::new([]) },
@@ -313,7 +313,7 @@ mod tests {
         let package = backend_engine::package_key("p");
         let id = RowId::Symbol(backend_engine::symbol_key(&preimage)).stable_key();
         let fact = SemanticQueryFact::new(
-            SemanticQueryEvidence::SqlNative(SqlNativeQueryEvidence::new(package, [1;32], [2;32], [3;32], [4;32], [5;32], [6;32], 4, preimage)),
+            SemanticQueryEvidence::SqlNative(SqlNativeQueryEvidence::new(package, [8;32], [9;32], [1;32], [2;32], [3;32], [4;32], [5;32], [6;32], 4, preimage)),
             SemanticQueryPresentation { id, kind: "field".into(), coordinate, name: "x".into(),
                 signature: Some(format!("SQL {kind} {display}")),
                 documentation: format!("SQL {kind} in {path}; use sql-query for binding, migration history and checked source"),

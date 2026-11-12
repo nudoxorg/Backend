@@ -322,6 +322,8 @@ impl StructuralFallbackEvidence {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SqlNativeQueryEvidence {
     package: PackageKey,
+    selection_digest: [u8; 32],
+    inventory_digest: [u8; 32],
     host: [u8; 32],
     input: [u8; 32],
     source: [u8; 32],
@@ -337,6 +339,8 @@ impl SqlNativeQueryEvidence {
     #[must_use]
     pub fn new(
         package: PackageKey,
+        selection_digest: [u8; 32],
+        inventory_digest: [u8; 32],
         host: [u8; 32],
         input: [u8; 32],
         source: [u8; 32],
@@ -348,6 +352,8 @@ impl SqlNativeQueryEvidence {
     ) -> Self {
         Self {
             package,
+            selection_digest,
+            inventory_digest,
             host,
             input,
             source,
@@ -983,6 +989,8 @@ fn digest_corpus(workspace: WorkspaceRoot, facts: &[SemanticQueryFact]) -> [u8; 
             SemanticQueryEvidence::SqlNative(value) => {
                 hasher.update(&[4]);
                 hasher.update(value.package.as_bytes());
+                hasher.update(&value.selection_digest);
+                hasher.update(&value.inventory_digest);
                 hasher.update(&value.host);
                 hasher.update(&value.input);
                 hasher.update(&value.source);

@@ -1162,12 +1162,12 @@ fn sql_native_evidence_binds_projection_and_host_basis() {
             related: Box::new([]),
         },
     );
-    let fact = |basis: [[u8; 32]; 6], ordinal: u32, shown: &str| {
+    let fact = |basis: [[u8; 32]; 8], ordinal: u32, shown: &str| {
         let preimage = format!("{coordinate}\0sql:{ordinal}");
         SemanticQueryFact::new(
             SemanticQueryEvidence::SqlNative(SqlNativeQueryEvidence::new(
                 package,
-                basis[0], basis[1], basis[2], basis[3], basis[4], basis[5],
+                basis[0], basis[1], basis[2], basis[3], basis[4], basis[5], basis[6], basis[7],
                 ordinal,
                 preimage.clone(),
             )),
@@ -1186,7 +1186,7 @@ fn sql_native_evidence_binds_projection_and_host_basis() {
             },
         )
     };
-    let basis = [[1; 32], [2; 32], [3; 32], [4; 32], [5; 32], [6; 32]];
+    let basis = [[1; 32], [2; 32], [3; 32], [4; 32], [5; 32], [6; 32], [8; 32], [9; 32]];
     let first = SemanticQueryCorpus::admit(
         workspace(),
         vec![package_fact.clone(), fact(basis, 4, coordinate)],
