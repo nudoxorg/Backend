@@ -222,7 +222,11 @@ impl std::error::Error for SqlCatalogError {}
 // node-size assumption participates in the catalog budget.
 const SLOTS_PER_CHUNK: usize = 32;
 const CHUNKS_PER_GROUP: usize = 64;
-const GROUPS_PER_ROOT: usize = 128;
+// Project input is governed by MAX_REBUILD_PACKAGES (1,000,000), while
+// relation rows retain their existing MAX_ROWS bound. The quota, not a new
+// smaller project cap, decides whether this requested layout fits.
+const GROUPS_PER_ROOT: usize = 512;
+const MAX_SLOTS: usize = SLOTS_PER_CHUNK * CHUNKS_PER_GROUP * GROUPS_PER_ROOT;
 struct SlotChunk<T> {
     values: [Option<T>; SLOTS_PER_CHUNK],
 }
@@ -257,7 +261,7 @@ impl<T> Slots<T> {
         if count == 0 {
             return Ok(Self::empty());
         }
-        if count > MAX_ROWS {
+        if count > MAX_SLOTS {
             return Err("SQL slot count exceeds bound".into());
         }
         let chunks = count
