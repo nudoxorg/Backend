@@ -645,6 +645,12 @@ pub struct RecordListDto {
     /// Exact returned edges, including confidence, scope and each edge's policy.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub graph_edges: Vec<backend_library::RichGraphEdge>,
+    /// Directed related edges with selected endpoint coordinates.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub related_edges: Vec<crate::RelatedEdge>,
+    /// Some related evidence could not be included.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub related_evidence_withheld: bool,
     /// Qualified node claims, each bound to its graph result ID.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub graph_source_policies: Vec<crate::GraphSourcePolicy>,
@@ -676,6 +682,8 @@ impl RecordListDto {
             graph_gap: list.graph_gap().map(str::to_owned),
             graph_center: list.graph_center(),
             graph_edges: list.graph_edges().to_vec(),
+            related_edges: list.related_edges().to_vec(),
+            related_evidence_withheld: list.related_withheld(),
             graph_source_policies: list.graph_source_policies().to_vec(),
             semantic_search: list.coverage().semantic_search_status(),
             search_scope: list

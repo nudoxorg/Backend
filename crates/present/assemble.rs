@@ -76,7 +76,7 @@ pub fn page_from_document_with_graph_relations(
     // structural and compiler-backed rows. A repeated coordinate cannot
     // replace that identity or select another row's members and graph edges.
     let centre = document.symbol;
-    let own = members.iter().find(|row| row.id == RowId::Symbol(centre));
+    let own = members.iter().chain(relations).find(|row| row.id == RowId::Symbol(centre));
     let language = page_language(&identity, members, centre);
     let source = source_from(&identity, &document.location, &document.excerpt);
     let kind = own.and_then(|row| row.kind);

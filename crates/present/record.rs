@@ -12,6 +12,19 @@ use crate::language::Language;
 use crate::signature::Signature;
 use backend_library::{DeclarationKind, PageContinuation, Row, RowState, SourceLocation};
 
+/// One directed related edge with its exact selected endpoint coordinates.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RelatedEdge {
+    /// Source coordinate.
+    pub from: String,
+    /// Target coordinate.
+    pub to: String,
+    /// Selected relation kind.
+    pub relation: backend_library::SemanticLinkKind,
+    /// Observed producer confidence, when supplied.
+    pub confidence: Option<backend_library::SemanticConfidence>,
+}
+
 /// The lifecycle of one result row.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum RecordState {
@@ -213,6 +226,9 @@ pub struct RecordList {
     graph_center: Option<backend_library::GraphNodeId>,
     graph_edges: Vec<backend_library::RichGraphEdge>,
     graph_labels: Vec<(backend_library::GraphNodeId, String)>,
+    related_edges: Vec<RelatedEdge>,
+    related_continuation: Option<String>,
+    related_withheld: bool,
 }
 
 impl RecordList {
@@ -236,6 +252,9 @@ impl RecordList {
             graph_center: None,
             graph_edges: Vec::new(),
             graph_labels: Vec::new(),
+            related_edges: Vec::new(),
+            related_continuation: None,
+            related_withheld: false,
         }
     }
 
@@ -250,6 +269,37 @@ impl RecordList {
         }
         self
     }
+
+    /// Attach exact typed edges from an already admitted selected snapshot.
+    #[must_use]
+    pub fn with_related_edges(mut self, edges: Vec<RelatedEdge>) -> Self {
+        self.related_edges = edges;
+        self
+    }
+
+    /// Returns each directed relation independently, including shared endpoints.
+    #[must_use]
+    pub fn related_edges(&self) -> &[RelatedEdge] { &self.related_edges }
+
+    /// Retain an owner-sealed related continuation without treating it as a row cursor.
+    #[must_use]
+    pub fn with_related_continuation(mut self, token: Option<String>) -> Self {
+        self.more = token.is_some();
+        self.related_continuation = token;
+        self
+    }
+
+    /// Opaque related continuation, when another edge page exists.
+    #[must_use]
+    pub fn related_continuation(&self) -> Option<&str> { self.related_continuation.as_deref() }
+
+    /// Record missing or conflicting selected evidence.
+    #[must_use]
+    pub fn with_related_withheld(mut self, withheld: bool) -> Self { self.related_withheld = withheld; self }
+
+    /// Whether selected related evidence was withheld.
+    #[must_use]
+    pub const fn related_withheld(&self) -> bool { self.related_withheld }
 
     /// Returns a readable graph node label when supplied by the owner.
     #[must_use]

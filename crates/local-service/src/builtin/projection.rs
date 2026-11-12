@@ -94,6 +94,27 @@ pub(crate) fn reply_certificate(
             rows,
             base,
         )?),
+        CommandReply::RelatedEdgePage(page) => {
+            let Command::RelatedEdgePage { symbol, request } = command else {
+                return Err(BuiltinModelError("related edge page reply does not match command".to_owned()));
+            };
+            let relations = page.snapshot.graph_relations.as_ref().ok_or_else(|| BuiltinModelError("related edge page omits relation identities".to_owned()))?;
+            if request.scope.root != page.snapshot.root.basis().root.to_bytes()
+                || request.scope.source != symbol.claimed_bytes()
+                || request.scope.source_selected != symbol.is_selected()
+                || page.keys.len() != relations.len()
+                || page.keys.len() > usize::from(request.scope.delivery)
+                || page.keys.windows(2).any(|pair| pair[0] >= pair[1])
+                || page.keys.iter().zip(relations.iter()).any(|(key, relation)| *key != backend_library::RelatedEdgeKey::new(*relation))
+            {
+                return Err(BuiltinModelError("related edge page does not match its selected request".to_owned()));
+            }
+            Some(view_certificate(
+                &page.snapshot.root,
+                &identity_preimage(&[b"query", b"graph", page.snapshot.root.basis().root.as_bytes(), &[0]]),
+                Some(owner_root), base,
+            )?)
+        }
         CommandReply::Graph(snapshot) => Some(view_certificate(
             &snapshot.root,
             &identity_preimage(&[
@@ -332,10 +353,11 @@ fn projection_page_certificate(
         Command::GraphPage {
             symbol,
             page: request,
-        } => backend_engine::QueryPageRecipe::graph_window(
+        } => backend_engine::QueryPageRecipe::graph_window_mode(
             page.snapshot.root.basis().root,
             *symbol,
             request.window(),
+            request.include_incoming(),
         ),
         _ => {
             return Err(BuiltinModelError(

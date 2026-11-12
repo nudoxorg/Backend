@@ -38,6 +38,8 @@ pub mod options;
 mod process;
 mod protocol;
 pub mod render;
+/// Encoding for owner-sealed related-edge continuation tokens.
+pub mod related_cursor;
 pub mod run;
 mod source_range;
 mod semantic_hydrate;

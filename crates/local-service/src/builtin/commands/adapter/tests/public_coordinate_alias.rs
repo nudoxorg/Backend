@@ -54,6 +54,9 @@ fn serve(adapter: &mut CommandAdapter, daemon: &ProductDaemon, request: &Command
         Command::GraphPage { symbol, page } => {
             adapter.graph_page(daemon, symbol, page, certificate)
         }
+        Command::RelatedEdgePage { symbol, ref request } => {
+            adapter.related_edge_page(daemon, symbol, request.clone(), certificate)
+        }
         _ => adapter.standard(daemon, &request.command, certificate),
     }
     .expect("actual command dispatch");
@@ -67,6 +70,62 @@ fn serve(adapter: &mut CommandAdapter, daemon: &ProductDaemon, request: &Command
     backend_library::admit_reply(request, &decoded)
         .expect("strict client admits original alias command");
     decoded
+}
+
+#[test]
+fn selected_related_edge_empty_page_survives_owner_wire_with_truthful_gap() {
+    let (mut fixture, native, _, _) = fixture();
+    let (adapter, daemon) = fixture.parts();
+    let root = daemon.engine().daemon().library().revision_root();
+    let symbol = SymbolAddress::selected(native);
+    let scope = backend_library::RelatedPageScope {
+        root: root.to_bytes(), source: symbol.claimed_bytes(), source_selected: true,
+        direction: backend_library::RelatedDirection::Both,
+        issued: 1, delivery: 1, windowed: false,
+    };
+    let command = Command::RelatedEdgePage { symbol, request: backend_library::RelatedPageRequest { scope, cursor: None } };
+    let certificate = WireCertificate::default().with_claim(WireClaim::KeyCommitment {
+        schema: backend_library::WireSchema::Symbol, id: backend_library::encode_id(native.as_bytes()),
+    }).with_claim(WireClaim::RootCommitment {
+        schema: backend_library::WireSchema::ViewRelation, id: backend_library::encode_id(root.as_bytes()),
+    });
+    let request = CommandDto::new(0x4010, command).with_certificate(certificate);
+    let request = CommandDto::decode_for_owner(&serde_json::to_vec(&request).expect("wire"), daemon.engine().daemon().library().cursor()).expect("admit request");
+    let reply = serve(adapter, daemon, &request);
+    let CommandReply::RelatedEdgePage(page) = reply.reply else { panic!("related edge page") };
+    assert!(page.keys.is_empty());
+    assert!(page.withheld, "structural fallback cannot claim complete semantic coverage");
+    assert!(matches!(page.terminal, backend_library::RelatedEdgeTerminal::Complete));
+    assert!(page.snapshot.root.rows().iter().any(|row| row.id == RowId::Symbol(native)));
+}
+
+#[test]
+fn public_related_page_mode_survives_owner_wire() {
+    let (mut fixture, native, neighbor, alias) = fixture();
+    let (adapter, daemon) = fixture.parts();
+    let root = daemon.engine().daemon().library().revision_root();
+    let mut page = PageRequest::new(root, QueryLimit::new(1).expect("limit")).with_incoming();
+    let mut certificate = request_certificate(&alias, root);
+    let mut rows = Vec::new();
+    for id in 0..2 {
+        let command = Command::GraphPage { symbol: SymbolAddress::canonical(symbol_key(&alias)), page };
+        let request = CommandDto::new(0x4000 + id, command).with_certificate(certificate);
+        let request = CommandDto::decode_for_owner(&serde_json::to_vec(&request).expect("wire"), daemon.engine().daemon().library().cursor()).expect("admit");
+        let reply = serve(adapter, daemon, &request);
+        let CommandReply::ProjectionPage(result) = &reply.reply else { panic!("related page") };
+        rows.extend(result.snapshot.root.row_refs().map(|row| row.id));
+        match result.terminal {
+            PageTerminal::More(next) => {
+                page = page.with_continuation(next);
+                certificate = reply.certificate().expect("cursor certificate").clone();
+            }
+            PageTerminal::Complete => break,
+            PageTerminal::Cancelled => panic!("cancelled"),
+        }
+    }
+    rows.sort();
+    let mut expected = vec![RowId::Symbol(native), RowId::Symbol(neighbor)]; expected.sort();
+    assert_eq!(rows, expected);
 }
 
 #[test]

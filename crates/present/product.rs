@@ -2242,7 +2242,7 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
                 if exhaustive {
                     "; no match in this project's SQL files (SQL inside application code is not analysed)"
                 } else {
-                    "; no match, but this is NOT proof of absence: see the gaps (query --role gap lists the statements)"
+                    "; no match, but this is NOT proof of absence: see the gaps (query --role gap lists affected files and statements)"
                 }
             } else { "" };
             let selection = if page.basis.implicit_selection { "all .sql files, dialect inferred" } else { "files named by .nudox/sql.json" };

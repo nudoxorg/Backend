@@ -126,6 +126,7 @@ enum CatalogReplyRequest {
     Names(backend_library::ViewRevision),
     Search(backend_library::ViewRevision),
     Graph(backend_library::ViewRevision),
+    RelatedEdge(backend_library::ViewRevision),
 }
 impl CatalogReplyRequest {
     fn from_command(command: &Command) -> Option<Self> {
@@ -139,7 +140,7 @@ impl CatalogReplyRequest {
     }
     const fn basis(self) -> backend_library::ViewRevision {
         match self {
-            Self::Names(basis) | Self::Search(basis) | Self::Graph(basis) => basis,
+            Self::Names(basis) | Self::Search(basis) | Self::Graph(basis) | Self::RelatedEdge(basis) => basis,
         }
     }
     fn successful_at_basis(
@@ -150,6 +151,7 @@ impl CatalogReplyRequest {
             (Self::Names(_), CommandReply::Names(snapshot))
             | (Self::Search(_), CommandReply::Search(snapshot)) => snapshot,
             (Self::Search(_), CommandReply::PublishedNameSearch(page)) => &page.snapshot,
+            (Self::RelatedEdge(_), CommandReply::RelatedEdgePage(page)) => &page.snapshot,
             (Self::Graph(_), CommandReply::ProjectionPage(page)) => {
                 if page.terminal == backend_library::PageTerminal::Cancelled {
                     return Ok(false);
@@ -682,6 +684,7 @@ fn answers_while_indexing(command: &Command) -> bool {
         | Command::Graph(_)
         | Command::Related(_)
         | Command::GraphPage { .. }
+        | Command::RelatedEdgePage { .. }
         | Command::GraphQuery(_)
         | Command::SemanticShapes(_)
         | Command::Health
@@ -4995,7 +4998,14 @@ impl CommandAdapter {
             &request.command,
             Command::Search(_) | Command::SearchPublishedNames(_)
         );
-        let catalog = CatalogReplyRequest::from_command(&request.command);
+        let catalog = match &request.command {
+            Command::RelatedEdgePage { request, .. }
+                if request.scope.root == daemon.engine().daemon().library().revision_root().to_bytes() =>
+            {
+                Some(CatalogReplyRequest::RelatedEdge(daemon.engine().daemon().library().revision_root().into()))
+            }
+            _ => CatalogReplyRequest::from_command(&request.command),
+        };
         self.pending_semantic_search = None;
         let admitted = self.dispatch(daemon, request.command, certificate, request_id)?;
         let status = if is_search {
@@ -5410,6 +5420,9 @@ impl CommandAdapter {
             Command::Graph(query) => self.graph(daemon, query, certificate, false),
             Command::GraphPage { symbol, page } => {
                 self.graph_page(daemon, symbol, page, certificate)
+            }
+            Command::RelatedEdgePage { symbol, request } => {
+                self.related_edge_page(daemon, symbol, request, certificate)
             }
             Command::Related(query) => self.graph(daemon, query, certificate, true),
             Command::GraphQuery(request) => {
@@ -6645,7 +6658,7 @@ impl CommandAdapter {
             // A stale page must be refused before executing against a newer graph.
             if !page.basis().matches(library.revision_root()) {
                 library.graph_page_for_address(resolved, symbol, page)
-            } else if let Some(snapshot) = self.graph_snapshot(daemon, query, false)? {
+            } else if let Some(snapshot) = self.graph_snapshot(daemon, query, page.include_incoming())? {
                 let ids = snapshot
                     .root
                     .rows()
@@ -6667,6 +6680,65 @@ impl CommandAdapter {
                 .unwrap_or_else(|error| CommandReply::Failed(error.into()))
         };
         Self::certify(daemon, &command, reply, certificate)
+    }
+
+    fn related_edge_page(
+        &mut self,
+        daemon: &ProductDaemon,
+        symbol: backend_engine::SymbolAddress,
+        request: backend_library::RelatedPageRequest,
+        certificate: Option<WireCertificate>,
+    ) -> Result<AdmittedReply, BuiltinModelError> {
+        let command = Command::RelatedEdgePage { symbol, request: request.clone() };
+        let library = daemon.engine().daemon().library();
+        let root = library.revision_root();
+        if request.scope.root != root.to_bytes()
+            || request.scope.source != symbol.claimed_bytes()
+            || request.scope.source_selected != symbol.is_selected()
+        {
+            return Self::certify(daemon, &command, CommandReply::Failed(
+                backend_library::CommandFailure::InvalidQuery("related page source or view differs from its request".to_owned())
+            ), certificate);
+        }
+        let selected = match Self::claimed_graph_symbol(daemon, symbol, root.into(), certificate.as_ref()) {
+            Ok(selected) => selected,
+            Err(failure) => return Self::certify(daemon, &command, CommandReply::Failed(failure), certificate),
+        };
+        let Some(center) = selected.resolve(library.view()).filter(|center| library.view().row_ref(backend_engine::RowId::Symbol(*center)).is_some()) else {
+            return Self::certify(daemon, &command, CommandReply::Failed(backend_library::CommandFailure::NotFound), certificate);
+        };
+        let query = backend_engine::GraphNeighborhoodQuery::addressed(symbol, root);
+        let workspace_snapshot = daemon.engine().daemon().owner().snapshot();
+        let secret = self.semantic_authority.product_statement_authority()?;
+        let observed = if let Ok(workspace) = self.product_state.workspace_path().map(Path::to_path_buf) {
+            super::semantic_query::execute_observed_related_page(
+                daemon, &workspace_snapshot, &self.compiler, &mut self.generations,
+                &mut self.image_rows, &workspace, &self.semantic_authority, query,
+                center, &request, secret,
+            )?
+        } else { None };
+        let semantic = if observed.is_none() {
+            super::semantic_query::execute_semantic_related_page(
+                daemon, &workspace_snapshot, &self.compiler, &mut self.generations,
+                &mut self.image_rows, query, center, &request, secret,
+            )?
+        } else { None };
+        let (snapshot, keys, semantic_revision, continuation, withheld) = if let Some(page) = observed.or(semantic) {
+            page
+        } else {
+            let (edges, revision, continuation, _withheld) = super::semantic_query::execute_structural_graph_edge_page(
+                &mut self.structural_calls, daemon, &workspace_snapshot, query, center, &request, secret,
+            )?;
+            let keys = edges.iter().map(|edge| backend_library::RelatedEdgeKey::new(*edge)).collect();
+            let snapshot = library.graph_from_semantic_relations(query.with_resolved_symbol(center), &edges)
+                .map_err(|error| BuiltinModelError(format!("project structural related page: {error}")))?;
+            // Structural calls are syntactic and do not certify semantic coverage.
+            (snapshot, keys, revision, continuation, true)
+        };
+        let terminal = continuation.map_or(backend_library::RelatedEdgeTerminal::Complete, backend_library::RelatedEdgeTerminal::More);
+        Self::certify(daemon, &command, CommandReply::RelatedEdgePage(backend_library::RelatedEdgePage {
+            snapshot, keys: keys.into_boxed_slice(), semantic_revision, terminal, withheld,
+        }), certificate)
     }
 
     /// Resolves a graph source named by the canonical coordinate a caller

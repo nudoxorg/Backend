@@ -253,6 +253,8 @@ pub fn encode_answer_with_call(
                     graph_gap: list.graph_gap(),
                     graph_center: list.graph_center(),
                     graph_edges: list.graph_edges(),
+                    related_edges: list.related_edges(),
+                    related_evidence_withheld: list.related_withheld(),
                     graph_source_policies: list.graph_source_policies(),
                     semantic_search: list.coverage().semantic_search_status(),
                     search_scope: list.coverage().published_names().map(|_| "published_names_only"),
@@ -766,6 +768,10 @@ struct SummaryRecordsDto<'a> {
     graph_center: Option<backend_library::GraphNodeId>,
     #[serde(skip_serializing_if = "<[backend_library::RichGraphEdge]>::is_empty")]
     graph_edges: &'a [backend_library::RichGraphEdge],
+    #[serde(skip_serializing_if = "<[crate::RelatedEdge]>::is_empty")]
+    related_edges: &'a [crate::RelatedEdge],
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    related_evidence_withheld: bool,
     #[serde(skip_serializing_if = "<[crate::GraphSourcePolicy]>::is_empty")]
     graph_source_policies: &'a [crate::GraphSourcePolicy],
     #[serde(skip_serializing_if = "Option::is_none")]

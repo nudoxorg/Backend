@@ -128,6 +128,7 @@ pub(crate) use structural::view_row_for_structural_coordinate;
 pub(crate) use structural::{
     StructuralCallEndpoint, StructuralCallResidence, StructuralCallRows,
     structural_call_endpoint_relations_mapped, structural_call_graph_relations_resident,
+    scan_structural_call_graph_relations_resident,
     structural_call_span, structural_file_span, structural_reference_facts_resident,
     structural_symbol_identity,
 };
@@ -3415,6 +3416,18 @@ pub fn decoy_mention() { let _ = "parse_config("; }
             .with_confidence(backend_library::SemanticConfidence::Syntactic);
             assert_eq!(outgoing, vec![edge.clone()]);
             assert_eq!(incoming, vec![edge]);
+            let mut paged = Vec::new();
+            super::scan_structural_call_graph_relations_resident(
+                &mut residence, &view, &sources, package, target, true,
+                |relation| paged.push(relation),
+            ).map_err(|error| error.to_string())?;
+            assert_eq!(paged, incoming, "bounded scanner retains the exact incoming caller");
+            let mut outgoing_from_target = Vec::new();
+            super::scan_structural_call_graph_relations_resident(
+                &mut residence, &view, &sources, package, target, false,
+                |relation| outgoing_from_target.push(relation),
+            ).map_err(|error| error.to_string())?;
+            assert!(outgoing_from_target.is_empty(), "outgoing mode must not include callers");
             let label = view.row_ref(target).ok_or("target row")?.label.as_str();
             let references = super::structural_reference_facts(&view, &sources, label)
                 .map_err(|error| error.to_string())?;

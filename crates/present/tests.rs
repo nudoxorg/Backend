@@ -836,6 +836,19 @@ fn declaration_row() -> backend_library::Row {
 }
 
 #[test]
+fn document_kind_uses_only_its_admitted_graph_center_when_members_are_unavailable() {
+    let own = declaration_row();
+    let other = backend_library::Row::in_package(
+        RowId::Symbol(symbol_key("other")), basis(), package_key(PROJECT), "other",
+    ).with_kind(DeclarationKind::Class);
+    let document = Document::new(symbol_key(DECLARATION), view_state_root(&[]), []);
+    let page = page_from_document(DECLARATION, &document, &[], &[other.clone(), own], Vec::new());
+    assert_eq!(page.kind(), Some(DeclarationKind::Function));
+    let missing = page_from_document(DECLARATION, &document, &[], &[other], Vec::new());
+    assert_eq!(missing.kind(), None);
+}
+
+#[test]
 fn stale_file_never_renders_captured_excerpt_as_current_source() {
     let document = Document::new(symbol_key(DECLARATION), view_state_root(&[]), [])
         .with_location(SourceAvailability::stale_file("src/lib.rs").expect("stale path"))
@@ -2681,4 +2694,30 @@ fn legacy_outline_node_decodes_without_inventing_a_selector() {
     assert!(node.semantic_data.is_none());
     let value = serde_json::to_value(node).expect("legacy node JSON");
     assert!(value.get("semantic_data").is_none());
+}
+
+#[test]
+fn related_paging_lowers_distinct_edge_request_and_preserves_cursor() {
+    let grammar = grammar_for("related").expect("related grammar");
+    let mut invocation = Invocation::new(grammar);
+    invocation.push(DECLARATION);
+    invocation.set("limit", "7");
+    invocation.set("cursor", "re1-opaque");
+    assert!(matches!(lower(&invocation, PROJECT), Ok(Request::RelatedPage {
+        selector: backend_library::DeclarationSelector::Coordinate(coordinate), limit: 7, cursor: Some(cursor)
+    }) if coordinate == DECLARATION && cursor == "re1-opaque"));
+    invocation.set("cursor", "");
+    assert!(lower(&invocation, PROJECT).is_err());
+}
+
+#[test]
+fn related_paging_keeps_selected_identity_and_coordinate_assertion() {
+    let grammar = grammar_for("related").expect("related grammar");
+    let mut invocation = Invocation::new(grammar);
+    invocation.push("@/src/main.ts:1::main");
+    invocation.set("selected-id", "53".repeat(32));
+    invocation.set("limit", "11");
+    assert!(matches!(lower(&invocation, PROJECT), Ok(Request::RelatedPage {
+        selector: backend_library::DeclarationSelector::SelectedAt { coordinate, .. }, limit: 11, cursor: None
+    }) if coordinate == "@/src/main.ts:1::main"));
 }

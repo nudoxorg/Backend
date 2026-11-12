@@ -2062,6 +2062,33 @@ pub(crate) fn structural_call_graph_relations_resident(
     source_id: RowId,
     include_incoming: bool,
 ) -> Result<Option<Vec<backend_engine::GraphRelation>>, BuiltinModelError> {
+    let mut relations = BTreeSet::new();
+    scan_structural_call_graph_relations_resident(
+        residence, view, sources, package, source_id, include_incoming,
+        |relation| { relations.insert(relation); },
+    )?;
+    let relations = relations.into_iter().collect::<Vec<_>>();
+    if relations.is_empty() {
+        return Ok(None);
+    }
+    if relations.len() > usize::from(backend_engine::QueryLimit::MAX) {
+        return Err(BuiltinModelError(
+            "structural call graph exceeds the bounded result contract".to_owned(),
+        ));
+    }
+    Ok(Some(relations))
+}
+
+/// Visit direction-scoped structural calls without materializing a graph page.
+pub(crate) fn scan_structural_call_graph_relations_resident(
+    residence: &mut StructuralCallResidence,
+    view: &backend_engine::ViewRoot,
+    sources: &IndexedSources,
+    package: backend_engine::PackageKey,
+    source_id: RowId,
+    include_incoming: bool,
+    mut emit: impl FnMut(backend_engine::GraphRelation),
+) -> Result<(), BuiltinModelError> {
     if view.row_ref(source_id).is_none() {
         return Err(BuiltinModelError(
             "structural call graph source is absent from the view".to_owned(),
@@ -2069,7 +2096,6 @@ pub(crate) fn structural_call_graph_relations_resident(
     }
     let calls = residence.project_calls(sources, package)?;
     let source = view.row_ref(source_id).expect("source row checked above");
-    let mut relations = BTreeSet::new();
     // Only materialize the requested neighborhood. Incoming edges use the
     // reverse adjacency built with the same exact source projection.
     for (caller, callee) in calls.neighborhood_for_row(source_id, &source.label, include_incoming) {
@@ -2088,7 +2114,7 @@ pub(crate) fn structural_call_graph_relations_resident(
         if caller_id != source_id && (!include_incoming || callee_id != source_id) {
             continue;
         }
-        relations.insert(
+        emit(
             backend_engine::GraphRelation::new(
                 caller_id,
                 callee_id,
@@ -2097,16 +2123,7 @@ pub(crate) fn structural_call_graph_relations_resident(
             .with_confidence(backend_library::SemanticConfidence::Syntactic),
         );
     }
-    let relations = relations.into_iter().collect::<Vec<_>>();
-    if relations.is_empty() {
-        return Ok(None);
-    }
-    if relations.len() > usize::from(backend_engine::QueryLimit::MAX) {
-        return Err(BuiltinModelError(
-            "structural call graph exceeds the bounded result contract".to_owned(),
-        ));
-    }
-    Ok(Some(relations))
+    Ok(())
 }
 
 /// Incoming call sites for one declaration when semantic references are absent.

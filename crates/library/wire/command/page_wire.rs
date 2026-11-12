@@ -16,6 +16,8 @@ pub(crate) struct PageRequestWire {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) window: Option<super::QueryWindowWire>,
     pub(crate) continuation: Option<CursorWire>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) include_incoming: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -34,6 +36,7 @@ pub(crate) struct SymbolPageWire {
 
 pub(crate) fn page_request_to_wire(page: PageRequest) -> PageRequestWire {
     PageRequestWire {
+        include_incoming: page.include_incoming(),
         basis: encode_id(page.basis().as_bytes()),
         limit: page.limit().get(),
         window: super::window_to_wire(page.window()),
@@ -53,6 +56,7 @@ pub(crate) fn page_request_from_wire(
     let mut page = PageRequest::new(revision_from_wire(certificate, &value.basis)?, limit)
         .with_window(window)
         .ok_or_else(|| "query window changed issued ceiling".to_owned())?;
+    if value.include_incoming { page = page.with_incoming(); }
     if let Some(cursor) = value.continuation {
         page = page.with_continuation(PageContinuation::from_cursor(cursor_from_wire(
             &cursor,
@@ -77,6 +81,7 @@ pub(crate) fn page_request_from_wire_against_catalog_owner(
     let mut page = PageRequest::new(basis, limit)
         .with_window(window)
         .ok_or_else(|| "query window changed issued ceiling".to_owned())?;
+    if value.include_incoming { page = page.with_incoming(); }
     if let Some(cursor) = value.continuation {
         let compact_outline_root = allow_outline_witness
             && certificate.claims.iter().any(|claim| {

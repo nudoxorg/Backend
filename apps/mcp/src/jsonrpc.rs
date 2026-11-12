@@ -164,6 +164,20 @@ pub(super) trait Product: Engine {
         self.graph_page(coordinate, window.issued().get(), continuation)
     }
 
+    fn related_page_window(&mut self, coordinate: String, window: backend_library::QueryWindow, continuation: Option<PageContinuation>) -> Result<ReplyDto, ClientError> {
+        let _ = (coordinate, window, continuation);
+        Err(ClientError::Protocol("this product does not expose related pagination".to_owned()))
+    }
+    fn related_page_declaration(&mut self, selector: backend_library::DeclarationSelector, window: backend_library::QueryWindow, continuation: Option<PageContinuation>) -> Result<ReplyDto, ClientError> {
+        let _ = (selector, window, continuation);
+        Err(ClientError::Protocol("this product does not expose related pagination".to_owned()))
+    }
+
+    fn related_edge_page(&mut self, selector: backend_library::DeclarationSelector, window: backend_library::QueryWindow, cursor: Option<backend_library::RelatedPageCursor>) -> Result<ReplyDto, ClientError> {
+        let _ = (selector, window, cursor);
+        Err(ClientError::Protocol("this product does not expose related edge pages".to_owned()))
+    }
+
     /// Resumes an outline from an authenticated compact token whose page root
     /// remains untrusted until the owner reconstructs its predecessor rows.
     fn outline_page_token(
@@ -416,6 +430,17 @@ impl Product for SessionProduct {
     ) -> Result<ReplyDto, ClientError> {
         self.0
             .graph_page_declaration(&selector, window, continuation)
+    }
+
+    fn related_page_window(&mut self, coordinate: String, window: backend_library::QueryWindow, continuation: Option<PageContinuation>) -> Result<ReplyDto, ClientError> {
+        self.0.related_page_window(&coordinate, window, continuation)
+    }
+    fn related_page_declaration(&mut self, selector: backend_library::DeclarationSelector, window: backend_library::QueryWindow, continuation: Option<PageContinuation>) -> Result<ReplyDto, ClientError> {
+        self.0.related_page_declaration(&selector, window, continuation)
+    }
+
+    fn related_edge_page(&mut self, selector: backend_library::DeclarationSelector, window: backend_library::QueryWindow, cursor: Option<backend_library::RelatedPageCursor>) -> Result<ReplyDto, ClientError> {
+        self.0.related_edge_page_declaration(&selector, window, cursor)
     }
 
     fn graph_query(
@@ -1248,6 +1273,9 @@ impl<P: Product> Server<P> {
         } else {
             None
         };
+        if grammar.is_some_and(|grammar| grammar.name() == "related") {
+            return self.related_edge_tool(arguments, detail, invocation, response_id);
+        }
         let continuation = if matches!(route, ToolRoute::Query)
             || matches!(
                 cursor_domain,
@@ -1260,7 +1288,7 @@ impl<P: Product> Server<P> {
         if matches!(route, ToolRoute::Query) {
             return self.query_tool(arguments, detail, continuation, invocation, response_id);
         }
-        if grammar.is_some_and(|grammar| grammar.name() == "graph") {
+        if grammar.is_some_and(|grammar| matches!(grammar.name(), "graph" | "related")) {
             return self.graph_tool(arguments, detail, continuation, invocation, response_id);
         }
         let Some(grammar) = grammar else {
@@ -1643,6 +1671,99 @@ impl<P: Product> Server<P> {
         }
     }
 
+    fn related_edge_tool(&mut self, arguments: &Map<String, Value>, detail: Detail, invocation: McpInvocation<'_>, response_id: &Value) -> Result<Value, RpcError> {
+        no_extra(arguments, &["coordinate", "selected_symbol", "limit", "cursor", "detail"])?;
+        let operands = arguments.iter().filter(|(key, _)| matches!(key.as_str(), "coordinate" | "selected_symbol")).map(|(key, value)| (key.clone(), value.clone())).collect();
+        let grammar = backend_present::grammar_for("related").expect("related grammar");
+        tools::validate_registry_arguments(grammar, &operands).map_err(|fault| RpcError::from_fault(&fault))?;
+        let input = backend_present::Invocation::from_json(grammar, &operands).map_err(|fault| RpcError::from_fault(&fault))?;
+        let selector = backend_present::declaration_selector(&input).map_err(|fault| RpcError::from_fault(&fault))?;
+        let selector = match selector {
+            backend_library::DeclarationSelector::Coordinate(coordinate) => backend_library::DeclarationSelector::Coordinate(backend_present::resolve_declaration(&mut self.product, &coordinate, "related").map_err(|fault| RpcError::from_fault(&fault))?),
+            selected => selected,
+        };
+        let coordinate = match &selector { backend_library::DeclarationSelector::Coordinate(value) | backend_library::DeclarationSelector::SelectedAt { coordinate: value, .. } => value.clone(), backend_library::DeclarationSelector::Selected(id) => backend_library::encode_id(id.bytes()) };
+        let context = continuation_context(&self.project, invocation.selected_name(), arguments, detail);
+        let cursor = if let Some(value) = arguments.get("cursor") {
+            let token = value.as_str().filter(|v| !v.is_empty()).ok_or_else(|| RpcError::invalid("cursor must be a non-empty opaque string"))?;
+            let owner = self.verify_cursor_token(token, &context)?.ok_or_else(RpcError::stale_cursor)?;
+            let data = owner.strip_prefix("re1-").and_then(|v| URL_SAFE_NO_PAD.decode(v).ok()).ok_or_else(RpcError::stale_cursor)?;
+            Some(serde_json::from_slice::<backend_library::RelatedPageCursor>(&data).map_err(|_| RpcError::stale_cursor())?)
+        } else { None };
+        let effective = limit(arguments)?;
+        let mut delivery = cursor.as_ref().map_or(effective, |cursor| cursor.scope().delivery);
+        let budget = wire_admission::ResponseBudget::new(response_id);
+        let lifetime = self.semantic_lifetime()?;
+        loop {
+            lifetime.check().map_err(semantic_pages::semantic_client_error)?;
+            let window = record_pages::query_window(effective, delivery)?;
+            let reply = match self.product.related_edge_page(selector.clone(), window, cursor.clone()) {
+                Ok(reply) => reply,
+                Err(ClientError::ResponseTooLarge { .. }) if delivery > 1 => { delivery = delivery.div_ceil(2); continue; }
+                Err(error) => return Err(RpcError::from_fault(&Fault::from_client_error(&error, backend_present::Operand::Text(coordinate.clone())))),
+            };
+            let page = match reply.reply {
+                backend_library::CommandReply::RelatedEdgePage(page) => page,
+                backend_library::CommandReply::Failed(failure) => return Err(RpcError::from_fault(&backend_present::probe_fault(
+                    &ClientError::CommandFailed(failure), Probe::Related(&coordinate),
+                ))),
+                _ => return Err(RpcError::tool("related edge page reply changed shape")),
+            };
+            let mut records = backend_present::related_edge_records(&coordinate, &page)
+                .map_err(|fault| RpcError::from_fault(&fault))?;
+            let mut next_arguments = arguments.clone();
+            next_arguments.insert("limit".to_owned(), json!(effective));
+            let next_context = continuation_context(&self.project, invocation.selected_name(), &next_arguments, detail);
+            let next_invocation = invocation.with_arguments(&next_arguments);
+            let next = match &page.terminal {
+                backend_library::RelatedEdgeTerminal::Complete => None,
+                backend_library::RelatedEdgeTerminal::More(cursor) => {
+                    let bytes = serde_json::to_vec(cursor).map_err(|_| RpcError::tool("related cursor encoding failed"))?;
+                    Some(self.sign_cursor_token(&format!("re1-{}", URL_SAFE_NO_PAD.encode(bytes)), &next_context)?)
+                }
+            };
+            records = records.with_related_continuation(next.clone());
+            let mut result = match self.rendered_admitted(Answer::Records(Box::new(records)), detail, &context, CursorTarget::CliOption, invocation) {
+                Ok(result) => result,
+                Err(error) if delivery > 1 && semantic_pages::oversized(&error) => { delivery = delivery.div_ceil(2); continue; }
+                Err(error) => return Err(error),
+            };
+            let mut edge_preview = String::new();
+            if let Some(structured) = result.get_mut("structuredContent").and_then(Value::as_object_mut) {
+                let edges = page.snapshot.graph_relations.as_deref().unwrap_or(&[]).iter().map(|edge| {
+                    let label = |id| page.snapshot.root.rows().iter().find(|row| row.id == id).map(|row| row.label.as_str()).unwrap_or("");
+                    json!({"from": label(edge.from), "to": label(edge.to), "relation": edge.relation, "confidence": edge.confidence})
+                }).collect::<Vec<_>>();
+                // Preserve one structured copy of each edge in this surface.
+                structured.remove("related_edges");
+                for edge in edges.iter().take(10) {
+                    if let (Some(from), Some(relation), Some(to)) = (edge["from"].as_str(), edge["relation"].as_str(), edge["to"].as_str()) {
+                        edge_preview.push_str(&format!("\n- {from} — {relation} → {to}"));
+                    }
+                }
+                if edges.len() > 10 { edge_preview.push_str("\n- More edges are available in structuredContent.edges."); }
+                structured.insert("edges".to_owned(), json!(edges));
+                structured.insert("related_evidence_withheld".to_owned(), json!(page.withheld));
+                structured.insert("more".to_owned(), json!(next.is_some()));
+                if let Some(token) = &next {
+                    structured.insert("nextCursor".to_owned(), json!(token));
+                    structured.insert("continuation_call".to_owned(), serde_json::to_value(next_invocation.continuation_call(token)).map_err(|_| RpcError::tool("related continuation encoding failed"))?);
+                }
+            } else { return Err(RpcError::tool("related structured response missing")); }
+            if let Some(text) = result.get_mut("content").and_then(Value::as_array_mut).and_then(|content| content.first_mut()).and_then(|item| item.get_mut("text")).and_then(|value| value.as_str()) {
+                let mut text = text.to_owned();
+                if next.is_some() { text.push_str("\n\nMore related edges are available; copy structuredContent.continuation_call to continue."); }
+                if !edge_preview.is_empty() { text.push_str("\n\nRelated edges:"); text.push_str(&edge_preview); }
+                result["content"][0]["text"] = Value::String(bounded_text(&text));
+            }
+            match budget.admit(result) {
+                Ok(result) => return Ok(result),
+                Err(error) if delivery > 1 && semantic_pages::oversized(&error) => { delivery = delivery.div_ceil(2); }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     fn graph_tool(
         &mut self,
         arguments: &Map<String, Value>,
@@ -1660,7 +1781,8 @@ impl<P: Product> Server<P> {
             .filter(|(key, _)| matches!(key.as_str(), "coordinate" | "selected_symbol"))
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
-        let grammar = backend_present::grammar_for("graph").expect("graph grammar");
+        let incoming = invocation.selected_name() == "backend.related";
+        let grammar = backend_present::grammar_for(if incoming { "related" } else { "graph" }).expect("graph grammar");
         tools::validate_registry_arguments(grammar, &operands)
             .map_err(|fault| RpcError::from_fault(&fault))?;
         let invocation_operand = backend_present::Invocation::from_json(grammar, &operands)
@@ -1670,7 +1792,7 @@ impl<P: Product> Server<P> {
         let selector = match selector {
             backend_library::DeclarationSelector::Coordinate(coordinate) => {
                 backend_library::DeclarationSelector::Coordinate(
-                    backend_present::resolve_declaration(&mut self.product, &coordinate, "graph")
+                    backend_present::resolve_declaration(&mut self.product, &coordinate, if incoming { "related" } else { "graph" })
                         .map_err(|fault| RpcError::from_fault(&fault))?,
                 )
             }
@@ -1688,8 +1810,10 @@ impl<P: Product> Server<P> {
         let probe = if selector.selected_id().is_some() {
             Probe::Declaration {
                 selector: &selector,
-                read: backend_library::DeclarationRead::Graph,
+                read: if incoming { backend_library::DeclarationRead::Related } else { backend_library::DeclarationRead::Graph },
             }
+        } else if incoming {
+            Probe::Related(&coordinate)
         } else {
             Probe::Graph(&coordinate)
         };
@@ -1709,12 +1833,11 @@ impl<P: Product> Server<P> {
             lifetime
                 .check()
                 .map_err(semantic_pages::semantic_client_error)?;
-            let reply = if selector.selected_id().is_some() {
-                self.product
-                    .graph_page_declaration(selector.clone(), window, continuation)
-            } else {
-                self.product
-                    .graph_page_window(coordinate.clone(), window, continuation)
+            let reply = match (incoming, selector.selected_id().is_some()) {
+                (true, true) => self.product.related_page_declaration(selector.clone(), window, continuation),
+                (true, false) => self.product.related_page_window(coordinate.clone(), window, continuation),
+                (false, true) => self.product.graph_page_declaration(selector.clone(), window, continuation),
+                (false, false) => self.product.graph_page_window(coordinate.clone(), window, continuation),
             };
             lifetime
                 .check()
@@ -2988,6 +3111,10 @@ fn decode_cursor_owner(encoded: &str) -> Option<String> {
 /// Encoding admission only: the owner still checks the retained proof,
 /// selected roots, query roles and index state after wrapper authentication.
 fn valid_direct_cursor_owner(owner: &str) -> bool {
+    if let Some(encoded) = owner.strip_prefix("re1-") {
+        return encoded.len() <= backend_library::MAX_INDEX_SEARCH_CURSOR_BYTES.saturating_sub(4)
+            && URL_SAFE_NO_PAD.decode(encoded).ok().is_some_and(|bytes| serde_json::from_slice::<backend_library::RelatedPageCursor>(&bytes).is_ok());
+    }
     if let Some(encoded) = owner.strip_prefix("sr1-") {
         let Ok(decoded) = URL_SAFE_NO_PAD.decode(encoded) else { return false; };
         return decoded.len() == 68 && URL_SAFE_NO_PAD.encode(decoded) == encoded;

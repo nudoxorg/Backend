@@ -504,7 +504,7 @@ pub(in crate::builtin) struct CurrentNativeProgram {
     indices: Vec<usize>,
 }
 impl CurrentNativeProgram {
-    pub(super) fn sources(&self) -> &backend_semantic::ir::NativeProgramSources {
+    pub(in crate::builtin) fn sources(&self) -> &backend_semantic::ir::NativeProgramSources {
         &self.sources
     }
 

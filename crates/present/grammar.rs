@@ -834,8 +834,8 @@ pub const GRAMMARS: [CommandGrammar; 64] = [
             ArgumentKind::Coordinate,
             "Exact declaration coordinate to centre the neighbourhood on.",
         )],
-        options: &[SELECTED_SYMBOL],
-        when: "Use after you have a coordinate to see callers and callees in this package. Package-level dependents are a separate call.",
+        options: &[SELECTED_SYMBOL, LIMIT, CURSOR],
+        when: "Use after you have a coordinate to see callers and callees in this package. Use --limit to page edges, then repeat the same limit and pass the returned --cursor to continue. Package-level dependents are a separate call.",
     },
     CommandGrammar {
         name: "references",

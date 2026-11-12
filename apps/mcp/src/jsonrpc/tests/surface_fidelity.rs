@@ -385,6 +385,18 @@ impl Product for RetainedProduct {
         Ok(ReplyDto::new(17, CommandReply::ProjectionPage(page)))
     }
 
+    fn related_page_window(&mut self, coordinate: String, window: backend_library::QueryWindow, continuation: Option<PageContinuation>) -> Result<ReplyDto, ClientError> {
+        let page = self.page(window.issued().get(), continuation).with_window(window).expect("window").with_incoming();
+        let page = self.library.graph_page_for_address(self.symbol(&coordinate)?, backend_library::SymbolAddress::canonical(symbol_key(&coordinate)), page).map_err(|error| ClientError::CommandFailed(error.into()))?;
+        Ok(ReplyDto::new(17, CommandReply::ProjectionPage(page)))
+    }
+    fn related_page_declaration(&mut self, selector: backend_library::DeclarationSelector, window: backend_library::QueryWindow, continuation: Option<PageContinuation>) -> Result<ReplyDto, ClientError> {
+        let RowId::Symbol(symbol) = self.selected_row(&selector)?.id else { panic!("selected symbol") };
+        let page = self.page(window.issued().get(), continuation).with_window(window).expect("window").with_incoming();
+        let page = self.library.graph_page_for_address(symbol, selector.address(), page).map_err(|error| ClientError::CommandFailed(error.into()))?;
+        Ok(ReplyDto::new(17, CommandReply::ProjectionPage(page)))
+    }
+
     fn graph_query(
         &mut self,
         _input: AdmittedGraphQueryInput,

@@ -1028,6 +1028,7 @@ pub struct PageRequest {
     window: crate::QueryWindow,
     continuation: Option<PageContinuation>,
     outline_witness: Option<crate::OutlineCursorWitness>,
+    include_incoming: bool,
 }
 
 impl PageRequest {
@@ -1039,8 +1040,17 @@ impl PageRequest {
             window: crate::QueryWindow::fixed(limit),
             continuation: None,
             outline_witness: None,
+            include_incoming: false,
         }
     }
+
+    /// Requests both incoming and outgoing neighborhood relations.
+    #[must_use]
+    pub const fn with_incoming(mut self) -> Self { self.include_incoming = true; self }
+
+    /// Whether this graph page includes incoming relations.
+    #[must_use]
+    pub const fn include_incoming(self) -> bool { self.include_incoming }
 
     /// Resumes from a continuation returned by the preceding page.
     #[must_use]
@@ -1278,6 +1288,13 @@ pub enum Command {
         /// Shared root/query-bound paging request.
         page: PageRequest,
     },
+    /// Read a bounded page of related edge identities.
+    RelatedEdgePage {
+        /// Original center locator; raw cursor keys never establish authority.
+        symbol: SymbolAddress,
+        /// Exact query scope and optional owner-sealed continuation.
+        request: crate::RelatedPageRequest,
+    },
     /// Read the selected declaration and its immediate owned members only.
     MembersPage {
         /// Exact selected owner and complete source basis, when captured.
@@ -1319,7 +1336,7 @@ impl Command {
             Self::Resolve { .. } => CommandId::Resolve,
             Self::Search(_) | Self::SearchPublishedNames(_) => CommandId::Search,
             Self::Graph(_) | Self::GraphPage { .. } => CommandId::Graph,
-            Self::Related(_) => CommandId::Related,
+            Self::Related(_) | Self::RelatedEdgePage { .. } => CommandId::Related,
             Self::GraphQuery(_) => CommandId::GraphQuery,
             Self::SemanticShapes(_) => CommandId::SemanticShapes,
             Self::Surface(command) => command.id(),
@@ -1361,6 +1378,8 @@ pub enum CommandReply {
     Packages(ViewSnapshot),
     /// Shared bounded package/outline/graph page.
     ProjectionPage(ProjectionPage),
+    /// One bounded page of related edges.
+    RelatedEdgePage(crate::RelatedEdgePage),
     /// Accepted add intent.
     Added(crate::IntentId),
     /// Accepted remove intent.

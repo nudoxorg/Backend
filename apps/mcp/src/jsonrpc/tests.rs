@@ -943,6 +943,7 @@ impl Fake {
         limit: u16,
         continuation: Option<PageContinuation>,
         window: Option<backend_library::QueryWindow>,
+        incoming: bool,
     ) -> Result<ReplyDto, ClientError> {
         if let Some(failure) = &self.graph_failure {
             return Ok(ReplyDto::new(1, CommandReply::Failed(failure.clone())));
@@ -973,6 +974,7 @@ impl Fake {
             request = request
                 .with_window(window)
                 .expect("graph delivery preserves credit");
+            if incoming { request = request.with_incoming(); }
             if let Some(cursor) = continuation {
                 request = request.with_continuation(cursor);
             }
@@ -1230,11 +1232,18 @@ impl Engine for Fake {
                         backend_library::CommandFailure::NotFound,
                     ));
                 }
-                let mut value = self.document_override.clone().unwrap_or_else(document);
                 if self.document_matches_request && self.document_override.is_none() {
-                    value.symbol = symbol_key(at);
+                    let catalog = self.page_catalog.as_ref().ok_or_else(|| ClientError::Protocol("document fixture needs its selected catalog".to_owned()))?;
+                    let symbol = symbol_key(at);
+                    let row = catalog.view().row(RowId::Symbol(symbol)).ok_or(ClientError::CommandFailed(backend_library::CommandFailure::NotFound))?;
+                    let value = catalog.document(backend_library::DocumentQuery::new(symbol, catalog.revision_root()))
+                        .map_err(|error| ClientError::Protocol(error.to_string()))?;
+                    let selection = backend_library::DocumentSelection::from_row(&row, value.source_basis().expect("catalog document source"))
+                        .expect("selected catalog document row");
+                    CommandReply::Document(value.with_selection(selection).expect("document and selected catalog row share a basis"))
+                } else {
+                    CommandReply::Document(self.document_override.clone().unwrap_or_else(document))
                 }
-                CommandReply::Document(value)
             }
             Probe::Source(at) => {
                 if at == MISSING {
@@ -1575,7 +1584,7 @@ impl Product for Fake {
         limit: u16,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
-        self.catalog_graph_page(coordinate, limit, continuation, None)
+        self.catalog_graph_page(coordinate, limit, continuation, None, false)
     }
 
     fn graph_page_window(
@@ -1589,7 +1598,37 @@ impl Product for Fake {
             window.issued().get(),
             continuation,
             Some(window),
+            false,
         )
+    }
+
+    fn related_page_window(&mut self, coordinate: String, window: backend_library::QueryWindow, continuation: Option<PageContinuation>) -> Result<ReplyDto, ClientError> {
+        self.catalog_graph_page(coordinate, window.issued().get(), continuation, Some(window), true)
+    }
+
+    fn related_edge_page(&mut self, selector: backend_library::DeclarationSelector, window: backend_library::QueryWindow, cursor: Option<backend_library::RelatedPageCursor>) -> Result<ReplyDto, ClientError> {
+        self.page_limits.push(window.issued().get());
+        if let Some(failure) = &self.graph_failure { return Ok(ReplyDto::new(1, CommandReply::Failed(failure.clone()))); }
+        let fallback = if self.page_catalog.is_none() { Some(self.fixture_catalog(PROJECT)?) } else { None };
+        let catalog = self.page_catalog.as_ref().or(fallback.as_ref()).expect("fixture catalog");
+        if cursor.is_some() && self.catalog_delivery_ceiling.is_some_and(|bound| window.delivery().get() > bound) {
+            return Err(ClientError::ResponseTooLarge { basis: Some(catalog.revision_root().into()) });
+        }
+        let symbol = selector.address();
+        let center = symbol.resolve(catalog.view()).ok_or_else(|| ClientError::Protocol("fixture center absent".to_owned()))?;
+        let scope = backend_library::RelatedPageScope { root: *catalog.revision_root().as_bytes(), source: symbol.claimed_bytes(), source_selected: symbol.is_selected(), direction: backend_library::RelatedDirection::Both, issued: window.issued().get(), delivery: window.delivery().get(), windowed: window.is_windowed() };
+        let request = backend_library::RelatedPageRequest { scope, cursor };
+        let revision = *catalog.revision_root().as_bytes();
+        let secret = [7; 32];
+        let verified = backend_library::VerifiedRelatedPageRequest::verify(&request, revision, &secret).map_err(|_| ClientError::StaleCursor)?;
+        let mut edges = catalog.view().row_refs().filter(|row| row.parent == Some(center)).map(|row| backend_library::GraphRelation::new(RowId::Symbol(center), row.id, backend_library::SemanticLinkKind::Calls).with_confidence(backend_library::SemanticConfidence::Syntactic)).collect::<Vec<_>>();
+        edges.sort_by_key(|edge| backend_library::RelatedEdgeKey::new(*edge));
+        edges.retain(|edge| verified.after().is_none_or(|after| backend_library::RelatedEdgeKey::new(*edge) > after));
+        let more = edges.len() > usize::from(window.delivery().get());
+        edges.truncate(usize::from(window.delivery().get()));
+        let terminal = if more { backend_library::RelatedEdgeTerminal::More(verified.issue_cursor(backend_library::RelatedEdgeKey::new(*edges.last().expect("nonempty page"))).map_err(|error| ClientError::Protocol(format!("fixture issue: {error:?}")))?) } else { backend_library::RelatedEdgeTerminal::Complete };
+        let snapshot = catalog.graph_from_semantic_relations(backend_library::GraphNeighborhoodQuery::addressed(symbol, catalog.revision_root()), &edges).map_err(|error| ClientError::Protocol(error.to_string()))?;
+        Ok(ReplyDto::new(1, CommandReply::RelatedEdgePage(backend_library::RelatedEdgePage { keys: edges.iter().copied().map(backend_library::RelatedEdgeKey::new).collect(), snapshot, semantic_revision: revision, terminal, withheld: true })))
     }
 
     fn outline_page_token(
@@ -2432,9 +2471,87 @@ fn selected_search_page(
 }
 
 #[test]
+fn related_pages_fit_mcp_budget_for_large_neighborhood() {
+    let mut rows = vec![package_row(), module_row()];
+    rows.extend((0..180).map(|index| {
+        let coordinate = format!("{MODULE}:{}::{}_{}", index + 2, "long_name".repeat(35), index);
+        Row::in_package(RowId::Symbol(symbol_key(&coordinate)), basis(), package_key(PROJECT), coordinate)
+            .with_parent(symbol_key(MODULE))
+    }));
+    let view = root(rows);
+    let cursor = backend_library::Cursor::for_view_root(&view);
+    let catalog = backend_library::Library::from_view(view, cursor).expect("catalog");
+    let full = catalog.graph_page(symbol_key(MODULE), backend_library::PageRequest::new(catalog.revision_root(), backend_library::QueryLimit::new(200).expect("limit")).with_incoming()).expect("full neighborhood");
+    let projected = backend_present::RecordListDto::new(&record_list("selected", &full.snapshot));
+    assert!(serde_json::to_vec(&projected).expect("JSON").len() > 49_152);
+    let mut server = ready(Fake { page_catalog: Some(catalog), ..Fake::default() });
+    let mut args = json!({"coordinate": MODULE, "limit": 200});
+    let mut count = 0;
+    loop {
+        let result = call(&mut server, "backend.related", &args);
+        assert_context_bounded(&result);
+        assert_eq!(result["isError"], false, "{result}");
+        count += result["structuredContent"]["edges"].as_array().expect("edges").len();
+        if let Some(next) = result["structuredContent"]["continuation_call"].as_object() {
+            args = next["arguments"].clone();
+        } else { break; }
+    }
+    assert_eq!(count, 180);
+}
+
+#[test]
 fn default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapshots() {
-    for tool in ["backend.search", "backend.resolve", "backend.graph"] {
+    for tool in ["backend.search", "backend.resolve", "backend.graph", "backend.related"] {
         let catalog = paging_catalog(61);
+        if tool == "backend.related" {
+            // Related pages are keyed by edges; the selected center is a
+            // witness on every page, not another paged result identity.
+            let mut expected = catalog.view().row_refs()
+                .filter(|row| row.parent == Some(symbol_key(MODULE)))
+                .map(|row| (backend_library::RelatedEdgeKey::new(backend_library::GraphRelation::new(
+                    RowId::Symbol(symbol_key(MODULE)), row.id, backend_library::SemanticLinkKind::Calls,
+                )), row.label.clone()))
+                .collect::<Vec<_>>();
+            expected.sort_by_key(|(key, _)| *key);
+            let mut server = ready(Fake { page_catalog: Some(catalog), ..Fake::default() });
+            let mut arguments = json!({"coordinate": MODULE});
+            let mut first_continuation = None;
+            let mut seen = Vec::new();
+            for _ in 0..10 {
+                let response = request(&mut server, "tools/call", &json!({"name": tool, "arguments": arguments}));
+                assert_context_bounded(&response);
+                let result = &response["result"];
+                assert_eq!(result["isError"], false, "{tool}: {response}");
+                assert_eq!(result["structuredContent"]["detail"], "summary");
+                let edges = result["structuredContent"]["edges"].as_array().expect("complete typed edges");
+                assert!(edges.len() <= usize::from(backend_present::DEFAULT_LIMIT));
+                let preview = text_of(result);
+                assert!(preview.len() <= backend_present::MAX_PREVIEW_TEXT_BYTES);
+                assert_eq!(estimate_tokens(preview.len()), preview.len().div_ceil(backend_present::ESTIMATED_BYTES_PER_TOKEN));
+                for edge in edges {
+                    assert_eq!(edge["from"], MODULE);
+                    assert_eq!(edge["relation"], "calls");
+                    seen.push(edge["to"].as_str().expect("edge target").to_owned());
+                }
+                if let Some(next) = result["structuredContent"]["continuation_call"].as_object() {
+                    assert_eq!(result["structuredContent"]["more"], true);
+                    assert!(result["structuredContent"]["nextCursor"].is_string());
+                    assert!(preview.contains("structuredContent.continuation_call"));
+                    assert!(!preview.contains("raise `limit`"));
+                    first_continuation.get_or_insert_with(|| next["arguments"].clone());
+                    arguments = next["arguments"].clone();
+                } else { break; }
+            }
+            assert_eq!(seen, expected.into_iter().map(|(_, label)| label).collect::<Vec<_>>(),
+                "related preserves edge order with no skipped or repeated edges");
+            assert_eq!(server.product.page_limits, vec![backend_present::DEFAULT_LIMIT; 3]);
+            server.product.page_catalog = Some(paging_catalog(62));
+            let stale = request(&mut server, "tools/call", &json!({"name": tool, "arguments": first_continuation.expect("default related continues")}));
+            let fault = tool_failure(&stale, "cursor-mismatch");
+            assert_eq!(fault["cause"], "moved");
+            assert!(text_of(&stale["result"]).contains("restart the query"));
+            continue;
+        }
         let credit = backend_library::QueryLimit::new(200).expect("bounded oracle page");
         let snapshot = match tool {
             "backend.search" => selected_search_page(
@@ -2464,7 +2581,7 @@ fn default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapsho
             .iter()
             .map(|record| record.identity().coordinate().as_str().to_owned())
             .collect::<Vec<_>>();
-        if tool == "backend.graph" {
+        if matches!(tool, "backend.graph" | "backend.related") {
             // Neighborhood snapshots sort identities within each selected
             // page. The root/parent prefix precedes children in owner page
             // selection, so compare the actual owner order at this credit.
@@ -2480,6 +2597,7 @@ fn default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapsho
                     backend_library::QueryLimit::new(backend_present::DEFAULT_LIMIT)
                         .expect("default credit"),
                 );
+                if tool == "backend.related" { page = page.with_incoming(); }
                 if let Some(next) = cursor {
                     page = page.with_continuation(next);
                 }
@@ -2510,7 +2628,7 @@ fn default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapsho
             document_matches_request: tool == "backend.search",
             ..Fake::default()
         });
-        let mut arguments = if tool == "backend.graph" {
+        let mut arguments = if matches!(tool, "backend.graph" | "backend.related") {
             json!({"coordinate": MODULE})
         } else {
             json!({"query": "Session"})
@@ -10499,4 +10617,50 @@ fn search_published_names_never_masks_a_declared_compiler_refusal_as_partial() {
     assert_eq!(page["semantic_preparation"]["state"], "unavailable");
     assert_eq!(page["semantic_preparation"]["reason"], "unconfigured");
     assert_eq!(page["records"].as_array().expect("useful retained names").len(), 1);
+}
+
+#[test]
+fn related_edge_continuation_shrinks_later_delivery_without_losing_edges() {
+    let mut rows = vec![package_row(), module_row()];
+    rows.extend((0..13).map(|index| {
+        let coordinate = format!("{MODULE}:{}::{}_{}", index + 2, "long_name".repeat(12), index);
+        Row::in_package(RowId::Symbol(symbol_key(&coordinate)), basis(), package_key(PROJECT), coordinate)
+            .with_parent(symbol_key(MODULE))
+    }));
+    let view = root(rows);
+    let cursor = backend_library::Cursor::for_view_root(&view);
+    let catalog = backend_library::Library::from_view(view, cursor).expect("catalog");
+    let expected = catalog.view().row_refs().filter(|row| row.parent == Some(symbol_key(MODULE)))
+        .map(|row| row.label.clone()).collect::<std::collections::BTreeSet<_>>();
+    let mut server = ready(Fake { page_catalog: Some(catalog), catalog_delivery_ceiling: Some(2), ..Fake::default() });
+    let selected = backend_library::SelectedSymbolId::new(symbol_key(MODULE).to_bytes()).expect("center ID");
+    let facet = serde_json::to_value(backend_present::IdentitySemanticData::SelectedSymbolId(selected)).expect("selected facet");
+    let mut args = json!({"selected_symbol": facet, "limit": 4});
+    let mut seen = std::collections::BTreeSet::new();
+    let mut ordered = Vec::new();
+    let mut pages = 0;
+    loop {
+        let result = call(&mut server, "backend.related", &args);
+        assert_context_bounded(&result);
+        assert_eq!(result["isError"], false, "{result}");
+        let edges = result["structuredContent"]["edges"].as_array().expect("typed edges");
+        for edge in edges {
+            assert_eq!(edge["from"], MODULE);
+            assert_eq!(edge["relation"], "calls");
+            let target = edge["to"].as_str().expect("target");
+            assert!(seen.insert(target.to_owned()), "edge repeated");
+            ordered.push(backend_library::RelatedEdgeKey::new(backend_library::GraphRelation::new(
+                RowId::Symbol(symbol_key(MODULE)), RowId::Symbol(symbol_key(target)), backend_library::SemanticLinkKind::Calls,
+            )));
+        }
+        pages += 1;
+        if let Some(next) = result["structuredContent"]["continuation_call"].as_object() {
+            assert_eq!(result["structuredContent"]["more"], true);
+            args = next["arguments"].clone();
+        } else { break; }
+        assert!(pages < 20, "continuation failed to advance");
+    }
+    assert!(pages > 2, "later delivery ceiling must force smaller pages");
+    assert_eq!(seen, expected);
+    assert!(ordered.windows(2).all(|pair| pair[0] < pair[1]), "edge frontier order changed");
 }

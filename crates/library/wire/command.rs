@@ -658,6 +658,7 @@ enum CommandWire {
     Graph(GraphNeighborhoodQueryWire),
     Related(GraphNeighborhoodQueryWire),
     GraphPage(SymbolPageWire),
+    RelatedEdgePage(RelatedEdgePageWire),
     MembersPage(MembersPageWire),
     GraphQuery(GraphQueryRequestWire),
     SemanticShapes(SemanticShapeRequestWire),
@@ -706,6 +707,13 @@ struct DocumentQueryWire {
     source: Option<super::BasisWire>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source_range: Option<crate::SourceRangeRequest>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RelatedEdgePageWire {
+    symbol: SymbolAddressWire,
+    request: crate::RelatedPageRequest,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -926,6 +934,9 @@ fn command_to_wire(command: &Command) -> CommandWire {
             symbol: symbol_address_to_wire(*symbol),
             page: page_request_to_wire(*page),
         }),
+        Command::RelatedEdgePage { symbol, request } => CommandWire::RelatedEdgePage(RelatedEdgePageWire {
+            symbol: symbol_address_to_wire(*symbol), request: request.clone(),
+        }),
         Command::MembersPage { owner, page } => CommandWire::MembersPage(MembersPageWire {
             owner: document_query_to_wire(owner),
             page: page_request_to_wire(*page),
@@ -1018,6 +1029,10 @@ fn command_from_wire(
         CommandWire::GraphPage(value) => Ok(Command::GraphPage {
             symbol: symbol_address_from_wire(&value.symbol, required_certificate(certificate)?)?,
             page: page_request_from_wire(value.page, required_certificate(certificate)?)?,
+        }),
+        CommandWire::RelatedEdgePage(value) => Ok(Command::RelatedEdgePage {
+            symbol: symbol_address_from_wire(&value.symbol, required_certificate(certificate)?)?,
+            request: value.request,
         }),
         CommandWire::MembersPage(value) => Ok(Command::MembersPage {
             owner: document_query_from_wire(&value.owner, required_certificate(certificate)?)?,

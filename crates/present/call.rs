@@ -348,6 +348,15 @@ pub enum Request {
         /// Original owner query credit, preserved by every continuation.
         limit: u16,
     },
+    /// A bounded page of incoming and outgoing related edges.
+    RelatedPage {
+        /// Exact selected declaration or coordinate.
+        selector: DeclarationSelector,
+        /// Original owner query credit.
+        limit: u16,
+        /// Opaque owner-sealed predecessor, if resuming.
+        cursor: Option<String>,
+    },
     /// A bounded search page.
     Search {
         /// Query text.
@@ -424,6 +433,15 @@ pub fn declaration_selector(invocation: &Invocation) -> Result<DeclarationSelect
 
 fn declaration_request(invocation: &Invocation, read: DeclarationRead) -> Result<Request, Fault> {
     let selector = declaration_selector(invocation)?;
+    if read == DeclarationRead::Related
+        && (invocation.option("limit").is_some() || invocation.option("cursor").is_some())
+    {
+        let cursor = invocation.option("cursor").map(str::to_owned);
+        if cursor.as_deref() == Some("") {
+            return Err(Fault::usage("cursor", "related continuation must not be empty"));
+        }
+        return Ok(Request::RelatedPage { selector, limit: limit(invocation)?, cursor });
+    }
     if read == DeclarationRead::Graph
         && (invocation.option("limit").is_some() || invocation.option("cursor").is_some())
     {

@@ -4,6 +4,7 @@ mod adapter;
 mod browse_lane;
 mod diff;
 mod graph;
+mod graph_edge_window;
 pub(super) mod index;
 mod index_input_workers;
 mod index_operation;

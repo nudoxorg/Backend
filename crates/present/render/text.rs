@@ -184,7 +184,10 @@ fn records_with_cursor(
     if !list.graph_source_policies().is_empty() || list.graph_edges().iter().any(|edge| !edge.source_policy.is_unknown()) {
         lines.push("Unverified captured-source claims; effective ignore-policy stability unknown.".to_owned());
     }
-    for edge in list.graph_edges() {
+    for edge in list.related_edges() {
+        lines.push(format!("related {} -> {}; relation {:?}; confidence {:?}", edge.from, edge.to, edge.relation, edge.confidence));
+    }
+    for edge in list.graph_edges().iter().filter(|_| list.related_edges().is_empty()) {
         lines.push(format!(
             "graph edge {} -> {}; relation {:?}; confidence {:?}; availability {:?}",
             list.graph_label(edge.from),
@@ -194,20 +197,20 @@ fn records_with_cursor(
             edge.availability,
         ));
     }
-    let cursor_note = if list.has_more() && list.continuation().is_some() {
+    let cursor_note = if list.has_more() && (list.continuation().is_some() || list.related_continuation().is_some()) {
         cursor.map(|cursor| continuation_note(target, cursor))
     } else {
         None
     };
     if let Some(note) = &cursor_note {
         lines.push(theme.paint(Style::Dim, note));
-    } else if list.has_more() && list.continuation().is_some() {
+    } else if list.has_more() && (list.continuation().is_some() || list.related_continuation().is_some()) {
         lines.push(theme.paint(
             Style::Dim,
             "… more rows; this rendering does not include the continuation token",
         ));
     }
-    if list.has_more() && list.continuation().is_none() {
+    if list.has_more() && (list.continuation().is_none() && list.related_continuation().is_none()) {
         lines.push(theme.paint(
             Style::Dim,
             "… more rows at this revision; raise --limit to see them",

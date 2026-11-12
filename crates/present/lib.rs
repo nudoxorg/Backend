@@ -131,7 +131,7 @@ pub use coverage::{
 };
 pub use drive::{
     Answer, ContinuationCursor, Engine, Probe, answer, answer_paged, catalog_page_answer,
-    graph_page_records, probe_fault, resolve_declaration,
+    graph_page_records, related_edge_records, probe_fault, resolve_declaration,
 };
 pub use dto::{
     CapabilitiesDto, CompilerToolRequirementDto, CoverageDto, FaultDto, IdentityDto,
@@ -168,7 +168,7 @@ pub use product::{
 };
 pub use projection::{PageProjection, PageSection};
 pub use readiness::{PublishedFacts, ReadinessState};
-pub use record::{GraphSourcePolicy, Record, RecordList, RecordState, Score};
+pub use record::{GraphSourcePolicy, Record, RecordList, RecordState, RelatedEdge, Score};
 pub use render::{
     Colour, ContinuationTarget, Style, Theme, Width, continuation_note, display_width, markdown,
     text,

@@ -107,6 +107,17 @@ pub fn admit_request(request: &CommandDto) -> Result<(), RequestAdmissionError> 
     {
         return Err(RequestAdmissionError::InvalidSurface);
     }
+    if matches!(&request.command,
+        Command::OutlinePage { page, .. } | Command::MembersPage { page, .. } if page.include_incoming())
+    {
+        return Err(RequestAdmissionError::InvalidSurface);
+    }
+    if let Command::RelatedEdgePage { symbol, request } = &request.command {
+        if request.scope.admit().is_err() || request.scope.source != symbol.claimed_bytes()
+            || request.scope.source_selected != symbol.is_selected() {
+            return Err(RequestAdmissionError::InvalidSurface);
+        }
+    }
     let catalog = match &request.command {
         Command::Name(query) => Some((query.window(), query.cursor())),
         Command::Search(query) => Some((query.window(), query.cursor())),
@@ -229,6 +240,7 @@ fn admit_reply_internal(
     match &reply.reply {
         CommandReply::Packages(snapshot)
         | CommandReply::ProjectionPage(crate::ProjectionPage { snapshot, .. })
+        | CommandReply::RelatedEdgePage(crate::RelatedEdgePage { snapshot, .. })
         | CommandReply::Names(snapshot)
         | CommandReply::Search(snapshot)
         | CommandReply::Graph(snapshot) => {
@@ -247,6 +259,9 @@ fn admit_reply_internal(
             if let CommandReply::ProjectionPage(page) = &reply.reply {
                 admit_projection_page(&request.command, page, local_policy)?;
             }
+            if let CommandReply::RelatedEdgePage(page) = &reply.reply {
+                admit_related_edge_page(&request.command, page, local_policy)?;
+            }
             if matches!(
                 &reply.reply,
                 CommandReply::Names(_) | CommandReply::Search(_)
@@ -258,6 +273,7 @@ fn admit_reply_internal(
             // this page; shared admission checks the query contract separately.
             let response_cursor = match &reply.reply {
                 CommandReply::ProjectionPage(_)
+                | CommandReply::RelatedEdgePage(_)
                 | CommandReply::Names(_)
                 | CommandReply::Search(_) => None,
                 _ => command_cursor(&request.command),
@@ -621,10 +637,11 @@ fn admit_projection_page(
         Command::GraphPage {
             symbol,
             page: request,
-        } => crate::QueryPageRecipe::graph_window(
+        } => crate::QueryPageRecipe::graph_window_mode(
             page.snapshot.root.basis().root,
             *symbol,
             request.window(),
+            request.include_incoming(),
         )
         .identity(),
         _ => {
@@ -744,6 +761,7 @@ pub fn reply_memory_bound(reply: &ReplyDto) -> usize {
     match &reply.reply {
         CommandReply::Packages(snapshot)
         | CommandReply::ProjectionPage(crate::ProjectionPage { snapshot, .. })
+        | CommandReply::RelatedEdgePage(crate::RelatedEdgePage { snapshot, .. })
         | CommandReply::Names(snapshot)
         | CommandReply::Search(snapshot)
         | CommandReply::Graph(snapshot) => {
@@ -771,6 +789,9 @@ pub fn reply_memory_bound(reply: &ReplyDto) -> usize {
                             _ => 0,
                         }));
                 }
+            }
+            if let CommandReply::RelatedEdgePage(page) = &reply.reply {
+                add_bound(&mut bound, 2048usize.saturating_add(page.keys.len().saturating_mul(1024)));
             }
             if let CommandReply::ProjectionPage(page) = &reply.reply {
                 if let Some(order) = &page.outline_order {
@@ -991,6 +1012,68 @@ fn add_claim_bound(bound: &mut usize, claim: &WireClaim) {
     add_bound(bound, bytes);
 }
 
+fn admit_related_edge_page(command: &Command, page: &crate::RelatedEdgePage, local_policy: bool) -> Result<(), ReplyAdmissionError> {
+    let invalid = || ReplyAdmissionError::Protocol("related edge page failed scope or witness admission".to_owned());
+    let Command::RelatedEdgePage { symbol, request } = command else { return Err(invalid()) };
+    if request.scope.admit().is_err() || request.scope.source != symbol.claimed_bytes()
+        || request.scope.source_selected != symbol.is_selected()
+        || page.snapshot.root.basis().root.as_bytes() != &request.scope.root
+        || page.snapshot.root.recipe() != crate::view_identity_bytes(&[b"query", b"graph", page.snapshot.root.basis().root.as_bytes(), &[0]])
+        || page.snapshot.next.is_some() || page.keys.len() > usize::from(request.scope.delivery)
+        || page.keys.windows(2).any(|pair| pair[0] >= pair[1]) { return Err(invalid()); }
+    if request.cursor.as_ref().is_some_and(|cursor| !cursor.permits_successor(&request.scope) || !cursor.matches_revision(page.semantic_revision)) { return Err(invalid()); }
+    let previous = request.cursor.as_ref().map(crate::RelatedPageCursor::after);
+    if page.keys.first().is_some_and(|first| previous.is_some_and(|after| *first <= after)) { return Err(invalid()); }
+    if let crate::RelatedEdgeTerminal::More(cursor) = &page.terminal {
+        if !cursor.matches_page(&request.scope, page.semantic_revision)
+            || previous.is_some_and(|after| cursor.after() <= after)
+            || page.keys.last().is_some_and(|last| cursor.after() < *last)
+            || (!page.withheld && page.keys.last().is_none_or(|last| cursor.after() != *last)) { return Err(invalid()); }
+    }
+    let relations = page.snapshot.graph_relations.as_deref().ok_or_else(invalid)?;
+    if relations.len() != page.keys.len() || relations.iter().zip(page.keys.iter()).any(|(r,k)| crate::RelatedEdgeKey::new(*r) != *k) { return Err(invalid()); }
+    let rows = page.snapshot.root.rows();
+    let center = rows.iter().find(|row| match row.id {
+        crate::RowId::Symbol(id) => symbol.matches(id) || (!symbol.is_selected() && crate::symbol_key(&row.label) == match *symbol { crate::SymbolAddress::Canonical(key) => key, _ => unreachable!() }),
+        _ => false,
+    }).ok_or_else(invalid)?;
+    if rows.iter().any(|row| row.id != center.id && !relations.iter().any(|relation| relation.from == row.id || relation.to == row.id)) { return Err(invalid()); }
+    let Some(graph) = page.snapshot.rich_graph.as_ref() else {
+        // Structural-only edges have no semantic provenance; disclose the gap.
+        if !page.withheld || relations.iter().any(|relation| {
+            !rows.iter().any(|row| row.id == relation.from) || !rows.iter().any(|row| row.id == relation.to)
+            || relation.confidence != Some(crate::SemanticConfidence::Syntactic)
+            || (relation.from != center.id && (request.scope.direction != crate::RelatedDirection::Both || relation.to != center.id))
+        }) { return Err(invalid()); }
+        return Ok(());
+    };
+    if graph.admit().is_err() || graph.revision.view_root != page.snapshot.root.root().to_bytes() || graph.edges.len() != relations.len() { return Err(invalid()); }
+    if graph.center != crate::GraphNodeId::for_row(center.id) { return Err(invalid()); }
+    let captured = graph.nodes.iter().any(|node| !node.source_policy.is_unknown()) || graph.edges.iter().any(|edge| !edge.source_policy.is_unknown());
+    if captured && !local_policy { return Err(invalid()); }
+    for row in rows.iter() {
+        let node = graph.nodes.iter().find(|n| n.id == crate::GraphNodeId::for_row(row.id)).ok_or_else(invalid)?;
+        if node.label.as_str() != row.label || (captured && node.coordinate.as_ref().map(|v| v.as_str()) != Some(row.label.as_str())) { return Err(invalid()); }
+        if captured && (node.source_policy.is_unknown() || !node.source_policy.matches_graph_basis(page.snapshot.root.basis())) { return Err(invalid()); }
+    }
+    if graph.nodes.len() != rows.len() { return Err(invalid()); }
+    if captured {
+        let node = graph.nodes.iter().find(|n| n.id == graph.center).ok_or_else(invalid)?;
+        if !node.source_policy.matches_graph_page_address(*symbol) { return Err(invalid()); }
+    }
+    for relation in relations {
+        if !rows.iter().any(|row| row.id == relation.from) || !rows.iter().any(|row| row.id == relation.to)
+            || (relation.from != center.id && (request.scope.direction != crate::RelatedDirection::Both || relation.to != center.id)) { return Err(invalid()); }
+        let edge = graph.edges.iter().find(|edge| edge.id == crate::RichGraphEdge::from_relation(*relation, edge.provenance).id).ok_or_else(invalid)?;
+        if captured {
+            let crate::RowId::Symbol(source) = relation.from else { return Err(invalid()) };
+            if edge.source_policy.is_unknown() || !edge.source_policy.matches_graph_basis(page.snapshot.root.basis())
+                || !edge.source_policy.matches_graph_page_address(crate::SymbolAddress::selected(source)) { return Err(invalid()); }
+        }
+    }
+    Ok(())
+}
+
 fn admit_reply_shape(command: &Command, reply: &CommandReply, local_policy: bool) -> Result<(), ReplyAdmissionError> {
     let valid = match (command, reply) {
         (_, CommandReply::Failed(crate::CommandFailure::ReplyTooLarge { basis })) => {
@@ -998,6 +1081,7 @@ fn admit_reply_shape(command: &Command, reply: &CommandReply, local_policy: bool
                 Command::Search(query) => query.basis(),
                 Command::Name(query) => query.basis(),
                 Command::GraphPage { page, .. } => page.basis(),
+                Command::RelatedEdgePage { request, .. } => crate::ViewRevision::from_bytes(request.scope.root),
                 _ => {
                     return Err(ReplyAdmissionError::Protocol(
                         "catalog reply ceiling does not match this command".to_owned(),
@@ -1095,7 +1179,8 @@ fn admit_reply_shape(command: &Command, reply: &CommandReply, local_policy: bool
             | Command::MembersPage { .. },
             CommandReply::ProjectionPage(_),
         )
-        | (Command::GraphQuery(_), CommandReply::GraphQueryPage(_)) => true,
+        | (Command::GraphQuery(_), CommandReply::GraphQueryPage(_))
+        | (Command::RelatedEdgePage { .. }, CommandReply::RelatedEdgePage(_)) => true,
         (Command::SemanticShapes(_), CommandReply::SemanticShapes(_)) => true,
         (Command::Surface(command), CommandReply::Surface(reply)) => {
             admit_surface_reply_internal(command, reply, local_policy)?;

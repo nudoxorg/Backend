@@ -451,6 +451,10 @@ pub(crate) fn render_admitted_answer(
     answer: &Answer,
     options: &Options,
 ) -> Result<String, Fault> {
+    let related_cursor = match answer {
+        Answer::Records(records) => records.related_continuation(),
+        _ => None,
+    };
     let cursor = answer
         .continuation()
         .filter(|continuation| session.has_portable_query_continuation(*continuation))
@@ -459,7 +463,7 @@ pub(crate) fn render_admitted_answer(
         .map_err(|error| {
             Fault::from_client_error(&error, Operand::Argument("cursor".to_owned()))
         })?;
-    render::try_answer_with_cursor(answer, options, cursor.as_deref())
+    render::try_answer_with_cursor(answer, options, related_cursor.or(cursor.as_deref()))
 }
 
 struct Plan {

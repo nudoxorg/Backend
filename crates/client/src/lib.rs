@@ -1809,8 +1809,18 @@ impl Session {
         window: backend_library::QueryWindow,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
+        self.graph_page_declaration_mode(selector, window, continuation, false)
+    }
+
+    /// Pages a related neighborhood including incoming relations.
+    pub fn related_page_declaration(&mut self, selector: &DeclarationSelector, window: backend_library::QueryWindow, continuation: Option<PageContinuation>) -> Result<ReplyDto, ClientError> {
+        self.graph_page_declaration_mode(selector, window, continuation, true)
+    }
+
+    fn graph_page_declaration_mode(&mut self, selector: &DeclarationSelector, window: backend_library::QueryWindow, continuation: Option<PageContinuation>, incoming: bool) -> Result<ReplyDto, ClientError> {
         self.prepare_query_window(window, continuation, None)?;
         if let Some(prepared) = &self.prepared_query {
+            if matches!(&prepared.command, Command::GraphPage { page, .. } if page.include_incoming() != incoming) { return Err(ClientError::Protocol("graph direction changed".to_owned())); }
             if !declaration_coordinate_claims_match(prepared.certificate(), selector) {
                 return Err(ClientError::Protocol(
                     "graph continuation changed declaration coordinate assertion".to_owned(),
@@ -1828,6 +1838,7 @@ impl Session {
         let page = page_request(revision.root, window.issued().get(), continuation)?
             .with_window(window)
             .ok_or_else(|| ClientError::Protocol("graph window changed credit".to_owned()))?;
+        let page = if incoming { page.with_incoming() } else { page };
         self.send_success(
             Command::GraphPage {
                 symbol: selector.address(),
@@ -1835,6 +1846,45 @@ impl Session {
             },
             Some(self.page_certificate(certificate, continuation)),
         )
+    }
+
+    /// Reads one bounded related-edge page from the selected owner.
+    pub fn related_edge_page_declaration(
+        &mut self,
+        selector: &DeclarationSelector,
+        window: backend_library::QueryWindow,
+        continuation: Option<backend_library::RelatedPageCursor>,
+    ) -> Result<ReplyDto, ClientError> {
+        // Resolve coordinate aliases through an admitted document, then use its
+        // selected identity. The opaque continuation never mints that identity.
+        let selected = if let DeclarationSelector::Coordinate(coordinate) = selector {
+            let document = self.document(coordinate)?;
+            let CommandReply::Document(document) = document.reply else {
+                return Err(ClientError::Protocol("related center document changed shape".to_owned()));
+            };
+            let selection = document.selection.as_ref().ok_or_else(|| ClientError::Protocol("related center has no selected document witness".to_owned()))?;
+            if selection.symbol() != document.symbol || Some(selection.source()) != document.source_basis() {
+                return Err(ClientError::Protocol("related center selection changed source".to_owned()));
+            }
+            let id = backend_library::SelectedSymbolId::new(document.symbol.to_bytes()).ok_or_else(|| ClientError::Protocol("invalid selected center".to_owned()))?;
+            Some((DeclarationSelector::Selected(id), selection.source().root))
+        } else { None };
+        let revision = self.revision()?;
+        if selected.as_ref().is_some_and(|(_, root)| *root != revision.root) { return Err(ClientError::StaleCursor); }
+        let selector = selected.as_ref().map_or(selector, |(selector, _)| selector);
+        let symbol = selector.address();
+        let scope = backend_library::RelatedPageScope {
+            root: *revision.root.as_bytes(), source: symbol.claimed_bytes(),
+            source_selected: symbol.is_selected(), direction: backend_library::RelatedDirection::Both,
+            issued: window.issued().get(), delivery: window.delivery().get(), windowed: window.is_windowed(),
+        };
+        if continuation.as_ref().is_some_and(|cursor| !cursor.permits_successor(&scope)) {
+            return Err(ClientError::StaleCursor);
+        }
+        let certificate = declaration_certificate(revision.certificate, selector);
+        self.send_success(Command::RelatedEdgePage {
+            symbol, request: backend_library::RelatedPageRequest { scope, cursor: continuation },
+        }, Some(certificate))
     }
 
     /// Reads captured source for one declaration coordinate.
@@ -2080,8 +2130,18 @@ impl Session {
         window: backend_library::QueryWindow,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
+        self.graph_page_window_mode(coordinate, window, continuation, false)
+    }
+
+    /// Pages both incoming and outgoing relations for a coordinate.
+    pub fn related_page_window(&mut self, coordinate: &str, window: backend_library::QueryWindow, continuation: Option<PageContinuation>) -> Result<ReplyDto, ClientError> {
+        self.graph_page_window_mode(coordinate, window, continuation, true)
+    }
+
+    fn graph_page_window_mode(&mut self, coordinate: &str, window: backend_library::QueryWindow, continuation: Option<PageContinuation>, incoming: bool) -> Result<ReplyDto, ClientError> {
         self.prepare_query_window(window, continuation, None)?;
-        if self.prepared_query.is_some() {
+        if let Some(prepared) = &self.prepared_query {
+            if matches!(&prepared.command, Command::GraphPage { page, .. } if page.include_incoming() != incoming) { return Err(ClientError::Protocol("graph direction changed".to_owned())); }
             return self.resume_prepared_graph_window(
                 SymbolAddress::canonical(symbol_key(coordinate)),
                 window.issued().get(),
@@ -2099,6 +2159,7 @@ impl Session {
         let page = page_request(revision.root, window.issued().get(), continuation)?
             .with_window(window)
             .ok_or_else(|| ClientError::Protocol("graph window changed credit".to_owned()))?;
+        let page = if incoming { page.with_incoming() } else { page };
         self.send_success(
             Command::GraphPage {
                 symbol: SymbolAddress::canonical(symbol),
@@ -3121,6 +3182,7 @@ impl SelectedCoordinateAssertion {
                 })
                 .map(backend_library::DocumentSelection::coordinate),
             CommandReply::Graph(snapshot) => self.center_coordinate(&snapshot.root),
+            CommandReply::RelatedEdgePage(page) => self.center_coordinate(&page.snapshot.root),
             CommandReply::ProjectionPage(page) => {
                 self.center_coordinate(&page.snapshot.root).or_else(|| {
                     pinned_center
@@ -3159,7 +3221,7 @@ fn selected_coordinate_assertion(
     let symbol = match command {
         Command::Document(query) | Command::Source(query) => query.symbol(),
         Command::Graph(query) | Command::Related(query) => query.symbol(),
-        Command::GraphPage { symbol, .. } => *symbol,
+        Command::GraphPage { symbol, .. } | Command::RelatedEdgePage { symbol, .. } => *symbol,
         _ => return Ok(None),
     };
     if !symbol.is_selected() {

@@ -174,6 +174,19 @@ pub trait Engine {
         ))
     }
 
+    /// Reads an owner-certified incoming and outgoing related-edge window.
+    /// The owner verifies the cursor and selected declaration on every call.
+    fn declaration_related_window(
+        &mut self,
+        _selector: &DeclarationSelector,
+        _window: backend_library::QueryWindow,
+        _continuation: Option<backend_library::RelatedPageCursor>,
+    ) -> Result<ReplyDto, ClientError> {
+        Err(ClientError::Protocol(
+            "engine does not expose related edge delivery windows".to_owned(),
+        ))
+    }
+
     /// Reads the current immutable product revision.
     ///
     /// # Errors
@@ -436,6 +449,9 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
             Ok(Answer::Records(Box::new(record_list(text, &snapshot).resolution_view())))
         }
         Request::Outline(path) => outline(engine, path),
+        Request::RelatedPage { .. } => Err(Fault::usage(
+            "related", "related edge pages require a surface with bounded edge output admission",
+        )),
         Request::OutlinePage { .. } | Request::GraphPage { .. } => {
             answer_paged(engine, request, None)
         }
@@ -945,6 +961,7 @@ fn selected_declaration(
                         read: DeclarationRead::Related,
                     },
                     coordinate,
+                    &document,
                     &mut notes,
                 );
                 let members = probe_members(engine, coordinate, &document, &mut notes);
@@ -991,7 +1008,7 @@ fn page(engine: &mut dyn Engine, text: &str, cursor: Option<&str>) -> Result<Pag
         return Err(shape("document"));
     };
     let mut notes = Vec::with_capacity(2);
-    let relation_rows = probe_rows(engine, coordinate, &mut notes);
+    let relation_rows = probe_rows(engine, coordinate, &document, &mut notes);
     let members = probe_members(engine, coordinate, &document, &mut notes);
     let page = page_from_document_with_graph_relations(
         coordinate,
@@ -1096,6 +1113,21 @@ pub fn graph_page_records(at: &str, snapshot: &ViewSnapshot) -> RecordList {
     record_list(at, snapshot)
         .with_graph_source_policies(snapshot.rich_graph.as_ref())
         .with_graph_gap(gap)
+}
+
+/// Render one admitted related-edge page without collapsing distinct kinds.
+pub fn related_edge_records(at: &str, page: &backend_library::RelatedEdgePage) -> Result<RecordList, Fault> {
+    let rows = page.snapshot.root.rows();
+    let mut edges = Vec::new();
+    for relation in page.snapshot.graph_relations.as_deref().ok_or_else(|| shape("related edges"))? {
+        let from = rows.iter().find(|row| row.id == relation.from).ok_or_else(|| shape("related source"))?;
+        let to = rows.iter().find(|row| row.id == relation.to).ok_or_else(|| shape("related target"))?;
+        edges.push(crate::RelatedEdge { from: from.label.clone(), to: to.label.clone(), relation: relation.relation, confidence: relation.confidence });
+    }
+    Ok(graph_page_records(at, &page.snapshot)
+        .with_related_edges(edges)
+        .with_related_withheld(page.withheld)
+        .with_more(matches!(page.terminal, backend_library::RelatedEdgeTerminal::More(_))))
 }
 
 fn outline(engine: &mut dyn Engine, path: &str) -> Result<Answer, Fault> {
@@ -1260,18 +1292,27 @@ struct RelationRows {
 
 /// Fetches graph rows and keeps the compiler-selected typed edge sidecar
 /// attached to the same response revision.
-fn probe_rows(engine: &mut dyn Engine, coordinate: &str, notes: &mut Vec<Fault>) -> RelationRows {
-    probe_relation_rows(engine, Probe::Related(coordinate), coordinate, notes)
+fn probe_rows(engine: &mut dyn Engine, coordinate: &str, document: &backend_library::Document, notes: &mut Vec<Fault>) -> RelationRows {
+    probe_relation_rows(engine, Probe::Related(coordinate), coordinate, document, notes)
 }
 
 fn probe_relation_rows(
     engine: &mut dyn Engine,
     probe: Probe<'_>,
     coordinate: &str,
+    document: &backend_library::Document,
     notes: &mut Vec<Fault>,
 ) -> RelationRows {
     match engine.probe(probe).map(|reply| reply.reply) {
         Ok(CommandReply::Graph(snapshot)) => {
+            let basis = snapshot.root.basis();
+            if basis.root != document.basis || document.source_basis().is_some_and(|source| source != basis) {
+                notes.push(Fault::from_client_error(
+                    &ClientError::Protocol("related graph basis differs from the selected document".to_owned()),
+                    Operand::Coordinate(Coordinate::new(coordinate)),
+                ));
+                return RelationRows { rows: Vec::new(), graph_relations: None };
+            }
             let reason = graph_relation_gap(&snapshot);
             if let Some(reason) = reason {
                 notes.push(Fault::new(
@@ -1915,6 +1956,40 @@ mod document_member_paging_controls {
                 }
             }
             Ok(ReplyDto::new(1, CommandReply::ProjectionPage(page)))
+        }
+    }
+
+    #[test]
+    fn document_graph_probe_rejects_foreign_root_and_foreign_source_object() {
+        struct GraphReader { snapshot: ViewSnapshot }
+        impl Engine for GraphReader {
+            fn revision(&mut self) -> Result<ViewStateRoot, ClientError> { Ok(self.snapshot.root.basis().root) }
+            fn health(&mut self) -> Result<HealthReport, ClientError> { Err(ClientError::Protocol("unused".to_owned())) }
+            fn surface(&mut self, _: SurfaceCommand) -> Result<SurfaceReply, ClientError> { Err(ClientError::Protocol("unused".to_owned())) }
+            fn probe(&mut self, _: Probe<'_>) -> Result<ReplyDto, ClientError> {
+                Ok(ReplyDto::new(1, CommandReply::Graph(self.snapshot.clone())))
+            }
+        }
+        let library = catalog(0);
+        let snapshot = library.graph(backend_library::GraphNeighborhoodQuery::selected(
+            symbol_key(OWNER), library.revision_root(),
+        )).expect("selected graph");
+        let basis = snapshot.root.basis();
+        let foreign_root = view_state_root(&[("foreign".to_owned(), "root".to_owned())]);
+        let different_object = Basis::new(basis.root, object_version(b"other source object"));
+        for document in [
+            Document::new(symbol_key(OWNER), foreign_root, []),
+            Document::new(symbol_key(OWNER), basis.root, []).with_source_basis(different_object),
+        ] {
+            let mut reader = GraphReader { snapshot: snapshot.clone() };
+            let mut notes = Vec::new();
+            let rows = probe_relation_rows(&mut reader, Probe::Related(OWNER), OWNER, &document, &mut notes);
+            assert!(rows.rows.is_empty());
+            assert!(rows.graph_relations.is_none());
+            assert_eq!(notes.len(), 1);
+            let page = page_from_document(OWNER, &document, &[], &rows.rows, notes);
+            assert_eq!(page.kind(), None);
+            assert!(page.relations().is_empty());
         }
     }
 

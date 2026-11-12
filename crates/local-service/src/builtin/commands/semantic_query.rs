@@ -315,6 +315,148 @@ pub(super) fn execute_semantic_graph(
     Ok(Some(snapshot))
 }
 
+/// Page current compiler-selected graph evidence before building a snapshot.
+/// The selected workspace, bindings and image digests pin the continuation;
+/// partial graph coverage remains explicit on every returned page.
+pub(super) fn execute_semantic_related_page(
+    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    snapshot: &backend_engine::WorkspaceSnapshot,
+    compiler: &LocalCompilerClient,
+    generations: &mut super::super::generation_residence::SemanticGenerationResidence,
+    image_rows: &mut view_build::ImageRowResidence,
+    query: backend_engine::GraphNeighborhoodQuery,
+    center: backend_engine::SymbolKey,
+    request: &backend_library::RelatedPageRequest,
+    secret: &[u8; 32],
+) -> Result<Option<(backend_engine::ViewSnapshot, Vec<backend_library::RelatedEdgeKey>, [u8; 32], Option<backend_library::RelatedPageCursor>, bool)>, BuiltinModelError> {
+    if *snapshot != daemon.engine().daemon().owner().snapshot() {
+        return Err(BuiltinModelError("semantic graph page workspace snapshot is stale".to_owned()));
+    }
+    let library = daemon.engine().daemon().library();
+    let view = library.view();
+    let scope = &request.scope;
+    if !query.basis().matches(view.root()) || scope.root != view.root().to_bytes()
+        || scope.source != query.symbol().claimed_bytes()
+        || scope.source_selected != query.symbol().is_selected()
+    {
+        return Err(BuiltinModelError("semantic graph page source or view differs from its request".to_owned()));
+    }
+    let center_row = backend_engine::RowId::Symbol(center);
+    let Some(package) = view.row_ref(center_row).and_then(|row| row.package) else { return Ok(None) };
+    let sources = read_package_sources(snapshot, package)?;
+    let available = view_build::SourceAvailability::of(&sources)?;
+    let relation = snapshot.relation::<BuiltinSemanticRelation>()
+        .map_err(|error| BuiltinModelError(format!("open semantic graph relation: {error}")))?;
+    let mut activations = Vec::new();
+    let mut profile_scopes = std::collections::BTreeMap::new();
+    let mut gaps = BTreeSet::from(["Graph relation joins are not certified exhaustive; search source for additional relations".to_owned()]);
+    let mut withheld = false;
+    for_package_publications(&relation, package, &sources, "graph", |key, record| {
+        view_build::SourceAvailability::record_publication_scope(&mut profile_scopes, key, record);
+        let ProductSemanticPublicationRecord::Published { coverage, claim } = record else {
+            withheld = true;
+            gaps.insert(format!("{:?} profile unavailable; inspect package_profile", key.profile()));
+            return Ok(());
+        };
+        if matches!(coverage, SemanticPublicationCoverage::Partial(_)) {
+            withheld = true;
+            gaps.insert(format!("{:?} profile partial; inspect package_profile", key.profile()));
+        }
+        if matches!(key.profile(), backend_semantic::vocabulary::LanguageProfile::TypeScript(_)) && typescript_requires_nse(&sources, package) {
+            withheld = true;
+            restrict_typescript_inventory(&mut profile_scopes, key.profile(), &mut gaps);
+            gaps.insert(OBSERVED_POLICY_GAP.to_owned());
+            return Ok(());
+        }
+        let activated = activate_semantic_publication(compiler, key, *claim, generations, image_rows)?;
+        let selected = available.select_current(key, *coverage, activated, image_rows)?;
+        if selected.has_excluded_images() {
+            withheld = true;
+            profile_scopes.insert(super::super::ingest::lane_profile(key.profile()), view_build::RetargetingScope::SelectedArtifacts);
+            gaps.insert(format!("{:?} profile has stale or unavailable source artifacts; reindex and inspect package_profile", key.profile()));
+        }
+        if selected.has_program_manifest() && selected.program().is_none() {
+            withheld = true;
+            gaps.insert(format!("{:?} native program source or membership proof is unavailable or stale", key.profile()));
+        }
+        activations.push((selected, claim.binding()));
+        Ok(())
+    })?;
+    for profile in available.required_profiles(package) {
+        if !profile_scopes.contains_key(&super::super::ingest::lane_profile(profile)) {
+            withheld = true;
+            gaps.insert(format!("{profile:?} profile has no selected semantic publication; reindex and inspect package_profile"));
+        }
+    }
+    let mut images = Vec::new();
+    let mut origins = Vec::new();
+    let mut center_binding = None;
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"nudox.related.semantic-page.revision.v1\0");
+    hash.update(snapshot.root().as_bytes());
+    hash.update(snapshot.commit().id().as_bytes());
+    hash.update(&snapshot.sequence().to_be_bytes());
+    hash.update(&snapshot.owner_epoch().to_be_bytes());
+    for (activation, binding) in &activations {
+        hash.update(binding.identity.as_ref());
+        hash.update(&[u8::from(activation.has_excluded_images()), u8::from(activation.has_program_manifest())]);
+        if let Some(program) = activation.program() {
+            hash.update(&[1]);
+            hash.update(&program.sources().membership_identity());
+        } else {
+            hash.update(&[0]);
+        }
+        for image in activation.images() {
+            let digest = image.content_digest();
+            hash.update(&digest);
+            let opened = image.reopen().map_err(|error| BuiltinModelError(format!("reopen semantic graph page image: {error}")))?;
+            if semantic_entity_for_symbol(&opened, package, center)?.is_some() {
+                center_binding = Some(*binding);
+            }
+            images.push(opened);
+            origins.push((*binding, digest));
+        }
+    }
+    let Some(binding) = center_binding else { return Ok(None) };
+    let revision = *hash.finalize().as_bytes();
+    let verified = backend_library::VerifiedRelatedPageRequest::verify(request, revision, secret)
+        .map_err(|error| BuiltinModelError(format!("semantic graph page cursor: {error:?}")))?;
+    let programs = activations.iter().filter_map(|(activation, _)| activation.program()).collect::<Vec<_>>();
+    let refs = images.iter().collect::<Vec<_>>();
+    let index = ProjectCallableIndex::build_from_views_with_programs(
+        &refs, &available.retargeting_scopes(package, &profile_scopes), &programs,
+        !activations.iter().any(|(activation, _)| activation.has_program_manifest()),
+    )?;
+    let (selected, more) = select_semantic_graph_edge_window(
+        &images, view, package, center, center_row,
+        matches!(scope.direction, backend_library::RelatedDirection::Both),
+        &project_paths_for_package(&sources, package), &index, true,
+        verified.after(), usize::from(scope.delivery),
+    )?;
+    let last = selected.last().map(|(key, _)| *key);
+    let mut projected = BTreeSet::new();
+    for (_, candidate) in selected {
+        if let Some(candidate) = candidate { projected.insert(candidate); }
+        else { withheld = true; gaps.insert("Conflicting publication evidence for a graph relation".to_owned()); }
+    }
+    let (mut relations, edges, conflicts) = resolve_graph_edge_origins(bind_projected_graph_origins(projected, &origins));
+    if conflicts { withheld = true; gaps.insert("Conflicting publication evidence for a graph relation".to_owned()); }
+    relations.sort_by_key(|relation| backend_library::RelatedEdgeKey::new(*relation));
+    let keys = relations.iter().map(|relation| backend_library::RelatedEdgeKey::new(*relation)).collect();
+    let mut result = library.graph_from_semantic_relations(query.with_resolved_symbol(center), &relations)
+        .map_err(|error| BuiltinModelError(format!("project semantic related page: {error}")))?;
+    let rich_revision = backend_engine::RichGraphRevision::new(result.root.root().to_bytes(), backend_engine::SemanticGenerationId::new(*binding.identity.as_ref()), *binding.generation.pinned_root.as_ref());
+    let mut rich = rich_graph_for_root(&result.root, center_row, rich_revision, edges)?;
+    let backend_engine::ReferenceCoverage::Unknown { reason } = reference_coverage(&gaps, false)? else { unreachable!("graph gap always present") };
+    rich.availability = backend_engine::GraphAvailability::Unavailable(reason);
+    result.rich_graph = Some(rich);
+    let continuation = if more {
+        let last = last.ok_or_else(|| BuiltinModelError("semantic graph page omitted its frontier".to_owned()))?;
+        Some(verified.issue_cursor(last).map_err(|error| BuiltinModelError(format!("seal semantic graph page: {error:?}")))?)
+    } else { None };
+    Ok(Some((result, keys, revision, continuation, withheld)))
+}
+
 /// Keeps the selected semantic fact for an edge, using syntax only for missing edges.
 fn extend_structural_graph_relations(
     relations: &mut BTreeSet<backend_engine::GraphRelation>,
@@ -373,6 +515,88 @@ pub(super) fn execute_structural_call_graph(
         .graph_from_semantic_relations(query, &relations)
         .map(Some)
         .map_err(|error| BuiltinModelError(error.to_string()))
+}
+
+/// Select direction-scoped syntactic calls without claiming semantic
+/// completeness. This does not grant source authority to an endpoint.
+#[allow(dead_code)] // Connected by the related edge-page owner command.
+fn select_structural_graph_edge_window(
+    residence: &mut view_build::StructuralCallResidence,
+    view: &backend_engine::ViewRoot,
+    sources: &super::super::IndexedSources,
+    package: backend_engine::PackageKey,
+    source_id: backend_engine::RowId,
+    include_incoming: bool,
+    after: Option<backend_library::RelatedEdgeKey>,
+    limit: usize,
+) -> Result<(Vec<(backend_library::RelatedEdgeKey, Option<backend_engine::GraphRelation>)>, bool), BuiltinModelError> {
+    if limit == 0 || limit > usize::from(backend_engine::QueryLimit::MAX) {
+        return Err(BuiltinModelError("related graph page exceeds its delivery bound".to_owned()));
+    }
+    let mut window = super::graph_edge_window::EdgeWindow::new(after, limit)
+        .ok_or_else(|| BuiltinModelError("invalid related graph page limit".to_owned()))?;
+    view_build::scan_structural_call_graph_relations_resident(
+        residence, view, sources, package, source_id, include_incoming,
+        |relation| window.insert(backend_library::RelatedEdgeKey::new(relation), relation),
+    )?;
+    Ok(window.finish())
+}
+
+/// Bounded syntactic fallback. The snapshot and request are re-admitted on
+/// every page; completion only exhausts these structural calls, not semantic
+/// relations that the source projection may not know.
+#[allow(dead_code)] // Connected by the related edge-page owner command.
+pub(super) fn execute_structural_graph_edge_page(
+    residence: &mut view_build::StructuralCallResidence,
+    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    snapshot: &backend_engine::WorkspaceSnapshot,
+    query: backend_engine::GraphNeighborhoodQuery,
+    center: backend_engine::SymbolKey,
+    request: &backend_library::RelatedPageRequest,
+    secret: &[u8; 32],
+) -> Result<(Vec<backend_engine::GraphRelation>, [u8; 32], Option<backend_library::RelatedPageCursor>, bool), BuiltinModelError> {
+    if *snapshot != daemon.engine().daemon().owner().snapshot() {
+        return Err(BuiltinModelError("structural graph page workspace snapshot is stale".to_owned()));
+    }
+    let library = daemon.engine().daemon().library();
+    let view = library.view();
+    let scope = &request.scope;
+    if !query.basis().matches(view.root()) || scope.root != view.root().to_bytes()
+        || scope.source != query.symbol().claimed_bytes()
+        || scope.source_selected != query.symbol().is_selected()
+    {
+        return Err(BuiltinModelError("structural graph page source or view differs from its request".to_owned()));
+    }
+    let source_id = backend_engine::RowId::Symbol(center);
+    let source = view.row_ref(source_id).ok_or_else(|| BuiltinModelError("structural graph page center is absent".to_owned()))?;
+    let package = source.package.ok_or_else(|| BuiltinModelError("structural graph page center has no selected package".to_owned()))?;
+    let sources = read_package_sources(snapshot, package)?;
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"nudox.related.structural-page.revision.v1\0");
+    hash.update(snapshot.root().as_bytes());
+    hash.update(snapshot.commit().id().as_bytes());
+    hash.update(&snapshot.sequence().to_be_bytes());
+    hash.update(&snapshot.owner_epoch().to_be_bytes());
+    hash.update(&view.root().to_bytes());
+    let revision = *hash.finalize().as_bytes();
+    let verified = backend_library::VerifiedRelatedPageRequest::verify(request, revision, secret)
+        .map_err(|error| BuiltinModelError(format!("structural graph page cursor: {error:?}")))?;
+    let (selected, more) = select_structural_graph_edge_window(
+        residence, view, &sources, package, source_id,
+        matches!(scope.direction, backend_library::RelatedDirection::Both),
+        verified.after(), usize::from(scope.delivery),
+    )?;
+    let last = selected.last().map(|(key, _)| *key);
+    let mut withheld = false;
+    let mut edges = Vec::with_capacity(selected.len());
+    for (_, candidate) in selected {
+        if let Some(edge) = candidate { edges.push(edge); } else { withheld = true; }
+    }
+    let continuation = if more {
+        let last = last.ok_or_else(|| BuiltinModelError("structural graph page omitted its frontier".to_owned()))?;
+        Some(verified.issue_cursor(last).map_err(|error| BuiltinModelError(format!("seal structural graph page: {error:?}")))?)
+    } else { None };
+    Ok((edges, revision, continuation, withheld))
 }
 
 fn package_indexed_in_sources(
@@ -648,8 +872,40 @@ fn project_opened_semantic_graph_origins_with_index(
     callable_index: &ProjectCallableIndex,
     native_only: bool,
 ) -> Result<BTreeSet<(backend_engine::GraphRelation, usize)>, BuiltinModelError> {
-    let published = published_identities_from_views(images)?;
     let mut relations = BTreeSet::new();
+    scan_opened_semantic_graph_origins_with_index(
+        images, view, package, symbol, source_id, include_incoming, project_paths,
+        callable_index, native_only, |relation, image| { relations.insert((relation, image)); },
+    )?;
+    let mut ids = BTreeSet::from([source_id]);
+    for (relation, _) in &relations {
+        ids.insert(relation.from);
+        ids.insert(relation.to);
+    }
+    if ids.len() > 1 + usize::from(backend_engine::QueryLimit::MAX)
+        || relations.len() > usize::from(backend_engine::QueryLimit::MAX)
+    {
+        return Err(BuiltinModelError(
+            "semantic graph exceeds the bounded result contract".to_owned(),
+        ));
+    }
+    Ok(relations)
+}
+
+/// Visit each admitted candidate without materializing the whole neighborhood.
+fn scan_opened_semantic_graph_origins_with_index(
+    images: &[backend_semantic::ir::SemanticImageView<'_>],
+    view: &backend_engine::ViewRoot,
+    package: backend_engine::PackageKey,
+    symbol: backend_engine::SymbolKey,
+    source_id: backend_engine::RowId,
+    include_incoming: bool,
+    project_paths: &BTreeSet<String>,
+    callable_index: &ProjectCallableIndex,
+    native_only: bool,
+    mut emit: impl FnMut(backend_engine::GraphRelation, usize),
+) -> Result<(), BuiltinModelError> {
+    let published = published_identities_from_views(images)?;
     for (image_index, image) in images.iter().enumerate() {
         let caller_path = view_build::compiled_source_path(image)?;
         let image_identity = *blake3::hash(image.as_ref()).as_bytes();
@@ -673,7 +929,7 @@ fn project_opened_semantic_graph_origins_with_index(
                 else {
                     continue;
                 };
-                relations.insert((
+                emit(
                     backend_engine::GraphRelation::new(
                         source_id,
                         target,
@@ -681,7 +937,7 @@ fn project_opened_semantic_graph_origins_with_index(
                     )
                     .with_confidence(semantic_confidence(link.confidence)),
                     image_index,
-                ));
+                );
             }
         }
         if include_incoming {
@@ -717,7 +973,7 @@ fn project_opened_semantic_graph_origins_with_index(
                     if view.row_ref(from).is_none() {
                         continue;
                     }
-                    relations.insert((
+                    emit(
                         backend_engine::GraphRelation::new(
                             from,
                             source_id,
@@ -725,24 +981,47 @@ fn project_opened_semantic_graph_origins_with_index(
                         )
                         .with_confidence(semantic_confidence(link.confidence)),
                         image_index,
-                    ));
+                    );
                 }
             }
         }
     }
-    let mut ids = BTreeSet::from([source_id]);
-    for (relation, _) in &relations {
-        ids.insert(relation.from);
-        ids.insert(relation.to);
+    Ok(())
+}
+
+// The key deliberately excludes confidence and producer: those belong to
+// the evidence grouped under the edge identity, not its page ordering.
+type NeighborhoodEdgeKey = backend_library::RelatedEdgeKey;
+
+/// Scan the selected images with memory bounded by the delivery credit. A
+/// conflicting origin is returned as `None` at its key so a caller can report
+/// a gap and advance past it without arbitrarily choosing a source claim.
+#[allow(dead_code)] // Wired to the dedicated related-page command separately.
+fn select_semantic_graph_edge_window(
+    images: &[backend_semantic::ir::SemanticImageView<'_>],
+    view: &backend_engine::ViewRoot,
+    package: backend_engine::PackageKey,
+    symbol: backend_engine::SymbolKey,
+    source_id: backend_engine::RowId,
+    include_incoming: bool,
+    project_paths: &BTreeSet<String>,
+    callable_index: &ProjectCallableIndex,
+    native_only: bool,
+    after: Option<NeighborhoodEdgeKey>,
+    limit: usize,
+) -> Result<(Vec<(NeighborhoodEdgeKey, Option<(backend_engine::GraphRelation, usize)>)>, bool), BuiltinModelError> {
+    if limit == 0 || limit > usize::from(backend_engine::QueryLimit::MAX) {
+        return Err(BuiltinModelError("related graph page exceeds its delivery bound".to_owned()));
     }
-    if ids.len() > 1 + usize::from(backend_engine::QueryLimit::MAX)
-        || relations.len() > usize::from(backend_engine::QueryLimit::MAX)
-    {
-        return Err(BuiltinModelError(
-            "semantic graph exceeds the bounded result contract".to_owned(),
-        ));
-    }
-    Ok(relations)
+    let mut window = super::graph_edge_window::EdgeWindow::new(after, limit)
+        .ok_or_else(|| BuiltinModelError("invalid related graph page limit".to_owned()))?;
+    scan_opened_semantic_graph_origins_with_index(
+        images, view, package, symbol, source_id, include_incoming, project_paths,
+        callable_index, native_only, |relation, image| {
+            window.insert(backend_library::RelatedEdgeKey::new(relation), (relation, image));
+        },
+    )?;
+    Ok(window.finish())
 }
 
 fn project_semantic_graph_relations(
@@ -1950,6 +2229,48 @@ fn project_observed_native_graph_origins(
     )
 }
 
+/// Select a bounded page from admitted observed images before issuing any
+/// per-edge source claims. Each key with competing origins remains withheld;
+/// the key is still consumed so the continuation cannot loop on ambiguity.
+#[allow(dead_code)] // Connected by the related edge-page owner command.
+fn project_observed_native_graph_edge_window(
+    images: &[backend_semantic::ir::SemanticImageView<'_>],
+    view: &backend_engine::ViewRoot,
+    package: backend_engine::PackageKey,
+    symbol: backend_engine::SymbolKey,
+    source_id: backend_engine::RowId,
+    include_incoming: bool,
+    project_paths: &BTreeSet<String>,
+    scopes: &std::collections::BTreeMap<backend_semantic::vocabulary::Language, view_build::RetargetingScope>,
+    current: &[&view_build::CurrentNativeProgram],
+    observed: &[&view_build::ObservedNativeProgram<'_>],
+    after: Option<backend_library::RelatedEdgeKey>,
+    limit: usize,
+) -> Result<(BTreeSet<(backend_engine::GraphRelation, usize)>, Option<backend_library::RelatedEdgeKey>, bool, bool), BuiltinModelError> {
+    if observed.is_empty() {
+        return Err(BuiltinModelError("observed graph projection requires an observed program".to_owned()));
+    }
+    let image_refs = images.iter().collect::<Vec<_>>();
+    let index = ProjectCallableIndex::build_from_views_with_observed_programs(
+        &image_refs, scopes, current, observed, false,
+    )?;
+    let (selected, more) = select_semantic_graph_edge_window(
+        images, view, package, symbol, source_id, include_incoming,
+        project_paths, &index, true, after, limit,
+    )?;
+    let last = selected.last().map(|(key, _)| *key);
+    let mut withheld = false;
+    let mut projected = BTreeSet::new();
+    for (_, candidate) in selected {
+        if let Some(candidate) = candidate {
+            projected.insert(candidate);
+        } else {
+            withheld = true;
+        }
+    }
+    Ok((projected, last, more, withheld))
+}
+
 struct NativeGraphEdgeSourceOrigin {
     relation: backend_engine::GraphRelation,
     image_index: usize,
@@ -2131,7 +2452,30 @@ fn qualify_observed_graph_edges(
         &images, view, package, center, backend_engine::RowId::Symbol(center),
         include_incoming, project_paths, scopes, &[], &observed,
     )?;
-    let origins = bind_native_graph_edge_source_origins(&images, package, projected)?;
+    qualify_projected_observed_graph_edges(
+        publications, snapshot, view, package, &images, &image_publications, &programs,
+        projected, workspace, compiler, generations, authority, source_budget,
+    )
+}
+
+/// Qualifies only the selected bounded candidates against their own caller
+/// source, preserving the same admission used by the full graph route.
+fn qualify_projected_observed_graph_edges(
+    publications: &[ObservedQueryPublication],
+    snapshot: &backend_engine::WorkspaceSnapshot,
+    view: &backend_engine::ViewRoot,
+    package: backend_engine::PackageKey,
+    images: &[backend_semantic::ir::SemanticImageView<'_>],
+    image_publications: &[usize],
+    programs: &[view_build::ObservedNativeProgram<'_>],
+    projected: BTreeSet<(backend_engine::GraphRelation, usize)>,
+    workspace: &std::path::Path,
+    compiler: &LocalCompilerClient,
+    generations: &mut super::super::generation_residence::SemanticGenerationResidence,
+    authority: &super::super::semantic_authority::SemanticAuthority,
+    source_budget: &mut usize,
+) -> Result<(Vec<QualifiedNativeGraphEdge>, bool), BuiltinModelError> {
+    let origins = bind_native_graph_edge_source_origins(images, package, projected)?;
     let mut qualified = std::collections::BTreeMap::new();
     let mut conflicts = BTreeSet::new();
     let mut withheld = publications.iter().any(|publication| publication.artifacts.has_excluded_images());
@@ -2249,6 +2593,176 @@ fn execute_observed_native_graph(
     }))
 }
 
+/// Commit the checked workspace/source-evidence snapshot and every selected
+/// native image and program used by a related page. Program admission must
+/// still be revalidated against this snapshot before every page.
+#[allow(dead_code)] // Used by the related edge-page owner command.
+fn observed_graph_page_revision(
+    snapshot: &backend_engine::WorkspaceSnapshot,
+    publications: &[ObservedQueryPublication],
+) -> Result<[u8; 32], BuiltinModelError> {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"nudox.related.observed-page.revision.v1\0");
+    hash.update(snapshot.root().as_bytes());
+    hash.update(snapshot.commit().id().as_bytes());
+    hash.update(&snapshot.sequence().to_be_bytes());
+    hash.update(&snapshot.owner_epoch().to_be_bytes());
+    hash.update(&(publications.len() as u64).to_be_bytes());
+    for publication in publications {
+        hash.update(publication.claim.binding().identity.as_ref());
+        hash.update(&[u8::from(publication.artifacts.has_excluded_images())]);
+        let program = publication.artifacts.program().ok_or_else(|| BuiltinModelError("observed graph page program is unavailable".to_owned()))?;
+        hash.update(&program.sources().membership_identity());
+        hash.update(&(publication.artifacts.images().len() as u64).to_be_bytes());
+        for image in publication.artifacts.images() {
+            hash.update(&image.content_digest());
+        }
+    }
+    Ok(*hash.finalize().as_bytes())
+}
+
+/// A bounded observed candidate page. This internal value is not a wire
+/// capability: the caller must seal its exact source and semantic revision
+/// and admit every node and edge before exposing it.
+struct QualifiedNativeGraphEdgePage {
+    batch: QualifiedNativeGraphBatch,
+    semantic_revision: [u8; 32],
+    continuation: Option<backend_library::RelatedPageCursor>,
+    withheld: bool,
+}
+
+#[allow(dead_code)] // Connected by the related edge-page owner command.
+fn execute_observed_native_edge_page(
+    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    snapshot: &backend_engine::WorkspaceSnapshot,
+    compiler: &LocalCompilerClient,
+    generations: &mut super::super::generation_residence::SemanticGenerationResidence,
+    image_rows: &mut view_build::ImageRowResidence,
+    workspace: &std::path::Path,
+    authority: &super::super::semantic_authority::SemanticAuthority,
+    query: backend_engine::GraphNeighborhoodQuery,
+    center: backend_engine::SymbolKey,
+    request: &backend_library::RelatedPageRequest,
+    secret: &[u8; 32],
+) -> Result<Option<QualifiedNativeGraphEdgePage>, BuiltinModelError> {
+    if *snapshot != daemon.engine().daemon().owner().snapshot() {
+        return Err(BuiltinModelError("related graph page workspace snapshot is stale".to_owned()));
+    }
+    let library = daemon.engine().daemon().library();
+    let view = library.view();
+    if !query.basis().matches(view.root()) {
+        return Err(BuiltinModelError("observed graph page basis is stale".to_owned()));
+    }
+    let center_row = backend_engine::RowId::Symbol(center);
+    let row = view.row_ref(center_row).ok_or_else(|| BuiltinModelError("observed graph page center is absent".to_owned()))?;
+    let Some(package) = row.package else { return Ok(None) };
+    let sources = read_package_sources(snapshot, package)?;
+    if !typescript_requires_nse(&sources, package) { return Ok(None) }
+    let available = view_build::SourceAvailability::of(&sources)?;
+    let (publications, publication_gap) = collect_observed_query_publications(
+        snapshot, &sources, package, &available, compiler, generations, image_rows,
+    )?;
+    if !observed_typescript_target_present(&publications, package, center)? { return Ok(None) }
+    let scope = &request.scope;
+    if scope.root != view.root().to_bytes()
+        || scope.source != query.symbol().claimed_bytes()
+        || scope.source_selected != query.symbol().is_selected()
+    {
+        return Err(BuiltinModelError("related graph page source or view differs from its request".to_owned()));
+    }
+    let semantic_revision = observed_graph_page_revision(snapshot, &publications)?;
+    let verified = backend_library::VerifiedRelatedPageRequest::verify(request, semantic_revision, secret)
+        .map_err(|error| BuiltinModelError(format!("related graph page cursor: {error:?}")))?;
+    let include_incoming = matches!(scope.direction, backend_library::RelatedDirection::Both);
+    let after = verified.after();
+    let limit = usize::from(scope.delivery);
+    let mut images = Vec::new();
+    let mut image_publications = Vec::new();
+    let mut programs = Vec::with_capacity(publications.len());
+    for (publication_index, publication) in publications.iter().enumerate() {
+        let program = publication.artifacts.program().ok_or_else(|| BuiltinModelError("observed graph page program is unavailable".to_owned()))?;
+        for image in publication.artifacts.images() {
+            images.push(image.reopen().map_err(|error| BuiltinModelError(format!("reopen observed graph page image: {error}")))?);
+            image_publications.push(publication_index);
+        }
+        programs.push(program);
+    }
+    if images.is_empty() { return Ok(None) }
+    let scopes = std::collections::BTreeMap::from([(
+        backend_semantic::vocabulary::Language::TypeScript,
+        view_build::RetargetingScope::SelectedArtifacts,
+    )]);
+    let observed = programs.iter().collect::<Vec<_>>();
+    let (projected, last_consumed, more, conflict_gap) = project_observed_native_graph_edge_window(
+        &images, view, package, center, center_row, include_incoming,
+        &project_paths_for_package(&sources, package), &scopes, &[], &observed, after, limit,
+    )?;
+    let mut budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
+    let (mut edges, edge_gap) = qualify_projected_observed_graph_edges(
+        &publications, snapshot, view, package, &images, &image_publications, &programs,
+        projected, workspace, compiler, generations, authority, &mut budget,
+    )?;
+    edges.sort_by_key(|edge| backend_library::RelatedEdgeKey::new(edge.relation));
+    let mut wanted = BTreeSet::from([center_row]);
+    for edge in &edges { wanted.insert(edge.relation.from); wanted.insert(edge.relation.to); }
+    let mut nodes = Vec::new();
+    let mut admitted = BTreeSet::new();
+    let mut node_gap = false;
+    for row in wanted {
+        match qualify_observed_graph_node(&publications, snapshot, view, package, row, workspace, compiler, generations, authority, &mut budget)? {
+            Some(node) => { admitted.insert(node.row); nodes.push(node); }
+            None if row == center_row => return Err(BuiltinModelError("observed graph page center source policy is unavailable".to_owned())),
+            None => node_gap = true,
+        }
+    }
+    edges.retain(|edge| admitted.contains(&edge.relation.from) && admitted.contains(&edge.relation.to));
+    let mut gaps = BTreeSet::from([
+        OBSERVED_POLICY_GAP.to_owned(),
+        "Graph relation joins are not certified exhaustive; search source for additional relations".to_owned(),
+    ]);
+    if publication_gap || conflict_gap || edge_gap || node_gap {
+        gaps.insert("Some selected native graph evidence was unavailable; reindex and inspect package_profile".to_owned());
+    }
+    let backend_engine::ReferenceCoverage::Unknown { reason } = reference_coverage(&gaps, false)? else {
+        unreachable!("observed graph always carries a policy gap")
+    };
+    let continuation = if more {
+        let last = last_consumed.ok_or_else(|| BuiltinModelError("related graph page omitted its frontier".to_owned()))?;
+        Some(verified.issue_cursor(last).map_err(|error| BuiltinModelError(format!("seal related graph page: {error:?}")))?)
+    } else { None };
+    Ok(Some(QualifiedNativeGraphEdgePage {
+        batch: QualifiedNativeGraphBatch { nodes, edges, availability: backend_engine::GraphAvailability::Unavailable(reason) },
+        semantic_revision, continuation,
+        withheld: publication_gap || conflict_gap || edge_gap || node_gap,
+    }))
+}
+
+/// Project an already selected bounded batch with the same source-policy
+/// admission used by the unpaged graph route. Keys and graph relations retain
+/// the producer's edge order; a cursor may advance past withheld keys.
+#[allow(dead_code)] // Called by the dedicated related command adapter.
+pub(super) fn execute_observed_related_page(
+    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    snapshot: &backend_engine::WorkspaceSnapshot,
+    compiler: &LocalCompilerClient,
+    generations: &mut super::super::generation_residence::SemanticGenerationResidence,
+    image_rows: &mut view_build::ImageRowResidence,
+    workspace: &std::path::Path,
+    authority: &super::super::semantic_authority::SemanticAuthority,
+    query: backend_engine::GraphNeighborhoodQuery,
+    center: backend_engine::SymbolKey,
+    request: &backend_library::RelatedPageRequest,
+    secret: &[u8; 32],
+) -> Result<Option<(backend_engine::ViewSnapshot, Vec<backend_library::RelatedEdgeKey>, [u8; 32], Option<backend_library::RelatedPageCursor>, bool)>, BuiltinModelError> {
+    let Some(page) = execute_observed_native_edge_page(
+        daemon, snapshot, compiler, generations, image_rows, workspace, authority,
+        query, center, request, secret,
+    )? else { return Ok(None) };
+    let keys = page.batch.edges.iter().map(|edge| backend_library::RelatedEdgeKey::new(edge.relation)).collect();
+    let graph = qualified_graph_snapshot(daemon, query.with_resolved_symbol(center), page.batch)?;
+    Ok(Some((graph, keys, page.semantic_revision, page.continuation, page.withheld)))
+}
+
 /// Construct a live graph sidecar only after every retained node and edge has
 /// its own independently issued selected-source claim.
 pub(super) fn execute_qualified_observed_graph(
@@ -2264,6 +2778,14 @@ pub(super) fn execute_qualified_observed_graph(
     let Some(batch) = execute_observed_native_graph(
         daemon, compiler, generations, image_rows, workspace, authority, query, include_incoming,
     )? else { return Ok(None) };
+    qualified_graph_snapshot(daemon, query, batch).map(Some)
+}
+
+fn qualified_graph_snapshot(
+    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    query: backend_engine::GraphNeighborhoodQuery,
+    batch: QualifiedNativeGraphBatch,
+) -> Result<backend_engine::ViewSnapshot, BuiltinModelError> {
     let library = daemon.engine().daemon().library();
     let center = query.resolve_symbol(library.view()).ok_or_else(|| BuiltinModelError("qualified graph center is absent".to_owned()))?;
     let center_row = backend_engine::RowId::Symbol(center);
@@ -2308,7 +2830,7 @@ pub(super) fn execute_qualified_observed_graph(
     let graph = builder.finish_with_availability(batch.availability)
         .map_err(|error| BuiltinModelError(format!("finish qualified graph: {error}")))?;
     snapshot.rich_graph = Some(graph);
-    Ok(Some(snapshot))
+    Ok(snapshot)
 }
 
 /// Preserve bounded graph metadata, including a qualified center witness when
@@ -3795,6 +4317,41 @@ mod project_call_tests {
                 "expected sync_workout to call workout/service/__init__.py set_note row, got {targets:?}"
             ));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_edge_scan_keeps_incoming_direction_and_exact_selected_relation() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service = project_call_image("workout/service.py", 1, b"set_note", TreeEntityId::new(0), None)?;
+        let caller = project_call_image("weeks.py", 2, b"sync_workout", TreeEntityId::new(0), Some(dotted_foreign_call_fixture(33)))?;
+        let rows = semantic_view_rows(package, &[
+            ("workout/service.py", 1, "set_note", fixture_version(1)),
+            ("weeks.py", 2, "sync_workout", fixture_version(2)),
+        ])?;
+        let view = semantic_view(rows)?;
+        let images = [&service, &caller].into_iter().map(|bytes| {
+            backend_semantic::ir::SemanticImageView::reopen(bytes).map_err(|error| error.to_string())
+        }).collect::<Result<Vec<_>, _>>()?;
+        let refs = images.iter().collect::<Vec<_>>();
+        let index = super::ProjectCallableIndex::build_from_views_with_programs(
+            &refs, &std::collections::BTreeMap::new(), &[], true,
+        ).map_err(|error| error.to_string())?;
+        let center = semantic_symbol(package, fixture_version(1).identity());
+        let source = RowId::Symbol(center);
+        let paths = project_paths(&["workout/service.py", "weeks.py"]);
+        let scan = |incoming| super::select_semantic_graph_edge_window(
+            &images, &view, package, center, source, incoming, &paths, &index, false, None, 1,
+        ).map_err(|error| error.to_string());
+        assert!(scan(false)?.0.is_empty());
+        let (rows, more) = scan(true)?;
+        assert!(!more);
+        assert_eq!(rows.len(), 1);
+        let (key, selected) = &rows[0];
+        let (edge, _) = selected.as_ref().ok_or("unexpected conflicting origin")?;
+        assert_eq!(edge.from, RowId::Symbol(semantic_symbol(package, fixture_version(2).identity())));
+        assert_eq!(edge.to, source);
+        assert_eq!(*key, backend_library::RelatedEdgeKey::new(*edge));
         Ok(())
     }
 

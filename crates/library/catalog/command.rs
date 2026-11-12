@@ -87,6 +87,9 @@ impl Library {
                 .ok_or(LibraryError::NotFound)
                 .and_then(|symbol| self.graph_page(symbol, page))
                 .map(CommandReply::ProjectionPage),
+            Command::RelatedEdgePage { .. } => Ok(CommandReply::Failed(crate::CommandFailure::InvalidQuery(
+                "related edge pages require the selected local owner".to_owned(),
+            ))),
             Command::GraphQuery(_) => {
                 Ok(CommandReply::Failed(crate::CommandFailure::InvalidQuery(
                     "structured graph queries require an execution owner".to_owned(),

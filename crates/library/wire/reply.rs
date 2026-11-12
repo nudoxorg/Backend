@@ -85,6 +85,7 @@ pub(crate) struct ReplyEnvelope {
 pub(crate) enum ReplyWire {
     Packages(SnapshotWire),
     ProjectionPage(ProjectionPageWire),
+    RelatedEdgePage(RelatedEdgePageWire),
     Added(DeltaWire),
     Removed(DeltaWire),
     Document(DocumentWire),
@@ -103,6 +104,23 @@ pub(crate) enum ReplyWire {
     Revision(RevisionWire),
     Error(ErrorWire),
     Failed(CommandFailureWire),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RelatedEdgePageWire {
+    snapshot: SnapshotWire,
+    keys: Box<[crate::RelatedEdgeKey]>,
+    semantic_revision: [u8; 32],
+    terminal: RelatedEdgeTerminalWire,
+    withheld: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "state", content = "cursor", rename_all = "kebab-case", deny_unknown_fields)]
+enum RelatedEdgeTerminalWire {
+    Complete,
+    More(crate::RelatedPageCursor),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -403,6 +421,12 @@ pub(crate) fn reply_to_wire(reply: &CommandReply) -> Result<ReplyWire, String> {
                 readiness: page.readiness,
             })
         }
+        CommandReply::RelatedEdgePage(page) => ReplyWire::RelatedEdgePage(RelatedEdgePageWire {
+            snapshot: snapshot_to_wire(&page.snapshot), keys: page.keys.clone(),
+            semantic_revision: page.semantic_revision,
+            terminal: match &page.terminal { crate::RelatedEdgeTerminal::Complete => RelatedEdgeTerminalWire::Complete, crate::RelatedEdgeTerminal::More(cursor) => RelatedEdgeTerminalWire::More(cursor.clone()) },
+            withheld: page.withheld,
+        }),
         CommandReply::Graph(snapshot) => ReplyWire::Graph(snapshot_to_wire(snapshot)),
         CommandReply::GraphQueryPage(page) => {
             ReplyWire::GraphQueryPage(graph_query_page_to_wire(page))
@@ -532,6 +556,13 @@ fn reply_from_wire_with_admission<A: CoverageAdmission>(
                 readiness: value.readiness,
             })
         }
+        ReplyWire::RelatedEdgePage(value) => CommandReply::RelatedEdgePage(crate::RelatedEdgePage {
+            snapshot: snapshot_from_wire_with_admission(value.snapshot, certificate, admission)?,
+            keys: value.keys,
+            semantic_revision: value.semantic_revision,
+            terminal: match value.terminal { RelatedEdgeTerminalWire::Complete => crate::RelatedEdgeTerminal::Complete, RelatedEdgeTerminalWire::More(cursor) => crate::RelatedEdgeTerminal::More(cursor) },
+            withheld: value.withheld,
+        }),
         ReplyWire::Graph(value) => CommandReply::Graph(snapshot_from_wire_with_admission(
             value,
             certificate,
