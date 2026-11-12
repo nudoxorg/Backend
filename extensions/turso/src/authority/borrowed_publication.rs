@@ -69,6 +69,7 @@ where F: for<'a> FnMut(SelectedPublicationWire<'a>, &mut SelectedNativeHeaderBud
         payload_total=payload_total.checked_add(image.byte_length() as usize).ok_or("selected payload length overflow")?;
         if payload_total>max_payload_bytes{return Err("selected payload exceeds residence limit".into());}
     }
+    drop(images);
     if payload_total>max_payload_bytes{return Err("selected payload exceeds residence limit".into());}
     for id in envelope.members(){if header_member_bounded(store,&pin,closure,id,budget,cancelled)?!=count{return Err("selected closure count changed".into());}}
     let frame_charge=frame_before.checked_sub(budget.memory).ok_or("selected frame charge underflow")?;
@@ -94,6 +95,7 @@ where F: for<'a> FnMut(SelectedPublicationWire<'a>, &mut SelectedNativeHeaderBud
         visit(SelectedPublicationWire::Image{member,bytes:&wire},budget)?;
         drop(wire);budget.memory=budget.memory.checked_add(temporary).ok_or("image refund overflow")?;
     }
+    drop(images);
     if let Some(member)=metadata.native_headers {
         let before=budget.memory;
         let (wire,schema,key)=header_object_bounded(store,&pin,*member.object_id(),&[COMPILER_NATIVE_HEADERS_SCHEMA],member.byte_length() as usize,budget,cancelled)?;
