@@ -4072,6 +4072,34 @@ mod tests {
         assert_eq!(borrowed.metadata_id, *envelope.metadata_id());
         assert!(borrowed.members().eq(envelope.member_ids().iter().copied()));
         assert!(matches!(borrowed_selected_envelope(&envelope_wire, &selected, selected.candidate_id(), &|| Err(CompilerEnvelopeError::Stopped)), Err(CompilerEnvelopeError::Stopped)));
+        // Parser-level qualification controls: these bytes are deliberately not
+        // reauthenticated as a selected CAS object, and are not owner proof.
+        macro_rules! reject_edit {
+            ($edit:expr) => {{
+                let mut changed = envelope.clone();
+                ($edit)(&mut changed);
+                assert!(borrowed_selected_envelope(&changed.canonical_bytes(), &selected, selected.candidate_id(), &|| Ok(())).is_err());
+            }};
+        }
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| e.namespace.package = "other".into());
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| e.namespace.source = "other".into());
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| e.namespace.branch = "other".into());
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| e.namespace.environment = "other".into());
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| e.profile = "other".into());
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| e.attempt_id[0] ^= 1);
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| e.attempt_epoch ^= 1);
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| e.attempt_fence[0] ^= 1);
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| e.input_digest[0] ^= 1);
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| e.logical_generation[0] ^= 1);
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| e.semantic_manifest_root = Some([0x91; 32]));
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| e.physical_pack_id[0] ^= 1);
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| e.metadata_id = [0x93; 32]);
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| { let mut ids = e.member_ids.to_vec(); ids.push(*selected.candidate_id()); ids.sort_unstable(); e.member_ids = ids.into_boxed_slice(); });
+        reject_edit!(|e: &mut CompilerPublicationEnvelope| { let mut ids = e.member_ids.to_vec(); ids.push(ids[0]); ids.sort_unstable(); e.member_ids = ids.into_boxed_slice(); });
+        let mut bad_flag = envelope_wire.clone();
+        let flag = bad_flag.len() - envelope.member_ids().len() * 32 - 4 - 32 - 1;
+        bad_flag[flag] = 2;
+        assert!(borrowed_selected_envelope(&bad_flag, &selected, selected.candidate_id(), &|| Ok(())).is_err());
         let mut changed = envelope_wire.clone();
         let end = changed.len(); changed[end - 1] ^= 1;
         assert!(borrowed_selected_envelope(&changed, &selected, selected.candidate_id(), &|| Ok(())).is_err());
