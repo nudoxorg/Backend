@@ -2249,7 +2249,7 @@ fn update_plane_segment_hash(hasher: &mut blake3::Hasher, segment: &SemanticPlan
     hasher.update(segment.id_claim.as_bytes());
     hasher.update(&segment.input.input_root);
     hasher.update(segment.input.read_manifest.as_bytes());
-    update_coverage_hash(&mut hasher, segment.input.coverage);
+    update_coverage_hash(hasher, segment.input.coverage);
 }
 
 #[path = "versioned_borrowed.rs"]
