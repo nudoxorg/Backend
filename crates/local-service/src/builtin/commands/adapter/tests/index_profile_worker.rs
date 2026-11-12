@@ -517,7 +517,7 @@ fn actual_worker_late_stop_retires_current_and_queued_attempts() -> Result<(), B
     cancelled.store(true, Ordering::Release);
     release_tx.send(())?;
     let completion = worker.join();
-    assert!(matches!(completion.outcome, ProfileOutcome::Admitted(Err(_)) | ProfileOutcome::Cancelled));
+    assert!(matches!(&completion.outcome, ProfileOutcome::Admitted(Err(_)) | ProfileOutcome::Cancelled));
     let adapter = fixture.adapter.as_mut().expect("actual adapter");
     install_transition_job(adapter);
     let job = adapter.indexing.as_mut().expect("actual resident job");
