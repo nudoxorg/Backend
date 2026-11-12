@@ -6037,6 +6037,16 @@ mod tests {
         assert!(admit_replayed_native_evidence(
             &workspace_store, std::slice::from_ref(&capture), &[&current], &[&removed, &unbound_retirement],
         ).is_err(), "a retirement from an uncaptured project must not pass replay");
+        let mut wrong_profile_image = current.clone();
+        wrong_profile_image.profile = LanguageProfile::TypeScript(TypeScriptSource::Tsx);
+        assert!(admit_replayed_native_evidence(
+            &workspace_store, std::slice::from_ref(&capture), &[&current, &wrong_profile_image], &[&removed],
+        ).is_err(), "a different-profile image cannot borrow Program membership");
+        let mut wrong_profile_retirement = removed.clone();
+        wrong_profile_retirement.profile = LanguageProfile::TypeScript(TypeScriptSource::Tsx);
+        assert!(admit_replayed_native_evidence(
+            &workspace_store, std::slice::from_ref(&capture), &[&current], &[&removed, &wrong_profile_retirement],
+        ).is_err(), "a different-profile retirement cannot borrow absence from this Program");
         let mut with_lines = current.clone();
         with_lines.line_starts = Some(main_line_starts.clone());
         let mut legacy_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(super::super::MAX_REBUILD_BYTES, NATIVE_HEADER_WORK_UNITS);
