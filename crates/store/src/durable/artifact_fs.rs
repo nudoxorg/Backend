@@ -367,7 +367,7 @@ mod imp {
     }
 
     impl BoundedReadDirectories {
-        pub(in crate::durable) fn open(store: &FileStore) -> Result<Self, StoreError> {
+        pub(in crate::durable) fn open(store: &FileStore, checkpoint: &mut dyn FnMut() -> Result<(), StoreError>) -> Result<Self, StoreError> {
             use std::os::unix::ffi::OsStrExt;
             let root = store.root.as_os_str().as_bytes();
             // The kernel path interface has a finite bound. This private
@@ -376,21 +376,26 @@ mod imp {
             if root.len() >= root_buf.len() || root.contains(&0) { return Err(StoreError::Bounds); }
             root_buf[..root.len()].copy_from_slice(root);
             let root_path = std::ffi::CStr::from_bytes_with_nul(&root_buf[..=root.len()]).map_err(|_| StoreError::Corrupt)?;
+            checkpoint()?;
             let root = File::from(open(root_path, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map_err(path_error)?);
             fn child(parent: &File, name: &'static [u8]) -> Result<File, StoreError> {
                 let name = std::ffi::CStr::from_bytes_with_nul(name).map_err(|_| StoreError::Corrupt)?;
                 openat(parent, name, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map(File::from).map_err(path_error)
             }
-            Ok(Self { objects: child(&root, b"objects\0")?, nodes: child(&root, b"nodes\0")?, closures: child(&root, b"closures\0")? })
+            checkpoint()?; let objects = child(&root, b"objects\0")?;
+            checkpoint()?; let nodes = child(&root, b"nodes\0")?;
+            checkpoint()?; let closures = child(&root, b"closures\0")?;
+            Ok(Self { objects, nodes, closures })
         }
 
-        fn open_named(parent: &File, name: &std::ffi::CStr) -> Result<File, StoreError> {
+        fn open_named(parent: &File, name: &std::ffi::CStr, checkpoint: &mut dyn FnMut() -> Result<(), StoreError>) -> Result<File, StoreError> {
             const ATTEMPTS: usize = 100;
             for attempt in 0..ATTEMPTS {
+                checkpoint()?;
                 let file = File::from(openat(parent, name, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map_err(path_error)?);
                 let metadata = file.metadata().map_err(|e| io_error(&e))?;
                 if !metadata.is_file() { return Err(StoreError::UnsafePath); }
-                if metadata.nlink() == 1 { seal_immutable_read(&file)?; return Ok(file); }
+                if metadata.nlink() == 1 { checkpoint()?; seal_immutable_read(&file)?; return Ok(file); }
                 if metadata.nlink() != 2 || attempt + 1 == ATTEMPTS { return Err(StoreError::UnsafePath); }
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
@@ -405,7 +410,7 @@ mod imp {
             buf[64..end].copy_from_slice(suffix); buf[end] = 0;
             std::ffi::CStr::from_bytes_with_nul(&buf[..=end]).map_err(|_| StoreError::Corrupt)
         }
-        pub(in crate::durable) fn relation_ref(&self, schema: backend_version::SchemaIdentity, version: &[u8;32]) -> Result<File, StoreError> {
+        pub(in crate::durable) fn relation_ref(&self, schema: backend_version::SchemaIdentity, version: &[u8;32], checkpoint: &mut dyn FnMut() -> Result<(), StoreError>) -> Result<File, StoreError> {
             let mut name = [0u8; 96];
             let mut at = 0usize;
             fn put(name: &mut [u8], at: &mut usize, bytes: &[u8]) { name[*at..*at+bytes.len()].copy_from_slice(bytes); *at += bytes.len(); }
@@ -416,13 +421,13 @@ mod imp {
             for byte in version { hex_byte(&mut name, &mut at, *byte); }
             put(&mut name, &mut at, b".ref\0");
             let name = std::ffi::CStr::from_bytes_with_nul(&name[..at]).map_err(|_| StoreError::Corrupt)?;
-            Self::open_named(&self.nodes, name)
+            Self::open_named(&self.nodes, name, checkpoint)
         }
-        pub(in crate::durable) fn object(&self, id: ObjectId) -> Result<File, StoreError> {
-            let mut buf = [0; 80]; Self::open_named(&self.objects, Self::hash_name(id.as_bytes(), b".object", &mut buf)?)
+        pub(in crate::durable) fn object(&self, id: ObjectId, checkpoint: &mut dyn FnMut() -> Result<(), StoreError>) -> Result<File, StoreError> {
+            let mut buf = [0; 80]; Self::open_named(&self.objects, Self::hash_name(id.as_bytes(), b".object", &mut buf)?, checkpoint)
         }
-        pub(in crate::durable) fn closure(&self, id: ClosureId) -> Result<File, StoreError> {
-            let mut buf = [0; 80]; Self::open_named(&self.closures, Self::hash_name(id.as_bytes(), b".closure", &mut buf)?)
+        pub(in crate::durable) fn closure(&self, id: ClosureId, checkpoint: &mut dyn FnMut() -> Result<(), StoreError>) -> Result<File, StoreError> {
+            let mut buf = [0; 80]; Self::open_named(&self.closures, Self::hash_name(id.as_bytes(), b".closure", &mut buf)?, checkpoint)
         }
     }
 

@@ -102,23 +102,43 @@ impl BoundedObjectReader<'_> {
     /// and typed version identities, then invokes the authenticated callback.
     /// The supplied slice must have exactly the claimed length. It must not be
     /// interpreted as authority if this function returns an error.
-    pub fn read_into<T, F>(mut self, payload: &mut [u8], budget: &mut usize, visit: F) -> Result<T, StoreError>
-    where F: for<'a> FnOnce(VerifiedObjectView<'a>, &mut usize) -> Result<T, StoreError> {
+    pub fn read_into<T, C, F>(mut self, payload: &mut [u8], budget: &mut usize, mut checkpoint: C, visit: F) -> Result<T, StoreError>
+    where C: FnMut(&mut usize, usize) -> Result<(), StoreError>,
+          F: for<'a> FnOnce(VerifiedObjectView<'a>, &mut usize) -> Result<T, StoreError> {
         if payload.len() != self.length { return Err(StoreError::Bounds); }
-        self.file.read_exact(payload).map_err(|error| if error.kind() == std::io::ErrorKind::UnexpectedEof { StoreError::Corrupt } else { io_error(&error) })?;
+        // Each bounded chunk is separately charged and cancellable before I/O
+        // and before each of the two identity hash passes.
+        for chunk in payload.chunks_mut(64 * 1024) {
+            checkpoint(budget, chunk.len())?;
+            self.file.read_exact(chunk).map_err(|error| if error.kind() == std::io::ErrorKind::UnexpectedEof { StoreError::Corrupt } else { io_error(&error) })?;
+        }
+        checkpoint(budget, 0)?;
         let mut trailing = [0u8;1];
         loop {
             match self.file.read(&mut trailing) {
                 Ok(0) => break,
                 Ok(_) => return Err(StoreError::Corrupt),
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => { checkpoint(budget, 0)?; },
                 Err(error) => return Err(io_error(&error)),
             }
         }
-        if object_commitment_view(self.schema, &self.key, &self.version, payload)? != *self.id.as_bytes() { return Err(StoreError::Corrupt); }
-        admit_backend_object_version(self.schema, payload, &self.version)?;
+        let payload_len = u64::try_from(payload.len()).map_err(|_| StoreError::Bounds)?;
+        let preimage_len = super::artifact::OBJECT_IDENTITY_FIXED_BYTES.checked_add(payload_len).ok_or(StoreError::Bounds)?;
+        let mut object_hash = blake3::Hasher::new();
+        object_hash.update(super::artifact::OBJECT_IDENTITY_DOMAIN);
+        object_hash.update(&preimage_len.to_le_bytes());
+        object_hash.update(&[self.schema.domain()]); object_hash.update(&self.schema.ty().to_le_bytes()); object_hash.update(&[self.schema.version()]);
+        object_hash.update(&self.key); object_hash.update(&self.version); object_hash.update(&payload_len.to_le_bytes());
+        let mut version_hash = backend_version::ObjectVersionHasher::new(self.schema, payload.len()).map_err(|_| StoreError::Bounds)?;
+        for chunk in payload.chunks(64 * 1024) {
+            checkpoint(budget, chunk.len().checked_mul(2).ok_or(StoreError::Bounds)?)?;
+            object_hash.update(chunk);
+            version_hash.update(chunk).map_err(|_| StoreError::Corrupt)?;
+        }
+        if object_hash.finalize().as_bytes() != self.id.as_bytes() || version_hash.finish().map_err(|_| StoreError::Corrupt)? != self.version { return Err(StoreError::Corrupt); }
         visit(VerifiedObjectView { id: self.id, schema: self.schema, key: self.key, version: self.version, bytes: payload }, budget)
     }
+
 }
 
 /// Removes crash-orphaned files only from the store writer's private temp namespace.
@@ -547,7 +567,7 @@ impl FileStore {
         budget: &mut usize, before_open: O, before_payload: P, visit: F,
     ) -> Result<T, StoreError>
     where
-        O: FnOnce(&mut usize) -> Result<(), StoreError>,
+        O: FnMut(&mut usize) -> Result<(), StoreError>,
         P: FnOnce(SchemaIdentity, &Hash, usize, &mut usize) -> Result<(), StoreError>,
         F: for<'a> FnOnce(VerifiedObjectView<'a>, &mut usize) -> Result<T, StoreError>,
     {
@@ -558,7 +578,7 @@ impl FileStore {
         let mut payload = Vec::new();
         payload.try_reserve_exact(length).map_err(|_| StoreError::Bounds)?;
         payload.resize(length, 0);
-        reader.read_into(&mut payload, budget, visit)
+        reader.read_into(&mut payload, budget, |_,_| Ok(()), visit)
     }
 
     /// Opens one immutable object and checks its untrusted fixed header before
@@ -567,9 +587,9 @@ impl FileStore {
     pub fn open_bounded_nonrelation_object<'a, O>(
         &self, pin: &'a GcPinGuard, claim: UntrustedObjectId,
         accepted_schemas: &[SchemaIdentity], expected_key: Option<Hash>, max_payload: usize,
-        budget: &mut usize, before_open: O,
+        budget: &mut usize, mut before_open: O,
     ) -> Result<BoundedObjectReader<'a>, StoreError>
-    where O: FnOnce(&mut usize) -> Result<(), StoreError> {
+    where O: FnMut(&mut usize) -> Result<(), StoreError> {
         // Stack storage for the root C string, object locator, and envelope
         // header is reserved before opening the descriptor.
         const OPEN_STACK: usize = 4096 + 80 + OBJECT_MAGIC.len() + 32 + 1 + 2 + 1 + 32 + 32 + 8;
@@ -579,7 +599,10 @@ impl FileStore {
         if !pin.covers_identity(self.gc_identity) { return Err(StoreError::Corrupt); }
         let id = ObjectId::from_bytes(*claim.as_bytes());
         #[cfg(unix)]
-        let mut file = super::artifact_fs::BoundedReadDirectories::open(self)?.object(id)?;
+        let mut file = {
+            let mut checkpoint = || before_open(budget);
+            super::artifact_fs::BoundedReadDirectories::open(self, &mut checkpoint)?.object(id, &mut checkpoint)?
+        };
         #[cfg(not(unix))]
         let mut file = super::artifact_fs::open_object(self, id)?.ok_or(StoreError::Corrupt)?;
         const HEADER: usize = OBJECT_MAGIC.len() + 32 + 1 + 2 + 1 + 32 + 32 + 8;
@@ -896,6 +919,13 @@ mod tests {
         assert_eq!(credit, 0);
         assert!(usize::try_from(measurement.bytes_max).unwrap() <= LENGTH + 4096,
             "requested allocation peak {} exceeds payload plus fixture opener allowance", measurement.bytes_max);
+        let mut destination = vec![0u8; LENGTH];
+        credit = open_stack;
+        let measurement = allocation_counter::measure(|| {
+            let reader = store.open_bounded_nonrelation_object(&pin, claim, &[object.schema()], Some(*object.key()), LENGTH, &mut credit, |_| Ok(())).expect("open");
+            reader.read_into(&mut destination, &mut credit, |_,_| Ok(()), |view,_| { assert_eq!(view.bytes().len(), LENGTH); Ok(()) }).expect("read");
+        });
+        assert_eq!(measurement.bytes_max, 0);
         drop(pin);
         let _ = fs::remove_dir_all(root);
     }
@@ -935,9 +965,16 @@ mod tests {
         let allocation = allocation_counter::measure(|| {
             let reader = store.open_bounded_nonrelation_object(&pin, claim, &[schema], Some(*object.key()), object.bytes().len(), &mut budget, |_| Ok(())).expect("open");
             assert_eq!(reader.payload_len(), destination.len());
-            reader.read_into(&mut destination, &mut budget, |view,_| { assert_eq!(view.bytes(), object.bytes()); Ok(()) }).expect("authenticate");
+            reader.read_into(&mut destination, &mut budget, |_,_| Ok(()), |view,_| { assert_eq!(view.bytes(), object.bytes()); Ok(()) }).expect("authenticate");
         });
         assert_eq!(allocation.bytes_max, 0);
+        budget = open_stack;
+        let reader = store.open_bounded_nonrelation_object(&pin, claim, &[schema], Some(*object.key()), object.bytes().len(), &mut budget, |_| Ok(())).expect("open for cancellation");
+        let chunks = Cell::new(0);
+        assert!(matches!(reader.read_into(&mut destination, &mut budget, |_,_| {
+            chunks.set(chunks.get()+1); if chunks.get() == 2 { Err(StoreError::Bounds) } else { Ok(()) }
+        }, |_,_| { visited.set(true); Ok(()) }), Err(StoreError::Bounds)));
+        assert!(!visited.get());
         let path = store.object_path(object.id());
         let mut bytes = fs::read(&path).expect("read envelope");
         *bytes.last_mut().expect("payload") ^= 1;

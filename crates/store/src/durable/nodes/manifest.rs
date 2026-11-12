@@ -124,8 +124,8 @@ fn account_manifest_node(
 }
 
 #[cfg(unix)]
-fn bounded_manifest_ref(dirs: &super::super::artifact_fs::BoundedReadDirectories, schema: SchemaIdentity, version: &Hash) -> Result<ObjectId, StoreError> {
-    let mut file = dirs.relation_ref(schema, version)?;
+fn bounded_manifest_ref(dirs: &super::super::artifact_fs::BoundedReadDirectories, schema: SchemaIdentity, version: &Hash, checkpoint: &mut dyn FnMut() -> Result<(), StoreError>) -> Result<ObjectId, StoreError> {
+    let mut file = dirs.relation_ref(schema, version, checkpoint)?;
     let len = super::wire::relation_ref_encoded_len();
     if usize::try_from(file.metadata().map_err(|e| io_error(&e))?.len()).map_err(|_| StoreError::Bounds)? != len { return Err(StoreError::Corrupt); }
     let bytes = super::relation::read_relation_reference(&mut file)?;
@@ -164,9 +164,9 @@ impl FileStore {
         if !pin.covers_identity(self.gc_identity) { return Err(StoreError::Corrupt); }
         before_read(budget)?;
         #[cfg(unix)]
-        let dirs = super::super::artifact_fs::BoundedReadDirectories::open(self)?;
+        let dirs = super::super::artifact_fs::BoundedReadDirectories::open(self, &mut || before_read(budget))?;
         #[cfg(unix)]
-        let mut file = dirs.closure(closure)?;
+        let mut file = dirs.closure(closure, &mut || before_read(budget))?;
         #[cfg(not(unix))]
         let mut file = super::super::artifact_fs::open_closure(self, closure)?;
         let length = usize::try_from(file.metadata().map_err(|e| io_error(&e))?.len()).map_err(|_| StoreError::Bounds)?;
@@ -181,7 +181,7 @@ impl FileStore {
         before_read(budget)?;
         let schema = SchemaIdentity::of_relation::<ManifestRelation>();
         #[cfg(unix)]
-        let root_object = bounded_manifest_ref(&dirs, schema, closure.as_bytes())?;
+        let root_object = bounded_manifest_ref(&dirs, schema, closure.as_bytes(), &mut || before_read(budget))?;
         #[cfg(not(unix))]
         let root_object = self.read_relation_ref(schema, closure.as_bytes())?;
         if root_object != descriptor.root { return Err(StoreError::Corrupt); }
@@ -199,8 +199,8 @@ impl FileStore {
                 #[cfg(unix)]
                 {
                     let schema = SchemaIdentity::of_relation::<ManifestRelation>();
-                    let object = bounded_manifest_ref(self.dirs, schema, claim.as_bytes())?;
-                    let file = self.dirs.object(object)?;
+                    let object = bounded_manifest_ref(self.dirs, schema, claim.as_bytes(), &mut || before(budget))?;
+                    let file = self.dirs.object(object, &mut || before(budget))?;
                     self.store.with_relation_object_preflight_file(file, crate::UntrustedObjectId::from_bytes(*object.as_bytes()),
                         |object| {
                             if object.schema() != schema || object.version() != claim.as_bytes() || object.key() != &crate::closure::relation_key(schema) { return Err(StoreError::Corrupt); }

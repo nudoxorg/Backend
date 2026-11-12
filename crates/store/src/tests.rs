@@ -438,6 +438,12 @@ fn bounded_closure_membership_preflights_path_and_denies_zero_credit() {
         |_| { calls.set(calls.get()+1); Ok(()) }, |_,_| Ok(())), Err(StoreError::Bounds)));
     assert_eq!(calls.get(), 0);
     credit = 2 * 1024 * 1024;
+    assert!(matches!(store.contains_closure_member_bounded(&pin, id, target, 32, &mut credit,
+        |_| { calls.set(calls.get()+1); if calls.get() == 3 { Err(StoreError::Bounds) } else { Ok(()) } },
+        |_,_| panic!("cancellation must precede node admission")), Err(StoreError::Bounds)));
+    assert_eq!(calls.get(), 3);
+    calls.set(0);
+    credit = 2 * 1024 * 1024;
     let measured = allocation_counter::measure(|| {
         assert_eq!(must(store.contains_closure_member_bounded(&pin, id, target, 32, &mut credit,
             |budget| { *budget = budget.checked_sub(1).ok_or(StoreError::Bounds)?; Ok(()) },
