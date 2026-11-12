@@ -332,8 +332,8 @@ fn admit_inner(
                 }
                 let mut checkpoint = |n| charge_native_header_work(budget, stopped, n);
                 if let Some(claimed) = &row.headers {
-                    let (index, digest) = header_index.as_ref().ok_or("native replay header witness absent")?;
-                    let file = super::super::native_ts_headers::witnessed_indexed_file_borrowed(row, index, *digest, &mut checkpoint)
+                    let (header_lookup, digest) = header_index.as_ref().ok_or("native replay header witness absent")?;
+                    let file = super::super::native_ts_headers::witnessed_indexed_file_borrowed(row, header_lookup, *digest, &mut checkpoint)
                         .map_err(|e| format!("native replay header: {e}"))?;
                     super::super::native_ts_headers::admit_image_borrowed(row, claimed, file, &view, bytes, &mut checkpoint)
                         .map_err(|e| format!("native replay header: {e}"))?;
