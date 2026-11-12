@@ -12624,3 +12624,78 @@ mod vue_stylo_region_tests {
         assert_eq!(site.source(), vue.host().source());
     }
 }
+
+/// Revalidates a selected line claim against confined exact host bytes.
+/// The source buffer is charged to the caller's operation ledger and does not escape.
+#[cfg(unix)]
+pub(super) fn native_line_map_matches_host(
+    root: &Path,
+    evidence: &backend_engine::builtin::NativeSourceEvidence,
+    source: backend_semantic::ir::SourceIdentity,
+    lines: backend_semantic::native_source_lines::NativeSourceLineFileView<'_>,
+    budget: &mut backend_extension_turso::SelectedNativeHeaderBudget,
+    stopped: &dyn Fn() -> bool,
+) -> Result<bool, String> {
+    use backend_version::Schema as _;
+    use rustix::fs::{Mode, OFlags, openat};
+    if evidence.validate().is_err() || !evidence.admits_image() || evidence.path != lines.path
+        || source != lines.source || evidence.byte_length != source.byte_len
+        || evidence.source_digest.as_slice() != source.identity.as_ref() { return Ok(false); }
+    let expected = source.byte_len as usize;
+    SourceAdmissionPolicy::from_environment().map_err(|e| format!("native line source policy: {e}"))?
+        .admit_actual_file(expected).map_err(|e| format!("native line source bound: {e:?}"))?;
+    budget.checkpoint(1, stopped).map_err(|e| format!("native line source stopped: {e:?}"))?;
+    let root = match ProjectRoot::open(root) { Ok(root) => root, Err(_) => return Ok(false) };
+    let mut components = Path::new(&evidence.path).components().peekable();
+    let mut directory = root.directory.try_clone().map_err(|e| format!("native line root: {e}"))?;
+    let mut file = loop {
+        budget.checkpoint(1, stopped).map_err(|e| format!("native line source stopped: {e:?}"))?;
+        let Some(std::path::Component::Normal(name)) = components.next() else { return Ok(false) };
+        let last = components.peek().is_none();
+        let flags = if last { OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC }
+            else { OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC };
+        let opened = match openat(&directory, name, flags, Mode::empty()).map(fs::File::from) { Ok(file) => file, Err(_) => return Ok(false) };
+        if last { break opened; }
+        directory = opened;
+    };
+    let metadata = match file.metadata() { Ok(value) => value, Err(_) => return Ok(false) };
+    if !metadata.is_file() || metadata.len() != expected as u64 { return Ok(false); }
+    budget.reserve_retained(expected).map_err(|e| format!("native line source budget: {e:?}"))?;
+    let mut bytes = backend_store::try_allocate_exact_zeroed_bytes(expected).map_err(|e| format!("native line source allocation: {e:?}"))?;
+    let schema = backend_version::SchemaIdentity::new(backend_compile::InputContentSchema::DOMAIN, backend_compile::InputContentSchema::TYPE, backend_compile::InputContentSchema::VERSION);
+    let encoded_len = expected.checked_add(8).ok_or("native input length overflow")?;
+    let mut input = backend_version::ObjectVersionHasher::new(schema, encoded_len).map_err(|e| format!("native input hash: {e:?}"))?;
+    input.update(&(expected as u64).to_be_bytes()).map_err(|e| format!("native input hash: {e:?}"))?;
+    let mut at = 0usize;
+    while at < expected {
+        budget.checkpoint(1, stopped).map_err(|e| format!("native line source stopped: {e:?}"))?;
+        let end = at.saturating_add(64 * 1024).min(expected);
+        match file.read(&mut bytes[at..end]) {
+            Ok(0) => return Ok(false),
+            Ok(n) => { input.update(&bytes[at..at + n]).map_err(|e| format!("native input hash: {e:?}"))?; at += n; },
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return Ok(false),
+        }
+    }
+    budget.checkpoint(1, stopped).map_err(|e| format!("native line source stopped: {e:?}"))?;
+    let mut extra = [0u8; 1];
+    loop {
+        match file.read(&mut extra) {
+            Ok(0) => break,
+            Ok(_) => return Ok(false),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => { budget.checkpoint(1, stopped).map_err(|e| format!("native line source stopped: {e:?}"))?; },
+            Err(_) => return Ok(false),
+        }
+    }
+    if input.finish().map_err(|e| format!("native input hash: {e:?}"))? != evidence.input_digest { return Ok(false); }
+    lines.matches_source(&bytes, &mut |_| budget.checkpoint(1, stopped).map_err(|e| format!("native line verification stopped: {e:?}")))
+}
+
+#[cfg(not(unix))]
+pub(super) fn native_line_map_matches_host(
+    _root: &Path, _evidence: &backend_engine::builtin::NativeSourceEvidence,
+    _source: backend_semantic::ir::SourceIdentity,
+    _lines: backend_semantic::native_source_lines::NativeSourceLineFileView<'_>,
+    _budget: &mut backend_extension_turso::SelectedNativeHeaderBudget,
+    _stopped: &dyn Fn() -> bool,
+) -> Result<bool, String> { Ok(false) }
