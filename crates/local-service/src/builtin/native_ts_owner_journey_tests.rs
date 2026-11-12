@@ -1410,6 +1410,9 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
             assert!(record.extent.is_none());
         }
         Ok(_) => return Err("unexpected stale Read reply".into()),
+        Err(backend_client::ClientError::CommandFailed(
+            backend_library::CommandFailure::InvalidQuery(detail),
+        )) if detail.contains("indexed source changed on disk; reindex and retry") => {}
         Err(error) => return Err(error.into()),
     }
     fs::write(project.join("src/app/layout.tsx"), changed_member)?;
