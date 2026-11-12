@@ -677,6 +677,7 @@ impl<'a, 's> BorrowedProgramGraph<'a, 's> {
         path: &[u8],
         mut checkpoint: impl FnMut(u64) -> Result<(), E>,
     ) -> Result<Option<super::super::SourceIdentity>, E> {
+        checkpoint(1)?;
         let mut low = 0;
         let mut high = self.rows.len() / 16;
         while low < high {

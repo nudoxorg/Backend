@@ -779,12 +779,12 @@ mod tests {
     use super::*;
     #[test]
     fn retained_indexed_single_program_bounds_package_lookup() {
-        let source = SourceIdentity::from_bytes(b"source").unwrap();
-        let rows = (0..4096)
+        let source = SourceIdentity::from_bytes(&0u32.to_le_bytes()).unwrap();
+        let rows = (0u32..4096)
             .map(|i| NativeProgramSource {
                 program_path: format!("project/file{i:04}.ts"),
-                package_path: Some(format!("src/file{i:04}.ts")),
-                source,
+                package_path: Some(format!("src/file{:04}.ts", 4095 - i)),
+                source: SourceIdentity::from_bytes(&i.to_le_bytes()).unwrap(),
             })
             .collect();
         let owned = NativeProgramSourceManifest::from_sources(

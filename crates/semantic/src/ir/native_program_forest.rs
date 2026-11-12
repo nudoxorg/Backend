@@ -800,12 +800,12 @@ mod tests {
     #[test]
     fn borrowed_graph_package_lookup_is_logarithmic_at_4096_rows() {
         let toolchain = ContentId::from_canonical_bytes(b"compiler");
-        let source = SourceIdentity::from_bytes(b"source").unwrap();
-        let rows = (0..4096)
+        let source = SourceIdentity::from_bytes(&0u32.to_le_bytes()).unwrap();
+        let rows = (0u32..4096)
             .map(|i| NativeProgramSource {
                 program_path: format!("project/file{i:04}.ts"),
-                package_path: Some(format!("src/file{i:04}.ts")),
-                source,
+                package_path: Some(format!("src/file{:04}.ts", 4095 - i)),
+                source: SourceIdentity::from_bytes(&i.to_le_bytes()).unwrap(),
             })
             .collect();
         let mut project = independent_nodes().remove(0);
