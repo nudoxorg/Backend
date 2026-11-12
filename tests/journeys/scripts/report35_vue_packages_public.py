@@ -43,6 +43,33 @@ def classify_search(reply, query):
     return 'invalid'
 
 
+def wait_full_search(journey, phase, query, readiness_observations, require):
+    # The owner journey already uses a 600-second preparation bound. Each
+    # request retains its existing transport deadline and unique receipt.
+    started = time.monotonic()
+    deadline = started + 600
+    attempt = 0
+    while time.monotonic() < deadline:
+        attempt += 1
+        label = f'{phase}-search-ready-{attempt:04d}'
+        rc, reply, raw = journey.cli(label, ['search', query, '--limit', '100'], deadline=deadline)
+        elapsed = time.monotonic() - started
+        readiness_observations.append({'phase': phase, 'attempt': attempt,
+            'elapsed_seconds': round(elapsed, 3), 'exit': rc,
+            'search_scope': reply.get('search_scope') if isinstance(reply, dict) else None,
+            'full_search': reply.get('full_search') if isinstance(reply, dict) else None,
+            'full_lexical': is_full_search(reply, query), 'observation_label': label})
+        if elapsed >= 600:
+            raise TimeoutError(f'{phase}: full lexical search exceeded the 600-second preparation bound')
+        state = classify_search(reply, query)
+        require(label + ' valid response', rc == 0 and state != 'invalid', raw)
+        if state == 'full':
+            return reply
+        interval = min(5.0, .25 * (2 ** min(attempt - 1, 5)))
+        time.sleep(min(interval, max(0, deadline - time.monotonic())))
+    raise TimeoutError(f'{phase}: full lexical search never became ready within 600 seconds')
+
+
 class StrictJourney(Journey):
     """Retire only process groups started by this journey, and report failures."""
     def _stop(self, proc):
@@ -209,34 +236,8 @@ def main():
     def require_full_search(label, reply, query):
         require(label + ' typed full lexical search', is_full_search(reply, query), reply)
 
-    def wait_full_search(phase, query):
-        # The owner journey already uses a 600-second preparation bound. Each
-        # request retains its existing transport deadline and unique receipt.
-        started = time.monotonic()
-        deadline = started + 600
-        attempt = 0
-        while time.monotonic() < deadline:
-            attempt += 1
-            label = f'{phase}-search-ready-{attempt:04d}'
-            rc, reply, raw = journey.cli(label, ['search', query, '--limit', '100'], deadline=deadline)
-            elapsed = time.monotonic() - started
-            readiness_observations.append({'phase': phase, 'attempt': attempt,
-                'elapsed_seconds': round(elapsed, 3), 'exit': rc,
-                'search_scope': reply.get('search_scope') if isinstance(reply, dict) else None,
-                'full_search': reply.get('full_search') if isinstance(reply, dict) else None,
-                'full_lexical': is_full_search(reply, query), 'observation_label': label})
-            if elapsed >= 600:
-                raise TimeoutError(f'{phase}: full lexical search exceeded the 600-second preparation bound')
-            state = classify_search(reply, query)
-            require(label + ' valid response', rc == 0 and state != 'invalid', raw)
-            if state == 'full':
-                return reply
-            interval = min(5.0, .25 * (2 ** min(attempt - 1, 5)))
-            time.sleep(min(interval, max(0, deadline - time.monotonic())))
-        raise TimeoutError(f'{phase}: full lexical search never became ready within 600 seconds')
-
     def verify(phase):
-        search = wait_full_search(phase, 'mounted')
+        search = wait_full_search(journey, phase, 'mounted', readiness_observations, require)
         require_full_search(phase + ' CLI', search, 'mounted')
         rows = declarations(search, 'mounted', {'function'}, None)
         rows = [row for row in rows if 'App.vue' in str(row.get('identity', {}))]
@@ -245,14 +246,16 @@ def main():
         result = mcp('backend.search', {'query': 'mounted', 'limit': 100}, phase + '-mcp-search')
         require_full_search(phase + ' MCP', result, 'mounted')
         require(phase + ' MCP search', coord in json.dumps(result), result)
-        # "return" occurs in mounted's signature, not its declaration name;
-        # this proves lexical content rather than a published-name match.
-        require(phase + ' lexical-only witness differs from name', 'return' not in rows[0]['identity']['name'].lower(), rows[0])
-        rc, lexical, raw = journey.cli(phase + '-lexical-only', ['search', 'return', '--limit', '100'])
-        require_full_search(phase + ' CLI lexical-only', lexical, 'return')
+        # This unique typed parameter is on the declaration's first line and
+        # is not part of its name. It witnesses the indexed signature field.
+        witness = 'uniquelexicalprobe'
+        require(phase + ' lexical-only witness differs from name', witness not in rows[0]['identity']['name'].lower(), rows[0])
+        require(phase + ' lexical-only witness in captured signature', isinstance(rows[0].get('signature'), str) and witness in rows[0]['signature'], rows[0])
+        rc, lexical, raw = journey.cli(phase + '-lexical-only', ['search', witness, '--limit', '100'])
+        require_full_search(phase + ' CLI lexical-only', lexical, witness)
         require(phase + ' CLI lexical-only witness', rc == 0 and any(r.get('identity', {}).get('coordinate') == coord for r in lexical['records']), raw)
-        lexical_mcp = mcp('backend.search', {'query': 'return', 'limit': 100}, phase + '-mcp-lexical-only')
-        require_full_search(phase + ' MCP lexical-only', lexical_mcp, 'return')
+        lexical_mcp = mcp('backend.search', {'query': witness, 'limit': 100}, phase + '-mcp-lexical-only')
+        require_full_search(phase + ' MCP lexical-only', lexical_mcp, witness)
         require(phase + ' MCP lexical-only witness', any(r.get('identity', {}).get('coordinate') == coord for r in lexical_mcp['records']), lexical_mcp)
         rc, _, raw = journey.cli(phase + '-source', ['source', coord])
         require(phase + ' CLI source', rc == 0 and "return 'é漢'" in raw and '<template>' not in raw, raw)
@@ -319,7 +322,7 @@ def main():
         (python_api / '__init__.py').write_text('from .applications import FastAPI\n')
         (python_api / 'applications.py').write_text('class FastAPI:\n    def get(self, path: str): ...\n')
         (python_api / 'leak.py').symlink_to(outside)
-        (project / 'App.vue').write_bytes('<template><button @click="mounted">Run</button></template>\r\n<script setup lang="ts">\r\n// é漢\r\nfunction mounted() { return \'é漢\'; }\r\nmounted();\r\nfunction wrapper() { mounted(); }\r\nfunction shadow(mounted: () => void) { mounted(); }\r\n</script>\r\n'.encode())
+        (project / 'App.vue').write_bytes('<template><button @click="mounted">Run</button></template>\r\n<script setup lang="ts">\r\n// é漢\r\nfunction mounted(uniquelexicalprobe: number = 0) { return \'é漢\'; }\r\nmounted();\r\nfunction wrapper() { mounted(); }\r\nfunction shadow(mounted: () => void) { mounted(); }\r\n</script>\r\n'.encode())
         journey.start_owner(project)
         journey.start_mcp()
         rc, state, raw = index_published(journey, project, 'vue')
@@ -334,7 +337,7 @@ def main():
         (project / 'App.vue').write_text('<script setup>function replacement() { return 2; }</script>')
         rc, state, raw = index_published(journey, project, 'edited')
         require('edit published', rc == 0 and state == 'published', raw)
-        result = wait_full_search('edited', 'mounted')
+        result = wait_full_search(journey, 'edited', 'mounted', readiness_observations, require)
         require_full_search('edit CLI', result, 'mounted')
         require('edit retires declaration', result.get('more') is False and not declarations(result, 'mounted', {'function'}, None), result)
         result = mcp('backend.search', {'query': 'mounted', 'limit': 100}, 'edited-mcp-search')
