@@ -467,6 +467,7 @@ impl RetainedIndexedNativeProgramSourceManifest {
         path: &[u8],
         mut checkpoint: impl FnMut(u64) -> Result<(), E>,
     ) -> Result<Option<SourceIdentity>, E> {
+        checkpoint(1)?;
         fn cmp<E>(
             a: &[u8],
             b: &[u8],
@@ -827,6 +828,34 @@ mod tests {
         assert!(
             indexed
                 .source_for_package_bytes(b"src/file4095.ts", |_| Err::<(), _>("stopped"))
+                .is_err()
+        );
+        let dependency = NativeProgramSourceManifest::from_sources(
+            ContentId::from_canonical_bytes(b"compiler"),
+            vec![NativeProgramSource {
+                program_path: "compiler/lib.ts".into(),
+                package_path: None,
+                source,
+            }],
+        )
+        .unwrap();
+        let required =
+            BorrowedNativeProgramSourceManifest::scratch_bytes(dependency.as_bytes()).unwrap();
+        let dependency = RetainedIndexedNativeProgramSourceManifest::admit(
+            dependency.as_bytes().into(),
+            vec![0; required].into_boxed_slice(),
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+        assert_eq!(
+            dependency
+                .source_for_package_bytes(b"missing", |_| Ok::<_, ()>(()))
+                .unwrap(),
+            None
+        );
+        assert!(
+            dependency
+                .source_for_package_bytes(b"missing", |_| Err::<(), _>("stopped"))
                 .is_err()
         );
     }
