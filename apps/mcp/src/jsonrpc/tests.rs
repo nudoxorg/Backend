@@ -10690,3 +10690,35 @@ fn related_edge_continuation_shrinks_later_delivery_without_losing_edges() {
     assert_eq!(seen, expected);
     assert!(ordered.windows(2).all(|pair| pair[0] < pair[1]), "edge frontier order changed");
 }
+
+#[test]
+fn related_initial_delivery_preserves_credit_and_existing_cursor_window() {
+    assert_eq!(related_initial_delivery(200, None), 32);
+    assert_eq!(related_initial_delivery(12, None), 12);
+    assert_eq!(related_initial_delivery(200, Some(100)), 100);
+    assert_eq!(related_initial_delivery(200, Some(7)), 7);
+}
+
+#[test]
+fn related_first_page_caps_delivery_without_reducing_issued_credit() {
+    let mut rows = vec![package_row(), module_row()];
+    rows.extend((0..40).map(|index| {
+        let coordinate = format!("{MODULE}:{}::item_{index}", index + 2);
+        Row::in_package(RowId::Symbol(symbol_key(&coordinate)), basis(), package_key(PROJECT), coordinate)
+            .with_parent(symbol_key(MODULE))
+    }));
+    let view = root(rows);
+    let cursor = backend_library::Cursor::for_view_root(&view);
+    let catalog = backend_library::Library::from_view(view, cursor).expect("catalog");
+    let mut server = ready(Fake { page_catalog: Some(catalog), ..Fake::default() });
+    let selected = backend_library::SelectedSymbolId::new(symbol_key(MODULE).to_bytes()).expect("center");
+    let facet = serde_json::to_value(backend_present::IdentitySemanticData::SelectedSymbolId(selected)).expect("facet");
+    let first = call(&mut server, "backend.related", &json!({"selected_symbol": facet, "limit": 100}));
+    assert_eq!(first["isError"], false, "{first}");
+    assert_eq!(first["structuredContent"]["edges"].as_array().expect("edges").len(), 32);
+    let next = first["structuredContent"]["continuation_call"]["arguments"].clone();
+    let second = call(&mut server, "backend.related", &next);
+    assert_eq!(second["isError"], false, "{second}");
+    assert_eq!(second["structuredContent"]["edges"].as_array().expect("edges").len(), 8);
+    assert_eq!(server.product.page_limits, vec![100, 100]);
+}

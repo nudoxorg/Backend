@@ -816,6 +816,11 @@ impl Drop for StdioShutdown {
     }
 }
 
+// Fresh RELATED pages cap work independently of the caller’s issued credit.
+fn related_initial_delivery(issued: u16, continuation_delivery: Option<u16>) -> u16 {
+    continuation_delivery.unwrap_or(issued.min(32))
+}
+
 pub(super) struct Server<P> {
     product: P,
     project: String,
@@ -1691,7 +1696,7 @@ impl<P: Product> Server<P> {
             Some(serde_json::from_slice::<backend_library::RelatedPageCursor>(&data).map_err(|_| RpcError::stale_cursor())?)
         } else { None };
         let effective = limit(arguments)?;
-        let mut delivery = cursor.as_ref().map_or(effective, |cursor| cursor.scope().delivery);
+        let mut delivery = related_initial_delivery(effective, cursor.as_ref().map(|cursor| cursor.scope().delivery));
         let budget = wire_admission::ResponseBudget::new(response_id);
         let lifetime = self.semantic_lifetime()?;
         loop {
