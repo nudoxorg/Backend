@@ -1019,6 +1019,9 @@ mod tests {
             store.write_object(&object)
         });
         ready_rx.recv_timeout(Duration::from_secs(10)).expect("live temporary created");
+        let probe = TempNamespaceLease::open(&root).expect("open independent lease");
+        assert!(matches!(probe.try_lock(), Err(std::fs::TryLockError::WouldBlock)), "live writer must hold a kernel lease");
+        drop(probe);
         let orphan = root.join("objects/.orphan.12345.67890.tmp");
         fs::write(&orphan, b"orphan").expect("create orphan");
         let (opened_tx, opened_rx) = mpsc::channel();
