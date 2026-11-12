@@ -3643,8 +3643,8 @@ impl SemanticAuthority {
         // closure. The envelope binds this member to the exact attempt/input.
         let native_header_member = if !staged.native_typescript_headers().is_empty() {
             if staged.profile().language() != backend_semantic::vocabulary::Language::TypeScript
-                || typescript_snapshot_member.is_none() {
-                return Err(BuiltinModelError("native headers require a TypeScript snapshot witness".into()));
+                || program_member.is_none() {
+                return Err(BuiltinModelError("native headers require the selected TypeScript program".into()));
             }
             let rows = staged.native_typescript_headers();
             let retained = rows.iter().try_fold(2 * std::mem::size_of::<usize>(), |total, row| {
