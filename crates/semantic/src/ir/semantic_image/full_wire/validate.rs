@@ -83,15 +83,44 @@ pub(crate) struct ValidatedFullImage {
     pub(crate) typed: TypedLayout,
 }
 
+/// Resource ledger consulted by bounded semantic-image admission.
+///
+/// `work` must check the live cancellation/deadline as well as debit work.
+/// `reserve` must debit memory before the corresponding allocation.
+pub trait SemanticImageAdmissionMeter {
+    /// Debits work and checks cancellation and deadline.
+    fn work(&self, units: u64) -> bool;
+    /// Debits bytes before allocation.
+    fn reserve(&self, bytes: usize) -> bool;
+}
+
+pub(super) fn work(meter: &dyn SemanticImageAdmissionMeter, units: u64) -> Result<(), FullSemanticImageFault> {
+    if meter.work(units) { Ok(()) } else { Err(FullSemanticImageFault::AdmissionStopped) }
+}
+
+struct Unlimited;
+impl SemanticImageAdmissionMeter for Unlimited {
+    fn work(&self, _: u64) -> bool { true }
+    fn reserve(&self, _: usize) -> bool { true }
+}
+
 pub(crate) fn reopen_full_semantic_image(
     bytes: &[u8],
 ) -> Result<ValidatedFullImage, FullSemanticImageError> {
+    reopen_full_semantic_image_with_meter(bytes, &Unlimited)
+}
+
+pub(crate) fn reopen_full_semantic_image_with_meter(
+    bytes: &[u8],
+    meter: &dyn SemanticImageAdmissionMeter,
+) -> Result<ValidatedFullImage, FullSemanticImageError> {
+    work(meter, 1)?;
     let layout = header::directory(bytes)?;
     header::validate_lane_widths(layout)?;
     header::validate_atoms(bytes, layout)?;
     let header_layout = header::image_layout(layout)?;
     let image = super::super::decode::decode_image_facts(bytes, header_layout)?;
-    let typed = typed::validate_typed(bytes, layout)?;
+    let typed = typed::validate_typed(bytes, layout, meter)?;
     typed_decode::validate_semantic_nodes(bytes, layout, typed)?;
     validate_entities(bytes, layout, typed)?;
     validate_signature_carrier_roles(bytes, layout)?;
@@ -105,8 +134,8 @@ pub(crate) fn reopen_full_semantic_image(
         validate_signature_carrier_bindings(bytes, layout, typed)?;
     }
     validate_terminal_lists(bytes, layout, typed)?;
-    graph::validate_externals(bytes, layout)?;
-    graph::validate_graph(bytes, layout)?;
+    graph::validate_externals(bytes, layout, meter)?;
+    graph::validate_graph(bytes, layout, meter)?;
     extensions::validate_extensions(bytes, layout, typed, image.authority)?;
     Ok(ValidatedFullImage {
         layout,
