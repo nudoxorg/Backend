@@ -166,6 +166,8 @@ def main():
     finally:
         j.close()
         try:
+            if any("cleanup_error" in record for record in j.records) or j.root.exists():
+                raise RuntimeError("journey-owned processes or private workspace were not retired")
             verified_after = verify_build()
             if verified_after["receipt_sha256"] != build["receipt_sha256"]:
                 raise RuntimeError("Cargo build receipt changed during the journey")
