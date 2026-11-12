@@ -11,7 +11,23 @@ fn limits_for(facts: &[SemanticQueryFact]) -> Limits {
     }
 }
 
+#[test]
+fn corpus_admission_workspace_fixture_allocations_are_separate_input_work() {
+    let measured = allocation_counter::measure(|| {
+        std::hint::black_box(workspace());
+    });
+    eprintln!(
+        "workspace input fixture allocations: {}",
+        measured.count_total
+    );
+    assert!(
+        measured.count_total > 0,
+        "the input fixture must be constructed before measuring corpus admission"
+    );
+}
+
 fn exact_admission_moves_buffer(facts: Vec<SemanticQueryFact>) {
+    let selected_workspace = workspace();
     let limits = limits_for(&facts);
     let pointer = facts.as_ptr();
     let count = facts.len();
@@ -20,7 +36,7 @@ fn exact_admission_moves_buffer(facts: Vec<SemanticQueryFact>) {
         .map(|fact| fact.presentation().id.clone())
         .collect();
     let expected_digest =
-        SemanticQueryCorpus::admit_with_limits(workspace(), facts.clone(), limits)
+        SemanticQueryCorpus::admit_with_limits(selected_workspace, facts.clone(), limits)
             .expect("legacy envelope")
             .evidence_digest();
     let retained = measure_semantic_query_facts_with_quota_controlled(
@@ -36,7 +52,7 @@ fn exact_admission_moves_buffer(facts: Vec<SemanticQueryFact>) {
     let measured = allocation_counter::measure(|| {
         admitted = Some(
             SemanticQueryCorpus::admit_with_budget_controlled(
-                workspace(),
+                selected_workspace,
                 facts,
                 limits,
                 SemanticQueryAdmissionBudget {
@@ -143,6 +159,7 @@ fn corpus_admission_validates_all_compiler_identities_without_scratch_strings() 
 
 #[test]
 fn corpus_admission_one_byte_short_refuses_before_new_allocations() {
+    let selected_workspace = workspace();
     let facts = sql_facts(32, "migrations/schema.sql");
     let limits = limits_for(&facts);
     let required = measure_semantic_query_facts_with_quota_controlled(
@@ -157,7 +174,7 @@ fn corpus_admission_one_byte_short_refuses_before_new_allocations() {
     let measured = allocation_counter::measure(|| {
         assert!(matches!(
             SemanticQueryCorpus::admit_with_budget_controlled(
-                workspace(),
+                selected_workspace,
                 facts,
                 limits,
                 SemanticQueryAdmissionBudget {
@@ -174,6 +191,7 @@ fn corpus_admission_one_byte_short_refuses_before_new_allocations() {
 
 #[test]
 fn corpus_admission_zero_credit_malformed_fields_do_not_allocate_error_text() {
+    let selected_workspace = workspace();
     for empty_coordinate in [false, true] {
         let mut facts = structural_facts(0);
         let mut presentation = facts[0].presentation().clone();
@@ -187,7 +205,7 @@ fn corpus_admission_zero_credit_malformed_fields_do_not_allocate_error_text() {
         let measured = allocation_counter::measure(|| {
             assert!(matches!(
                 SemanticQueryCorpus::admit_with_budget_controlled(
-                    workspace(),
+                    selected_workspace,
                     facts,
                     limits,
                     SemanticQueryAdmissionBudget {
@@ -205,6 +223,7 @@ fn corpus_admission_zero_credit_malformed_fields_do_not_allocate_error_text() {
 
 #[test]
 fn corpus_admission_zero_credit_alias_envelope_is_checked_without_allocation() {
+    let selected_workspace = workspace();
     use backend_library::{
         CargoPackageAliasCargoFactsV1, CargoPackageAliasCoverageV1, CargoPackageAliasEvidenceV1,
         CargoPackageAliasObservationV1, CargoPackageAliasV1, CargoTargetNameV1,
@@ -260,7 +279,7 @@ fn corpus_admission_zero_credit_alias_envelope_is_checked_without_allocation() {
         let measured = allocation_counter::measure(|| {
             assert!(matches!(
                 SemanticQueryCorpus::admit_with_budget_controlled(
-                    workspace(),
+                    selected_workspace,
                     input,
                     limits,
                     SemanticQueryAdmissionBudget {
@@ -281,6 +300,7 @@ fn corpus_admission_zero_credit_alias_envelope_is_checked_without_allocation() {
 
 #[test]
 fn corpus_admission_cancellation_is_observed_early_and_late() {
+    let selected_workspace = workspace();
     let facts = structural_facts(256);
     let limits = limits_for(&facts);
     let budget = SemanticQueryAdmissionBudget {
@@ -289,7 +309,7 @@ fn corpus_admission_cancellation_is_observed_early_and_late() {
     };
     let probes = Cell::new(0usize);
     SemanticQueryCorpus::admit_with_budget_controlled(
-        workspace(),
+        selected_workspace,
         facts.clone(),
         limits,
         budget,
@@ -310,7 +330,7 @@ fn corpus_admission_cancellation_is_observed_early_and_late() {
         probes.set(0);
         let measured = allocation_counter::measure(|| {
             cancelled_result = Some(SemanticQueryCorpus::admit_with_budget_controlled(
-                workspace(),
+                selected_workspace,
                 input,
                 limits,
                 budget,
@@ -334,6 +354,7 @@ fn corpus_admission_cancellation_is_observed_early_and_late() {
 
 #[test]
 fn corpus_admission_sorted_index_retains_identity_and_scope_refusals() {
+    let selected_workspace = workspace();
     let budget = SemanticQueryAdmissionBudget {
         maximum_requested_bytes: usize::MAX,
         allocation_quota_per_allocation: 0,
@@ -355,7 +376,7 @@ fn corpus_admission_sorted_index_retains_identity_and_scope_refusals() {
         assert!(
             matches!(
                 SemanticQueryCorpus::admit_with_budget_controlled(
-                    workspace(),
+                    selected_workspace,
                     facts,
                     limits,
                     budget,
