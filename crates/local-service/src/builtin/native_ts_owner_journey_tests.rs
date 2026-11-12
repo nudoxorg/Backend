@@ -595,7 +595,7 @@ fn native_ts_default_export_signatures_survive_cold_owner() -> Result<(), Box<dy
     ] {
         let (coordinate, source) = select_native_document(&mut session, &authority, name, path)?;
         assert_eq!(source.signature.as_deref(), Some(expected));
-        let CommandReply::Document(shown) = session.document(&coordinate)?.reply else { return Err("default Show reply".into()); };
+        let CommandReply::Document(shown) = session.document(&coordinate)?.reply else { return Err("default Document reply".into()); };
         assert_eq!(shown.signature.as_deref(), Some(expected));
     }
     drop(session);
@@ -608,7 +608,7 @@ fn native_ts_default_export_signatures_survive_cold_owner() -> Result<(), Box<dy
     ] {
         let (coordinate, source) = select_native_document(&mut session, &authority, name, path)?;
         assert_eq!(source.signature.as_deref(), Some(expected));
-        let CommandReply::Document(shown) = session.document(&coordinate)?.reply else { return Err("cold default Show reply".into()); };
+        let CommandReply::Document(shown) = session.document(&coordinate)?.reply else { return Err("cold default Document reply".into()); };
         assert_eq!(shown.signature.as_deref(), Some(expected));
     }
     drop(session);
