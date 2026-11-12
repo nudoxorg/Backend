@@ -628,3 +628,28 @@ fn flat_sql_upsert_and_renamed_objects_keep_precise_owner_edges() {
     let table = impact(&mut session, "table", "order_lines");
     assert!(table.rows.iter().all(|row| row.node.name != "order_items"), "the old table spelling must share the renamed entity");
 }
+
+#[test]
+fn sql_impact_distinguishes_drop_recreate_epochs() {
+    use backend_library::impact::{ImpactDomain, ImpactRequest, ImpactSeed, ImpactSeedSpec};
+    let workers = admitted_workers(Some(frontend_worker("sqlite", "sqlite-worker")), None);
+    let files = [
+        ("db/0001.sql", "CREATE TABLE books (id INTEGER, price INTEGER);\nCREATE VIEW old_book AS SELECT price FROM books;"),
+        ("db/0002.sql", "DROP TABLE books;\nCREATE TABLE books (id INTEGER, price INTEGER);\nCREATE VIEW new_book AS SELECT price FROM books;"),
+    ].into_iter().map(|(path, text)| (path.to_owned(), text.as_bytes().to_vec())).collect();
+    let mut wire = SourceWire::start_sql(TestStage::BeforeSourcePreparation, true, SqlFixture { files, workers });
+    wire.wait_at_source_within(TERMINAL_WAIT);
+    wire.release();
+    wire.wait_terminal_within(TERMINAL_WAIT);
+    mixed_published(&wire);
+    let project = wire.source.parent().expect("project").to_owned();
+    let mut session = Session::connect(&wire.endpoint).expect("listener");
+    let request = ImpactRequest::new(
+        backend_library::PackageReference::parse(project.to_str().unwrap().to_owned()).unwrap(),
+        ImpactSeed::Named(ImpactSeedSpec { domain: ImpactDomain::Sql, kind: "column".into(), name: "books.price".into(), path: None }),
+    );
+    let backend_library::SurfaceReply::Impact(report) = session.surface(backend_library::SurfaceCommand::Impact { request }).expect("public impact") else { panic!("impact reply") };
+    assert_eq!(report.seeds.len(), 1, "only the live epoch is seedable");
+    assert!(report.rows.iter().any(|row| row.node.name == "new_book"), "new view must follow live column: {:?}", report.rows);
+    assert!(report.rows.iter().all(|row| row.node.name != "old_book"), "old view cannot be reached through the recreated column: {:?}", report.rows);
+}
