@@ -168,8 +168,8 @@ fn exercise(fixture: &OwnerFixture) {
     assert!(renewed_root.same_authority(fixture.root));
     assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("scene before renewal").entity_id(), graph.entity_id(),
         "the retained scene must survive local interaction before renewal");
-    let renewal_key = rig.cx.update(|_, cx| indexed_world::key(renewed_root, old_key.preferred().cloned(), cx).expect("renewed serving key"));
-    assert_eq!(renewal_key, old_key, "the registered owner and preferred project must remain the same at renewal");
+    assert!(old_key.at_authority(renewed_root), "renewal retains the exact producer authority");
+    assert!(rig.cx.update(|_, cx| old_key.serving_owner(cx).is_some()), "the original serving generation remains registered");
     gate.publish(OwnerState::Ready { key: renewed_root, mode: ServiceMode::Attached });
     rig.settle();
     assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("renewed same-generation scene").entity_id(), graph.entity_id());
