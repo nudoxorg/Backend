@@ -84,6 +84,8 @@ def main() -> int:
     def row_fingerprint(body):
         return sorted(tuple(str(value) for value in (
                            identity(row).get("name"), identity(row).get("coordinate"),
+                           identity(row).get("key"),
+                           json.dumps(identity(row).get("semantic_data"), sort_keys=True),
                            row.get("kind"), row.get("language")))
                       for row in records(body) if isinstance(row, dict))
 
@@ -94,11 +96,14 @@ def main() -> int:
         return [row.get("name") for row in query_rows(body) if isinstance(row, dict)]
 
     def query_fingerprint(body):
-        return sorted(tuple(str(value) for value in (row.get("name"), row.get("coordinate")))
+        return sorted(tuple(str(value) for value in (row.get("id"), row.get("name"),
+                                                     row.get("coordinate"), row.get("state")))
                       for row in query_rows(body) if isinstance(row, dict))
 
     def reference_fingerprint(body):
         return sorted((str(row.get("title")), str(identity(row).get("name")),
+                       str(identity(row).get("key")), str(identity(row).get("coordinate")),
+                       json.dumps(identity(row).get("semantic_data"), sort_keys=True),
                        tuple(sorted(str(tag) for tag in row.get("tags", []))))
                       for row in records(body) if isinstance(row, dict))
 
@@ -162,7 +167,7 @@ def main() -> int:
         outline, _ = cli("outline", "outline", "--limit", "50")
         require_json("outline", outline)
         selected_rows("outline:tsx", outline, "NavBar")
-        query = "{ Declaration { name } }"
+        query = "{ Declaration { id @output name @output coordinate @output state @output } }"
         body, _ = cli("declarations", "query", query)
         require_json("query", body)
         check("query:declaration", "generateSchedule" in query_names(body), query_names(body))
@@ -196,9 +201,14 @@ def main() -> int:
                       {"result": result, "tail": raw[-500:]})
             shown_body, _ = cli("signature", "show", coordinate)
             require_json("signature", shown_body)
-            check("signature:modifiers", any("export async" in part for part in strings(shown_body)), shown_body)
-            check("signature:return", any("Promise<string>" in part for part in strings(shown_body)), shown_body)
-            check("signature:kind", any(row.get("kind") == "function" for row in records(shown_body)), shown_body)
+            check("signature:selected-page", shown_body.get("answer") == "page"
+                  and identity(shown_body).get("name") == "generateSchedule", shown_body)
+            signature = shown_body.get("signature")
+            expected_header = "export async function generateSchedule(req: string): Promise<string>"
+            check("signature:exact-header", isinstance(signature, str)
+                  and signature.rstrip().removesuffix("{").rstrip() == expected_header,
+                  {"signature": signature, "expected": expected_header})
+            check("signature:kind", shown_body.get("kind") == "function", shown_body)
             path_source, _ = cli("path-source", "source", path_coordinate)
             check("path-source:expected-line",
                   any('return loadSectionsCsv() + req;' in part for part in strings(path_source)), path_source)
@@ -243,13 +253,14 @@ def main() -> int:
                       any("generateSchedule" in part for part in strings(result)), result)
         mcp_status = tool("status", "backend.status", {})
         check("mcp:status:json", isinstance(mcp_status, dict) and bool(mcp_status), mcp_status)
-        mcp_status_body = mcp_status.get("structuredContent", {})
+        mcp_status_body = mcp_status
         check("mcp:status:typed", isinstance(mcp_status_body, dict), mcp_status)
-        comparable = {key for key in ("coverage", "rows")
-                      if key in status and key in mcp_status_body}
-        check("mcp:cli-status-parity", bool(comparable) and
-              all(status[key] == mcp_status_body[key] for key in comparable),
-              {"keys": sorted(comparable), "cli": status, "mcp": mcp_status_body})
+        comparable = ("coverage", "rows", "source", "revision")
+        check("mcp:cli-status-parity", isinstance(status, dict)
+              and isinstance(mcp_status_body, dict)
+              and all(key in status and key in mcp_status_body
+                      and status[key] == mcp_status_body[key] for key in comparable),
+              {"keys": comparable, "cli": status, "mcp": mcp_status_body})
         # Stop only this fixture's processes and reopen the same durable state.
         for process in (route.mcp, route.owner):
             if process is not None and process.poll() is None:
