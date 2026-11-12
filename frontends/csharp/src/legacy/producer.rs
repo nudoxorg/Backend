@@ -19,7 +19,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{
-        Arc,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
     time::Instant,
@@ -47,6 +47,168 @@ const MAX_RETAINED_EXECUTION_BYTES: usize = 1024 * 1024 * 1024;
 const MAX_EXECUTION_SNAPSHOT_NODES: usize = 32_768;
 const MAX_RETAINED_EXECUTION_NODES: usize = 65_536;
 
+// This process-wide budget is separate from the engine's staged-output queue:
+// direct producer callers bypass that queue, and snapshot leases can outlive
+// the staged package. Each reservation stays with the snapshot's final Arc.
+const MAX_SHARED_EXECUTION_BYTES: usize = 2 * 1024 * 1024 * 1024;
+const MAX_SHARED_EXECUTION_NODES: usize = 131_072;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct SnapshotUsage {
+    bytes: usize,
+    nodes: usize,
+}
+
+#[derive(Debug)]
+struct SnapshotBudget {
+    maximum: SnapshotUsage,
+    used: Mutex<SnapshotUsage>,
+}
+
+impl SnapshotBudget {
+    fn reserve(self: &Arc<Self>) -> Result<SnapshotReservation, CSharpAuthorityError> {
+        let mut used = self
+            .used
+            .lock()
+            .map_err(|_| CSharpAuthorityError::ExecutionSnapshotCapacity)?;
+        let bytes = used
+            .bytes
+            .checked_add(MAX_EXECUTION_SNAPSHOT_BYTES)
+            .filter(|n| *n <= self.maximum.bytes)
+            .ok_or(CSharpAuthorityError::ExecutionSnapshotCapacity)?;
+        let nodes = used
+            .nodes
+            .checked_add(MAX_EXECUTION_SNAPSHOT_NODES)
+            .filter(|n| *n <= self.maximum.nodes)
+            .ok_or(CSharpAuthorityError::ExecutionSnapshotCapacity)?;
+        *used = SnapshotUsage { bytes, nodes };
+        Ok(SnapshotReservation {
+            budget: Arc::clone(self),
+            held: SnapshotUsage {
+                bytes: MAX_EXECUTION_SNAPSHOT_BYTES,
+                nodes: MAX_EXECUTION_SNAPSHOT_NODES,
+            },
+            retain_on_drop: false,
+        })
+    }
+}
+
+fn shared_snapshot_budget() -> &'static Arc<SnapshotBudget> {
+    static BUDGET: OnceLock<Arc<SnapshotBudget>> = OnceLock::new();
+    BUDGET.get_or_init(|| {
+        Arc::new(SnapshotBudget {
+            maximum: SnapshotUsage {
+                bytes: MAX_SHARED_EXECUTION_BYTES,
+                nodes: MAX_SHARED_EXECUTION_NODES,
+            },
+            used: Mutex::new(SnapshotUsage::default()),
+        })
+    })
+}
+
+#[derive(Debug)]
+struct SnapshotReservation {
+    budget: Arc<SnapshotBudget>,
+    held: SnapshotUsage,
+    retain_on_drop: bool,
+}
+
+impl SnapshotReservation {
+    // Shrink only after copying and revalidation complete. No other owner can
+    // release these credits; an invalid measurement leaves the worst case held.
+    fn shrink(&mut self, actual: SnapshotUsage) -> Result<(), CSharpAuthorityError> {
+        let bytes = self
+            .held
+            .bytes
+            .checked_sub(actual.bytes)
+            .ok_or(CSharpAuthorityError::ExecutionSnapshotCapacity)?;
+        let nodes = self
+            .held
+            .nodes
+            .checked_sub(actual.nodes)
+            .ok_or(CSharpAuthorityError::ExecutionSnapshotCapacity)?;
+        let mut used = self
+            .budget
+            .used
+            .lock()
+            .map_err(|_| CSharpAuthorityError::ExecutionSnapshotCapacity)?;
+        let remaining_bytes = used
+            .bytes
+            .checked_sub(bytes)
+            .ok_or(CSharpAuthorityError::ExecutionSnapshotCapacity)?;
+        let remaining_nodes = used
+            .nodes
+            .checked_sub(nodes)
+            .ok_or(CSharpAuthorityError::ExecutionSnapshotCapacity)?;
+        *used = SnapshotUsage {
+            bytes: remaining_bytes,
+            nodes: remaining_nodes,
+        };
+        self.held = actual;
+        Ok(())
+    }
+}
+
+impl Drop for SnapshotReservation {
+    fn drop(&mut self) {
+        if self.retain_on_drop {
+            return;
+        }
+        let mut used = self
+            .budget
+            .used
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let (Some(bytes), Some(nodes)) = (
+            used.bytes.checked_sub(self.held.bytes),
+            used.nodes.checked_sub(self.held.nodes),
+        ) {
+            *used = SnapshotUsage { bytes, nodes };
+        } else {
+            // Corrupt accounting never grants new capacity.
+            *used = self.budget.maximum;
+        }
+    }
+}
+
+// Always attempt private-directory cleanup before releasing the credits. If
+// cleanup fails, keep the process-local reservation charged rather than
+// pretending the leftover files ceased consuming the bounded resource.
+#[derive(Debug)]
+struct ReservedSnapshotDirectory {
+    directory: Option<tempfile::TempDir>,
+    reservation: SnapshotReservation,
+}
+
+impl ReservedSnapshotDirectory {
+    fn new(reservation: SnapshotReservation) -> Result<Self, CSharpAuthorityError> {
+        let directory = tempfile::tempdir().map_err(|_| CSharpAuthorityError::Configuration)?;
+        Ok(Self {
+            directory: Some(directory),
+            reservation,
+        })
+    }
+
+    fn path(&self) -> &Path {
+        self.directory
+            .as_ref()
+            .expect("live snapshot directory")
+            .path()
+    }
+}
+
+impl Drop for ReservedSnapshotDirectory {
+    fn drop(&mut self) {
+        if self
+            .directory
+            .take()
+            .is_some_and(|directory| directory.close().is_err())
+        {
+            self.reservation.retain_on_drop = true;
+        }
+    }
+}
+
 /// Immutable custody for the executable files that participate in one Roslyn
 /// invocation.  The bytes are captured before spawning the helper and checked
 /// again immediately before use; a changed host/runtime fails closed.
@@ -58,7 +220,7 @@ pub struct CSharpExecutionClosure {
 
 #[derive(Debug)]
 struct CSharpExecutionSnapshot {
-    _directory: tempfile::TempDir,
+    _directory: ReservedSnapshotDirectory,
     toolchain: PathBuf,
     oracle: PathBuf,
     digest: [u8; 32],
@@ -439,7 +601,11 @@ fn snapshot_execution(
     let root = toolchain
         .parent()
         .ok_or(CSharpAuthorityError::Configuration)?;
-    let directory = tempfile::tempdir().map_err(|_| CSharpAuthorityError::Configuration)?;
+    checkpoint(control, CSharpAuthorityPhase::Spawn)?;
+    // Reserve before creating a private tree or reading/copying source bytes.
+    // The directory owner keeps this credit until cleanup and the final lease.
+    let reservation = shared_snapshot_budget().reserve()?;
+    let mut directory = ReservedSnapshotDirectory::new(reservation)?;
     let copied_root = directory.path().join("dotnet");
     let mut files = 0;
     let mut bytes: usize = 0;
@@ -679,6 +845,10 @@ fn snapshot_execution(
     if !copied_tool.is_file() {
         return Err(CSharpAuthorityError::Configuration);
     }
+    directory.reservation.shrink(SnapshotUsage {
+        bytes,
+        nodes: entries,
+    })?;
     Ok(CSharpExecutionSnapshot {
         _directory: directory,
         toolchain: copied_tool,
@@ -1738,6 +1908,9 @@ pub enum CSharpAuthorityError {
     /// Exact compiler options are incomplete or inconsistent.
     #[error("C# captured compiler configuration is incomplete")]
     Configuration,
+    /// Process-wide execution snapshot credits are unavailable.
+    #[error("C# execution snapshot capacity is exhausted or unavailable")]
+    ExecutionSnapshotCapacity,
     /// Captured input set is too large, malformed, or omits the binding.
     #[error("C# captured input manifest is invalid or exceeds its bound")]
     Manifest,
@@ -2027,13 +2200,116 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     #[test]
+    fn snapshot_credit_lives_until_last_owner_and_cleanup() {
+        let budget = Arc::new(SnapshotBudget {
+            maximum: SnapshotUsage {
+                bytes: MAX_EXECUTION_SNAPSHOT_BYTES,
+                nodes: MAX_EXECUTION_SNAPSHOT_NODES,
+            },
+            used: Mutex::new(SnapshotUsage::default()),
+        });
+        let mut directory = ReservedSnapshotDirectory::new(budget.reserve().expect("credit"))
+            .expect("private snapshot");
+        directory
+            .reservation
+            .shrink(SnapshotUsage {
+                bytes: 17,
+                nodes: 3,
+            })
+            .unwrap();
+        let root = directory.path().to_owned();
+        let lease = CSharpExecutionLease(Arc::new(CSharpExecutionSnapshot {
+            toolchain: root.join("dotnet"),
+            oracle: root.join("oracle.dll"),
+            _directory: directory,
+            digest: [4; 32],
+            copied_bytes: 17,
+            output_nodes: 3,
+        }));
+        let second = lease.clone();
+        drop(lease);
+        assert!(root.is_dir());
+        assert_eq!(
+            *budget.used.lock().unwrap(),
+            SnapshotUsage {
+                bytes: 17,
+                nodes: 3
+            }
+        );
+        // Even one held owner prevents another worst-case reservation here.
+        assert!(budget.reserve().is_err());
+        drop(second);
+        assert!(!root.exists());
+        assert_eq!(*budget.used.lock().unwrap(), SnapshotUsage::default());
+        assert!(budget.reserve().is_ok());
+    }
+
+    #[test]
+    fn concurrent_snapshot_reservations_refuse_before_copy() {
+        use std::sync::Barrier;
+        let budget = Arc::new(SnapshotBudget {
+            maximum: SnapshotUsage {
+                bytes: MAX_EXECUTION_SNAPSHOT_BYTES,
+                nodes: MAX_EXECUTION_SNAPSHOT_NODES,
+            },
+            used: Mutex::new(SnapshotUsage::default()),
+        });
+        let start = Arc::new(Barrier::new(3));
+        let finish = Arc::new(Barrier::new(3));
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                let budget = Arc::clone(&budget);
+                let start = Arc::clone(&start);
+                let finish = Arc::clone(&finish);
+                thread::spawn(move || {
+                    start.wait();
+                    let credit = budget.reserve().ok();
+                    finish.wait();
+                    credit
+                })
+            })
+            .collect();
+        start.wait();
+        finish.wait();
+        let credits: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(credits.iter().filter(|credit| credit.is_some()).count(), 1);
+        assert_eq!(
+            *budget.used.lock().unwrap(),
+            SnapshotUsage {
+                bytes: MAX_EXECUTION_SNAPSHOT_BYTES,
+                nodes: MAX_EXECUTION_SNAPSHOT_NODES
+            }
+        );
+        drop(credits);
+        assert_eq!(*budget.used.lock().unwrap(), SnapshotUsage::default());
+    }
+
+    #[test]
     fn staged_sources_retain_each_exact_execution_owner_even_with_equal_digests() {
         fn fixture(
             digest: [u8; 32],
             copied_bytes: usize,
             output_nodes: usize,
         ) -> (CSharpExecutionLease, PathBuf) {
-            let directory = tempfile::tempdir().expect("private execution snapshot");
+            let budget = Arc::new(SnapshotBudget {
+                maximum: SnapshotUsage {
+                    bytes: MAX_EXECUTION_SNAPSHOT_BYTES,
+                    nodes: MAX_EXECUTION_SNAPSHOT_NODES,
+                },
+                used: Mutex::new(SnapshotUsage::default()),
+            });
+            let mut directory = ReservedSnapshotDirectory::new(budget.reserve().expect("credit"))
+                .expect("private execution snapshot");
+            directory
+                .reservation
+                .shrink(SnapshotUsage {
+                    bytes: copied_bytes,
+                    nodes: output_nodes,
+                })
+                .expect("fixture charge");
             let root = directory.path().to_owned();
             let snapshot = CSharpExecutionSnapshot {
                 toolchain: root.join("dotnet"),
