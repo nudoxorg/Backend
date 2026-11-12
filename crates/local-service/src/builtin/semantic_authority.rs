@@ -70,9 +70,9 @@ fn native_header_reader_admissible(bytes: &[u8], reader_budget: usize, writer_bu
     let decoded = before - credit;
     if !bytes.len().checked_add(2 * std::mem::size_of::<usize>())
         .and_then(|wire| wire.checked_add(decoded)).is_some_and(|cost| cost <= reader_budget) { return false; }
-    // Both object construction and member verification charge their own wire
-    // and decoded temporaries. Refuse before streaming if either cannot fit.
-    bytes.len().checked_mul(3).and_then(|wire| decoded.checked_mul(2).and_then(|heap| wire.checked_add(heap)))
+    // Object construction reserves three wire copies and an Arc header;
+    // construction and member verification each decode independently.
+    bytes.len().checked_mul(3).and_then(|wire| wire.checked_add(2 * std::mem::size_of::<usize>())).and_then(|wire| decoded.checked_mul(2).and_then(|heap| wire.checked_add(heap)))
         .is_some_and(|cost| cost <= writer_budget)
 }
 const MAX_CHUNK_BYTES: usize = 16 * 1024;
@@ -5304,7 +5304,7 @@ mod tests {
         backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical_budgeted(&bytes, &mut credit).expect("decode aggregate");
         let decoded = usize::MAX - credit;
         let reader = (bytes.len() * 2 + decoded).max(bytes.len() + 2 * std::mem::size_of::<usize>() + decoded);
-        let writer = bytes.len() * 3 + decoded * 2;
+        let writer = bytes.len() * 3 + 2 * std::mem::size_of::<usize>() + decoded * 2;
         assert!(native_header_reader_admissible(&bytes, reader, writer));
         assert!(!native_header_reader_admissible(&bytes, reader - 1, writer));
         assert!(!native_header_reader_admissible(&bytes, reader, writer - 1));
