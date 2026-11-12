@@ -5739,7 +5739,9 @@ mod tests {
         let stopped = || { let next = stops.get() + 1; stops.set(next); next > 3 };
         assert!(authority.publish_staged_with_stop(&key, attempt.clone(), &staged, &stopped, |_| Ok(())).is_err());
         assert!(stops.get() > 3, "stop must occur after staged publication began");
-        assert!(authority.read_selected_pair(&key).is_err(), "cancelled publication must not select a generation");
+        let selections = authority.image_loader.selections.read().expect("selection snapshot");
+        assert!(SelectedClosureImageLoader::committed_pair_optional_in(&selections, &key).expect("selection lookup").is_none(), "cancelled publication must not select a generation");
+        drop(selections);
         let (claim, selected) = authority
             .publish_staged(&key, attempt, &staged, |_| Ok(()))
             .expect("real admission counts the declared accelerator in the exact payload set");
