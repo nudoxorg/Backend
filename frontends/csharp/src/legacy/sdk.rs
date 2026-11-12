@@ -16,6 +16,9 @@ pub const CSHARP_GLOBALIZATION_POLICY_ID: &str = "dotnet-globalization-invariant
 pub const CSHARP_GLOBALIZATION_ENV_NAME: &str = "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT";
 pub const CSHARP_GLOBALIZATION_ENV_VALUE: &str = "1";
 
+#[path = "sdk_projection.rs"]
+mod projection;
+
 // A deliberately narrow global.json grammar prevents custom SDK search paths
 // and rejects duplicate keys before handing the same bytes to dotnet.
 #[derive(serde::Deserialize)]
@@ -844,41 +847,19 @@ pub fn resolve_references_with_sdk_diagnostics(
     if pack_layout_digest(&private_pack_root, deadline, cancelled)? != pack_digest {
         return Err("SDK pack changed during resolution");
     }
-    let value: Value =
-        serde_json::from_slice(&output.stdout).map_err(|_| "SDK resolution malformed")?;
-    let invoked_sdk_directory = value
-        .get("Properties")
-        .and_then(Value::as_object)
-        .and_then(|properties| properties.get("MSBuildSDKsPath"))
-        .and_then(Value::as_str)
-        .ok_or("SDK invocation path missing")?;
-    let invoked_sdk_directory =
-        fs::canonicalize(invoked_sdk_directory).map_err(|_| "SDK invocation path unavailable")?;
+    let projected = projection::decode(&output.stdout, snapshots.len())?;
+    let invoked_sdk_directory = fs::canonicalize(&projected.sdk_path)
+        .map_err(|_| "SDK invocation path unavailable")?;
     if invoked_sdk_directory != observed_sdk_directory {
         return Err("SDK invocation differs from captured selection");
     }
-    let items = value
-        .get("Items")
-        .and_then(Value::as_object)
-        .and_then(|o| o.get("NudoxReference"))
-        .and_then(Value::as_array)
-        .ok_or("SDK resolution missing ReferencePath")?;
-    if items.is_empty() || items.len() > snapshots.len() {
-        return Err("SDK selected invalid reference count");
-    }
     let mut selected = Vec::new();
     let mut selected_indices = std::collections::HashSet::new();
-    for item in items {
+    for item in projected.items {
         if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
             return Err("SDK resolution cancelled");
         }
-        let path = item
-            .get("FullPath")
-            .or_else(|| item.get("Identity"))
-            .and_then(Value::as_str)
-            .ok_or("SDK resolution path missing")?;
-        if path.is_empty() || path.len() > 4096 { return Err("SDK resolution path invalid"); }
-        let path = fs::canonicalize(path).map_err(|_| "SDK resolution path unavailable")?;
+        let path = fs::canonicalize(&item.path).map_err(|_| "SDK resolution path unavailable")?;
         let mapped_pack_path = path
             .strip_prefix(&private_pack_root)
             .ok()
@@ -906,14 +887,7 @@ pub fn resolve_references_with_sdk_diagnostics(
         if current_digest != snapshot.digest {
             return Err("SDK candidate changed during resolution");
         }
-        let fusion_name = item
-            .get("FusionName")
-            .and_then(Value::as_str)
-            .ok_or("SDK selected assembly identity missing")?;
-        if fusion_name.is_empty() || fusion_name.len() > 4096 {
-            return Err("SDK selected assembly identity invalid");
-        }
-        let fusion_name = fusion_name.to_owned().into_boxed_str();
+        let fusion_name = item.fusion.into_boxed_str();
         selected.push((snapshot.owned.clone(), fusion_name));
     }
     if selected.is_empty() {
