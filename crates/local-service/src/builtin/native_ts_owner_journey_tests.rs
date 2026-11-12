@@ -1582,6 +1582,9 @@ fn native_ts_large_crlf_line_map_source_show_read_and_cold() -> Result<(), Box<d
     index(&mut session, &project, 0x72)?;
     let (coordinate, document) = select_native_document(&mut session, &authority_secret, "Greeting", "view.ts")?;
     assert_eq!(document.location.captured().ok_or("warm source location")?.start_line(), 20_001);
+    let CommandReply::Names(warm_names) = session.names("Greeting", 100)?.reply else { return Err("warm Names reply".into()) };
+    let warm_row = warm_names.root.rows().iter().find(|row| row.label.as_str() == coordinate).ok_or("warm native Names row")?;
+    assert_eq!(warm_row.source.captured().ok_or("warm Names location")?.start_line(), 20_001);
     let CommandReply::Document(shown) = session.document(&coordinate)?.reply else { return Err("Show reply".into()) };
     assert_eq!(shown.location.captured().ok_or("warm Show location")?.start_line(), 20_001);
     for (name, path) in [("Bare", "bare.ts"), ("Sep", "sep.ts"), ("Para", "para.ts")] {
@@ -1628,6 +1631,9 @@ fn native_ts_large_crlf_line_map_source_show_read_and_cold() -> Result<(), Box<d
     let mut cold = Session::connect(cold_owner.endpoint())?;
     let (_, cold_source) = select_native_document(&mut cold, &authority_secret, "Greeting", "view.ts")?;
     assert_eq!(cold_source.location.captured().ok_or("cold source location")?.start_line(), 20_001);
+    let CommandReply::Names(cold_names) = cold.names("Greeting", 100)?.reply else { return Err("cold Names reply".into()) };
+    let cold_row = cold_names.root.rows().iter().find(|row| row.label.as_str() == coordinate).ok_or("cold native Names row")?;
+    assert_eq!(cold_row.source.captured().ok_or("cold Names location")?.start_line(), 20_001);
     let CommandReply::Document(cold_show) = cold.document(&coordinate)?.reply else { return Err("cold Show reply".into()) };
     assert_eq!(cold_show.location.captured().ok_or("cold Show location")?.start_line(), 20_001);
     let SurfaceReply::Read(cold_records) = cold.surface(request()?)? else { return Err("cold Read reply".into()) };
