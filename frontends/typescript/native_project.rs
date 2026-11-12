@@ -1392,7 +1392,7 @@ mod tests {
         assert!(selected_function_header(&duplicate, source, compiler_extent, "run", &StopAfterOne(std::sync::atomic::AtomicUsize::new(0))).is_err());
         assert!(selected_function_header(&[], source, compiler_extent, "run", &Stopped).is_err());
         for (path, source, expected) in [
-            ("src/main.ts", "const async = 1; async\nfunction plain() {}", None),
+            ("src/main.ts", "const async = 1; async\nfunction plain() {}", Some("function plain()")),
             ("src/main.ts", "const async = 1; async; function plain() {}", Some("function plain()")),
             ("src/main.ts", "export default function plain() {}", Some("export default function plain()")),
             ("src/main.ts", "export default async function* plain(): Promise<number> { yield 1; }", Some("export default async function* plain(): Promise<number>")),
