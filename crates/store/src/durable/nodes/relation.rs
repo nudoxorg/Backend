@@ -700,9 +700,18 @@ impl FileStore {
         }
         let mut bytes = [0u8; 128];
         if expected_len > bytes.len() { return Err(StoreError::Bounds); }
-        file.read_exact(&mut bytes[..expected_len]).map_err(|error| io_error(&error))?;
+        file.read_exact(&mut bytes[..expected_len]).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::UnexpectedEof { StoreError::Corrupt } else { io_error(&error) }
+        })?;
         let mut trailing = [0u8; 1];
-        if file.read(&mut trailing).map_err(|error| io_error(&error))? != 0 { return Err(StoreError::Corrupt); }
+        loop {
+            match file.read(&mut trailing) {
+                Ok(0) => break,
+                Ok(_) => return Err(StoreError::Corrupt),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(io_error(&error)),
+            }
+        }
         wire::decode_relation_ref(&bytes[..expected_len], schema, version).map(Some)
     }
 }
