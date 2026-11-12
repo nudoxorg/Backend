@@ -226,6 +226,7 @@ fn pack_layout_digest(root: &Path, deadline: Instant, cancelled: &AtomicBool) ->
         if depth > 32 { return Err("SDK pack snapshot depth"); }
         let mut entries = Vec::new();
         for entry in fs::read_dir(dir).map_err(|_| "SDK pack snapshot unavailable")? {
+            if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline { return Err("SDK pack snapshot cancelled"); }
             if entries.len() >= 32768usize.saturating_sub(*count) { return Err("SDK pack snapshot limit"); }
             entries.push(entry.map_err(|_| "SDK pack snapshot unavailable")?);
         }
@@ -239,6 +240,7 @@ fn pack_layout_digest(root: &Path, deadline: Instant, cancelled: &AtomicBool) ->
             if kind.is_symlink() { return Err("SDK pack snapshot symlink"); }
             let relative = path.strip_prefix(root).map_err(|_| "SDK pack snapshot unavailable")?;
             let name = relative.as_os_str().as_encoded_bytes();
+            if name.is_empty() || name.len() > 4096 { return Err("SDK pack path limit"); }
             if kind.is_dir() {
                 hash.update([0]);
                 hash.update((name.len() as u64).to_le_bytes());
@@ -1691,7 +1693,10 @@ mod tests {
         let cancelled = AtomicBool::new(false);
         let first = pack_layout_digest(root.path(), deadline, &cancelled).unwrap();
         fs::write(&metadata, b"other").unwrap();
-        assert_ne!(first, pack_layout_digest(root.path(), deadline, &cancelled).unwrap());
+        let changed = pack_layout_digest(root.path(), deadline, &cancelled).unwrap();
+        assert_ne!(first, changed);
+        fs::create_dir(root.path().join("Example.Ref/2")).unwrap();
+        assert_ne!(changed, pack_layout_digest(root.path(), deadline, &cancelled).unwrap());
     }
 
     #[test]
