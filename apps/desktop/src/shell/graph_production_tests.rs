@@ -174,6 +174,7 @@ fn exercise(fixture: &OwnerFixture) {
     });
     gate.publish(OwnerState::Ready { key: renewed_root, mode: ServiceMode::Attached });
     rig.settle();
+    assert_eq!(projection(&mut rig).0, old_key, "renewal must preserve the indexed-world key");
     assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("renewed same-generation scene").entity_id(), graph.entity_id());
     assert!(native_bounds(&mut rig, "Button", "Declarations", true).is_some(), "a certified attachment renewal re-admits resource controls");
     assert!(native_bounds(&mut rig, "Status", "Earlier indexed graph · local exploration available; the index connection is unavailable.", false).is_none(),
