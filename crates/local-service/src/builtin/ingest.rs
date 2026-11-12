@@ -504,9 +504,10 @@ impl RevalidatedNativeTsCapture {
     pub(super) fn program_image_evidence(
         &self,
         activated: &super::ActivatedProductSemantics,
-        headers: Option<(&backend_semantic::native_ts_headers::NativeTsHeaderAggregate, [u8; 32])>,
+        headers: Option<(&backend_semantic::native_ts_headers::NativeTsHeaderAggregateView<'_>, [u8; 32])>,
+        checkpoint: &mut impl FnMut(usize) -> Result<(), String>,
     ) -> Result<Vec<backend_engine::builtin::NativeSourceEvidence>, String> {
-        self.capture.program_image_evidence(activated, headers)
+        self.capture.program_image_evidence(activated, headers, checkpoint)
     }
 }
 
@@ -540,16 +541,10 @@ impl NativeTsCapture {
     pub(super) fn program_image_evidence(
         &self,
         activated: &super::ActivatedProductSemantics,
-        headers: Option<(&backend_semantic::native_ts_headers::NativeTsHeaderAggregate, [u8; 32])>,
+        headers: Option<(&backend_semantic::native_ts_headers::NativeTsHeaderAggregateView<'_>, [u8; 32])>,
+        checkpoint: &mut impl FnMut(usize) -> Result<(), String>,
     ) -> Result<Vec<backend_engine::builtin::NativeSourceEvidence>, String> {
-        let mut header_claims = BTreeMap::new();
-        if let Some((aggregate, _)) = headers {
-            for header in &aggregate.files {
-                if header_claims.insert(header.path.as_str(), header).is_some() {
-                    return Err("duplicate native header source".into());
-                }
-            }
-        }
+        let mut consumed_headers = 0usize;
         let program = activated.native_program_sources.as_ref()
             .ok_or("native TypeScript program is unavailable")?;
         let captured: BTreeMap<_, _> = self.sources.iter()
@@ -586,7 +581,9 @@ impl NativeTsCapture {
             {
                 return Err("native image is not an exact program member".into());
             }
-            if let Some(header) = header_claims.remove(path) {
+            let header = match headers { Some((aggregate, _)) => aggregate.find_file_checkpointed(path, checkpoint)?, None => None };
+            if let Some(header) = header {
+                consumed_headers += 1;
                 if header.source != source || header.producer_recipe != super::native_ts_headers::producer_recipe() {
                     return Err("native header producer or source differs".into());
                 }
@@ -595,11 +592,11 @@ impl NativeTsCapture {
                     image_identity: header.image_identity, image_byte_len: header.image_byte_len,
                     producer_recipe: header.producer_recipe, aggregate_digest,
                 };
-                super::native_ts_headers::admit_image(&captured_source.evidence, &reference, header, &view, image.as_ref())?;
+                super::native_ts_headers::admit_image_borrowed(&captured_source.evidence, &reference, header, &view, image.as_ref(), checkpoint)?;
                 admitted_headers.insert(path.to_owned(), reference);
             }
         }
-        if !header_claims.is_empty() { return Err("native headers lack their selected image".into()); }
+        if headers.is_some_and(|(aggregate, _)| consumed_headers != aggregate.len()) { return Err("native headers lack their selected image".into()); }
         // A mapped program input is source evidence even when this profile
         // did not emit an image for it. Keep that weaker fact distinct from
         // an admitted image; consumers must not infer declarations from it.
