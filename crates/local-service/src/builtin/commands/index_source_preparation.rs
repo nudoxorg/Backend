@@ -1942,6 +1942,7 @@ mod csharp_project_discovery_tests {
         let mut authority = crate::builtin::semantic_authority::SemanticAuthority::open(&workspace).map_err(|e| e.to_string())?;
         let observation = authority.observe(&key, [0x52; 32], 1).map_err(|e| e.to_string())?;
         let capture = SemanticSourceCapture::new(Some(operation.to_bytes()), [0x31; 32], [0x52; 32], observation.sequence(), 1)?;
+        let observed_for_attempt = observation.clone();
         let intent = BuiltinIntent::index_with_capture(package, label, vec![
             BuiltinSourceChange { key: project_key, after: Some(project) },
             BuiltinSourceChange { key: source_key, after: Some(file) },
@@ -1970,13 +1971,19 @@ mod csharp_project_discovery_tests {
         plan.prepare_csharp_source_only_for_park().map_err(|e| e.to_string())?;
         let (_plan, witness) = plan.capture_csharp_admission(&snapshot, receipt).map_err(|e| e.to_string())?;
         assert!(witness.revalidate(&snapshot, &cancellation).map_err(|e| e.to_string())?);
+        let attempt = authority.begin_candidate_attempt(witness.key(), &observed_for_attempt).map_err(|e| e.to_string())?;
+        assert!(crate::builtin::csharp_admission::validate_selected_attempt(&snapshot, &witness, &attempt, &authority, &cancellation).is_ok());
         assert!(!witness.revalidate(&snapshot, &Arc::new(AtomicBool::new(false))).map_err(|e| e.to_string())?);
         let stale = crate::builtin::genesis().map_err(|e| e.to_string())?.snapshot();
         assert!(!witness.revalidate(&stale, &cancellation).map_err(|e| e.to_string())?);
+        assert!(crate::builtin::csharp_admission::validate_selected_attempt(&stale, &witness, &attempt, &authority, &cancellation).is_err());
         cancellation.store(true, Ordering::Release);
         assert!(!witness.revalidate(&snapshot, &cancellation).map_err(|e| e.to_string())?);
+        assert!(crate::builtin::csharp_admission::validate_selected_attempt(&snapshot, &witness, &attempt, &authority, &cancellation).is_err());
         cancellation.store(false, Ordering::Release);
         assert!(witness.revalidate(&snapshot, &cancellation).map_err(|e| e.to_string())?);
+        let _new_attempt = authority.begin_candidate_attempt(witness.key(), &observed_for_attempt).map_err(|e| e.to_string())?;
+        assert!(crate::builtin::csharp_admission::validate_selected_attempt(&snapshot, &witness, &attempt, &authority, &cancellation).is_err());
         std::fs::write(source_root.join("App.cs"), "class Else {}\n").map_err(|error| error.to_string())?;
         assert!(!witness.revalidate(&snapshot, &cancellation).map_err(|error| error.to_string())?);
         Ok(())
