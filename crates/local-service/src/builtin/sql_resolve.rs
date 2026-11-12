@@ -718,9 +718,10 @@ fn resolve_column(
                 _ => opaque = true,
             }
         }
-        return match (relations.is_empty(), opaque) {
-            (true, _) => Res::Unresolved(SqlUnresolved::OpaqueScope),
-            _ => Res::Expands(relations),
+        return if opaque || relations.is_empty() {
+            Res::Unresolved(SqlUnresolved::OpaqueScope)
+        } else {
+            Res::Expands(relations)
         };
     }
     if let Some(qualifier) = &reference.qualifier {
@@ -764,14 +765,24 @@ fn resolve_column(
         saw_scope = true;
         let mut found = Vec::new();
         let mut unknown_relation = None;
+        let mut multiple_unknown_relations = false;
         let mut opaque = false;
         for entry in &group {
             match member(catalog, dialect, statement, entry, &reference.name) {
                 Member::Found(column) => found.push(column),
                 Member::Missing => {}
-                Member::Unknown(Some(relation)) => unknown_relation = Some(relation),
+                Member::Unknown(Some(relation)) => {
+                    if unknown_relation.replace(relation).is_some() {
+                        multiple_unknown_relations = true;
+                    }
+                }
                 Member::Unknown(None) => opaque = true,
             }
+        }
+        // An opaque peer can also supply the name. The known match is not an
+        // exact binding; preserve the gap instead of choosing it arbitrarily.
+        if opaque || multiple_unknown_relations || (!found.is_empty() && unknown_relation.is_some()) {
+            return Res::Unresolved(SqlUnresolved::OpaqueScope);
         }
         match found.len() {
             0 => {
@@ -782,7 +793,6 @@ fn resolve_column(
                     return Res::Unresolved(SqlUnresolved::OpaqueScope);
                 }
             }
-            1 if !opaque && unknown_relation.is_none() => return Res::Resolved(found[0]),
             1 => return Res::Resolved(found[0]),
             n => {
                 found.truncate(MAX_CANDIDATES);
@@ -975,6 +985,28 @@ mod tests {
             }
         };
         Reference { kind, role, schema: None, qualifier: qualifier.map(str::to_owned), name: name.into(), extent: ext, full_extent: full }
+    }
+
+    #[test]
+    fn opaque_peer_never_turns_a_possible_column_into_an_exact_binding() {
+        let source = "SELECT id FROM books, (SELECT 1) s";
+        let region = ex(source, source, 0);
+        let mut catalog = Catalog::default();
+        let table = catalog.add(Entity { id: SqlEntityRef { path: "schema.sql".into(), ordinal: 1 }, kind: ObjectKind::Table, schema: "main".into(), name: "books".into(), alive: true, columns: Vec::new(), columns_known: true, parent: None }, SqlDialect::Sqlite, Ns::Relation);
+        let column = catalog.add(Entity { id: SqlEntityRef { path: "schema.sql".into(), ordinal: 2 }, kind: ObjectKind::Column, schema: "main".into(), name: "id".into(), alive: true, columns: Vec::new(), columns_known: true, parent: Some(table) }, SqlDialect::Sqlite, Ns::Relation);
+        catalog.entities[table].columns.push(column);
+        let statement = StatementOutline { kind: StatementKind::Select, extent: region.clone(), support: StatementSupport::Full, definitions: vec![], references: vec![], scope: vec![
+            ScopeEntry { kind: ScopeKind::Relation, visible_as: "books".into(), relation: Some("books".into()), relation_schema: None, columns: None, region: region.clone() },
+            ScopeEntry { kind: ScopeKind::Subquery, visible_as: "s".into(), relation: None, relation_schema: None, columns: None, region },
+        ] };
+        let id = reference(source, source, RefKind::Column, RefRole::Read, None, "id");
+        assert!(matches!(resolve_column(&catalog, SqlDialect::Sqlite, &statement, &id), Res::Unresolved(SqlUnresolved::OpaqueScope)));
+        let mut only_known = statement.clone();
+        only_known.scope.pop();
+        assert!(matches!(resolve_column(&catalog, SqlDialect::Sqlite, &only_known, &id), Res::Resolved(found) if found == column));
+        let mut star = id;
+        star.name = "*".into();
+        assert!(matches!(resolve_column(&catalog, SqlDialect::Sqlite, &statement, &star), Res::Unresolved(SqlUnresolved::OpaqueScope)));
     }
 
     #[test]
