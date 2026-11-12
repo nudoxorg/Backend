@@ -535,7 +535,12 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
     eprintln!("native owner: start warm owner");
     let owner = start_owner(&paths).map_err(|e| io::Error::other(format!("start warm owner: {e:?}")))?;
     let mut session = Session::connect(owner.endpoint()).map_err(|e| io::Error::other(format!("connect warm owner: {e:?}")))?;
-    index(&mut session, &project, 0x51).map_err(|e| io::Error::other(format!("warm index: {e:?}")))?;
+    if let Err(error) = index(&mut session, &project, 0x51) {
+        let running = owner.is_running();
+        drop(session);
+        let disposition = owner.close();
+        return Err(io::Error::other(format!("warm index: {error:?}; owner running: {running}; owner close: {disposition:?}")).into());
+    }
     eprintln!("native owner: select warm document");
     let (coordinate, document) =
         select_native_document(&mut session, &authority, "Greeting", "view.ts")
