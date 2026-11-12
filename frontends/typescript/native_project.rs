@@ -1300,6 +1300,20 @@ mod tests {
     }
 
     #[test]
+    fn header_capture_count_boundary_is_explicit() -> Result<(), Box<dyn Error>> {
+        fn capture(count: usize) -> Result<Vec<NativeFunctionHeader>, String> {
+            let text = (0..count).map(|i| format!("function f{i}() {{}}\n")).collect::<String>();
+            let mut parser = MeteredParserState::new("src/boundary.ts".to_owned(), text.clone());
+            parser.parse_source_file_with_execution_checkpoint(&Unlimited).map_err(|e| format!("parse: {e:?}"))?;
+            assert!(parser.get_diagnostics().is_empty());
+            function_headers_from_arena(&parser.arena, &text, &Unlimited)
+        }
+        assert_eq!(capture(16_384)?.len(), 16_384);
+        assert_eq!(capture(16_385).unwrap_err(), "native TSZ header limit exceeded");
+        Ok(())
+    }
+
+    #[test]
     fn function_headers_use_native_body_and_modifier_spans() -> Result<(), Box<dyn Error>> {
         let source = "// λ\nexport async function run(x: { a: number }): Promise<string> { return ''; }\nfunction other() {}\n";
         let headers = function_headers(Path::new("src/main.ts"), source, &Unlimited)?;
