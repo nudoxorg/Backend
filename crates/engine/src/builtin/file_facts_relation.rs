@@ -2103,7 +2103,7 @@ mod tests {
         let capture = |analysis: &backend_compile::SourceAnalysis| match analysis
             .declarations()
             .iter()
-            .find(|decl| decl.name() == "large")
+            .find(|decl| decl.name() == "large" && decl.kind() == DeclarationKind::Function)
             .expect("large")
             .binding_identity()
         {
