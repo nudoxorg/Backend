@@ -247,7 +247,7 @@ if a.expect_no_worker:
         if code != 0:
             fail(f"{label}: outline failed: {raw[:800]}")
         outline = json.loads(raw)
-        names = [lane for lane in outline.get("coverage", []) if lane.get("lane") == "names"]
+        names = [lane for lane in outline.get("page", {}).get("coverage", []) if lane.get("lane") == "names"]
         if len(names) != 1 or names[0].get("state") == "complete":
             fail(f"{label}: outline claims complete names despite SQL gaps: {names}")
         return status, names
@@ -279,7 +279,7 @@ if a.expect_no_worker:
             fail(f"{label}: MCP SQL status differs from CLI: {status_reply}")
         outline_reply = exchange(4, "tools/call", {"name": "backend.outline", "arguments": {"path": str(project), "detail": "full"}})
         outline_result = outline_reply.get("result", {})
-        names = [lane for lane in outline_result.get("structuredContent", {}).get("coverage", []) if lane.get("lane") == "names"]
+        names = [lane for lane in outline_result.get("structuredContent", {}).get("page", {}).get("coverage", []) if lane.get("lane") == "names"]
         if outline_result.get("isError") or names != expected_names:
             fail(f"{label}: MCP names coverage differs from CLI: {outline_reply}")
         mcp.stdin.close()
