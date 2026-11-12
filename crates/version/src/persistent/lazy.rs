@@ -163,7 +163,7 @@ impl LazyTreeMetadataShape {
         Some(by_entry_count.min(DEFAULT_CUT_POLICY.max_encoded_bytes()))
     }
 
-    fn minimum_fanout(self) -> Option<usize> {
+    fn minimum_fanouts(self) -> Option<(usize, usize)> {
         let leaf = LENGTH_FRAME_BYTES
             .checked_add(self.max_key_bytes)?
             .checked_add(LENGTH_FRAME_BYTES)?
@@ -172,11 +172,8 @@ impl LazyTreeMetadataShape {
             .checked_add(self.max_key_bytes)?
             .checked_add(BRANCH_COMMITMENT_BYTES)?
             .checked_add(size_of::<u64>())?;
-        Some(
-            entries_before_anchor_limit(self.min_entries_per_node, leaf)?.min(
-                entries_before_anchor_limit(self.min_entries_per_node, branch)?,
-            ),
-        )
+        Some((entries_before_anchor_limit(self.min_entries_per_node, leaf)?,
+              entries_before_anchor_limit(self.min_entries_per_node, branch)?))
     }
 
     fn update_metadata_bytes<R: CanonicalRelation>(self, change_count: usize) -> Option<usize> {
@@ -321,19 +318,11 @@ fn entries_before_anchor_limit(
     Some(configured_minimum.min(byte_limited.max(1)))
 }
 
-fn tree_height(member_count: usize, minimum_fanout: usize) -> Option<usize> {
-    if minimum_fanout == 0 {
-        return None;
-    }
-    if minimum_fanout == 1 {
-        return (member_count <= 1).then_some(1);
-    }
-    let mut nodes = member_count.max(1).div_ceil(minimum_fanout);
+fn tree_height(member_count: usize, leaf_minimum: usize, branch_minimum: usize) -> Option<usize> {
+    if leaf_minimum == 0 || branch_minimum < 2 { return None; }
+    let mut nodes = member_count.max(1).div_ceil(leaf_minimum);
     let mut height = 1usize;
-    while nodes > 1 {
-        nodes = nodes.div_ceil(minimum_fanout);
-        height = height.checked_add(1)?;
-    }
+    while nodes > 1 { nodes = nodes.div_ceil(branch_minimum); height = height.checked_add(1)?; }
     Some(height)
 }
 
@@ -381,7 +370,9 @@ fn validate_node_shape<R: CanonicalRelation>(
     }
     let mut encoded = Vec::new();
     if node.node().level() == 0 {
-        for (key, value) in node.leaf_entries()? {
+        let entries = node.leaf_entries()?;
+        if entries.len() > shape.max_entries_per_node { return Err(NodeError::OversizedNode); }
+        for (key, value) in entries {
             encoded.clear();
             R::encode_key(&key, &mut encoded);
             if encoded.len() > shape.max_key_bytes {
@@ -394,7 +385,9 @@ fn validate_node_shape<R: CanonicalRelation>(
             }
         }
     } else {
-        for child in node.child_summaries()? {
+        let children = node.child_summaries()?;
+        if children.len() > shape.max_entries_per_node { return Err(NodeError::OversizedNode); }
+        for child in children {
             encoded.clear();
             R::encode_key(&child.first_key, &mut encoded);
             if encoded.len() > shape.max_key_bytes {
@@ -1035,8 +1028,8 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
             .ok()
             .and_then(|rows| {
                 shape
-                    .minimum_fanout()
-                    .and_then(|fanout| tree_height(rows, fanout))
+                    .minimum_fanouts()
+                    .and_then(|(leaf, branch)| tree_height(rows, leaf, branch))
             });
         if shape.max_tree_levels < root_levels
             || required_levels.is_none_or(|levels| shape.max_tree_levels < levels)
@@ -1136,8 +1129,8 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
             .ok()
             .and_then(|rows| rows.checked_add(additions));
         let required_levels = shape
-            .minimum_fanout()
-            .and_then(|fanout| tree_height(target_rows?, fanout));
+            .minimum_fanouts()
+            .and_then(|(leaf, branch)| tree_height(target_rows?, leaf, branch));
         let charge = if changes.len() > budget.max_changes
             || !shape.valid()
             || shape.max_tree_levels < root_levels

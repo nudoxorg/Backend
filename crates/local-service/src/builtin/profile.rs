@@ -4739,27 +4739,34 @@ fn precharge_native_evidence_delta(
 // The bounded tree API requires a relation-specific shape. All selected and
 // target rows have already been scanned; a larger unseen sibling is rejected
 // by the tree's per-node shape check rather than decoded without a limit.
-fn native_evidence_update_budget(
-    relation: &WorkspaceRelationHandle<backend_engine::builtin::NativeSourceEvidenceRelation>,
+fn native_evidence_shape(
     rows: &[([u8; 32], backend_engine::builtin::NativeSourceEvidence)],
-    changes: &[NativeEvidenceChange], available: usize,
-) -> Result<backend_version::LazyTreeUpdateBudget, BuiltinModelError> {
+    changes: &[NativeEvidenceChange], root_level: usize,
+) -> Result<backend_version::LazyTreeMetadataShape, BuiltinModelError> {
     let mut width = 1usize;
     for row in rows.iter().map(|(_, row)| row).chain(changes.iter().filter_map(|c| c.expected.as_ref())) {
         width = width.max(row.checked_encoded_len().ok_or_else(|| BuiltinModelError("native update width overflow".into()))?);
     }
     let entry = width.checked_add(48).ok_or_else(|| BuiltinModelError("native update width overflow".into()))?;
-    let minimum = 64usize.min((16_384usize - 32) / entry).max(1);
-    let spill = 1024 / minimum + 2;
     let count = rows.len().checked_add(changes.len()).ok_or_else(|| BuiltinModelError("native update count overflow".into()))?;
+    let max_entries = count.max(2).min(1024);
+    let configured_min = 64usize.min(max_entries);
+    let leaf_min = configured_min.min((16_384usize - 32) / entry).max(1);
+    let branch_min = configured_min.min((16_384usize - 32) / 88).max(1);
+    let spill = max_entries / leaf_min.min(branch_min) + 2;
     let mut levels = 1usize;
-    let mut nodes = count.max(1);
-    if minimum == 1 && nodes > 1 { levels = 32; } else {
-        while nodes > 1 { nodes = nodes.div_ceil(minimum.max(2)); levels += 1; }
-    }
-    levels = levels.max(usize::from(relation.root_handle().evidence().node().level()) + 2);
+    let mut nodes = count.max(1).div_ceil(leaf_min);
+    while nodes > 1 { nodes = nodes.div_ceil(branch_min.max(2)); levels += 1; }
+    levels = levels.max(root_level + 2);
     if levels > 32 { return Err(BuiltinModelError("native update depth exceeded".into())); }
-    let shape = backend_version::LazyTreeMetadataShape::new(32, width, 64, 1024, spill, levels);
+    Ok(backend_version::LazyTreeMetadataShape::new(32, width, configured_min, max_entries, spill, levels))
+}
+fn native_evidence_update_budget(
+    relation: &WorkspaceRelationHandle<backend_engine::builtin::NativeSourceEvidenceRelation>,
+    rows: &[([u8; 32], backend_engine::builtin::NativeSourceEvidence)],
+    changes: &[NativeEvidenceChange], available: usize,
+) -> Result<backend_version::LazyTreeUpdateBudget, BuiltinModelError> {
+    let shape = native_evidence_shape(rows, changes, usize::from(relation.root_handle().evidence().node().level()))?;
     Ok(backend_version::LazyTreeUpdateBudget::new(changes.len(), available / 2, shape))
 }
 
@@ -4775,13 +4782,10 @@ fn charge_native_change_clones(changes: &[NativeEvidenceChange], budget: &mut us
 }
 
 fn charge_native_initial_build(rows: &[([u8; 32], backend_engine::builtin::NativeSourceEvidence)], budget: &mut usize) -> Result<(), BuiltinModelError> {
-    let mut required = 0usize;
-    for (_, row) in rows {
-        let value = row.checked_encoded_len().and_then(|n| n.checked_add(row.checked_heap_bytes()?))
-            .and_then(|n| n.checked_add(512)).ok_or_else(|| BuiltinModelError("native initial build overflow".into()))?;
-        required = required.checked_add(value.checked_mul(8).ok_or_else(|| BuiltinModelError("native initial build overflow".into()))?)
-            .ok_or_else(|| BuiltinModelError("native initial build overflow".into()))?;
-    }
+    let shape = native_evidence_shape(rows, &[], 0)?;
+    let policy = backend_version::LazyTreeUpdateBudget::new(rows.len(), *budget, shape);
+    let required = policy.bulk_charge::<backend_engine::builtin::NativeSourceEvidenceRelation>(rows.len())
+        .ok_or_else(|| BuiltinModelError("native initial build bound overflow".into()))?;
     *budget = budget.checked_sub(required).ok_or_else(|| BuiltinModelError("native initial build budget exceeded".into()))?;
     Ok(())
 }
@@ -4866,9 +4870,10 @@ fn prepare_native_evidence_relation_update(
             ));
         }
         charge_native_initial_build(&target_rows, &mut read_budget)?;
-        let state = backend_engine::RelationState::<NativeSourceEvidenceRelation>::from_entries(
+        let state = backend_engine::RelationState::<NativeSourceEvidenceRelation>::from_sorted_entries_controlled(
             target_rows,
             super::admitted_coverage()?,
+            &mut || Ok::<(), backend_version::TreeError>(()),
         )
         .map_err(|error| BuiltinModelError(format!("build native evidence relation: {error}")))?;
         let mut closure = state.node_closure();
@@ -6737,9 +6742,10 @@ fn validate_persisted_native_evidence(
                 ));
             }
             charge_native_initial_build(&bounded_target, &mut read_budget)?;
-            *backend_engine::RelationState::<NativeSourceEvidenceRelation>::from_entries(
+            *backend_engine::RelationState::<NativeSourceEvidenceRelation>::from_sorted_entries_controlled(
                 bounded_target,
                 super::admitted_coverage()?,
+                &mut || Ok::<(), backend_version::TreeError>(()),
             )
             .map_err(|error| {
                 BuiltinModelError(format!("recompute native evidence initial root: {error}"))

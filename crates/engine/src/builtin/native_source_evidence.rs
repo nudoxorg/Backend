@@ -530,6 +530,31 @@ mod tests {
     }
 
     #[test]
+    fn bounded_update_accepts_two_near_capacity_rows_and_exact_credit() {
+        use backend_store::{FileStore, RelationAdmissionRegistry};
+        use backend_version::{CoverageWitness, RelationState, ScopeRoot, UntrustedCoverageScope, LazyTreeMetadataShape, LazyTreeUpdateBudget, TreeChange};
+        use std::sync::Arc;
+        let directory = tempfile::tempdir().unwrap();
+        let registry = RelationAdmissionRegistry::new().with_relation::<NativeSourceEvidenceRelation>().unwrap();
+        let store = FileStore::open_with_registry(directory.path(), 1024 * 1024, registry).unwrap();
+        let mut a = row(); a.path="aa".into(); a.byte_length=16_336; a.line_starts=Some((0..=16_336).collect());
+        let mut b=a.clone(); b.path="bb".into();
+        let mut rows=vec![(a.key().unwrap(),a),(b.key().unwrap(),b)]; rows.sort_unstable_by_key(|r|r.0);
+        let coverage=CoverageWitness::Partial(UntrustedCoverageScope::from_scope_root(ScopeRoot::from_u64(1)));
+        let state=RelationState::<NativeSourceEvidenceRelation>::from_entries(rows.clone(),coverage).unwrap();
+        store.write_relation_state(&state).unwrap();
+        let relation=WorkspaceRelationHandle::<NativeSourceEvidenceRelation>::open(Arc::new(store),*state.root().as_bytes()).unwrap();
+        let key=rows[0].0; rows[0].1.input_digest[0]^=1;
+        let changes=[TreeChange::<NativeSourceEvidenceRelation>{key,after:Some(rows[0].1.clone())}];
+        let shape=LazyTreeMetadataShape::new(32,MAX_NATIVE_EVIDENCE_STORED_VALUE,3,3,5,4);
+        let charge=LazyTreeUpdateBudget::new(1,usize::MAX,shape).update_charge::<NativeSourceEvidenceRelation>(1).unwrap();
+        assert!(relation.prepare_update_bounded(&changes,LazyTreeUpdateBudget::new(1,charge-1,shape)).is_err());
+        let update=relation.prepare_update_bounded(&changes,LazyTreeUpdateBudget::new(1,charge,shape)).unwrap();
+        let rebuilt=RelationState::<NativeSourceEvidenceRelation>::from_entries(rows,coverage).unwrap();
+        assert_eq!(update.target().root(),rebuilt.root());
+    }
+
+    #[test]
     fn claims_roundtrip_and_reject_noncanonical_input() {
         let row = row();
         let mut bytes = Vec::new();
