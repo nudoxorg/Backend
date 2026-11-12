@@ -3636,6 +3636,11 @@ mod tests {
         assert!(measured.bytes_max < 32 * 1024, "nested metadata preflight: {measured:?}");
         let envelope = CompilerPublicationEnvelope::new(&attempt(), &record).unwrap();
         let mut bytes = envelope.canonical_bytes();
+        let bound = compiler_envelope_decode_bound(&bytes).unwrap();
+        let mut reopened = None;
+        let peak = measure(|| { reopened = Some(CompilerPublicationEnvelope::decode(&bytes).unwrap()); });
+        assert_eq!(reopened.unwrap(), envelope);
+        assert!(peak.bytes_max as usize <= bound, "envelope allocation peak {peak:?}, bound {bound}");
         let offset = bytes.len() - envelope.member_ids().len() * 32 - 4;
         bytes[offset..offset + 4].copy_from_slice(&(MAX_MEMBER_IDS as u32).to_le_bytes());
         bytes.truncate(offset + 4);
