@@ -356,7 +356,7 @@ pub use view::{
 };
 
 pub use native_program_forest::{
-    BorrowedProgramGraph, BorrowedProgramGraphNode, BorrowedProgramGraphScratch,
+    BorrowedProgramGraph, BorrowedProgramGraphScratch,
     MAX_NATIVE_PROGRAM_NODES, NativeProgramForestSchema, NativeProgramNode,
     NativeProgramOwnedSourceRef, NativeProgramSources,
 };

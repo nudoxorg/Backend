@@ -82,7 +82,7 @@ pub enum BorrowedNativeProgramError<E> {
     Manifest(NativeProgramSourceManifestError),
     /// The caller's shared work ledger, deadline, or cancellation stopped admission.
     Stopped(E),
-    /// The caller did not provide the scratch requested by `scratch_slots`.
+    /// The caller did not provide the scratch requested by `scratch_bytes`.
     Scratch,
 }
 
@@ -96,9 +96,8 @@ pub struct BorrowedNativeProgramSourceManifest<'a> {
 }
 
 impl<'a> BorrowedNativeProgramSourceManifest<'a> {
-    /// Maximum number of path slots needed to admit this single envelope.
-    /// The caller owns and accounts for these slots before calling `decode`.
-    pub fn scratch_slots(bytes: &[u8]) -> Result<usize, NativeProgramSourceManifestError> {
+    /// Exact maximum scratch bytes needed to admit this single envelope.
+    pub fn scratch_bytes(bytes: &[u8]) -> Result<usize, NativeProgramSourceManifestError> {
         if bytes.len() < HEADER || bytes.len() > MAX_NATIVE_PROGRAM_MANIFEST_BYTES {
             return Err(NativeProgramSourceManifestError::Limit);
         }
@@ -111,7 +110,7 @@ impl<'a> BorrowedNativeProgramSourceManifest<'a> {
         if count == 0 || count > MAX_NATIVE_PROGRAM_SOURCES {
             return Err(NativeProgramSourceManifestError::Limit);
         }
-        Ok(count)
+        Ok(count * 8)
     }
 
     /// Validates without allocating. The caller supplies the pinned wire and
@@ -119,12 +118,13 @@ impl<'a> BorrowedNativeProgramSourceManifest<'a> {
     /// its actual cancellation and deadline.
     pub fn decode<E>(
         bytes: &'a [u8],
-        scratch: &mut [Option<&'a str>],
+        scratch: &mut [u8],
         mut checkpoint: impl FnMut(u64) -> Result<(), E>,
     ) -> Result<Self, BorrowedNativeProgramError<E>> {
         use BorrowedNativeProgramError::{Manifest, Scratch, Stopped};
-        let count = Self::scratch_slots(bytes).map_err(Manifest)?;
-        if scratch.len() < count {
+        let required = Self::scratch_bytes(bytes).map_err(Manifest)?;
+        let count = required / 8;
+        if scratch.len() < required {
             return Err(Scratch);
         }
         // Charge wire traversal before path validation, then check at each row.
@@ -153,7 +153,10 @@ impl<'a> BorrowedNativeProgramSourceManifest<'a> {
             }
             prior = Some(row.program_path);
             if let Some(path) = row.package_path {
-                scratch[packages] = Some(path);
+                let offset = path.as_ptr() as usize - bytes.as_ptr() as usize;
+                let entry = &mut scratch[packages * 8..packages * 8 + 8];
+                entry[..4].copy_from_slice(&(offset as u32).to_le_bytes());
+                entry[4..].copy_from_slice(&(path.len() as u32).to_le_bytes());
                 packages += 1;
             }
             hash.update(&(row.program_path.len() as u32).to_le_bytes());
@@ -171,11 +174,11 @@ impl<'a> BorrowedNativeProgramSourceManifest<'a> {
         }
         // In-place heapsort avoids an allocation and meters each comparison.
         fn less<E>(
-            a: &str,
-            b: &str,
+            a: &[u8],
+            b: &[u8],
             checkpoint: &mut impl FnMut(u64) -> Result<(), E>,
         ) -> Result<bool, E> {
-            for (a, b) in a.as_bytes().chunks(4096).zip(b.as_bytes().chunks(4096)) {
+            for (a, b) in a.chunks(4096).zip(b.chunks(4096)) {
                 checkpoint(1)?;
                 match a.cmp(b) {
                     std::cmp::Ordering::Less => return Ok(true),
@@ -186,8 +189,20 @@ impl<'a> BorrowedNativeProgramSourceManifest<'a> {
             checkpoint(1)?;
             Ok(a.len() < b.len())
         }
+        fn key<'a>(bytes: &'a [u8], values: &[u8], index: usize) -> &'a [u8] {
+            let entry = &values[index * 8..index * 8 + 8];
+            let offset = u32::from_le_bytes(entry[..4].try_into().unwrap()) as usize;
+            let length = u32::from_le_bytes(entry[4..].try_into().unwrap()) as usize;
+            &bytes[offset..offset + length]
+        }
+        fn swap(values: &mut [u8], a: usize, b: usize) {
+            for i in 0..8 {
+                values.swap(a * 8 + i, b * 8 + i);
+            }
+        }
         fn sift<E>(
-            values: &mut [Option<&str>],
+            bytes: &[u8],
+            values: &mut [u8],
             mut root: usize,
             end: usize,
             checkpoint: &mut impl FnMut(u64) -> Result<(), E>,
@@ -199,30 +214,40 @@ impl<'a> BorrowedNativeProgramSourceManifest<'a> {
                 }
                 if child + 1 < end
                     && less(
-                        values[child].unwrap(),
-                        values[child + 1].unwrap(),
+                        key(bytes, values, child),
+                        key(bytes, values, child + 1),
                         checkpoint,
                     )?
                 {
                     child += 1;
                 }
-                if !less(values[root].unwrap(), values[child].unwrap(), checkpoint)? {
+                if !less(
+                    key(bytes, values, root),
+                    key(bytes, values, child),
+                    checkpoint,
+                )? {
                     return Ok(());
                 }
-                values.swap(root, child);
+                swap(values, root, child);
                 root = child;
             }
         }
-        let values = &mut scratch[..packages];
+        let values = &mut scratch[..packages * 8];
         for root in (0..packages / 2).rev() {
-            sift(values, root, packages, &mut checkpoint).map_err(Stopped)?;
+            sift(bytes, values, root, packages, &mut checkpoint).map_err(Stopped)?;
         }
         for end in (1..packages).rev() {
-            values.swap(0, end);
-            sift(values, 0, end, &mut checkpoint).map_err(Stopped)?;
+            swap(values, 0, end);
+            sift(bytes, values, 0, end, &mut checkpoint).map_err(Stopped)?;
         }
-        for pair in values.windows(2) {
-            if !less(pair[0].unwrap(), pair[1].unwrap(), &mut checkpoint).map_err(Stopped)? {
+        for index in 1..packages {
+            if !less(
+                key(bytes, values, index - 1),
+                key(bytes, values, index),
+                &mut checkpoint,
+            )
+            .map_err(Stopped)?
+            {
                 return Err(Manifest(NativeProgramSourceManifestError::Encoding));
             }
         }
@@ -418,6 +443,11 @@ fn valid_path(path: &str) -> bool {
             .any(|part| part == ".." || part.is_empty() || part == ".")
 }
 struct Input<'a>(&'a [u8]);
+pub(super) fn borrowed_row(
+    bytes: &[u8],
+) -> Result<NativeProgramSourceRef<'_>, NativeProgramSourceManifestError> {
+    Input(bytes).row()
+}
 impl<'a> Input<'a> {
     fn take(&mut self, count: usize) -> Result<&'a [u8], NativeProgramSourceManifestError> {
         let (head, tail) = self
@@ -500,11 +530,8 @@ mod tests {
             rows(),
         )
         .unwrap();
-        let mut scratch = vec![
-            None;
-            BorrowedNativeProgramSourceManifest::scratch_slots(owned.as_bytes())
-                .unwrap()
-        ];
+        let mut scratch =
+            vec![0; BorrowedNativeProgramSourceManifest::scratch_bytes(owned.as_bytes()).unwrap()];
         let view =
             BorrowedNativeProgramSourceManifest::decode(owned.as_bytes(), &mut scratch, |_| {
                 Ok::<_, ()>(())
@@ -540,7 +567,7 @@ mod tests {
         ));
         let mut corrupt = owned.as_bytes().to_vec();
         corrupt[42] ^= 1;
-        let mut corrupt_scratch = vec![None; scratch.len()];
+        let mut corrupt_scratch = vec![0; scratch.len()];
         assert!(matches!(
             BorrowedNativeProgramSourceManifest::decode(&corrupt, &mut corrupt_scratch, |_| Ok::<
                 _,

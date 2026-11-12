@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 mod borrowed;
-pub use borrowed::{BorrowedProgramGraph, BorrowedProgramGraphNode, BorrowedProgramGraphScratch};
+pub use borrowed::{BorrowedProgramGraph, BorrowedProgramGraphScratch};
 
 const MAGIC: &[u8; 8] = b"BKNPSF01";
 const PROJECT_SET_MAGIC: &[u8; 8] = b"BKNPSU01";
@@ -607,9 +607,9 @@ mod tests {
             .with_image_bindings(vec![("src/app.ts".to_owned(), [7; 32])])
             .unwrap();
         let shape = BorrowedProgramGraph::scratch(graph.as_bytes(), |_| Ok::<_, ()>(())).unwrap();
-        let mut nodes = vec![None; shape.nodes];
-        let mut rows = vec![None; shape.rows];
-        let mut paths = vec![None; shape.leaf_paths];
+        let mut nodes = vec![0; shape.nodes * 8];
+        let mut rows = vec![0; shape.rows * 12];
+        let mut paths = vec![0; shape.leaf_paths];
         let view = BorrowedProgramGraph::decode(
             graph.as_bytes(),
             &mut nodes,
