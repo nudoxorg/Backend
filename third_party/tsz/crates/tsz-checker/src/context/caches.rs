@@ -1075,6 +1075,54 @@ mod tests {
     }
 
     #[test]
+    fn transient_child_allocates_arena_caches_on_demand() {
+        use crate::context::{CheckerContext, CheckerOptions};
+        use tsz_binder::BinderState;
+        use tsz_parser::parser::ParserState;
+        use tsz_solver::construction::TypeInterner;
+
+        let mut parser = ParserState::new("cache.ts".into(), "let value = 1;".into());
+        let root = parser.parse_source_file();
+        let arena = parser.get_arena();
+        let mut binder = BinderState::new();
+        binder.bind_source_file(arena, root);
+        let types = TypeInterner::new();
+        let options = CheckerOptions::default();
+        let parent =
+            CheckerContext::new(arena, &binder, &types, "cache.ts".into(), options.clone());
+        let mut child = CheckerContext::with_parent_cache(
+            arena,
+            &binder,
+            &types,
+            "cache.ts".into(),
+            options,
+            &parent,
+        );
+        assert!(parent.node_types.data.capacity() > 0);
+        assert_eq!(
+            parent.narrowable_identifier_cache.borrow().data.len(),
+            arena.nodes.len()
+        );
+        assert_eq!(child.node_types.data.capacity(), 0);
+        assert_eq!(
+            child.narrowable_identifier_cache.borrow().data.capacity(),
+            0
+        );
+        child.node_types.insert(7000, TypeId::STRING);
+        child
+            .narrowable_identifier_cache
+            .borrow_mut()
+            .insert(7000, false);
+        assert_eq!(child.node_types.get(&7000), Some(&TypeId::STRING));
+        assert_eq!(
+            child.narrowable_identifier_cache.borrow().get(7000),
+            Some(false)
+        );
+        assert_eq!(parent.node_types.get(&7000), None);
+        assert_eq!(parent.narrowable_identifier_cache.borrow().get(7000), None);
+    }
+
+    #[test]
     fn empty_and_preallocated_arena_caches_have_the_same_behavior() {
         let mut empty = NodeTypeCache::new();
         let mut eager = NodeTypeCache::with_capacity(8192);
@@ -1103,6 +1151,8 @@ mod tests {
             cache.insert(7000, false);
             cache.insert(3, true);
             assert_eq!(cache.get(7000), Some(false));
+            cache.insert(7000, true);
+            assert_eq!(cache.get(7000), Some(true));
             assert_eq!(cache.get(3), Some(true));
             assert_eq!(cache.get(4000), None);
             assert_eq!(cache.get(9000), None);
