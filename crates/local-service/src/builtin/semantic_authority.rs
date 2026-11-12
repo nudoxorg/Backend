@@ -3786,12 +3786,14 @@ impl SemanticAuthority {
         let slots = staged.native_typescript_line_slots();
         let mut retained = 0usize;
         let mut line_count = 0usize;
-        for ordinal in 0..slots {
-            check().map_err(|e| BuiltinModelError(format!("native line inventory stopped: {e}")))?;
-            if let Some(file) = staged.native_typescript_line_at(ordinal) {
-                retained = retained.checked_add(file.path.capacity()).and_then(|n| n.checked_add(file.line_starts.capacity().checked_mul(std::mem::size_of::<u32>())?))
-                    .ok_or_else(|| BuiltinModelError("native line retained size overflow".into()))?;
-                line_count = line_count.checked_add(1).ok_or_else(|| BuiltinModelError("native line count overflow".into()))?;
+        if staged.profile().language() == backend_semantic::vocabulary::Language::TypeScript {
+            for ordinal in 0..slots {
+                check().map_err(|e| BuiltinModelError(format!("native line inventory stopped: {e}")))?;
+                if let Some(file) = staged.native_typescript_line_at(ordinal) {
+                    retained = retained.checked_add(file.path.capacity()).and_then(|n| n.checked_add(file.line_starts.capacity().checked_mul(std::mem::size_of::<u32>())?))
+                        .ok_or_else(|| BuiltinModelError("native line retained size overflow".into()))?;
+                    line_count = line_count.checked_add(1).ok_or_else(|| BuiltinModelError("native line count overflow".into()))?;
+                }
             }
         }
         let native_lines_member = if line_count != 0 {
