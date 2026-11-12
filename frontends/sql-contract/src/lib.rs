@@ -1009,11 +1009,13 @@ mod tests {
             }),
         };
         let json = serde_json::to_string(&response).unwrap();
+        let marker = path.with_extension("started");
+        let marker_shell = marker.to_str().unwrap().replace('\'', "'\\''");
         std::fs::write(
             &path,
             format!(
-                "#!/bin/sh\nIFS= read -r request || :\nprintf '%s' '{}'\n",
-                json
+                "#!/bin/sh\nprintf started > '{}'\nIFS= read -r request || :\nprintf '%s' '{}'\n",
+                marker_shell, json
             ),
         )
         .unwrap();
@@ -1032,6 +1034,11 @@ mod tests {
             probe_basis_checked(launch(), Dialect::Sqlite, Engine::Syntaqlite4e4de76).unwrap(),
             basis
         );
+        assert!(
+            marker.is_file(),
+            "positive control really started the worker"
+        );
+        std::fs::remove_file(&marker).unwrap();
         cancelled.store(true, std::sync::atomic::Ordering::Release);
         assert!(matches!(
             probe_basis_checked(launch(), Dialect::Sqlite, Engine::Syntaqlite4e4de76),
@@ -1052,6 +1059,10 @@ mod tests {
             probe_basis_checked(with_dependency, Dialect::Sqlite, Engine::Syntaqlite4e4de76),
             Err(CheckedError::UnsupportedSettings)
         ));
+        assert!(
+            !marker.exists(),
+            "refused probes must not launch the worker"
+        );
         std::fs::write(&path, b"#!/bin/sh\nexit 0\n").unwrap();
         assert!(probe_basis_checked(launch(), Dialect::Sqlite, Engine::Syntaqlite4e4de76).is_err());
         std::fs::remove_file(path).unwrap();
