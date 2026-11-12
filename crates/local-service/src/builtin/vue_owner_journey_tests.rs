@@ -16,14 +16,22 @@ fn index(session: &mut Session, project: &std::path::Path, byte: u8) -> Result<(
     let package = PackageReference::parse(project.to_string_lossy().into_owned())
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     let mut status = session
-        .start_index_operation(key, package, CompileExecutionIntent::Interactive)
+        .start_index_operation(key, package.clone(), CompileExecutionIntent::Interactive)
         .map_err(|e| std::io::Error::other(format!("start operation: {e}")))?;
     let deadline = Instant::now() + Duration::from_secs(600);
-    let mut reconnects = 0;
+    let mut request_digest = None;
     loop {
         let IndexOperationObservation::Known(known) = status else {
             return Err("unknown index status".into());
         };
+        if known.operation_key != key
+            || known.package != package
+            || known.execution_intent != CompileExecutionIntent::Interactive
+            || request_digest.is_some_and(|digest| digest != known.request_digest)
+        {
+            return Err("index status changed operation identity".into());
+        }
+        request_digest = Some(known.request_digest);
         match known.state {
             IndexOperationState::Published(_) => return Ok(()),
             IndexOperationState::Accepted | IndexOperationState::Active { .. } => {}
@@ -33,19 +41,14 @@ fn index(session: &mut Session, project: &std::path::Path, byte: u8) -> Result<(
             return Err("Vue index deadline".into());
         }
         std::thread::sleep(Duration::from_millis(30));
-        status = match session.index_operation_status(key) {
-            Ok(status) => status,
-            Err(backend_client::ClientError::Disconnected(_)) if reconnects < 3 => {
-                reconnects += 1;
-                session.reconnect().map_err(|e| {
-                    std::io::Error::other(format!("reconnect exact operation status: {e}"))
-                })?;
-                session.index_operation_status(key).map_err(|e| {
-                    std::io::Error::other(format!("poll exact operation after reconnect: {e}"))
-                })?
-            }
-            Err(e) => return Err(std::io::Error::other(format!("poll operation: {e}")).into()),
-        };
+        if session.connection_frames_remaining() == Some(0) {
+            session.reconnect().map_err(|e| {
+                std::io::Error::other(format!("rotate exhausted owner connection: {e}"))
+            })?;
+        }
+        status = session
+            .index_operation_status(key)
+            .map_err(|e| std::io::Error::other(format!("poll operation: {e}")))?;
     }
 }
 
