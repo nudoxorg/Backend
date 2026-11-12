@@ -46,6 +46,26 @@ impl<'a> Reader<'a> {
     fn u16(&mut self)->Option<u16>{Some(u16::from_be_bytes(self.take(2)?.try_into().ok()?))}
     fn u32(&mut self)->Option<u32>{Some(u32::from_be_bytes(self.take(4)?.try_into().ok()?))}
 }
+impl NativeSourceLineFile {
+    /// Checks the complete map against independently supplied exact source bytes.
+    /// Selected closure membership and source ownership must be proved separately.
+    pub fn matches_source(&self, bytes: &[u8]) -> bool {
+        let Some(actual) = SourceIdentity::from_bytes(bytes) else { return false; };
+        if actual != self.source || self.line_starts.first() != Some(&0) { return false; }
+        let Ok(text) = std::str::from_utf8(bytes) else { return false; };
+        if text.contains('\u{2028}') || text.contains('\u{2029}') { return false; }
+        let mut index = 1usize;
+        for (at, byte) in bytes.iter().enumerate() {
+            if *byte == b'\r' && bytes.get(at + 1) != Some(&b'\n') { return false; }
+            if *byte == b'\n' {
+                let Some(expected) = u32::try_from(at + 1).ok() else { return false; };
+                if self.line_starts.get(index) != Some(&expected) { return false; }
+                index += 1;
+            }
+        }
+        index == self.line_starts.len()
+    }
+}
 impl NativeSourceLineAggregate {
     pub fn file(&self,path:&str)->Option<&NativeSourceLineFile>{self.files.binary_search_by(|f|f.path.as_str().cmp(path)).ok().map(|i|&self.files[i])}
     /// Precharges decoded arrays before materializing untrusted bytes.
@@ -95,6 +115,14 @@ impl NativeSourceLineAggregate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn line_map_requires_exact_source_and_complete_newline_positions() {
+        let bytes = "α\r\nsecond\n".as_bytes();
+        let mut file = NativeSourceLineFile { path:"a.ts".into(), source:SourceIdentity::from_bytes(bytes).unwrap(), line_starts:vec![0,4,11] };
+        assert!(file.matches_source(bytes));
+        file.line_starts[1]=3; assert!(!file.matches_source(bytes));
+        file.line_starts[1]=4; assert!(!file.matches_source("β\r\nsecond\n".as_bytes()));
+    }
     #[test]
     fn million_line_map_roundtrips_with_preallocation_limits() {
         let mut source = SourceIdentity::from_bytes(b"source fixture").unwrap();
