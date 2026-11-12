@@ -3481,6 +3481,67 @@ mod tests {
     }
 
     #[test]
+    fn native_header_object_and_selected_reopen_have_bounded_allocation_peaks() {
+        use allocation_counter::measure;
+        use backend_semantic::ir::{DeclarationFamilyId, DeclarationIdentity, NativeProgramSource, NativeProgramSourceManifest, NativeProgramSourceManifestSchema, SourceIdentity, VariantFingerprint};
+        use backend_semantic::native_ts_headers::{NativeTsHeaderAggregate, NativeTsHeaderAggregateSchema, NativeTsHeaderEntry, NativeTsHeaderFile};
+        let source_bytes = vec![b'x'; 40_000];
+        let source = SourceIdentity::from_bytes(&source_bytes).unwrap();
+        let aggregate = NativeTsHeaderAggregate { files: vec![NativeTsHeaderFile {
+            path: "src/main.ts".into(), source, image_identity: [7; 32], image_byte_len: 123, producer_recipe: [8; 32],
+            entries: (0..16_000).map(|i| NativeTsHeaderEntry { entity_id: i,
+                identity: DeclarationIdentity { family: DeclarationFamilyId::from_raw([1; 16]), variant: VariantFingerprint::from_raw([2; 16]) },
+                compiler_extent: (i, i + 2), header_extent: (i, i + 1), }).collect(),
+        }] };
+        let bytes = aggregate.encode_checked().unwrap();
+        let mut decoded_budget = usize::MAX;
+        NativeTsHeaderAggregate::decode_canonical_budgeted(&bytes, &mut decoded_budget).unwrap();
+        let decoded = usize::MAX - decoded_budget;
+        let constructor_credit = 3 * bytes.len() + 2 * std::mem::size_of::<usize>() + decoded;
+        let mut object = None;
+        let constructed = measure(|| {
+            let mut credit = constructor_credit;
+            object = Some(compiler_native_headers_object(&bytes, &mut credit).unwrap());
+        });
+        assert!(constructed.bytes_max as usize <= constructor_credit, "constructor peak: {constructed:?}");
+        let object = object.unwrap();
+        let legacy = TypedObject::from_value(&ObjectKey::<NativeTsHeaderAggregateSchema>::from_value(&aggregate), &aggregate);
+        assert_eq!(object.id(), legacy.id());
+        assert_eq!(object.version(), legacy.version());
+        let directory = scratch_store();
+        let store = FileStore::open(&directory, 8 * 1024 * 1024).unwrap();
+        store.write_object(&object).unwrap();
+        let verified = store.verify_object_claim(UntrustedObjectId::from_bytes(*object.id().as_bytes())).unwrap();
+        let header_member = CompilerNativeHeadersMember::from_verified_object(verified, &bytes, &mut (bytes.len() + decoded)).unwrap();
+        let program = NativeProgramSourceManifest::from_sources(ContentId::from_canonical_bytes(b"compiler"), vec![NativeProgramSource {
+            program_path: "src/main.ts".into(), package_path: Some("src/main.ts".into()), source,
+        }]).unwrap();
+        let program_object = TypedObject::from_value(&ObjectKey::<NativeProgramSourceManifestSchema>::from_value(program.as_bytes()), program.as_bytes());
+        store.write_object(&program_object).unwrap();
+        let program_member = CompilerProgramSourceMember::from_verified_object(store.verify_object_claim(UntrustedObjectId::from_bytes(*program_object.id().as_bytes())).unwrap(), &program).unwrap();
+        let (image, image_object) = compiler_image();
+        let metadata = metadata(image).with_native_program_sources(program_member).unwrap().with_native_headers(header_member).unwrap();
+        let attempt = attempt();
+        let envelope = CompilerPublicationEnvelope::new(&attempt, &metadata).unwrap();
+        let mut objects = vec![image_object, program_object, object, metadata.typed_object(), envelope.typed_object()];
+        objects.sort_by_key(|object| (object.schema(), *object.key(), *object.version()));
+        let closure_id = store.write_closure(&ClosureManifest::new(objects).unwrap()).unwrap();
+        let candidate = envelope.candidate(attempt.clone(), *closure_id.as_bytes()).unwrap();
+        let selected = selected_generation(&attempt, &candidate, 1);
+        let reader_credit = 2 * bytes.len() + decoded;
+        let mut witness = None;
+        let reopened = measure(|| {
+            witness = Some(reopen_selected_native_headers(&store, &selected, reader_credit).unwrap().unwrap());
+        });
+        assert_eq!(witness.unwrap().as_bytes(), bytes.as_slice());
+        // Metadata, closure indexes, paths and I/O are outside the payload credit.
+        const FIXED_REOPEN_ALLOWANCE: usize = 256 * 1024;
+        assert!(reopened.bytes_max as usize <= reader_credit + FIXED_REOPEN_ALLOWANCE, "selected reopen peak: {reopened:?}");
+        drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn selected_metadata_keeps_snapshot_payload_lazy_but_explicit_reopen_refuses_missing_bytes() {
         use backend_semantic::ir::{
             NativeProgramSource, NativeProgramSourceManifest, NativeProgramSourceManifestSchema,
