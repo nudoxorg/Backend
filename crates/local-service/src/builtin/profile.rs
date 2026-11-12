@@ -4766,7 +4766,7 @@ fn native_evidence_shape(
     let mut levels = 1usize;
     let mut nodes = count.max(1).div_ceil(leaf_min);
     while nodes > 1 { nodes = nodes.div_ceil(branch_min.max(2)); levels += 1; }
-    levels = levels.max(root_level + 2);
+    levels = levels.max(root_level + 1);
     if levels > 32 { return Err(BuiltinModelError("native update depth exceeded".into())); }
     Ok(backend_version::LazyTreeMetadataShape::new(32, width, configured_min, max_entries, spill, levels))
 }

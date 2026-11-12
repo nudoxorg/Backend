@@ -626,7 +626,7 @@ mod tests {
         let width=rows.iter().map(|(_,r)|r.checked_encoded_len().unwrap()).max().unwrap();
         let key=rows[0].0;rows[0].1.input_digest[0]^=1;
         let changes=[TreeChange::<NativeSourceEvidenceRelation>{key,after:Some(rows[0].1.clone())}];
-        let shape=LazyTreeMetadataShape::new(32,width,64,1024,18,3);
+        let shape=LazyTreeMetadataShape::new(32,width,64,1024,18,2);
         let update=relation.prepare_update_bounded(&changes,LazyTreeUpdateBudget::new(1,62*1024*1024,shape)).unwrap();
         let expected=RelationState::<NativeSourceEvidenceRelation>::from_entries(rows,coverage).unwrap();
         assert_eq!(update.target().root(),expected.root());
