@@ -34,6 +34,73 @@ pub struct BorrowedProgramGraph<'a, 's> {
     identity: [u8; 32],
 }
 
+/// Validated graph wire and offset index retained under the caller's ledger.
+pub struct RetainedProgramGraph {
+    bytes: Box<[u8]>,
+    rows: Box<[u8]>,
+    toolchain: ContentId<ToolchainDomain>,
+    identity: [u8; 32],
+}
+
+impl RetainedProgramGraph {
+    /// Validate caller-owned exact allocations before transferring them to the owner.
+    /// The caller must reserve the shared storage ledger before allocating and
+    /// retain the wire and row-index debit for this owner's lifetime.
+    pub fn admit<E>(
+        bytes: Box<[u8]>,
+        mut rows: Box<[u8]>,
+        nodes: &mut [u8],
+        leaf_paths: &mut [u8],
+        mut checkpoint: impl FnMut(u64) -> Result<(), E>,
+    ) -> Result<Self, Error<E>> {
+        let shape = BorrowedProgramGraph::scratch(&bytes, &mut checkpoint)?;
+        if rows.len() != shape.row_bytes() {
+            return Err(Error::Scratch);
+        }
+        let view = BorrowedProgramGraph::decode(&bytes, nodes, &mut rows, leaf_paths, checkpoint)?;
+        let (toolchain, identity) = (view.toolchain, view.identity);
+        Ok(Self {
+            bytes,
+            rows,
+            toolchain,
+            identity,
+        })
+    }
+    fn view(&self) -> BorrowedProgramGraph<'_, '_> {
+        BorrowedProgramGraph {
+            bytes: &self.bytes,
+            toolchain: self.toolchain,
+            rows: &self.rows,
+            identity: self.identity,
+        }
+    }
+    /// Stable identity of the entire canonical graph envelope.
+    pub const fn membership_identity(&self) -> [u8; 32] {
+        self.identity
+    }
+    /// Compiler toolchain shared by all leaf programs.
+    pub const fn toolchain(&self) -> ContentId<ToolchainDomain> {
+        self.toolchain
+    }
+    /// Visit actual leaf memberships with the live shared work checkpoint.
+    pub fn visit_sources<E>(
+        &self,
+        checkpoint: impl FnMut(u64) -> Result<(), E>,
+        visit: impl FnMut(NativeProgramOwnedSourceRef<'_>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        self.view().visit_sources(checkpoint, visit)
+    }
+    /// Verify one producer-sealed image digest with metered lookup.
+    pub fn image_matches<E>(
+        &self,
+        path: &str,
+        image: &[u8; 32],
+        checkpoint: impl FnMut(u64) -> Result<(), E>,
+    ) -> Result<bool, E> {
+        self.view().image_matches(path, image, checkpoint)
+    }
+}
+
 fn cmp<E>(
     a: &str,
     b: &str,

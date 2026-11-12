@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 mod borrowed;
-pub use borrowed::{BorrowedProgramGraph, BorrowedProgramGraphScratch};
+pub use borrowed::{BorrowedProgramGraph, BorrowedProgramGraphScratch, RetainedProgramGraph};
 
 const MAGIC: &[u8; 8] = b"BKNPSF01";
 const PROJECT_SET_MAGIC: &[u8; 8] = b"BKNPSU01";
@@ -658,6 +658,22 @@ mod tests {
             BorrowedProgramGraph::scratch(graph.as_bytes(), |_| Err(())),
             Err(crate::ir::BorrowedNativeProgramError::Stopped(()))
         ));
+        let mut retained_nodes = vec![0; shape.node_bytes()];
+        let mut retained_paths = vec![0; shape.leaf_paths];
+        let retained = RetainedProgramGraph::admit(
+            graph.as_bytes().into(),
+            vec![0; shape.row_bytes()].into_boxed_slice(),
+            &mut retained_nodes,
+            &mut retained_paths,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+        assert_eq!(retained.membership_identity(), graph.membership_identity());
+        assert!(
+            retained
+                .image_matches("vite.config.ts", &[9; 32], |_| Ok::<_, ()>(()))
+                .unwrap()
+        );
         let mut corrupt = graph.as_bytes().to_vec();
         let node_offset = corrupt.len() - 64;
         corrupt[node_offset] ^= 1;

@@ -294,6 +294,56 @@ impl<'a> BorrowedNativeProgramSourceManifest<'a> {
     }
 }
 
+/// A validated single Program owning the exact caller-admitted wire allocation.
+pub struct RetainedNativeProgramSourceManifest {
+    bytes: Box<[u8]>,
+    program: [u8; 32],
+    toolchain: ContentId<ToolchainDomain>,
+    count: usize,
+}
+
+impl RetainedNativeProgramSourceManifest {
+    /// Consume an exact wire allocation and validate it before returning an owner.
+    /// The caller must debit its shared storage ledger before allocating `bytes`
+    /// and `scratch`, and keep the wire debit for this owner's lifetime.
+    pub fn admit<E>(
+        bytes: Box<[u8]>,
+        scratch: &mut [u8],
+        checkpoint: impl FnMut(u64) -> Result<(), E>,
+    ) -> Result<Self, BorrowedNativeProgramError<E>> {
+        let view = BorrowedNativeProgramSourceManifest::decode(&bytes, scratch, checkpoint)?;
+        let (program, toolchain, count) = (view.program, view.toolchain, view.count);
+        Ok(Self {
+            bytes,
+            program,
+            toolchain,
+            count,
+        })
+    }
+    /// Exact native membership identity.
+    pub const fn program(&self) -> [u8; 32] {
+        self.program
+    }
+    /// Compiler toolchain bound by the manifest.
+    pub const fn toolchain(&self) -> ContentId<ToolchainDomain> {
+        self.toolchain
+    }
+    /// Visit validated rows with the live operation's shared work checkpoint.
+    pub fn visit_sources<E>(
+        &self,
+        checkpoint: impl FnMut(u64) -> Result<(), E>,
+        visit: impl FnMut(NativeProgramSourceRef<'_>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        BorrowedNativeProgramSourceManifest {
+            bytes: &self.bytes,
+            program: self.program,
+            toolchain: self.toolchain,
+            count: self.count,
+        }
+        .visit_sources(checkpoint, visit)
+    }
+}
+
 impl NativeProgramSourceManifest {
     /// Constructs membership from actual native files. No caller supplies a program ID.
     pub fn from_sources(
@@ -549,6 +599,24 @@ mod tests {
         )
         .unwrap();
         assert_eq!(visited, owned.sources().collect::<Vec<_>>());
+        let retained = RetainedNativeProgramSourceManifest::admit(
+            owned.as_bytes().into(),
+            &mut scratch,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+        assert_eq!(retained.program(), owned.program());
+        let mut retained_rows = Vec::new();
+        retained
+            .visit_sources(
+                |_| Ok::<_, ()>(()),
+                |row| {
+                    retained_rows.push(row);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(retained_rows, visited);
         assert!(matches!(
             BorrowedNativeProgramSourceManifest::decode(
                 owned.as_bytes(),
