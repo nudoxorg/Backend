@@ -79,6 +79,28 @@ pub(super) fn witnessed_file_borrowed<'a>(
     if reference.aggregate_digest != digest { return Err("native header closure differs".into()); }
     let file = aggregate.find_file_checkpointed(&claim.path, checkpoint)?
         .ok_or("native header file absent from compiler closure")?;
+    validate_witnessed_file(claim, digest, file)
+}
+
+/// Resolve an already-indexed selected header aggregate without rescanning it.
+pub(super) fn witnessed_indexed_file_borrowed<'a>(
+    claim: &NativeSourceEvidence,
+    index: &backend_semantic::native_ts_headers::NativeTsHeaderFileIndex<'a, '_>,
+    digest: [u8; 32], checkpoint: &mut impl FnMut(usize) -> Result<(), String>,
+) -> Result<backend_semantic::native_ts_headers::NativeTsHeaderFileView<'a>, String> {
+    let reference = claim.headers.as_ref().ok_or("native header reference absent")?;
+    if reference.aggregate_digest != digest { return Err("native header closure differs".into()); }
+    let file = index.find_file_checkpointed(&claim.path, checkpoint)?
+        .ok_or("native header file absent from compiler closure")?;
+    validate_witnessed_file(claim, digest, file)
+}
+
+fn validate_witnessed_file<'a>(
+    claim: &NativeSourceEvidence, digest: [u8; 32],
+    file: backend_semantic::native_ts_headers::NativeTsHeaderFileView<'a>,
+) -> Result<backend_semantic::native_ts_headers::NativeTsHeaderFileView<'a>, String> {
+    let reference = claim.headers.as_ref().ok_or("native header reference absent")?;
+    if reference.aggregate_digest != digest { return Err("native header closure differs".into()); }
     if file.source.byte_len != claim.byte_length || file.source.identity.as_ref() != claim.source_digest.as_slice()
         || file.image_identity != reference.image_identity || file.image_byte_len != reference.image_byte_len
         || file.producer_recipe != reference.producer_recipe

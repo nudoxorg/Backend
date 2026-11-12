@@ -97,6 +97,15 @@ fn allocate(len: usize, budget: &mut SelectedNativeHeaderBudget, stopped: &dyn F
     budget.reserve_retained(len).map_err(|e| format!("native replay memory: {e:?}"))?;
     backend_store::try_allocate_exact_zeroed_bytes(len).map_err(|e| format!("native replay allocation: {e:?}"))
 }
+fn allocate_u32(count: usize, budget: &mut SelectedNativeHeaderBudget, stopped: &dyn Fn() -> bool) -> Result<Vec<u32>> {
+    let bytes = count.checked_mul(std::mem::size_of::<u32>()).ok_or("native replay header index overflow")?;
+    step(budget, stopped, u64::try_from(bytes.div_ceil(1024)).unwrap_or(u64::MAX))?;
+    budget.reserve_retained(bytes).map_err(|e| format!("native replay header index memory: {e:?}"))?;
+    let mut credit = bytes;
+    backend_store::try_allocate_exact_zeroed_u32_budgeted(count, &mut credit)
+        .map_err(|e| format!("native replay header index allocation: {e:?}"))
+}
+
 fn copy(bytes: &[u8], budget: &mut SelectedNativeHeaderBudget, stopped: &dyn Fn() -> bool) -> Result<Box<[u8]>> {
     let mut out = allocate(bytes.len(), budget, stopped)?;
     for (dst, src) in out.chunks_mut(1024).zip(bytes.chunks(1024)) {
@@ -235,6 +244,15 @@ fn admit_inner(
         backend_semantic::native_ts_headers::NativeTsHeaderAggregateView::parse_canonical_checkpointed(wire, &mut checkpoint)
             .map(|view| (view, *digest)).map_err(|e| format!("native replay headers: {e:?}"))
     }).transpose()?;
+    let mut header_slots = match headers.as_ref() {
+        Some((view, _)) => allocate_u32(view.len(), budget, stopped)?,
+        None => Vec::new(),
+    };
+    let header_index = headers.as_ref().map(|(view, digest)| {
+        let mut checkpoint = |n| charge_native_header_work(budget, stopped, n);
+        view.index_files_checkpointed(&mut header_slots, &mut checkpoint)
+            .map(|index| (index, *digest)).map_err(|e| format!("native replay header index: {e:?}"))
+    }).transpose()?;
     let lines = plan.lines.as_ref().map(|wire| {
         let mut checkpoint = |n| charge_native_header_work(budget, stopped, n);
         backend_semantic::native_source_lines::NativeSourceLineAggregateView::parse(wire, &mut checkpoint)
@@ -314,14 +332,14 @@ fn admit_inner(
                 }
                 let mut checkpoint = |n| charge_native_header_work(budget, stopped, n);
                 if let Some(claimed) = &row.headers {
-                    let (aggregate, digest) = headers.as_ref().ok_or("native replay header witness absent")?;
-                    let file = super::super::native_ts_headers::witnessed_file_borrowed(row, aggregate, *digest, &mut checkpoint)
+                    let (index, digest) = header_index.as_ref().ok_or("native replay header witness absent")?;
+                    let file = super::super::native_ts_headers::witnessed_indexed_file_borrowed(row, index, *digest, &mut checkpoint)
                         .map_err(|e| format!("native replay header: {e}"))?;
                     super::super::native_ts_headers::admit_image_borrowed(row, claimed, file, &view, bytes, &mut checkpoint)
                         .map_err(|e| format!("native replay header: {e}"))?;
                     plan.flags[index] |= 8;
-                } else if let Some((aggregate, _)) = &headers {
-                    if aggregate.find_file_checkpointed(&row.path, &mut checkpoint)?.is_some() { return Err("native replay lost compiler header reference".into()); }
+                } else if let Some((index, _)) = &header_index {
+                    if index.find_file_checkpointed(&row.path, &mut checkpoint)?.is_some() { return Err("native replay lost compiler header reference".into()); }
                 }
                 plan.flags[index] |= 4;
             }
