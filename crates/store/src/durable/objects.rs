@@ -468,6 +468,67 @@ impl FileStore {
             .ok_or(StoreError::Corrupt)
     }
 
+    /// Authenticates a non-relation object with a caller-controlled reservation.
+    ///
+    /// `before_open` must reserve filesystem/path scratch and work, and may
+    /// reject or cancel before any object is opened. `before_payload` receives
+    /// untrusted header fields and must reserve the payload, typed admission,
+    /// visitor allocations and work before any payload allocation or read.
+    /// Both callbacks must fail closed on exhausted credit. The same immutable
+    /// descriptor is used for header and payload. This verifies the object,
+    /// not its membership in a selected closure. Only the final callback sees
+    /// authenticated data; header fields passed to preflight are not authority.
+    /// The caller must retain the reservation until this method returns and
+    /// separately account for any data retained by `visit`.
+    pub fn with_verified_nonrelation_object_bounded<T, O, P, F>(
+        &self, pin: &GcPinGuard, claim: UntrustedObjectId,
+        accepted_schemas: &[SchemaIdentity], expected_key: Option<Hash>, max_payload: usize,
+        budget: &mut usize, before_open: O, before_payload: P, visit: F,
+    ) -> Result<T, StoreError>
+    where
+        O: FnOnce(&mut usize) -> Result<(), StoreError>,
+        P: FnOnce(SchemaIdentity, &Hash, usize, &mut usize) -> Result<(), StoreError>,
+        F: for<'a> FnOnce(VerifiedObjectView<'a>, &mut usize) -> Result<T, StoreError>,
+    {
+        if *budget == 0 { return Err(StoreError::Bounds); }
+        before_open(budget)?;
+        if !pin.covers_identity(self.gc_identity) { return Err(StoreError::Corrupt); }
+        let id = ObjectId::from_bytes(*claim.as_bytes());
+        let mut file = super::artifact_fs::open_object(self, id)?.ok_or(StoreError::Corrupt)?;
+        const HEADER: usize = OBJECT_MAGIC.len() + 32 + 1 + 2 + 1 + 32 + 32 + 8;
+        let file_len = usize::try_from(file.metadata().map_err(|error| io_error(&error))?.len()).map_err(|_| StoreError::Bounds)?;
+        if file_len < HEADER || file_len > self.object_envelope_limit()? { return Err(StoreError::Bounds); }
+        let mut header = [0u8; HEADER];
+        file.read_exact(&mut header).map_err(|error| io_error(&error))?;
+        if !header.starts_with(OBJECT_MAGIC) { return Err(StoreError::Corrupt); }
+        let mut at = OBJECT_MAGIC.len();
+        let claimed = read_hash(&header, &mut at)?;
+        if &claimed != claim.as_bytes() { return Err(StoreError::Corrupt); }
+        let domain = read_byte(&header, &mut at)?;
+        let ty = u16::from_le_bytes(header[at..at + 2].try_into().map_err(|_| StoreError::Corrupt)?); at += 2;
+        let tag = read_byte(&header, &mut at)?;
+        let schema = SchemaIdentity::new(domain, ty, tag);
+        let key = read_hash(&header, &mut at)?;
+        let version = read_hash(&header, &mut at)?;
+        let length = usize::try_from(read_u64(&header, &mut at)?).map_err(|_| StoreError::Bounds)?;
+        if at != HEADER || HEADER.checked_add(length) != Some(file_len) { return Err(StoreError::Corrupt); }
+        if length > max_payload { return Err(StoreError::Bounds); }
+        if !accepted_schemas.contains(&schema) || expected_key.is_some_and(|expected| expected != key)
+            || self.relation_registry.contains_schema(schema) { return Err(StoreError::Corrupt); }
+        *budget = budget.checked_sub(length).ok_or(StoreError::Bounds)?;
+        before_payload(schema, &key, length, budget)?;
+        let mut payload = Vec::new();
+        payload.try_reserve_exact(length).map_err(|_| StoreError::Bounds)?;
+        payload.resize(length, 0);
+        file.read_exact(&mut payload).map_err(|error| io_error(&error))?;
+        let mut trailing = [0u8; 1];
+        if file.read(&mut trailing).map_err(|error| io_error(&error))? != 0 { return Err(StoreError::Corrupt); }
+        let actual = object_commitment_view(schema, &key, &version, &payload)?;
+        if actual != claimed { return Err(StoreError::Corrupt); }
+        admit_backend_object_version(schema, &payload, &version)?;
+        visit(VerifiedObjectView { id, schema, key, version, bytes: &payload }, budget)
+    }
+
     /// Opens and admits the object named by `claim`, returning `None` when
     /// the object path is absent. The safe artifact opener owns path, link,
     /// and immutability checks before the descriptor reaches the decoder.
@@ -681,6 +742,45 @@ mod tests {
             Err(StoreError::Corrupt)
         );
         replace_fixture(&path, &original);
+    }
+
+    #[test]
+    fn bounded_nonrelation_read_preflights_before_payload_and_authenticates() {
+        use std::cell::Cell;
+        let (store, root) = test_store("bounded-nonrelation");
+        let object = bytes_object(vec![9; 512 * 1024]);
+        store.write_object(&object).expect("write");
+        let pin = store.pin_garbage_collection().expect("pin");
+        let claim = UntrustedObjectId::from_bytes(*object.id().as_bytes());
+        let schema = object.schema();
+        let opened = Cell::new(false);
+        let payload_gate = Cell::new(false);
+        let visited = Cell::new(false);
+        let mut budget = 0;
+        assert!(matches!(store.with_verified_nonrelation_object_bounded(&pin, claim, &[schema], Some(*object.key()), object.bytes().len(), &mut budget,
+            |_| { opened.set(true); Ok(()) }, |_,_,_,_| { payload_gate.set(true); Ok(()) }, |_,_| { visited.set(true); Ok(()) }), Err(StoreError::Bounds)));
+        assert!(!opened.get() && !payload_gate.get() && !visited.get());
+        budget = object.bytes().len() - 1;
+        assert!(matches!(store.with_verified_nonrelation_object_bounded(&pin, claim, &[schema], Some(*object.key()), object.bytes().len(), &mut budget,
+            |_| Ok(()), |_,_,_,_| { payload_gate.set(true); Ok(()) }, |_,_| { visited.set(true); Ok(()) }), Err(StoreError::Bounds)));
+        assert!(!payload_gate.get() && !visited.get());
+        budget = object.bytes().len();
+        let measured = allocation_counter::measure(|| {
+            store.with_verified_nonrelation_object_bounded(&pin, claim, &[schema], Some(*object.key()), object.bytes().len(), &mut budget,
+                |_| Ok(()), |_,_,len,_| { assert_eq!(len, object.bytes().len()); Ok(()) },
+                |view,_| { assert_eq!(view.id(), object.id()); assert_eq!(view.bytes(), object.bytes()); Ok(()) }).expect("read");
+        });
+        assert!(usize::try_from(measured.bytes_max).unwrap() <= object.bytes().len() + 4096);
+        let path = store.object_path(object.id());
+        let mut bytes = fs::read(&path).expect("read envelope");
+        *bytes.last_mut().expect("payload") ^= 1;
+        replace_fixture(&path, &bytes);
+        budget = object.bytes().len();
+        assert!(store.with_verified_nonrelation_object_bounded(&pin, claim, &[schema], None, object.bytes().len(), &mut budget,
+            |_| Ok(()), |_,_,_,_| Ok(()), |_,_| { visited.set(true); Ok(()) }).is_err());
+        assert!(!visited.get());
+        drop(pin);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
