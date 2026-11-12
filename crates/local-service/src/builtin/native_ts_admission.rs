@@ -200,6 +200,8 @@ pub(super) fn refresh_native_ts_evidence_plan(
     compiler: &LocalCompilerClient,
     semantic_authority: &super::semantic_authority::SemanticAuthority,
     bytes_read: &mut usize,
+    header_budget: &mut backend_extension_turso::SelectedNativeHeaderBudget,
+    deadline: std::time::Instant,
 ) -> Result<RefreshedNativeTsEvidencePlan, BuiltinModelError> {
     plan.validate_base_before_commit(base)?;
     let before = *bytes_read;
@@ -240,13 +242,8 @@ pub(super) fn refresh_native_ts_evidence_plan(
             .native_program_sources
             .as_ref()
             .ok_or_else(|| BuiltinModelError("native TypeScript program is unavailable".into()))?;
-        let mut header_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(
-            backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES,
-            backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES as u64,
-        );
-        let deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
         let stopped = || candidate.revalidated.cancelled() || std::time::Instant::now() >= deadline;
-        let header_witness = semantic_authority.native_header_aggregate_for_admitted(&selected, &mut header_budget, &stopped)?;
+        let header_witness = semantic_authority.native_header_aggregate_for_admitted(&selected, header_budget, &stopped)?;
         let mut checkpoint = |_: usize| header_budget.checkpoint(1, &stopped).map_err(|e| format!("native header stopped: {e:?}"));
         let header_view = header_witness.as_ref().map(|witness| {
             backend_semantic::native_ts_headers::NativeTsHeaderAggregateView::parse_canonical_checkpointed(witness.as_bytes(), &mut checkpoint)
@@ -844,6 +841,8 @@ pub(super) fn admit_native_ts_owner_candidate(
     expected_capture: SemanticSourceCapture,
     compiler: &LocalCompilerClient,
     semantic_authority: &super::semantic_authority::SemanticAuthority,
+    header_budget: &mut backend_extension_turso::SelectedNativeHeaderBudget,
+    deadline: std::time::Instant,
 ) -> Result<NativeTsOwnerCandidate, BuiltinModelError> {
     if !publication.is_fresh_completion()
         || !publication.key().is_selected()
@@ -931,13 +930,8 @@ pub(super) fn admit_native_ts_owner_candidate(
         &mut generations,
         &mut image_rows,
     )?;
-    let mut header_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(
-        backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES,
-        backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES as u64,
-    );
-    let deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
     let stopped = || revalidated.cancelled() || std::time::Instant::now() >= deadline;
-    let header_witness = semantic_authority.native_header_aggregate_for_admitted(&selected, &mut header_budget, &stopped)?;
+    let header_witness = semantic_authority.native_header_aggregate_for_admitted(&selected, header_budget, &stopped)?;
     let mut checkpoint = |_: usize| header_budget.checkpoint(1, &stopped).map_err(|e| format!("native header stopped: {e:?}"));
     let header_view = header_witness.as_ref().map(|witness| {
         backend_semantic::native_ts_headers::NativeTsHeaderAggregateView::parse_canonical_checkpointed(witness.as_bytes(), &mut checkpoint)
