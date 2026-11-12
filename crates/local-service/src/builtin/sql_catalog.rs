@@ -195,180 +195,913 @@ pub(super) fn progress(
     Ok(has_hosts.then_some(summary))
 }
 
-/// Read selected SQL projects in two bounded passes, without cloning facts for
-/// other projects. The shared byte budget is charged before each retained row.
-pub(super) fn load_projects_bounded(
-    snapshot: &WorkspaceSnapshot,
-    projects: &std::collections::BTreeSet<[u8; 32]>,
-    cancelled: &dyn Fn() -> bool,
-    max_bytes: usize,
-) -> Result<(std::collections::BTreeMap<[u8; 32], ProjectSql>, usize), String> {
-    use std::collections::BTreeMap;
-    use std::io::{self, Write};
-    struct Counter {
-        bytes: usize,
-        limit: usize,
-    }
-    impl Write for Counter {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            self.bytes = self
-                .bytes
-                .checked_add(bytes.len())
-                .filter(|n| *n <= self.limit)
-                .ok_or_else(|| io::Error::other("SQL catalog byte bound"))?;
-            Ok(bytes.len())
+// Fixed-size boxed chunks make each requested allocation layout explicit. The
+// logical array length is counted before allocation; no Vec growth or BTree
+// node-size assumption participates in the catalog budget.
+const SLOTS_PER_CHUNK: usize = 32;
+const CHUNKS_PER_GROUP: usize = 64;
+const GROUPS_PER_ROOT: usize = 128;
+struct SlotChunk<T> {
+    values: [Option<T>; SLOTS_PER_CHUNK],
+}
+struct SlotGroup<T> {
+    chunks: [Option<Box<SlotChunk<T>>>; CHUNKS_PER_GROUP],
+}
+struct SlotRoot<T> {
+    groups: [Option<Box<SlotGroup<T>>>; GROUPS_PER_ROOT],
+}
+pub(super) struct Slots<T> {
+    root: Option<Box<SlotRoot<T>>>,
+    capacity: usize,
+    charged: usize,
+}
+impl<T> Slots<T> {
+    fn empty() -> Self {
+        Self {
+            root: None,
+            capacity: 0,
+            charged: 0,
         }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
     }
-    fn charge(row: &SqlAnalysisRecord, used: &mut usize, max: usize) -> Result<(), String> {
-        let mut counter = Counter {
-            bytes: used
-                .checked_add(256)
-                .filter(|n| *n <= max)
-                .ok_or("SQL catalog byte bound")?,
-            limit: max,
-        };
-        serde_json::to_writer(&mut counter, row)
-            .map_err(|_| "SQL catalog byte bound".to_owned())?;
-        *used = counter.bytes;
+    fn new(count: usize, remaining: &mut usize, bookkeeping: usize) -> Result<Self, String> {
+        if count == 0 {
+            return Ok(Self::empty());
+        }
+        if count > MAX_ROWS {
+            return Err("SQL slot count exceeds bound".into());
+        }
+        let chunks = count
+            .checked_add(SLOTS_PER_CHUNK - 1)
+            .ok_or("SQL slot overflow")?
+            / SLOTS_PER_CHUNK;
+        let groups = chunks
+            .checked_add(CHUNKS_PER_GROUP - 1)
+            .ok_or("SQL slot overflow")?
+            / CHUNKS_PER_GROUP;
+        if groups > GROUPS_PER_ROOT {
+            return Err("SQL slot count exceeds bound".into());
+        }
+        let allocations = 1usize
+            .checked_add(groups)
+            .and_then(|n| n.checked_add(chunks))
+            .ok_or("SQL slot overflow")?;
+        let charge = std::mem::size_of::<SlotRoot<T>>()
+            .checked_add(
+                std::mem::size_of::<SlotGroup<T>>()
+                    .checked_mul(groups)
+                    .ok_or("SQL slot overflow")?,
+            )
+            .and_then(|n| n.checked_add(std::mem::size_of::<SlotChunk<T>>().checked_mul(chunks)?))
+            .and_then(|n| n.checked_add(bookkeeping.checked_mul(allocations)?))
+            .ok_or("SQL slot overflow")?;
+        *remaining = remaining
+            .checked_sub(charge)
+            .ok_or("SQL catalog byte bound")?;
+        let mut root = Box::new(SlotRoot {
+            groups: std::array::from_fn(|_| None),
+        });
+        for group_index in 0..groups {
+            let mut group = Box::new(SlotGroup {
+                chunks: std::array::from_fn(|_| None),
+            });
+            let group_chunks = (chunks - group_index * CHUNKS_PER_GROUP).min(CHUNKS_PER_GROUP);
+            for i in 0..group_chunks {
+                group.chunks[i] = Some(Box::new(SlotChunk {
+                    values: std::array::from_fn(|_| None),
+                }));
+            }
+            root.groups[group_index] = Some(group);
+        }
+        Ok(Self {
+            root: Some(root),
+            capacity: count,
+            charged: charge,
+        })
+    }
+    fn slot(&self, index: usize) -> Option<&Option<T>> {
+        if index >= self.capacity {
+            return None;
+        }
+        let chunk = index / SLOTS_PER_CHUNK;
+        Some(
+            &self.root.as_ref()?.groups[chunk / CHUNKS_PER_GROUP]
+                .as_ref()?
+                .chunks[chunk % CHUNKS_PER_GROUP]
+                .as_ref()?
+                .values[index % SLOTS_PER_CHUNK],
+        )
+    }
+    fn slot_mut(&mut self, index: usize) -> Option<&mut Option<T>> {
+        if index >= self.capacity {
+            return None;
+        }
+        let chunk = index / SLOTS_PER_CHUNK;
+        Some(
+            &mut self.root.as_mut()?.groups[chunk / CHUNKS_PER_GROUP]
+                .as_mut()?
+                .chunks[chunk % CHUNKS_PER_GROUP]
+                .as_mut()?
+                .values[index % SLOTS_PER_CHUNK],
+        )
+    }
+    fn put(&mut self, index: usize, value: T) -> Result<(), &'static str> {
+        let slot = self.slot_mut(index).ok_or("SQL slot count changed")?;
+        if slot.is_some() {
+            return Err("duplicate SQL slot");
+        }
+        *slot = Some(value);
         Ok(())
     }
-    let Some(relation) = sql_analysis_relation(snapshot).map_err(|e| e.to_string())? else {
-        return Ok((BTreeMap::new(), 0));
-    };
-    let mut result = BTreeMap::new();
-    let mut pending_hosts: BTreeMap<[u8; 32], Vec<SqlHost>> = BTreeMap::new();
-    let mut used = 0usize;
+    fn get(&self, index: usize) -> Option<&T> {
+        self.slot(index)?.as_ref()
+    }
+    fn get_mut(&mut self, index: usize) -> Option<&mut T> {
+        self.slot_mut(index)?.as_mut()
+    }
+    fn is_full(&self) -> bool {
+        (0..self.capacity).all(|i| self.get(i).is_some())
+    }
+    fn swap(&mut self, a: usize, b: usize) {
+        if a == b {
+            return;
+        }
+        let x = self
+            .slot_mut(a)
+            .expect("index in range")
+            .take()
+            .expect("filled slot");
+        let y = self
+            .slot_mut(b)
+            .expect("index in range")
+            .replace(x)
+            .expect("filled slot");
+        *self.slot_mut(a).expect("index in range") = Some(y);
+    }
+    fn sort_by(
+        &mut self,
+        compare: impl Fn(&T, &T) -> std::cmp::Ordering,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<(), String> {
+        // In-place heapsort needs no temporary allocation.
+        fn sift<T>(
+            slots: &mut Slots<T>,
+            start: usize,
+            end: usize,
+            cmp: &impl Fn(&T, &T) -> std::cmp::Ordering,
+            cancelled: &dyn Fn() -> bool,
+        ) -> Result<(), String> {
+            let mut root = start;
+            loop {
+                if cancelled() {
+                    return Err("SQL read cancelled".into());
+                }
+                let Some(mut child) = root.checked_mul(2).and_then(|n| n.checked_add(1)) else {
+                    break;
+                };
+                if child >= end {
+                    break;
+                }
+                if child + 1 < end
+                    && cmp(slots.get(child).unwrap(), slots.get(child + 1).unwrap()).is_lt()
+                {
+                    child += 1;
+                }
+                if !cmp(slots.get(root).unwrap(), slots.get(child).unwrap()).is_lt() {
+                    break;
+                }
+                slots.swap(root, child);
+                root = child;
+            }
+            Ok(())
+        }
+        for start in (0..self.capacity / 2).rev() {
+            sift(self, start, self.capacity, &compare, cancelled)?;
+        }
+        for end in (1..self.capacity).rev() {
+            if cancelled() {
+                return Err("SQL read cancelled".into());
+            }
+            self.swap(0, end);
+            sift(self, 0, end, &compare, cancelled)?;
+        }
+        Ok(())
+    }
+    pub(super) fn iter(&self) -> SlotsIter<'_, T> {
+        SlotsIter {
+            slots: self,
+            next: 0,
+        }
+    }
+    fn refund(self, remaining: &mut usize) -> Result<(), String> {
+        let charge = self.charged;
+        drop(self);
+        *remaining = remaining.checked_add(charge).ok_or("SQL budget overflow")?;
+        Ok(())
+    }
+}
+impl<T> std::ops::Index<usize> for Slots<T> {
+    type Output = T;
+    fn index(&self, index: usize) -> &T {
+        self.get(index).expect("validated SQL slot")
+    }
+}
+pub(super) struct SlotsIter<'a, T> {
+    slots: &'a Slots<T>,
+    next: usize,
+}
+impl<'a, T> Iterator for SlotsIter<'a, T> {
+    type Item = &'a T;
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.next < self.slots.capacity {
+            let i = self.next;
+            self.next += 1;
+            if let Some(value) = self.slots.get(i) {
+                return Some(value);
+            }
+        }
+        None
+    }
+}
+impl<'a, T> IntoIterator for &'a Slots<T> {
+    type Item = &'a T;
+    type IntoIter = SlotsIter<'a, T>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+pub(super) struct BoundedSqlHost {
+    pub(super) key: [u8; 32],
+    pub(super) path: String,
+    pub(super) dialect: SqlDialect,
+    pub(super) input: Option<[u8; 32]>,
+    pub(super) source: Option<[u8; 32]>,
+    pub(super) producer: Option<[u8; 32]>,
+    pub(super) settings: Option<[u8; 32]>,
+    pub(super) context: Option<[u8; 32]>,
+    pub(super) fact_digest: [u8; 32],
+    pub(super) length: Option<u64>,
+    pub(super) terminal: SqlHostTerminal,
+    expected_facts: u32,
+    seen_facts: u32,
+    seen_ordinals: Slots<u64>,
+}
+pub(super) struct BoundedProjectSql {
+    pub(super) root: String,
+    pub(super) inventory_complete: bool,
+    pub(super) implicit: bool,
+    pub(super) gaps: SqlGapCounts,
+    pub(super) hosts: Slots<BoundedSqlHost>,
+    pub(super) facts: Slots<(usize, u32, SqlFact)>,
+}
+struct ProjectPlan {
+    key: [u8; 32],
+    selected: bool,
+    filled_selection: bool,
+    declared_hosts: usize,
+    counted_hosts: usize,
+    filled_hosts: usize,
+    counted_facts: usize,
+    filled_facts: usize,
+    sql: Option<BoundedProjectSql>,
+}
+pub(super) struct SqlProjects {
+    plans: Slots<ProjectPlan>,
+}
+impl SqlProjects {
+    fn position(&self, key: &[u8; 32]) -> Option<usize> {
+        let (mut low, mut high) = (0, self.plans.capacity);
+        while low < high {
+            let mid = low + (high - low) / 2;
+            match self.plans.get(mid)?.key.cmp(key) {
+                std::cmp::Ordering::Less => low = mid + 1,
+                std::cmp::Ordering::Greater => high = mid,
+                std::cmp::Ordering::Equal => return Some(mid),
+            }
+        }
+        None
+    }
+    pub(super) fn get(&self, key: &[u8; 32]) -> Option<&BoundedProjectSql> {
+        self.plans.get(self.position(key)?)?.sql.as_ref()
+    }
+    pub(super) fn values(&self) -> impl Iterator<Item = &BoundedProjectSql> {
+        self.plans.iter().filter_map(|plan| plan.sql.as_ref())
+    }
+}
+#[derive(Clone, Copy)]
+struct HostIndex {
+    key: [u8; 32],
+    project: usize,
+    host: usize,
+}
+fn find_host(index: &Slots<HostIndex>, key: &[u8; 32]) -> Option<HostIndex> {
+    let (mut low, mut high) = (0, index.capacity);
+    while low < high {
+        let mid = low + (high - low) / 2;
+        let item = *index.get(mid)?;
+        match item.key.cmp(key) {
+            std::cmp::Ordering::Less => low = mid + 1,
+            std::cmp::Ordering::Greater => high = mid,
+            std::cmp::Ordering::Equal => return Some(item),
+        }
+    }
+    None
+}
+fn charge_row(
+    row: &SqlAnalysisRecord,
+    remaining: &mut usize,
+    bookkeeping: usize,
+) -> Result<(), &'static str> {
+    use backend_engine::builtin::{sql_row_owned_allocation_count, sql_row_owned_payload_bytes};
+    let payload = sql_row_owned_payload_bytes(row).ok_or("SQL retained payload overflow")?;
+    let allocations =
+        sql_row_owned_allocation_count(row).ok_or("SQL retained allocation overflow")?;
+    let cost = allocations
+        .checked_mul(bookkeeping)
+        .and_then(|n| n.checked_add(payload))
+        .ok_or("SQL retained allocation overflow")?;
+    *remaining = remaining
+        .checked_sub(cost)
+        .ok_or("SQL catalog byte bound")?;
+    Ok(())
+}
+fn scan_sql(
+    relation: &backend_engine::workspace::WorkspacePreflightRelationHandle<
+        backend_engine::builtin::SqlAnalysisRelation,
+    >,
+    remaining: &mut usize,
+    bookkeeping: usize,
+    cancelled: &dyn Fn() -> bool,
+    mut row_fn: impl FnMut(&[u8; 32], SqlAnalysisRecord, &mut usize) -> Result<(), &'static str>,
+) -> Result<(), String> {
+    use backend_engine::builtin::sql_visit_preflighted;
     let mut after = None;
     let mut rows = 0usize;
     loop {
         if cancelled() {
             return Err("SQL read cancelled".into());
         }
-        let page = relation
-            .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
-            .map_err(|e| e.to_string())?;
-        for (key, row) in page.entries() {
-            rows = rows.checked_add(1).ok_or("SQL relation row bound")?;
-            if rows > MAX_ROWS {
-                return Err("SQL relation exceeds the read bound".into());
-            }
+        let mut failure = None;
+        let result = sql_visit_preflighted(
+            relation,
+            after.as_ref(),
+            64,
+            remaining,
+            bookkeeping,
+            &mut |key, row, budget| {
+                if cancelled() {
+                    failure = Some("SQL read cancelled");
+                    return Err(backend_store::StoreError::Bounds);
+                }
+                rows = match rows.checked_add(1) {
+                    Some(n) if n <= MAX_ROWS => n,
+                    _ => {
+                        failure = Some("SQL relation exceeds the read bound");
+                        return Err(backend_store::StoreError::Bounds);
+                    }
+                };
+                match row_fn(key, row, budget) {
+                    Ok(()) => Ok(()),
+                    Err(error) => {
+                        failure = Some(error);
+                        Err(backend_store::StoreError::Bounds)
+                    }
+                }
+            },
+        );
+        if let Some(error) = failure {
+            return Err(error.into());
+        }
+        let next = result.map_err(|error| error.to_string())?;
+        match next {
+            None => break,
+            Some(key) if after.is_none_or(|previous| previous < key) => after = Some(key),
+            Some(_) => return Err("SQL relation cursor did not advance".into()),
+        }
+    }
+    Ok(())
+}
+fn selected_definition(fact: &SqlFact) -> bool {
+    use backend_semantic::sql_analysis::SqlDefinitionAction;
+    matches!(fact, SqlFact::Definition(definition) if definition.live_at_head && matches!(definition.action, SqlDefinitionAction::Create | SqlDefinitionAction::AddColumn))
+}
+fn verify_fact(key: &[u8; 32], host: &BoundedSqlHost, ordinal: u32) -> Result<(), &'static str> {
+    use backend_engine::builtin::sql_fact_key;
+    let (Some(input), Some(source), Some(producer), Some(settings)) =
+        (host.input, host.source, host.producer, host.settings)
+    else {
+        return Err("selected SQL fact lacks host basis");
+    };
+    if *key
+        != sql_fact_key(
+            host.key,
+            host.dialect,
+            input,
+            source,
+            producer,
+            settings,
+            host.context,
+            ordinal,
+        )
+    {
+        return Err("SQL fact key does not match host basis");
+    }
+    Ok(())
+}
+
+/// Read selected SQL projects using one shared requested-allocation ledger.
+/// All retained arrays use fixed-size boxed chunks charged before allocation;
+/// the caller supplies its explicit per-allocation bookkeeping allowance.
+pub(super) fn load_projects_bounded(
+    snapshot: &WorkspaceSnapshot,
+    projects: &std::collections::BTreeSet<[u8; 32]>,
+    cancelled: &dyn Fn() -> bool,
+    max_bytes: usize,
+    allocation_bookkeeping_bytes: usize,
+) -> Result<(SqlProjects, usize), String> {
+    use backend_engine::builtin::{sql_analysis_preflight_relation, sql_host_key};
+    let mut remaining = max_bytes;
+    let mut result = SqlProjects {
+        plans: Slots::new(projects.len(), &mut remaining, allocation_bookkeeping_bytes)?,
+    };
+    for (i, key) in projects.iter().copied().enumerate() {
+        result.plans.put(
+            i,
+            ProjectPlan {
+                key,
+                selected: false,
+                filled_selection: false,
+                declared_hosts: 0,
+                counted_hosts: 0,
+                filled_hosts: 0,
+                counted_facts: 0,
+                filled_facts: 0,
+                sql: None,
+            },
+        )?;
+    }
+    let Some(relation) = sql_analysis_preflight_relation(snapshot).map_err(|e| e.to_string())?
+    else {
+        return Ok((result, max_bytes - remaining));
+    };
+
+    // Count selection/host slots before retaining any owned row.
+    scan_sql(
+        &relation,
+        &mut remaining,
+        allocation_bookkeeping_bytes,
+        cancelled,
+        |key, row, _| {
             match row {
                 SqlAnalysisRecord::Selection {
                     project,
-                    source_root,
-                    inventory,
-                    implicit,
-                    gaps,
+                    host_count,
                     ..
-                } if projects.contains(project) => {
-                    charge(row, &mut used, max_bytes)?;
-                    if result
-                        .insert(
-                            *project,
-                            ProjectSql {
-                                root: source_root.clone(),
-                                inventory_complete: matches!(inventory, SqlInventory::Complete),
-                                implicit: *implicit,
-                                gaps: *gaps,
-                                hosts: Vec::new(),
-                                facts: Vec::new(),
-                            },
-                        )
-                        .is_some()
-                    {
-                        return Err("duplicate SQL selection".into());
+                } => {
+                    if let Some(i) = result.position(&project) {
+                        if *key != sql_selection_key(project) {
+                            return Err("SQL selection key mismatch");
+                        }
+                        let plan = result.plans.get_mut(i).ok_or("missing SQL project slot")?;
+                        if plan.selected {
+                            return Err("duplicate SQL selection");
+                        }
+                        plan.selected = true;
+                        plan.declared_hosts =
+                            usize::try_from(host_count).map_err(|_| "SQL host count overflow")?;
                     }
                 }
-                SqlAnalysisRecord::Host {
-                    project,
-                    path,
-                    dialect,
-                    input,
-                    source,
-                    producer,
-                    settings,
-                    fact_digest,
-                    length,
-                    terminal,
-                    ..
-                } if projects.contains(project) => {
-                    charge(row, &mut used, max_bytes)?;
-                    pending_hosts.entry(*project).or_default().push(SqlHost {
-                        key: *key,
-                        path: path.clone(),
-                        dialect: *dialect,
-                        input: *input,
-                        source: *source,
-                        producer: *producer,
-                        settings: *settings,
-                        fact_digest: *fact_digest,
-                        length: *length,
-                        terminal: *terminal,
-                    });
+                SqlAnalysisRecord::Host { project, path, .. } => {
+                    if let Some(i) = result.position(&project) {
+                        if sql_host_key(project, &path).map_err(|_| "invalid SQL host path")?
+                            != *key
+                        {
+                            return Err("SQL host key mismatch");
+                        }
+                        let plan = result.plans.get_mut(i).ok_or("missing SQL project slot")?;
+                        plan.counted_hosts = plan
+                            .counted_hosts
+                            .checked_add(1)
+                            .ok_or("SQL host count overflow")?;
+                    }
                 }
                 _ => {}
             }
+            Ok(())
+        },
+    )?;
+    let mut total_hosts = 0usize;
+    for i in 0..result.plans.capacity {
+        let plan = result.plans.get_mut(i).ok_or("missing SQL project slot")?;
+        if !plan.selected {
+            if plan.counted_hosts != 0 {
+                return Err("SQL hosts lack selected project".into());
+            }
+            continue;
         }
-        match page.next().copied() {
-            Some(next) if after != Some(next) => after = Some(next),
-            Some(_) => return Err("SQL relation page did not advance".into()),
-            None => break,
+        if plan.counted_hosts != plan.declared_hosts {
+            return Err("SQL selected host count mismatch".into());
         }
+        total_hosts = total_hosts
+            .checked_add(plan.counted_hosts)
+            .ok_or("SQL host count overflow")?;
+        let hosts = Slots::new(
+            plan.counted_hosts,
+            &mut remaining,
+            allocation_bookkeeping_bytes,
+        )?;
+        plan.sql = Some(BoundedProjectSql {
+            root: String::new(),
+            inventory_complete: false,
+            implicit: false,
+            gaps: SqlGapCounts::default(),
+            hosts,
+            facts: Slots::new(0, &mut remaining, allocation_bookkeeping_bytes)?,
+        });
     }
-    let mut host_index = BTreeMap::new();
-    for (project, mut hosts) in pending_hosts {
-        let Some(sql) = result.get_mut(&project) else {
-            return Err("SQL hosts lack selected project".into());
+
+    // Move selected roots and hosts into their already charged slots.
+    scan_sql(
+        &relation,
+        &mut remaining,
+        allocation_bookkeeping_bytes,
+        cancelled,
+        |key, row, budget| {
+            match &row {
+                SqlAnalysisRecord::Selection { project, .. }
+                    if result.position(project).is_some() =>
+                {
+                    charge_row(&row, budget, allocation_bookkeeping_bytes)?;
+                    let SqlAnalysisRecord::Selection {
+                        project,
+                        source_root,
+                        inventory,
+                        implicit,
+                        gaps,
+                        ..
+                    } = row
+                    else {
+                        unreachable!()
+                    };
+                    let i = result
+                        .position(&project)
+                        .ok_or("missing SQL project slot")?;
+                    if *key != sql_selection_key(project) {
+                        return Err("SQL selection key mismatch");
+                    }
+                    let plan = result.plans.get_mut(i).ok_or("missing SQL project slot")?;
+                    if plan.filled_selection {
+                        return Err("duplicate SQL selection");
+                    }
+                    let sql = plan.sql.as_mut().ok_or("SQL selection count changed")?;
+                    sql.root = source_root;
+                    sql.inventory_complete = matches!(inventory, SqlInventory::Complete);
+                    sql.implicit = implicit;
+                    sql.gaps = gaps;
+                    plan.filled_selection = true;
+                }
+                SqlAnalysisRecord::Host { project, .. } if result.position(project).is_some() => {
+                    charge_row(&row, budget, allocation_bookkeeping_bytes)?;
+                    let SqlAnalysisRecord::Host {
+                        project,
+                        path,
+                        dialect,
+                        input,
+                        source,
+                        producer,
+                        settings,
+                        context,
+                        fact_count,
+                        fact_digest,
+                        length,
+                        terminal,
+                        ..
+                    } = row
+                    else {
+                        unreachable!()
+                    };
+                    if sql_host_key(project, &path).map_err(|_| "invalid SQL host path")? != *key {
+                        return Err("SQL host key mismatch");
+                    }
+                    let i = result
+                        .position(&project)
+                        .ok_or("missing SQL project slot")?;
+                    let plan = result.plans.get_mut(i).ok_or("missing SQL project slot")?;
+                    let sql = plan.sql.as_mut().ok_or("SQL hosts lack selected project")?;
+                    sql.hosts.put(
+                        plan.filled_hosts,
+                        BoundedSqlHost {
+                            key: *key,
+                            path,
+                            dialect,
+                            input,
+                            source,
+                            producer,
+                            settings,
+                            context,
+                            fact_digest,
+                            length,
+                            terminal,
+                            expected_facts: fact_count,
+                            seen_facts: 0,
+                            seen_ordinals: Slots::empty(),
+                        },
+                    )?;
+                    plan.filled_hosts = plan
+                        .filled_hosts
+                        .checked_add(1)
+                        .ok_or("SQL host count overflow")?;
+                }
+                _ => {}
+            }
+            Ok(())
+        },
+    )?;
+    let mut host_index = Slots::new(total_hosts, &mut remaining, allocation_bookkeeping_bytes)?;
+    let mut host_index_count = 0usize;
+    let mut expected_fact_total = 0usize;
+    for i in 0..result.plans.capacity {
+        let plan = result.plans.get_mut(i).ok_or("missing SQL project slot")?;
+        let Some(sql) = plan.sql.as_mut() else {
+            continue;
         };
-        hosts.sort_by(|a, b| a.path.cmp(&b.path));
-        for (index, host) in hosts.iter().enumerate() {
-            if host_index.insert(host.key, (project, index)).is_some() {
-                return Err("duplicate SQL host identity".into());
+        if !plan.filled_selection || plan.filled_hosts != plan.counted_hosts || !sql.hosts.is_full()
+        {
+            return Err("SQL selection or host slot missing".into());
+        }
+        sql.hosts.sort_by(|a, b| a.path.cmp(&b.path), cancelled)?;
+        for h in 0..sql.hosts.capacity {
+            if h > 0 && sql.hosts[h - 1].path == sql.hosts[h].path {
+                return Err("duplicate SQL host path".into());
+            }
+            let host = sql.hosts.get_mut(h).ok_or("missing SQL host slot")?;
+            host_index.put(
+                host_index_count,
+                HostIndex {
+                    key: host.key,
+                    project: i,
+                    host: h,
+                },
+            )?;
+            host_index_count += 1;
+            let count =
+                usize::try_from(host.expected_facts).map_err(|_| "SQL fact count overflow")?;
+            expected_fact_total = expected_fact_total
+                .checked_add(count)
+                .filter(|n| *n <= MAX_ROWS)
+                .ok_or("SQL relation exceeds the read bound")?;
+            let words = count.checked_add(63).ok_or("SQL fact count overflow")? / 64;
+            host.seen_ordinals = Slots::new(words, &mut remaining, allocation_bookkeeping_bytes)?;
+            for word in 0..words {
+                host.seen_ordinals.put(word, 0)?;
             }
         }
-        sql.hosts = hosts;
     }
-    after = None;
-    rows = 0;
-    loop {
-        if cancelled() {
-            return Err("SQL read cancelled".into());
+    if host_index_count != total_hosts || !host_index.is_full() {
+        return Err("SQL host index missing".into());
+    }
+    host_index.sort_by(|a, b| a.key.cmp(&b.key), cancelled)?;
+    for i in 1..host_index.capacity {
+        if host_index[i - 1].key == host_index[i].key {
+            return Err("duplicate SQL host identity".into());
         }
-        let page = relation
-            .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
-            .map_err(|e| e.to_string())?;
-        for (_, row) in page.entries() {
-            rows = rows.checked_add(1).ok_or("SQL relation row bound")?;
-            if rows > MAX_ROWS {
-                return Err("SQL relation exceeds the read bound".into());
-            }
-            if let SqlAnalysisRecord::Fact {
+    }
+
+    // Verify every selected host ordinal and count only the live definitions
+    // needed by ordinary discovery/query projection.
+    scan_sql(
+        &relation,
+        &mut remaining,
+        allocation_bookkeeping_bytes,
+        cancelled,
+        |key, row, _| {
+            let SqlAnalysisRecord::Fact {
                 host,
                 ordinal,
                 fact,
             } = row
-                && let Some((project, index)) = host_index.get(host)
-            {
-                charge(row, &mut used, max_bytes)?;
-                result
-                    .get_mut(project)
-                    .ok_or("SQL fact lacks selected project")?
-                    .facts
-                    .push((*index, *ordinal, fact.clone()));
+            else {
+                return Ok(());
+            };
+            let Some(index) = find_host(&host_index, &host) else {
+                return Ok(());
+            };
+            let plan = result
+                .plans
+                .get_mut(index.project)
+                .ok_or("missing SQL project slot")?;
+            let sql = plan.sql.as_mut().ok_or("missing SQL selected project")?;
+            let host = sql
+                .hosts
+                .get_mut(index.host)
+                .ok_or("missing SQL host slot")?;
+            if ordinal >= host.expected_facts {
+                return Err("SQL fact ordinal outside host count");
+            }
+            verify_fact(key, host, ordinal)?;
+            let word = usize::try_from(ordinal / 64).map_err(|_| "SQL ordinal overflow")?;
+            let mask = 1u64 << (ordinal % 64);
+            let bits = host
+                .seen_ordinals
+                .get_mut(word)
+                .ok_or("SQL ordinal slot missing")?;
+            if *bits & mask != 0 {
+                return Err("duplicate SQL fact ordinal");
+            }
+            *bits |= mask;
+            host.seen_facts = host
+                .seen_facts
+                .checked_add(1)
+                .ok_or("SQL fact count overflow")?;
+            if selected_definition(&fact) {
+                if !matches!(host.terminal, SqlHostTerminal::Parsed { .. }) {
+                    return Err("SQL definition lacks parsed host terminal");
+                }
+                plan.counted_facts = plan
+                    .counted_facts
+                    .checked_add(1)
+                    .ok_or("SQL fact count overflow")?;
+            }
+            Ok(())
+        },
+    )?;
+    for i in 0..result.plans.capacity {
+        let plan = result.plans.get_mut(i).ok_or("missing SQL project slot")?;
+        let Some(sql) = plan.sql.as_mut() else {
+            continue;
+        };
+        for h in 0..sql.hosts.capacity {
+            let host = sql.hosts.get_mut(h).ok_or("missing SQL host slot")?;
+            if host.seen_facts != host.expected_facts {
+                return Err("SQL host facts missing".into());
+            }
+            let seen = std::mem::replace(&mut host.seen_ordinals, Slots::empty());
+            seen.refund(&mut remaining)?;
+        }
+        sql.facts = Slots::new(
+            plan.counted_facts,
+            &mut remaining,
+            allocation_bookkeeping_bytes,
+        )?;
+    }
+
+    // Move only the selected definitions. The decoder's temporary reservation
+    // remains live while each retained ownership charge is transferred.
+    scan_sql(
+        &relation,
+        &mut remaining,
+        allocation_bookkeeping_bytes,
+        cancelled,
+        |key, row, budget| {
+            let SqlAnalysisRecord::Fact {
+                host,
+                ordinal,
+                ref fact,
+            } = row
+            else {
+                return Ok(());
+            };
+            let Some(index) = find_host(&host_index, &host) else {
+                return Ok(());
+            };
+            if !selected_definition(fact) {
+                return Ok(());
+            }
+            charge_row(&row, budget, allocation_bookkeeping_bytes)?;
+            let SqlAnalysisRecord::Fact { fact, .. } = row else {
+                unreachable!()
+            };
+            let plan = result
+                .plans
+                .get_mut(index.project)
+                .ok_or("missing SQL project slot")?;
+            let sql = plan.sql.as_mut().ok_or("missing SQL selected project")?;
+            let host = sql.hosts.get(index.host).ok_or("missing SQL host slot")?;
+            verify_fact(key, host, ordinal)?;
+            sql.facts
+                .put(plan.filled_facts, (index.host, ordinal, fact))?;
+            plan.filled_facts = plan
+                .filled_facts
+                .checked_add(1)
+                .ok_or("SQL fact count overflow")?;
+            Ok(())
+        },
+    )?;
+    for i in 0..result.plans.capacity {
+        let plan = result.plans.get_mut(i).ok_or("missing SQL project slot")?;
+        let Some(sql) = plan.sql.as_mut() else {
+            continue;
+        };
+        if plan.filled_facts != plan.counted_facts || !sql.facts.is_full() {
+            return Err("SQL definition slot missing".into());
+        }
+        sql.facts
+            .sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)), cancelled)?;
+        for n in 1..sql.facts.capacity {
+            if (sql.facts[n - 1].0, sql.facts[n - 1].1) == (sql.facts[n].0, sql.facts[n].1) {
+                return Err("duplicate SQL definition ordinal".into());
             }
         }
-        match page.next().copied() {
-            Some(next) if after != Some(next) => after = Some(next),
-            Some(_) => return Err("SQL relation page did not advance".into()),
-            None => break,
+    }
+    host_index.refund(&mut remaining)?;
+    let used = max_bytes
+        .checked_sub(remaining)
+        .ok_or("SQL budget overflow")?;
+    Ok((result, used))
+}
+
+#[cfg(test)]
+mod bounded_catalog_tests {
+    use super::*;
+    use backend_semantic::sql_analysis::SqlCoverage;
+
+    #[test]
+    fn slot_arrays_precharge_exact_requested_layout_before_allocation() {
+        const N: usize = 33;
+        const HEADER: usize = 64;
+        let expected = std::mem::size_of::<SlotRoot<u64>>()
+            + std::mem::size_of::<SlotGroup<u64>>()
+            + 2 * std::mem::size_of::<SlotChunk<u64>>()
+            + 4 * HEADER;
+        let mut short = expected - 1;
+        let failed = allocation_counter::measure(|| {
+            assert!(Slots::<u64>::new(N, &mut short, HEADER).is_err());
+        });
+        // Constructing the error String itself may allocate; no slot payload
+        // or partial tree is admitted when the precharge fails.
+        assert!(failed.bytes_max < std::mem::size_of::<SlotChunk<u64>>() as u64);
+        assert_eq!(short, expected - 1);
+        for initial in [expected, expected + 1] {
+            let mut budget = initial;
+            let measured = allocation_counter::measure(|| {
+                let slots = Slots::<u64>::new(N, &mut budget, HEADER).unwrap();
+                assert_eq!(budget, initial - expected);
+                assert_eq!(slots.capacity, N);
+                std::hint::black_box(slots);
+            });
+            assert!(
+                measured.bytes_max <= (expected - 4 * HEADER) as u64,
+                "{measured:?}"
+            );
+            assert_eq!(measured.count_max, 4);
         }
     }
-    for sql in result.values_mut() {
-        sql.facts
-            .sort_by_key(|(host, ordinal, _)| (*host, *ordinal));
+
+    #[test]
+    fn chunked_sort_checks_completeness_duplicates_and_cancellation() {
+        let mut budget = 8 * 1024 * 1024;
+        let mut slots = Slots::new(1025, &mut budget, 64).unwrap();
+        for i in 0..1025 {
+            slots.put(i, 1024 - i).unwrap();
+        }
+        assert!(slots.is_full());
+        assert!(slots.put(0, 9).is_err());
+        slots.sort_by(Ord::cmp, &|| false).unwrap();
+        assert!(slots.iter().copied().eq(0..1025));
+        assert!(slots.sort_by(Ord::cmp, &|| true).is_err());
+        let mut missing = Slots::<usize>::new(2, &mut budget, 64).unwrap();
+        missing.put(0, 1).unwrap();
+        assert!(!missing.is_full());
     }
-    Ok((result, used))
+
+    #[test]
+    fn fact_key_requires_exact_host_basis_and_ordinal() {
+        let host = BoundedSqlHost {
+            key: [1; 32],
+            path: "a.sql".into(),
+            dialect: SqlDialect::Sqlite,
+            input: Some([2; 32]),
+            source: Some([3; 32]),
+            producer: Some([4; 32]),
+            settings: Some([5; 32]),
+            context: Some([6; 32]),
+            fact_digest: [7; 32],
+            length: Some(10),
+            terminal: SqlHostTerminal::Parsed {
+                source: SqlCoverage::Partial,
+                contextual: SqlCoverage::Partial,
+                sqlite_lineage: None,
+            },
+            expected_facts: 2,
+            seen_facts: 0,
+            seen_ordinals: Slots::empty(),
+        };
+        let key = backend_engine::builtin::sql_fact_key(
+            host.key,
+            host.dialect,
+            [2; 32],
+            [3; 32],
+            [4; 32],
+            [5; 32],
+            host.context,
+            1,
+        );
+        assert!(verify_fact(&key, &host, 1).is_ok());
+        assert!(verify_fact(&key, &host, 0).is_err());
+        let mut changed = host;
+        changed.source = Some([8; 32]);
+        assert!(verify_fact(&key, &changed, 1).is_err());
+        changed.source = None;
+        assert!(verify_fact(&key, &changed, 1).is_err());
+    }
 }

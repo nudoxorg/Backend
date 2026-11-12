@@ -67,6 +67,7 @@ unicode-normalization = "0.1.25"
 url = "=2.5.8"
 
 [dev-dependencies]
+allocation-counter.workspace = true
 backend-client = { path = "../client", features = ["test-support"] }
 backend-store-s3 = { path = "../store-s3", features = ["test-support"] }
 
