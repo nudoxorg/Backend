@@ -775,6 +775,23 @@ mod tests {
         store.read_relation_node_claim_preflight(claim, |_| Ok(())).expect("admit after preflight");
         assert!(PREFLIGHT_DECODE_CALLS.load(Ordering::Relaxed) > 0);
         let object = store.read_relation_node(state.root()).expect("root object");
+        // Build a physically authenticated object with a correctly recomputed
+        // typed root hash but truncated node framing. Neither the budget gate
+        // nor a typed decoder may see its malformed fields.
+        let mut malformed = object.bytes().to_vec();
+        malformed.pop();
+        let schema = SchemaIdentity::of_relation::<PreflightTestRelation>();
+        let version = backend_version::state_root_digest(schema, &malformed).expect("root digest");
+        let forged = TypedObject::from_wire_parts(schema, crate::closure::relation_key(schema), version, malformed.into_boxed_slice());
+        let envelope = super::super::super::objects::encode_object(&forged, 1024 * 1024).expect("envelope");
+        fs::write(store.object_path(forged.id()), envelope).expect("forged fixture");
+        write_reference(&store, &forged, forged.id());
+        let malformed_claim = UntrustedId::<PreflightTestRelation>::from_wire(&version, IdContext::relation::<PreflightTestRelation>()).expect("claim");
+        let malformed_called = std::cell::Cell::new(false);
+        PREFLIGHT_DECODE_CALLS.store(0, Ordering::Relaxed);
+        assert!(store.read_relation_node_claim_preflight(malformed_claim, |_| { malformed_called.set(true); Ok(()) }).is_err());
+        assert!(!malformed_called.get());
+        assert_eq!(PREFLIGHT_DECODE_CALLS.load(Ordering::Relaxed), 0);
         let mut bytes = fs::read(store.object_path(object.id())).expect("envelope");
         let last = bytes.len() - 1; bytes[last] ^= 1;
         replace_object(&store, object.id(), &bytes);
