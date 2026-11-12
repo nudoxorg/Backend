@@ -5947,6 +5947,23 @@ mod tests {
         }
         let workspace_store = FileStore::open(workspace.0.join("objects"), 8 * 1024 * 1024)
             .expect("open copied workspace object store");
+        let replay_store = FileStore::open(workspace.0.join(CAS_DIRECTORY), 128 * 1024 * 1024)
+            .expect("open selected compiler store");
+        let checks = std::cell::Cell::new(0usize);
+        let count_checks = || { checks.set(checks.get() + 1); false };
+        let mut replay_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(super::super::MAX_REBUILD_BYTES, NATIVE_HEADER_WORK_UNITS);
+        bounded_replay::admit(&replay_store, &selected, &capture, &[&current], &[&removed], &mut replay_budget, &count_checks)
+            .expect("real selected replay before cancellation");
+        let stop_at = (checks.get() / 2).max(2);
+        let stopped_checks = std::cell::Cell::new(0usize);
+        let stop_during_replay = || { let next = stopped_checks.get() + 1; stopped_checks.set(next); next >= stop_at };
+        let mut replay_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(super::super::MAX_REBUILD_BYTES, NATIVE_HEADER_WORK_UNITS);
+        assert!(bounded_replay::admit(&replay_store, &selected, &capture, &[&current], &[&removed], &mut replay_budget, &stop_during_replay).is_err(),
+            "live cancellation during selected replay must stop admission");
+        assert!(stopped_checks.get() >= stop_at);
+        let mut replay_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(super::super::MAX_REBUILD_BYTES, NATIVE_HEADER_WORK_UNITS);
+        bounded_replay::admit(&replay_store, &selected, &capture, &[&current], &[&removed], &mut replay_budget, &|| false)
+            .expect("cancelled replay leaves selected publication reusable");
         assert!(admit_replayed_native_evidence(
             &workspace_store, std::slice::from_ref(&capture), &[&current], &[&removed],
         ).is_ok(), "a fresh Program may retire an omitted path");
