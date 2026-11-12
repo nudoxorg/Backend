@@ -1294,10 +1294,14 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
         loop {
             let IndexOperationObservation::Known(known) = status else { return Err("unknown index operation".into()) };
             match known.state {
-                IndexOperationState::Published(_) => return Ok(()),
+                IndexOperationState::Published(_) => {
+                    if session.connection_frames_remaining() == Some(0) { session.reconnect()?; }
+                    return Ok(());
+                }
                 IndexOperationState::PartiallyPublished { refused_profiles, .. } => {
                     if refused_profiles.is_empty() { return Err("partial publication missing refused profiles".into()); }
                     eprintln!("member fixture partial profiles: {refused_profiles:?}");
+                    if session.connection_frames_remaining() == Some(0) { session.reconnect()?; }
                     return Ok(());
                 }
                 IndexOperationState::Accepted | IndexOperationState::Active { .. } => {}
@@ -1305,6 +1309,7 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
             }
             if Instant::now() >= deadline { return Err("index deadline".into()); }
             thread::sleep(Duration::from_millis(30));
+            if session.connection_frames_remaining() == Some(0) { session.reconnect()?; }
             status = session.index_operation_status(key)?;
         }
     }
