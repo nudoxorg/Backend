@@ -585,11 +585,20 @@ fn selected_definition(fact: &SqlFact) -> bool {
     use backend_semantic::sql_analysis::SqlDefinitionAction;
     matches!(fact, SqlFact::Definition(definition) if definition.live_at_head && matches!(definition.action, SqlDefinitionAction::Create | SqlDefinitionAction::AddColumn))
 }
-fn verify_fact(key: &[u8; 32], host: &BoundedSqlHost, ordinal: u32) -> Result<(), &'static str> {
+fn verify_fact(
+    key: &[u8; 32],
+    host: &BoundedSqlHost,
+    ordinal: u32,
+    fact: &SqlFact,
+) -> Result<(), &'static str> {
     use backend_engine::builtin::sql_fact_key;
-    let (Some(input), Some(source), Some(producer), Some(settings)) =
-        (host.input, host.source, host.producer, host.settings)
-    else {
+    let (Some(input), Some(source), Some(producer), Some(settings), Some(length)) = (
+        host.input,
+        host.source,
+        host.producer,
+        host.settings,
+        host.length,
+    ) else {
         return Err("selected SQL fact lacks host basis");
     };
     if *key
@@ -605,6 +614,65 @@ fn verify_fact(key: &[u8; 32], host: &BoundedSqlHost, ordinal: u32) -> Result<()
         )
     {
         return Err("SQL fact key does not match host basis");
+    }
+    use backend_semantic::sql_analysis::SqlCoverage;
+    let outline = matches!(
+        host.terminal,
+        SqlHostTerminal::Parsed {
+            source: SqlCoverage::Partial,
+            ..
+        }
+    );
+    match fact {
+        SqlFact::SqliteRelation { .. } | SqlFact::SqliteOutputLineage { .. }
+            if host.dialect != SqlDialect::Sqlite
+                || !matches!(
+                    host.terminal,
+                    SqlHostTerminal::Parsed {
+                        contextual: SqlCoverage::Partial,
+                        ..
+                    }
+                ) =>
+        {
+            return Err("SQL model fact lacks contextual host");
+        }
+        SqlFact::Diagnostic {
+            extent: Some(range),
+            ..
+        } if u64::from(range.end) > length => return Err("SQL diagnostic extent outside host"),
+        SqlFact::Statement { extent, .. } if !outline || u64::from(extent.end) > length => {
+            return Err("SQL statement lacks outline host");
+        }
+        SqlFact::Definition(value)
+            if !outline
+                || u64::from(value.name_extent.end) > length
+                || u64::from(value.extent.end) > length =>
+        {
+            return Err("SQL definition lacks outline host");
+        }
+        SqlFact::Reference(value)
+            if !outline
+                || u64::from(value.extent.end) > length
+                || u64::from(value.full_extent.end) > length =>
+        {
+            return Err("SQL reference lacks outline host");
+        }
+        SqlFact::PostgresColumnRead { extent, .. }
+            if host.dialect != SqlDialect::Postgres
+                || host.context.is_none()
+                || !matches!(
+                    host.terminal,
+                    SqlHostTerminal::Parsed {
+                        source: SqlCoverage::Partial,
+                        contextual: SqlCoverage::Partial,
+                        sqlite_lineage: None
+                    }
+                )
+                || u64::from(extent.end) > length =>
+        {
+            return Err("PostgreSQL read lacks contextual host");
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -898,7 +966,7 @@ pub(super) fn load_projects_bounded(
             if ordinal >= host.expected_facts {
                 return Err("SQL fact ordinal outside host count");
             }
-            verify_fact(key, host, ordinal)?;
+            verify_fact(key, host, ordinal, &fact)?;
             let word = usize::try_from(ordinal / 64).map_err(|_| "SQL ordinal overflow")?;
             let mask = 1u64 << (ordinal % 64);
             let bits = host
@@ -977,7 +1045,7 @@ pub(super) fn load_projects_bounded(
                 .ok_or("missing SQL project slot")?;
             let sql = plan.sql.as_mut().ok_or("missing SQL selected project")?;
             let host = sql.hosts.get(index.host).ok_or("missing SQL host slot")?;
-            verify_fact(key, host, ordinal)?;
+            verify_fact(key, host, ordinal, &fact)?;
             sql.facts
                 .put(plan.filled_facts, (index.host, ordinal, fact))?;
             plan.filled_facts = plan
@@ -1096,12 +1164,23 @@ mod bounded_catalog_tests {
             host.context,
             1,
         );
-        assert!(verify_fact(&key, &host, 1).is_ok());
-        assert!(verify_fact(&key, &host, 0).is_err());
+        let fact = SqlFact::Diagnostic {
+            code: backend_semantic::sql_analysis::SqlDiagnostic::Other,
+            extent: None,
+        };
+        assert!(verify_fact(&key, &host, 1, &fact).is_ok());
+        assert!(verify_fact(&key, &host, 0, &fact).is_err());
+        let outside = SqlFact::Diagnostic {
+            code: backend_semantic::sql_analysis::SqlDiagnostic::Other,
+            extent: Some(backend_semantic::sql_analysis::SqlByteRange { start: 0, end: 11 }),
+        };
+        assert!(verify_fact(&key, &host, 1, &outside).is_err());
         let mut changed = host;
+        changed.terminal = SqlHostTerminal::NativeError;
+        assert!(verify_fact(&key, &changed, 1, &fact).is_ok());
         changed.source = Some([8; 32]);
-        assert!(verify_fact(&key, &changed, 1).is_err());
+        assert!(verify_fact(&key, &changed, 1, &fact).is_err());
         changed.source = None;
-        assert!(verify_fact(&key, &changed, 1).is_err());
+        assert!(verify_fact(&key, &changed, 1, &fact).is_err());
     }
 }
