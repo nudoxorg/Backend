@@ -3496,6 +3496,18 @@ mod tests {
         bytes.extend_from_slice(&[0; 35]); // header pointer lacks its final byte
         let measured = measure(|| assert!(matches!(CompilerPublicationMetadata::decode(&bytes), Err(CompilerEnvelopeError::Truncated))));
         assert!(measured.bytes_max < 32 * 1024, "metadata optional tail preflight: {measured:?}");
+        bytes.truncate(offset + 4 + MAX_MEMBER_IDS * 72);
+        bytes[METADATA_MAGIC.len()..METADATA_MAGIC.len() + 2].copy_from_slice(&METADATA_VERSION.to_le_bytes());
+        let mut nested = Vec::new();
+        nested.extend_from_slice(b"TURVPM\0\0");
+        nested.extend_from_slice(&3u16.to_le_bytes());
+        nested.extend_from_slice(&[0; 32]);
+        nested.extend_from_slice(&50_000u32.to_le_bytes());
+        bytes.push(1);
+        bytes.extend_from_slice(&(nested.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&nested);
+        let measured = measure(|| assert!(matches!(CompilerPublicationMetadata::decode(&bytes), Err(CompilerEnvelopeError::VersionedPlane(VersionedPlaneError::Truncated)))));
+        assert!(measured.bytes_max < 32 * 1024, "nested metadata preflight: {measured:?}");
         let envelope = CompilerPublicationEnvelope::new(&attempt(), &record).unwrap();
         let mut bytes = envelope.canonical_bytes();
         let offset = bytes.len() - envelope.member_ids().len() * 32 - 4;
