@@ -5952,7 +5952,19 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             let native_lines = if tsz_package_membership.contains_key(source.relative_path()) {
                 let budget = tsz_budget.as_ref().ok_or(PackageSemanticError::Capacity { lane: "TypeScript source lines budget" })?;
                 super::typescript_program_lane::capture_source_lines(source.source, source.relative_path(), compiled.source, budget, &mut native_lines_budget)
-                    .map_err(|_| PackageSemanticError::Capacity { lane: "TypeScript source lines capture" })?
+                    .map_err(|_| {
+                        if let Some(cause) = budget.stop_reason() {
+                            PackageSemanticError::Compile {
+                                path: source.relative_path.into(),
+                                terminal: Box::new(package_authority_terminal(
+                                    package.package_target.target(), application_request, source_authority,
+                                    self.toolchain_for_package(application_request, typescript_toolchain)
+                                        .unwrap_or(ToolchainSelection::ExplicitlyUnavailable { tool: NativeTool::TypeScriptCompiler }),
+                                    PackageAuthorityError::TypeScriptTsz(backend_frontend_typescript::TszAuthorityError::ExecutionStopped(cause)),
+                                )),
+                            }
+                        } else { PackageSemanticError::Capacity { lane: "TypeScript source lines capture" } }
+                    })?
             } else { None };
             artifacts.push(StagedPackageArtifact {
                 native_lines,
