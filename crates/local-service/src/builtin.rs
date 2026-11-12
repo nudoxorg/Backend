@@ -2044,13 +2044,13 @@ fn compose_owner_timed(
     }
     let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
         &config.workspace,
-        BuiltinModel::with_owner_context(receipt_context.clone(), shutdown),
+        BuiltinModel::with_owner_context(receipt_context.clone(), shutdown.clone()),
         genesis,
         dispatcher,
         DaemonConfig::default(),
         relation_registry,
     )
-    .map_err(|error| embedded_host::owner_open_refusal(&config.workspace, error))?;
+    .map_err(|error| embedded_host::owner_open_refusal_with_shutdown(&config.workspace, error, shutdown.clone()))?;
     timing.begin(startup_timing::Phase::DirectoryAdmission);
     let workspace_admission = daemon
         .engine()
@@ -2058,9 +2058,10 @@ fn compose_owner_timed(
         .owner()
         .directory_admission()
         .map_err(|error| {
-            embedded_host::owner_open_refusal(
+            embedded_host::owner_open_refusal_with_shutdown(
                 &config.workspace,
                 crate::LocaldError::Workspace(error),
+                shutdown.clone(),
             )
         })?;
     workspace_admission::admit_local_owner_directories(&workspace_admission).map_err(|error| {

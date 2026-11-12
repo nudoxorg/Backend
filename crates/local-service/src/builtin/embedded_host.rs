@@ -23,14 +23,14 @@ struct RetiredLayoutEvidence {
     files: std::num::NonZeroUsize,
 }
 
-fn probe_retired_layout(workspace: &std::path::Path) -> Result<RetiredLayoutEvidence, String> {
+fn probe_retired_layout(workspace: &std::path::Path, shutdown: Option<crate::listener::ListenerShutdown>) -> Result<RetiredLayoutEvidence, String> {
     use super::profile::{BuiltinWorkspaceRelation, RetiredSourceProbe};
     use backend_engine::WorkspaceOwner;
 
     let registry = super::product_relation_registry().map_err(|error| error.to_string())?;
     let owner = WorkspaceOwner::open_with_registry(
         workspace,
-        RetiredSourceProbe::new(workspace),
+        RetiredSourceProbe::with_shutdown(workspace, shutdown),
         super::genesis().map_err(|error| error.to_string())?,
         registry,
     )
@@ -58,6 +58,17 @@ pub(super) fn owner_open_refusal(
     workspace: &std::path::Path,
     error: crate::LocaldError,
 ) -> ProcessError {
+    owner_open_refusal_with_shutdown(workspace, error, None)
+}
+
+pub(super) fn owner_open_refusal_with_shutdown(
+    workspace: &std::path::Path,
+    error: crate::LocaldError,
+    shutdown: Option<crate::listener::ListenerShutdown>,
+) -> ProcessError {
+    if shutdown.as_ref().is_some_and(crate::listener::ListenerShutdown::is_requested) {
+        return ProcessError::Profile(error.to_string());
+    }
     if matches!(
         &error,
         crate::LocaldError::Workspace(backend_engine::WorkspaceError::AlreadyOwned)
@@ -69,7 +80,7 @@ pub(super) fn owner_open_refusal(
     if matches!(
         &error,
         crate::LocaldError::Workspace(backend_engine::WorkspaceError::Model(_))
-    ) && let Ok(evidence) = probe_retired_layout(workspace)
+    ) && let Ok(evidence) = probe_retired_layout(workspace, shutdown)
     {
         return ProcessError::StateFromAnotherBuild(format!(
             "{} indexed source files are keyed by the source-file key layout an earlier build wrote ({error})",

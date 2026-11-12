@@ -5513,13 +5513,19 @@ pub(super) fn prepare_retired_fixture(
 #[derive(Clone, Debug)]
 pub(super) struct RetiredSourceProbe {
     workspace: std::path::PathBuf,
+    shutdown: Option<crate::listener::ListenerShutdown>,
 }
 
 impl RetiredSourceProbe {
     pub(super) fn new(workspace: &std::path::Path) -> Self {
         Self {
             workspace: workspace.to_owned(),
+            shutdown: None,
         }
+    }
+
+    pub(super) fn with_shutdown(workspace: &std::path::Path, shutdown: Option<crate::listener::ListenerShutdown>) -> Self {
+        Self { workspace: workspace.to_owned(), shutdown }
     }
 
     // WorkspaceOwner opens/repairs its diagnostic journal after model and
@@ -5588,7 +5594,7 @@ impl WorkspaceModel for RetiredSourceProbe {
         store: &backend_engine::FileStore,
     ) -> Result<PreparedTransition, Self::Error> {
         let transition =
-            admit_persisted_transition_with_layout(persisted, store, SourceFileKeyLayout::Retired, None)?;
+            admit_persisted_transition_with_layout(persisted, store, SourceFileKeyLayout::Retired, self.shutdown.as_ref())?;
         self.admit_unmodified_diagnostics()?;
         Ok(transition)
     }
