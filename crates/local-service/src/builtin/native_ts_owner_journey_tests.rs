@@ -44,6 +44,9 @@ fn start_owner_with_frame_budget(
 #[test]
 #[ignore = "real owner index with a one-frame connection budget"]
 fn native_ts_index_polling_reconnects_without_resubmitting() -> Result<(), Box<dyn Error>> {
+    if backend_client::connection_frame_budget() != 1 {
+        return Err("run with BACKEND_LOCALD_MAX_FRAMES_PER_CONNECTION=1".into());
+    }
     let mut builder = tempfile::Builder::new();
     builder.prefix("tsx-poll-");
     #[cfg(unix)]
