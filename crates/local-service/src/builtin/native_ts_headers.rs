@@ -69,6 +69,55 @@ pub(super) fn admit_image(
     Ok(())
 }
 
+/// Resolves a closure-bound file without materializing the aggregate.
+pub(super) fn witnessed_file_borrowed<'a>(
+    claim: &NativeSourceEvidence,
+    aggregate: &backend_semantic::native_ts_headers::NativeTsHeaderAggregateView<'a>,
+    digest: [u8; 32], checkpoint: &mut impl FnMut(usize) -> Result<(), String>,
+) -> Result<backend_semantic::native_ts_headers::NativeTsHeaderFileView<'a>, String> {
+    let reference = claim.headers.as_ref().ok_or("native header reference absent")?;
+    if reference.aggregate_digest != digest { return Err("native header closure differs".into()); }
+    let file = aggregate.find_file_checkpointed(&claim.path, checkpoint)?
+        .ok_or("native header file absent from compiler closure")?;
+    if file.source.byte_len != claim.byte_length || file.source.identity.as_ref() != claim.source_digest.as_slice()
+        || file.image_identity != reference.image_identity || file.image_byte_len != reference.image_byte_len
+        || file.producer_recipe != reference.producer_recipe
+    { return Err("native header file differs from source evidence".into()); }
+    Ok(file)
+}
+
+/// Checks every borrowed claim against the exact selected compiler image.
+pub(super) fn admit_image_borrowed(
+    claim: &NativeSourceEvidence, headers: &backend_engine::builtin::NativeHeaderEvidence,
+    file: backend_semantic::native_ts_headers::NativeTsHeaderFileView<'_>, image: &SemanticImageView<'_>,
+    encoded: &[u8], checkpoint: &mut impl FnMut(usize) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut hasher = backend_version::ArtifactHasher::<backend_version::IrSemanticImageEncoding, backend_version::IrSemanticImageDomain>::new();
+    for chunk in encoded.chunks(64 * 1024) { checkpoint(chunk.len())?; hasher.write_chunk(chunk); }
+    let identity: [u8; 32] = *hasher.finalize().as_ref();
+    if headers.image_identity != identity || headers.image_byte_len != encoded.len() as u64
+        || file.path != claim.path || file.source.byte_len != claim.byte_length
+        || file.source.identity.as_ref() != claim.source_digest.as_slice()
+        || file.image_identity != identity || file.image_byte_len != encoded.len() as u64
+        || file.producer_recipe != headers.producer_recipe
+    { return Err("native header image or source differs".into()); }
+    let session = DocumentationSession::new(image);
+    for entry in file.entries() {
+        checkpoint(52)?;
+        let entity = session.entity(backend_semantic::ir::EntityId::new(entry.entity_id))
+            .map_err(|error| format!("native header entity: {error}"))?;
+        let Some(span) = entity.entity.source else { return Err("native header source absent".into()) };
+        if entity.entity.version.identity() != entry.identity || entity.entity.kind != ItemKind::Function
+            || entity.entity.authority.publication != DeclarationPublicationRole::PrimaryOwned
+            || entity.entity.authority.source != FactAvailability::Captured
+            || entity.entity.authority.source_file != FactAvailability::Captured
+            || (span.start(), span.end()) != entry.compiler_extent
+            || image.atom(span.file()) != Some(claim.path.as_bytes())
+        { return Err("native header entity differs".into()); }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
