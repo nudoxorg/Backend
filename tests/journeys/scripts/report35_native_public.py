@@ -8,10 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
-import signal
-import subprocess
 import sys
 import time
 
@@ -144,7 +141,8 @@ def main() -> int:
             'export async function POST(): Promise<string> { return generateSchedule("request"); }\n'
         )
         (project / "src/NavBar.tsx").write_text(
-            'export function NavBar(): string { return "navigation"; }\n'
+            'import { loadSectionsCsv } from "@/data";\n'
+            'export function NavBar(): string { return loadSectionsCsv(); }\n'
         )
         route.start_owner(project)
         add, _ = cli("add", "add", str(project), "--wait", "--wait-timeout", "900")
@@ -186,6 +184,9 @@ def main() -> int:
             ref_rows = records(refs)
             check("references-caller:" + name,
                   any(caller in json.dumps(row) for row in ref_rows), ref_rows)
+            if name == "loadSectionsCsv":
+                check("references:cross-profile:NavBar", any(
+                    identity(row).get("name") == "NavBar" for row in ref_rows), ref_rows)
             cli_references[name] = refs
         # The historical path coordinate must remain usable on unchanged source.
         coordinate = coordinates.get("generateSchedule")
@@ -262,12 +263,8 @@ def main() -> int:
                       and status[key] == mcp_status_body[key] for key in comparable),
               {"keys": comparable, "cli": status, "mcp": mcp_status_body})
         # Stop only this fixture's processes and reopen the same durable state.
-        for process in (route.mcp, route.owner):
-            if process is not None and process.poll() is None:
-                os.killpg(process.pid, signal.SIGTERM)
-                process.wait(timeout=15)
-        route.mcp = None
-        route.owner = None
+        retirement = route.retire_for_reopen()
+        check("reopen:previous-owner-retired", len(retirement) == 2, retirement)
         deadline = time.monotonic() + 15
         while route.endpoint.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
@@ -296,6 +293,9 @@ def main() -> int:
         check("runner", False, str(error))
     finally:
         route.stop()
+        cleanup = route.records[-1] if route.records else {}
+        check("cleanup:owned-processes-retired", cleanup.get("label") == "cleanup"
+              and not cleanup.get("unretired") and not route.root.exists(), cleanup)
         verified_after = verify_build()
         if verified_after["receipt_sha256"] != build["receipt_sha256"]:
             raise RuntimeError("Cargo build receipt changed during the public journey")

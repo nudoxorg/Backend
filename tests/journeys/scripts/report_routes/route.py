@@ -8,7 +8,7 @@ labelled with the exact source commit and binary hashes.
 Debug builds skip the account gate, so a run of this script on a debug build is
 DEVELOPMENT MODE: it never proves authenticated behaviour. The receipt says so.
 """
-import argparse, hashlib, json, os, pathlib, select, shutil, signal, subprocess, sys, tempfile, time
+import argparse, hashlib, json, os, pathlib, re, select, shutil, signal, stat, subprocess, sys, tempfile, time
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -19,6 +19,250 @@ def sha(path):
     return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
 
 
+def _read_linux_process(pid):
+    """Read process identity and private-environment evidence, or return None."""
+    root = pathlib.Path("/proc") / str(pid)
+    try:
+        argv = [part.decode("utf-8", "strict") for part in (root / "cmdline").read_bytes().split(b"\0") if part]
+        raw = (root / "stat").read_text()
+        # comm is parenthesized and may itself contain spaces or parentheses.
+        fields = raw[raw.rfind(")") + 2:].split()
+        status = (root / "status").read_text()
+        uid_row = next(line for line in status.splitlines() if line.startswith("Uid:"))
+        uid = int(uid_row.split()[2])
+        environment = {}
+        for entry in (root / "environ").read_bytes().split(b"\0"):
+            key, sep, value = entry.partition(b"=")
+            if sep and key in (b"HOME", b"XDG_RUNTIME_DIR"):
+                environment[key.decode()] = value.decode("utf-8", "strict")
+        executable = os.readlink(root / "exe")
+        return {"argv": argv, "start_ticks": fields[19], "pgrp": int(fields[2]),
+                "session": int(fields[3]), "uid": uid,
+                "environment": environment, "executable": executable}
+    except (OSError, UnicodeError, IndexError, ValueError):
+        return None
+
+
+def _option_value(argv, option):
+    for index, item in enumerate(argv):
+        if item == option and index + 1 < len(argv):
+            return argv[index + 1]
+        if item.startswith(option + "="):
+            return item[len(option) + 1:]
+    return None
+
+
+def _wait_pidfd(fd, timeout):
+    poller = select.poll()
+    poller.register(fd, select.POLLIN)
+    return any(ready_fd == fd and mask & select.POLLIN
+               for ready_fd, mask in poller.poll(max(0, int(timeout * 1000))))
+
+
+def _private_default_endpoint(endpoint, root, runtime_dir):
+    try:
+        endpoint_path = pathlib.Path(endpoint).resolve(strict=False)
+        root_path = pathlib.Path(root).resolve(strict=True)
+        runtime_path = pathlib.Path(runtime_dir).resolve(strict=True)
+        return (endpoint_path.parent == runtime_path
+                and os.path.commonpath((str(root_path), str(endpoint_path))) == str(root_path)
+                and re.fullmatch(r"backend-v2-[0-9a-f]{24}\.sock", endpoint_path.name) is not None)
+    except (OSError, ValueError):
+        return False
+
+
+def _matches_detached_owner(current, expected_executable, workspace, root, home, runtime_dir):
+    argv = current["argv"]
+    if (not argv or argv[0] != expected_executable
+            or current["executable"] != expected_executable
+            or current["uid"] != os.geteuid()
+            or current["environment"].get("HOME") != str(home)
+            or current["environment"].get("XDG_RUNTIME_DIR") != str(runtime_dir)
+            or _option_value(argv, "--workspace") != str(workspace)
+            or _option_value(argv, "--authority-secret-file") != str(pathlib.Path(workspace) / "authority.secret")):
+        return False
+    endpoint = _option_value(argv, "--endpoint")
+    return bool(endpoint and _private_default_endpoint(endpoint, root, runtime_dir))
+
+
+def _retire_detached_owner(pid, descriptor, expected_executable, workspace, root,
+                           home, runtime_dir, observed, timeout=8):
+    """Retire a previously pinned autostart owner and prove its kernel exit."""
+    if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+        return None
+    try:
+        if _wait_pidfd(descriptor, 0):
+            return {"proof": "linux-pidfd-already-exited", "pid": pid,
+                    "endpoint": observed["endpoint"]}
+        current = _read_linux_process(pid)
+        if (current is None or current["start_ticks"] != observed["start_ticks"]
+                or _option_value(current["argv"], "--endpoint") != observed["endpoint"]
+                or not _matches_detached_owner(current, expected_executable, workspace,
+                                               root, home, runtime_dir)):
+            return None
+        try:
+            signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        if _wait_pidfd(descriptor, timeout):
+            return {"proof": "linux-pidfd", "pid": pid, "signal": "TERM",
+                    "endpoint": observed["endpoint"]}
+        signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+        if _wait_pidfd(descriptor, timeout):
+            return {"proof": "linux-pidfd", "pid": pid, "signal": "KILL-after-TERM-timeout",
+                    "endpoint": observed["endpoint"]}
+        return None
+    except (OSError, ProcessLookupError, PermissionError, TimeoutError):
+        return None
+
+
+def _owned_detached_owners(binary, workspace, root, home, runtime_dir):
+    """Find exact same-user owner commands with private route environment."""
+    proc_root = pathlib.Path("/proc")
+    if not proc_root.is_dir() or not hasattr(os, "pidfd_open"):
+        return None
+    expected = str(pathlib.Path(binary).resolve(strict=True))
+    owners = []
+    for entry in proc_root.iterdir():
+        if not entry.name.isdecimal():
+            continue
+        pid = int(entry.name)
+        observed = _read_linux_process(pid)
+        if observed is None:
+            continue
+        argv = observed["argv"]
+        if (argv and argv[0] == expected
+                and _option_value(argv, "--workspace") == str(workspace)
+                and observed["uid"] == os.geteuid()
+                and observed["environment"].get("HOME") == str(home)
+                and observed["environment"].get("XDG_RUNTIME_DIR") == str(runtime_dir)):
+            endpoint = _option_value(argv, "--endpoint")
+            if endpoint and _private_default_endpoint(endpoint, root, runtime_dir):
+                observed["endpoint"] = endpoint
+                owners.append((pid, observed))
+    return owners
+
+
+def _linux_group_members(pgid):
+    """Pin live members of the Popen-created private session before signalling."""
+    if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+        return None
+    members = []
+    for entry in pathlib.Path("/proc").iterdir():
+        if not entry.name.isdecimal():
+            continue
+        pid = int(entry.name)
+        first = _read_linux_process(pid)
+        if first is None or first["pgrp"] != pgid or first["session"] != pgid:
+            continue
+        try:
+            descriptor = os.pidfd_open(pid)
+        except OSError:
+            for _, owned_fd in members:
+                os.close(owned_fd)
+            return None
+        second = _read_linux_process(pid)
+        if (second is not None and second["start_ticks"] == first["start_ticks"]
+                and second["pgrp"] == pgid and second["session"] == pgid):
+            if not _wait_pidfd(descriptor, 0):
+                members.append((pid, descriptor))
+                continue
+        os.close(descriptor)
+    return members
+
+
+def _retire_spawned_group(proc, identity, grace=2, timeout=8):
+    """Retire a Popen-owned session without signalling a recycled numeric PGID."""
+    if identity.get("unproved"):
+        return None, "spawned process identity could not be proven; refusing to signal its process group"
+    pgid = proc.pid
+    leader_fd = identity.get("leader_fd")
+    if leader_fd is None:
+        # On hosts without pidfd, a live Popen leader proves its own freshly
+        # created group. Once that leader has exited, retain the fixture if
+        # descendants remain instead of signalling a possibly recycled PGID.
+        if proc.returncode is None:
+            try:
+                os.killpg(pgid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except OSError as error:
+                return None, f"TERM failed: {error.__class__.__name__}"
+            try:
+                proc.wait(timeout=grace)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=grace)
+                except Exception:
+                    return None, "owned leader did not exit"
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return {"proof": "owned-popen-child", "pid": pgid,
+                    "exit_code": proc.returncode}, None
+        except OSError as error:
+            return None, f"group retirement unproved: {error.__class__.__name__}"
+        return None, "leader exited but descendant retirement has no pidfd proof"
+
+    if not _wait_pidfd(leader_fd, 0):
+        # The retained pidfd proves that this group leader still exists, so the
+        # numeric PGID cannot refer to an unrelated replacement group here.
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except OSError as error:
+            return None, f"TERM failed: {error.__class__.__name__}"
+        try:
+            proc.wait(timeout=grace)
+        except subprocess.TimeoutExpired:
+            try:
+                signal.pidfd_send_signal(leader_fd, signal.SIGKILL)
+                proc.wait(timeout=grace)
+            except Exception:
+                return None, "owned leader did not exit"
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        members = _linux_group_members(pgid)
+        if members is None:
+            return None, "session members could not be pinned"
+        if not members:
+            try:
+                proc.wait(timeout=max(0.1, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                return None, "owned leader did not exit"
+            return {"proof": "owned-popen-session-pidfds", "pid": pgid,
+                    "exit_code": proc.returncode}, None
+        member_failure = None
+        for pid, descriptor in members:
+            try:
+                signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+                if not _wait_pidfd(descriptor, min(grace, max(0.1, deadline - time.monotonic()))):
+                    signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+                    if not _wait_pidfd(descriptor, max(0.1, deadline - time.monotonic())):
+                        member_failure = f"session member {pid} did not retire"
+            except ProcessLookupError:
+                if not _wait_pidfd(descriptor, 0):
+                    member_failure = f"session member {pid} identity disappeared without exit proof"
+            except OSError as error:
+                member_failure = f"session member retirement failed: {error.__class__.__name__}"
+            finally:
+                os.close(descriptor)
+        if member_failure:
+            return None, member_failure
+    return None, "session descendants remained after TERM/KILL"
+
+
+class RetirementUnproved(RuntimeError):
+    """A cleanup failure retains structured ownership evidence for callers."""
+
+    def __init__(self, failures):
+        self.failures = failures
+        super().__init__("route owner retirement was not proven: " + json.dumps(failures))
+
+
 class Route:
     """One private HOME, one owner, any number of CLI and MCP calls."""
 
@@ -26,12 +270,17 @@ class Route:
         self.bin = pathlib.Path(bin_dir)
         self.out = pathlib.Path(out)
         self.out.mkdir(parents=True, exist_ok=True)
-        self.root = pathlib.Path(tempfile.mkdtemp(prefix="ndx-route-"))
+        self.root = pathlib.Path(tempfile.mkdtemp(prefix="ndx-route-", dir="/tmp")).resolve()
         os.chmod(self.root, 0o700)
         self.records = []
         self.seq = 0
         self.owner = None
         self.mcp = None
+        self.cleanup_proofs = []
+        self.spawned_processes = {}
+        self.autostart_attempted = False
+        self.autostart_unproved = False
+        self.autostart_owners = {}
         self.pending = bytearray()
         self.auto_start = auto_start
         base_path = os.environ.get("PATH", "/usr/bin:/bin")
@@ -56,15 +305,15 @@ class Route:
         if self.auto_start:
             return
         secret = self.workspace / "authority.secret"
-        secret.write_bytes(os.urandom(32))
-        os.chmod(secret, 0o600)
+        self._ensure_authority_secret(secret)
         env = dict(self.env, BACKEND_LOCALD_AUTHORITY_SECRET_FILE=str(secret))
-        log = open(self.out / "owner-stderr.log", "wb")
-        self.owner = subprocess.Popen(
-            [str(self.bin / "backend-locald"), "--endpoint", str(self.endpoint), "--workspace",
-             str(self.workspace), "--authority-secret-file", str(secret), "--registry-offline",
-             "--registry-discovery-offline", "--advisory-offline", "--forge-offline"],
-            cwd=cwd, env=env, stdout=subprocess.DEVNULL, stderr=log, start_new_session=True)
+        with open(self.out / "owner-stderr.log", "wb") as log:
+            self.owner = subprocess.Popen(
+                [str(self.bin / "backend-locald"), "--endpoint", str(self.endpoint), "--workspace",
+                 str(self.workspace), "--authority-secret-file", str(secret), "--registry-offline",
+                 "--registry-discovery-offline", "--advisory-offline", "--forge-offline"],
+                cwd=cwd, env=env, stdout=subprocess.DEVNULL, stderr=log, start_new_session=True)
+        self._remember_spawned_process(self.owner)
         deadline = time.monotonic() + 420
         while not self.endpoint.exists():
             if self.owner.poll() is not None:
@@ -73,14 +322,111 @@ class Route:
                 raise RuntimeError("locald startup timed out")
             time.sleep(0.05)
 
+    @staticmethod
+    def _ensure_authority_secret(path):
+        """Create the route authority once, or reuse only a safe 32-byte file."""
+        required = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                    | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
+        if not getattr(os, "O_NOFOLLOW", 0):
+            raise RuntimeError("cannot safely create the route authority without O_NOFOLLOW")
+        try:
+            fd = os.open(path, required, 0o600)
+        except FileExistsError:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                         | getattr(os, "O_CLOEXEC", 0))
+            try:
+                info = os.fstat(fd)
+                if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                        or info.st_uid != os.getuid() or info.st_mode & 0o077
+                        or info.st_size != 32):
+                    raise RuntimeError("existing route authority is not a private single-link 32-byte file")
+                secret = os.read(fd, 33)
+                if len(secret) != 32:
+                    raise RuntimeError("existing route authority is not a private single-link 32-byte file")
+            finally:
+                os.close(fd)
+            return
+        secret = os.urandom(32)
+        try:
+            os.fchmod(fd, 0o600)
+            view = memoryview(secret)
+            while view:
+                written = os.write(fd, view)
+                if written <= 0:
+                    raise OSError("short write creating route authority")
+                view = view[written:]
+            os.fsync(fd)
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                    or info.st_uid != os.getuid() or info.st_mode & 0o077
+                    or info.st_size != 32):
+                raise RuntimeError("new route authority did not remain a private single-link 32-byte file")
+        finally:
+            os.close(fd)
+
+    def _remember_autostart_owners(self):
+        if not self.auto_start:
+            return
+        try:
+            found = _owned_detached_owners(
+                self.bin / "backend-locald", self.workspace, self.root,
+                self.root / "HOME", self.root / "XDG_RUNTIME_DIR")
+        except Exception:
+            found = None
+        if found is None:
+            self.autostart_unproved = True
+            return
+        for pid, observed in found:
+            identity = (pid, observed["start_ticks"])
+            if identity in self.autostart_owners:
+                continue
+            try:
+                descriptor = os.pidfd_open(pid)
+                current = _read_linux_process(pid)
+                if current is not None:
+                    current["endpoint"] = _option_value(current["argv"], "--endpoint")
+                if (current is None or current["start_ticks"] != observed["start_ticks"]
+                        or current.get("endpoint") != observed["endpoint"]
+                        or not _matches_detached_owner(
+                            current, str((self.bin / "backend-locald").resolve(strict=True)),
+                            self.workspace, self.root, self.root / "HOME",
+                            self.root / "XDG_RUNTIME_DIR")):
+                    os.close(descriptor)
+                    self.autostart_unproved = True
+                    continue
+                current["endpoint"] = observed["endpoint"]
+                self.autostart_owners[identity] = {
+                    "pid": pid, "descriptor": descriptor, "observed": current,
+                }
+            except OSError:
+                self.autostart_unproved = True
+
+    def _remember_spawned_process(self, proc):
+        identity = {"leader_fd": None, "start_ticks": None}
+        if hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal"):
+            try:
+                observed = _read_linux_process(proc.pid)
+                if (observed is None or observed["pgrp"] != proc.pid
+                        or observed["session"] != proc.pid):
+                    raise RuntimeError("spawned child did not retain its private session identity")
+                descriptor = os.pidfd_open(proc.pid)
+                current = _read_linux_process(proc.pid)
+                if (current is None or current["start_ticks"] != observed["start_ticks"]
+                        or current["pgrp"] != proc.pid or current["session"] != proc.pid):
+                    os.close(descriptor)
+                    raise RuntimeError("spawned child identity changed before pidfd pin")
+                identity.update(leader_fd=descriptor, start_ticks=current["start_ticks"])
+            except (OSError, RuntimeError):
+                identity["unproved"] = True
+        self.spawned_processes[proc.pid] = identity
+
     def save_records(self):
         (self.out / "records.json").write_text(json.dumps(self.records, indent=1))
 
-    def stop(self):
-        try:
-            self.save_records()
-        except Exception:
-            pass
+    def retire_for_reopen(self):
+        """Retire this route's owners while keeping its private state for reuse."""
+        unretired = []
+        proofs = []
         for proc in (self.mcp, self.owner):
             if proc is None:
                 continue
@@ -89,23 +435,100 @@ class Route:
                     proc.stdin.close()
             except Exception:
                 pass
-            if proc.poll() is None:
-                try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                    proc.wait(timeout=8)
-                except Exception:
+            try:
+                identity = self.spawned_processes.get(proc.pid)
+                if identity is None:
+                    proof, error = None, "no retained Popen session identity"
+                else:
+                    proof, error = _retire_spawned_group(proc, identity)
+            except Exception as failure:
+                proof, error = None, f"retirement failed: {failure.__class__.__name__}"
+            if proof is None:
+                unretired.append({"kind": "spawned-process-group", "pid": proc.pid,
+                                  "reason": error or "retirement unproved"})
+                continue
+            proofs.append(proof)
+            for stream_name in ("stdin", "stdout", "stderr"):
+                stream = getattr(proc, stream_name, None)
+                if stream is not None:
                     try:
-                        os.killpg(proc.pid, signal.SIGKILL)
+                        stream.close()
                     except Exception:
                         pass
-        # An owner the CLI started itself is found by its unique private workspace path.
-        subprocess.run(["pkill", "-TERM", "-f", str(self.workspace)], check=False)
-        time.sleep(0.5)
-        subprocess.run(["pkill", "-KILL", "-f", str(self.workspace)], check=False)
-        shutil.rmtree(self.root, ignore_errors=True)
+            identity = self.spawned_processes.pop(proc.pid, None)
+            if identity and identity.get("leader_fd") is not None:
+                try:
+                    os.close(identity["leader_fd"])
+                except OSError:
+                    pass
+            if self.mcp is proc:
+                self.mcp = None
+            if self.owner is proc:
+                self.owner = None
+
+        if self.auto_start:
+            if self.autostart_attempted:
+                self._remember_autostart_owners()
+            if self.autostart_unproved:
+                unretired.append({"kind": "autostart-owner",
+                                  "reason": "process identity or kernel retirement was not proven"})
+            if self.autostart_attempted and not self.autostart_owners:
+                unretired.append({"kind": "autostart-owner",
+                                  "reason": "no owned identity was pinned; empty discovery is not proof of retirement"})
+            try:
+                expected_executable = str((self.bin / "backend-locald").resolve(strict=True))
+            except OSError:
+                expected_executable = None
+                if self.autostart_owners:
+                    unretired.append({"kind": "autostart-owner", "reason": "owner executable identity unavailable"})
+            for identity, record in list(self.autostart_owners.items()):
+                proof = None
+                if expected_executable is not None:
+                    proof = _retire_detached_owner(
+                        record["pid"], record["descriptor"], expected_executable,
+                        self.workspace, self.root, self.root / "HOME",
+                        self.root / "XDG_RUNTIME_DIR", record["observed"])
+                if proof is None:
+                    unretired.append({"kind": "autostart-owner", "pid": record["pid"],
+                                      "endpoint": record["observed"].get("endpoint"),
+                                      "reason": "identity changed or kernel retirement was not proven"})
+                else:
+                    proofs.append(proof)
+                    try:
+                        os.close(record["descriptor"])
+                    except OSError:
+                        pass
+                    self.autostart_owners.pop(identity, None)
+
+        self.cleanup_proofs.extend(proofs)
+        if unretired:
+            raise RetirementUnproved(unretired)
+        return proofs
+
+    def stop(self):
+        unretired = []
+        before = len(self.cleanup_proofs)
+        try:
+            self.retire_for_reopen()
+        except RetirementUnproved as failure:
+            unretired = failure.failures
+        proofs = self.cleanup_proofs[before:]
+        cleanup_record = {"label": "cleanup", "retired": proofs, "unretired": unretired,
+                          "private_root": str(self.root), "root_removed": not unretired}
+        self.records.append(cleanup_record)
+        try:
+            self.save_records()
+        except Exception:
+            unretired.append({"kind": "receipt", "reason": "cleanup receipt could not be saved"})
+            cleanup_record["unretired"] = unretired
+            cleanup_record["root_removed"] = False
+        if not unretired:
+            shutil.rmtree(self.root, ignore_errors=True)
 
     # ---- CLI -----------------------------------------------------------------------
     def cli(self, label, args, project, timeout=1800, json_out=True):
+        if self.auto_start:
+            self.autostart_attempted = True
         cmd = [str(self.bin / "backend-cli")]
         if json_out:
             cmd += ["--format", "json"]
@@ -113,7 +536,11 @@ class Route:
         if not self.auto_start:
             cmd += ["--endpoint", str(self.endpoint)]
         cmd += list(args)
-        proc = subprocess.run(cmd, cwd=project, env=self.env, capture_output=True, timeout=timeout)
+        try:
+            proc = subprocess.run(cmd, cwd=project, env=self.env, capture_output=True, timeout=timeout)
+        finally:
+            if self.auto_start:
+                self._remember_autostart_owners()
         out = proc.stdout.decode("utf-8", "replace")
         err = proc.stderr.decode("utf-8", "replace")
         (self.out / f"{label}.stdout").write_text(out)
@@ -127,15 +554,21 @@ class Route:
 
     # ---- MCP -----------------------------------------------------------------------
     def start_mcp(self, project):
+        if self.auto_start:
+            self.autostart_attempted = True
         argv = [str(self.bin / "backend-mcp"), "--project", str(project), "--workspace", str(self.workspace)]
         if not self.auto_start:
             argv += ["--endpoint", str(self.endpoint)]
-        self.mcp = subprocess.Popen(argv, cwd=project, env=self.env, stdin=subprocess.PIPE,
-                                    stdout=subprocess.PIPE, stderr=open(self.out / "mcp-stderr.log", "wb"),
-                                    start_new_session=True, bufsize=0)
+        with open(self.out / "mcp-stderr.log", "wb") as log:
+            self.mcp = subprocess.Popen(argv, cwd=project, env=self.env, stdin=subprocess.PIPE,
+                                        stdout=subprocess.PIPE, stderr=log,
+                                        start_new_session=True, bufsize=0)
+        self._remember_spawned_process(self.mcp)
         self.rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
                                 "clientInfo": {"name": "report-routes", "version": "1"}})
         self.mcp.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
+        if self.auto_start:
+            self._remember_autostart_owners()
 
     def rpc(self, method, params, timeout=120, allow_error=False):
         self.seq += 1
