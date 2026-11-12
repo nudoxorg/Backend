@@ -361,6 +361,8 @@ pub(super) fn capture_source_lines(
         }
     }
     if count > MAX_NATIVE_SOURCE_LINES_PER_FILE { return Ok(None); }
+    let retained = count.checked_mul(std::mem::size_of::<u32>()).and_then(|n| n.checked_add(path.len())).ok_or("source line capacity overflow")?;
+    if retained > *remaining { checkpoint.checkpoint(0).map_err(|e| format!("source lines stopped: {e:?}"))?; return Ok(None); }
     if hash.finish().map_err(|_| "source line hash failed")? != source.identity || source.byte_len as usize != bytes.len() { return Err("source line identity differs".into()); }
     let mut line_starts = backend_store::try_allocate_exact_zeroed_u32_budgeted(count, remaining).map_err(|e| format!("source line capacity: {e:?}"))?;
     let mut cursor = 1;
