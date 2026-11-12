@@ -679,8 +679,12 @@ class HarnessContractTests(unittest.TestCase):
 
     def test_cli_surface_call_does_not_use_health_only_passive_flag(self) -> None:
         source = (REPOSITORY / "apps/cli/src/options.rs").read_text(encoding="utf-8")
-        guard = source.index('"--passive"')
-        self.assertIn('grammar.name() == "health"', source[guard : guard + 700])
+        # Locate the actual validation block; unrelated global options can grow
+        # without moving the health-only contract into a fixed character window.
+        guard = source.split("    if passive\n", 1)[1].split("    let format =", 1)[0]
+        self.assertIn('grammar.name() == "health"', guard)
+        self.assertIn("return Err(Fault::usage(", guard)
+        self.assertIn('"--passive"', guard)
         runner_source = (SCRIPT_DIRECTORY / "run-real-workspace-index-acceptance.py").read_text(
             encoding="utf-8"
         )

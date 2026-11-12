@@ -17,6 +17,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "report_routes"))
 from route import Route, receipt_header
+from runtime_build_receipt import stable_file, verify_runtime_build_receipt
 
 
 def main() -> int:
@@ -24,7 +25,22 @@ def main() -> int:
     parser.add_argument("--bin-dir", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--source-commit", required=True)
+    parser.add_argument("--build-receipt", type=Path, required=True,
+                        help="Successful locked Cargo build receipt captured by record-runtime-build-manifest.py")
     args = parser.parse_args()
+    source = Path(__file__).resolve().parents[3]
+
+    def verify_build():
+        verified = verify_runtime_build_receipt(args.build_receipt.resolve(), source)
+        if verified["source"]["commit"] != args.source_commit:
+            raise RuntimeError("requested source differs from the verified Cargo build")
+        for name, artifact in verified["artifacts"].items():
+            candidate = stable_file(args.bin_dir.resolve() / name, name, executable=True)
+            if any(candidate[key] != artifact[key] for key in ("sha256", "bytes", "architecture")):
+                raise RuntimeError(f"{name} differs from the verified Cargo output")
+        return verified
+
+    build = verify_build()
     route = Route(args.bin_dir.resolve(), args.out.resolve())
     checks = []
 
@@ -129,8 +145,10 @@ def main() -> int:
         add, _ = cli("add", "add", str(project), "--wait", "--wait-timeout", "900")
         require_json("add", add)
         coordinates = {}
+        initial_search = {}
         for name in ("generateSchedule", "loadSectionsCsv", "POST", "NavBar"):
             body, _ = cli("search-" + name, "search", name, "--limit", "20")
+            initial_search[name] = row_fingerprint(body)
             found = [row for row in records(body) if identity(row).get("name") == name]
             check("search:" + name, bool(found), names(body))
             if found:
@@ -243,18 +261,38 @@ def main() -> int:
         while route.endpoint.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
         route.start_owner(project)
-        body, _ = cli("reopen-search", "search", "generateSchedule", "--limit", "20")
-        reopened = selected_rows("reopen:search", body, "generateSchedule")
-        check("reopen:identity-parity", row_fingerprint(body) == row_fingerprint(
-            route.cli("reopen-parity-search", "search", "generateSchedule", "--limit", "20")[0]),
-            row_fingerprint(body))
+        for name in ("generateSchedule", "loadSectionsCsv", "POST", "NavBar"):
+            body, _ = cli("reopen-search-" + name, "search", name, "--limit", "20")
+            selected_rows("reopen:search:" + name, body, name, coordinates.get(name))
+            check("reopen:identity-parity:" + name,
+                  bool(initial_search[name]) and row_fingerprint(body) == initial_search[name],
+                  {"before": initial_search[name], "after": row_fingerprint(body)})
+        body, _ = cli("reopen-query", "query", query)
+        check("reopen:query-parity", query_fingerprint(body) == query_fingerprint(cli_query),
+              {"before": query_fingerprint(cli_query), "after": query_fingerprint(body)})
+        if coordinate:
+            body, _ = cli("reopen-source", "source", path_coordinate)
+            check("reopen:source-body", any('return loadSectionsCsv() + req;' in part
+                                            for part in strings(body)), body)
+            body, _ = cli("reopen-references", "references", path_coordinate)
+            check("reopen:reference-parity", reference_fingerprint(body) == reference_fingerprint(
+                  cli_references.get("generateSchedule", {})),
+                  {"before": reference_fingerprint(cli_references.get("generateSchedule", {})),
+                   "after": reference_fingerprint(body)})
         reopened_status, _ = cli("reopen-status", "status")
         check("reopen:status", isinstance(reopened_status, dict) and bool(reopened_status), reopened_status)
     except Exception as error:
         check("runner", False, str(error))
     finally:
         route.stop()
+        verified_after = verify_build()
+        if verified_after["receipt_sha256"] != build["receipt_sha256"]:
+            raise RuntimeError("Cargo build receipt changed during the public journey")
         receipt = receipt_header(args.bin_dir, args.source_commit, effective_env=route.env)
+        receipt["root_build_receipt"] = {
+            "path": build["receipt_path"], "sha256": build["receipt_sha256"],
+            "artifacts": build["artifacts"],
+        }
         receipt["scope"] = "synthetic TS/TSX-only CLI/MCP and cold-reopen regression; no real React or WSL proof"
         receipt["checks"] = checks
         receipt["pass"] = bool(checks) and all(item["pass"] for item in checks)
