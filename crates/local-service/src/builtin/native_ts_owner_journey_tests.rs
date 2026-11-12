@@ -1556,3 +1556,79 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
     assert_eq!(owner.close()?.failures, 0);
     Ok(())
 }
+
+#[test]
+fn native_ts_large_crlf_line_map_source_show_read_and_cold() -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child(module_path!(), "native_ts_large_crlf_line_map_source_show_read_and_cold")? { return Ok(()); }
+    use backend_engine::builtin::{native_source_evidence_key, native_source_evidence_relation, ProductSemanticCaptureOutcome};
+    use backend_semantic::vocabulary::{LanguageProfile, TypeScriptSource};
+    let _guard = FrontendFailpoint;
+    super::ingest::TEST_REJECT_STRUCTURAL_FRONTENDS.store(true, Ordering::Release);
+    let fixture = tempfile::Builder::new().prefix("native-lines-").tempdir_in("/tmp")?;
+    let project = fixture.path().join("project");
+    fs::create_dir(&project)?;
+    fs::write(project.join("tsconfig.json"), r#"{"compilerOptions":{"strict":true},"include":["*.ts"]}"#)?;
+    let mut source = "// padding\r\n".repeat(20_000);
+    source.push_str("export function Greeting() { return 'before'; }\r\n");
+    fs::write(project.join("view.ts"), &source)?;
+    let paths = backend_runtime::WorkspacePaths::discover(Some(fixture.path().join("owner")), Some(fixture.path().join("state")), Some(fixture.path().join("owner.sock")))?;
+    paths.initialize()?;
+    let authority_secret = backend_engine::read_authority_secret(paths.authority_secret())?;
+    let owner = start_owner(&paths)?;
+    let mut session = Session::connect(owner.endpoint())?;
+    index(&mut session, &project, 0x72)?;
+    let (coordinate, document) = select_native_document(&mut session, &authority_secret, "Greeting", "view.ts")?;
+    assert_eq!(document.location.captured().ok_or("warm source location")?.start_line(), 20_001);
+    let CommandReply::Document(shown) = session.document(&coordinate)?.reply else { return Err("Show reply".into()) };
+    assert_eq!(shown.location.captured().ok_or("warm Show location")?.start_line(), 20_001);
+    let request = || SurfaceCommand::Read { locators: vec![ProductText::new(coordinate.clone()).map_err(|e| io::Error::other(e.to_string()))?].into_boxed_slice() };
+    let SurfaceReply::Read(records) = session.surface(request()?)? else { return Err("Read reply".into()) };
+    assert!(records.first().and_then(|record| record.extent.as_ref()).is_some(), "fresh native Read extent");
+    drop(session);
+    assert_eq!(owner.close()?.failures, 0);
+
+    let profile = super::profile_descriptor(super::BuiltinProfile::Product)?;
+    let dispatcher = super::builtin_dispatcher(Some(super::ECHO_AUTHORITY_SECRET), profile, 60_000)?;
+    let mut daemon = crate::Locald::open_with_dispatcher_and_registry(paths.data(), super::BuiltinModel, super::genesis()?, dispatcher, backend_engine::DaemonConfig::default(), super::product_relation_registry()?)?;
+    let mut authority = super::semantic_authority::SemanticAuthority::open(paths.data())?;
+    authority.reconcile_workspace(&mut daemon)?;
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let project_key = backend_engine::PackageKey::from_value(project.canonicalize()?.to_str().ok_or("project path")?).to_bytes();
+    let ts = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
+    let relation = native_source_evidence_relation(&snapshot)?.ok_or("native evidence")?;
+    let row = relation.lookup(&native_source_evidence_key(project_key, ts, "view.ts")?)?.ok_or("native image row")?;
+    assert!(row.line_starts.is_none(), "large line index must not be inline");
+    let captures = backend_engine::builtin::semantic_capture_relation(&snapshot)?.ok_or("capture relation")?;
+    let page = captures.page(None, backend_engine::MAX_SNAPSHOT_PAGE_ROWS)?;
+    assert!(page.next().is_none());
+    let (key, capture) = page.entries().iter().find(|(key, capture)| key.package_key().to_bytes() == project_key && key.profile() == ts && key.is_selected() && matches!(capture.outcome(), ProductSemanticCaptureOutcome::Published { .. })).ok_or("selected TS capture")?;
+    let ProductSemanticCaptureOutcome::Published { claim, .. } = capture.outcome() else { return Err("publication claim".into()) };
+    let mut budget = backend_extension_turso::SelectedNativeHeaderBudget::new(64 * 1024 * 1024, 10_000_000);
+    let witness = authority.selected_native_lines(key, claim, &mut budget, &|| false)?.ok_or("selected compiler line map")?;
+    let view = backend_semantic::native_source_lines::NativeSourceLineAggregateView::parse(witness.as_bytes(), &mut |_| Ok::<(), ()>(())).map_err(|_| "line map decode")?;
+    let file = view.find_file("view.ts", &mut |_| Ok::<(), ()>(())).map_err(|_| "line lookup")?.ok_or("line map file")?;
+    assert!(file.matches_source(source.as_bytes(), &mut |_| Ok::<(), ()>(())).map_err(|_| "line verification")?);
+    assert_eq!(file.line_count(), 20_002);
+    assert_eq!(file.line_start(20_000), Some(("// padding\r\n".len() * 20_000) as u32));
+    drop(snapshot);
+    drop(authority);
+    drop(daemon);
+
+    let cold_owner = start_owner(&paths)?;
+    let mut cold = Session::connect(cold_owner.endpoint())?;
+    let (_, cold_source) = select_native_document(&mut cold, &authority_secret, "Greeting", "view.ts")?;
+    assert_eq!(cold_source.location.captured().ok_or("cold source location")?.start_line(), 20_001);
+    let CommandReply::Document(cold_show) = cold.document(&coordinate)?.reply else { return Err("cold Show reply".into()) };
+    assert_eq!(cold_show.location.captured().ok_or("cold Show location")?.start_line(), 20_001);
+    let SurfaceReply::Read(cold_records) = cold.surface(request()?)? else { return Err("cold Read reply".into()) };
+    assert!(cold_records.first().and_then(|record| record.extent.as_ref()).is_some());
+    let changed = source.replacen("before", "afters", 1);
+    assert_eq!(source.len(), changed.len());
+    fs::write(project.join("view.ts"), changed)?;
+    if let Ok(SurfaceReply::Read(stale)) = cold.surface(request()?) {
+        assert!(stale.first().is_none_or(|record| record.extent.is_none() && record.source_policy.is_unknown()));
+    }
+    drop(cold);
+    assert_eq!(cold_owner.close()?.failures, 0);
+    Ok(())
+}
