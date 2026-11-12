@@ -91,3 +91,30 @@ impl NativeSourceLineAggregate {
         let mut bytes=Vec::with_capacity(size);NativeSourceLineAggregateSchema::encode(self,&mut bytes);Ok(bytes)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn million_line_map_roundtrips_with_preallocation_limits() {
+        let mut source = SourceIdentity::from_bytes(b"source fixture").unwrap();
+        source.byte_len = 1_000_000;
+        let value = NativeSourceLineAggregate { files: vec![NativeSourceLineFile {
+            path:"src/large.ts".into(), source, line_starts:(0..1_000_000).collect(),
+        }] };
+        let mut budget = 16 * 1024 * 1024;
+        let bytes = value.encode_budgeted(&mut budget).unwrap();
+        assert!(bytes.len() > 4_000_000);
+        let mut short = 1;
+        assert!(NativeSourceLineAggregate::decode_budgeted(&bytes, &mut short).is_err());
+        assert_eq!(short, 1);
+        let mut credit = 8 * 1024 * 1024;
+        assert_eq!(NativeSourceLineAggregate::decode_budgeted(&bytes, &mut credit).unwrap(), value);
+        assert!(credit < 8 * 1024 * 1024);
+        assert!(NativeSourceLineAggregate::decode_budgeted(&bytes[..bytes.len()-1], &mut credit).is_err());
+        let mut bad = bytes.clone(); bad[4..8].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(NativeSourceLineAggregate::decode_budgeted(&bad, &mut credit).is_err());
+        let mut invalid = value; invalid.files[0].line_starts[1]=0;
+        assert!(invalid.encode_budgeted(&mut budget).is_err());
+    }
+}
