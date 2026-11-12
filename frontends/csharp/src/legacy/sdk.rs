@@ -806,7 +806,7 @@ pub fn resolve_references_with_sdk_diagnostics(
         &command,
         CaptureLimits {
             deadline,
-            stdout_bytes: 512 * 1024,
+            stdout_bytes: resolver_stdout_limit(candidates.len()),
             stderr_bytes: 1024 * 1024,
         },
         cancelled,
@@ -855,6 +855,9 @@ pub fn resolve_references_with_sdk_diagnostics(
         .and_then(|o| o.get("ReferencePath"))
         .and_then(Value::as_array)
         .ok_or("SDK resolution missing ReferencePath")?;
+    if items.is_empty() || items.len() > snapshots.len() {
+        return Err("SDK selected invalid reference count");
+    }
     let mut selected = Vec::new();
     let mut selected_indices = std::collections::HashSet::new();
     for item in items {
@@ -866,6 +869,7 @@ pub fn resolve_references_with_sdk_diagnostics(
             .or_else(|| item.get("Identity"))
             .and_then(Value::as_str)
             .ok_or("SDK resolution path missing")?;
+        if path.is_empty() || path.len() > 4096 { return Err("SDK resolution path invalid"); }
         let path = fs::canonicalize(path).map_err(|_| "SDK resolution path unavailable")?;
         let mapped_pack_path = path
             .strip_prefix(&private_pack_root)
@@ -897,9 +901,11 @@ pub fn resolve_references_with_sdk_diagnostics(
         let fusion_name = item
             .get("FusionName")
             .and_then(Value::as_str)
-            .ok_or("SDK selected assembly identity missing")?
-            .to_owned()
-            .into_boxed_str();
+            .ok_or("SDK selected assembly identity missing")?;
+        if fusion_name.is_empty() || fusion_name.len() > 4096 {
+            return Err("SDK selected assembly identity invalid");
+        }
+        let fusion_name = fusion_name.to_owned().into_boxed_str();
         selected.push((snapshot.owned.clone(), fusion_name));
     }
     if selected.is_empty() {
@@ -985,6 +991,16 @@ fn write_resolver_global_json(root: &Path, captured: Option<&str>) -> Result<(),
     // from silently selecting an SDK when the captured chain was absent.
     fs::write(root.join("global.json"), captured.unwrap_or("{}").as_bytes())
         .map_err(|_| "SDK global.json unavailable")
+}
+
+// MSBuild's -getItem emits all standard metadata, not only FullPath and
+// FusionName. Bound its JSON based on the admitted input cardinality, with a
+// fixed envelope and absolute ceiling; returned fields are bounded separately.
+fn resolver_stdout_limit(candidate_count: usize) -> usize {
+    const ENVELOPE: usize = 512 * 1024;
+    const PER_CANDIDATE: usize = 8 * 1024;
+    const MAXIMUM: usize = 16 * 1024 * 1024;
+    ENVELOPE.saturating_add(candidate_count.saturating_mul(PER_CANDIDATE)).min(MAXIMUM)
 }
 
 fn resolver_command(dotnet: &Path, args: Vec<OsString>, scratch: &Path) -> CaptureCommand {
@@ -1654,6 +1670,14 @@ pub fn observe_csharp_sdk_with(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sdk_json_budget_scales_with_admitted_candidates_and_is_bounded() {
+        assert_eq!(resolver_stdout_limit(0), 512 * 1024);
+        assert_eq!(resolver_stdout_limit(1), 520 * 1024);
+        assert_eq!(resolver_stdout_limit(8192), 16 * 1024 * 1024);
+        assert_eq!(resolver_stdout_limit(usize::MAX), 16 * 1024 * 1024);
+    }
+
     #[test]
     fn pack_metadata_changes_its_identity() {
         let root = tempfile::tempdir().unwrap();
