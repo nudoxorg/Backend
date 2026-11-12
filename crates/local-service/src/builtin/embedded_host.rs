@@ -23,7 +23,12 @@ struct RetiredLayoutEvidence {
     files: std::num::NonZeroUsize,
 }
 
-fn probe_retired_layout(workspace: &std::path::Path, shutdown: Option<crate::listener::ListenerShutdown>) -> Result<RetiredLayoutEvidence, String> {
+#[cfg(test)]
+fn probe_retired_layout(workspace: &std::path::Path) -> Result<RetiredLayoutEvidence, String> {
+    probe_retired_layout_with_shutdown(workspace, None)
+}
+
+fn probe_retired_layout_with_shutdown(workspace: &std::path::Path, shutdown: Option<crate::listener::ListenerShutdown>) -> Result<RetiredLayoutEvidence, String> {
     use super::profile::{BuiltinWorkspaceRelation, RetiredSourceProbe};
     use backend_engine::WorkspaceOwner;
 
@@ -80,7 +85,7 @@ pub(super) fn owner_open_refusal_with_shutdown(
     if matches!(
         &error,
         crate::LocaldError::Workspace(backend_engine::WorkspaceError::Model(_))
-    ) && let Ok(evidence) = probe_retired_layout(workspace, shutdown)
+    ) && let Ok(evidence) = probe_retired_layout_with_shutdown(workspace, shutdown)
     {
         return ProcessError::StateFromAnotherBuild(format!(
             "{} indexed source files are keyed by the source-file key layout an earlier build wrote ({error})",
