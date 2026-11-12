@@ -20,10 +20,21 @@ fn index_fixture(fixture: &mut AdapterFixture) {
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     while adapter.indexing.is_some() {
         adapter.poll_deferred(daemon);
-        assert!(
-            std::time::Instant::now() < deadline,
-            "structural index terminal"
-        );
+        if std::time::Instant::now() >= deadline {
+            let stage = match &adapter.indexing.as_ref().expect("active index").work {
+                IndexJobWork::Acquiring(_) => "acquiring",
+                IndexJobWork::Scanning(_) => "scanning",
+                IndexJobWork::Compiling { .. } => "compiling",
+                IndexJobWork::Publishing { .. } => "publishing",
+                IndexJobWork::PublicationWorker { .. } => "publication worker",
+                IndexJobWork::PreparingSource { .. } => "preparing source",
+                IndexJobWork::SourceRetiring { .. } => "retiring source",
+                IndexJobWork::RetirementPending { .. } => "retirement pending",
+                IndexJobWork::PublicationRetiring { .. } => "retiring publication",
+                IndexJobWork::Transition => "transition",
+            };
+            panic!("structural index terminal: still {stage}");
+        }
         std::thread::sleep(Duration::from_millis(2));
     }
     finish_search_lane(adapter, daemon);
@@ -75,6 +86,18 @@ fn python_and_csharp_structural_source_survive_public_wire_and_cold_reopen() {
     fs::write(root.join("main.py"), python).expect("real Python source");
     fs::write(root.join("BankAccount.cs"), csharp).expect("real C# source");
     index_fixture(&mut fixture);
+    {
+        let (adapter, daemon) = fixture.parts();
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        let row = daemon.engine().daemon().library().view().row_refs()
+            .find(|row| row.label.rsplit("::").next() == Some("health"))
+            .expect("health view row");
+        let sources = crate::builtin::read_package_sources(&snapshot, row.package.expect("health package"))
+            .expect("selected project sources");
+        assert!(super::super::super::structural_source::admit(&sources, row)
+            .expect("complete selected structural facts").is_some(), "health structural row must join exact facts");
+        let _ = adapter;
+    }
     for cold in [false, true] {
         if cold {
             fixture = fixture.reopen();
