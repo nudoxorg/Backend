@@ -1314,6 +1314,35 @@ mod tests {
     }
 
     #[test]
+    fn native_function_keeps_parser_owned_async_start() -> Result<(), Box<dyn Error>> {
+        for (source, expected_async) in [
+            ("export async function run() {}", true),
+            ("export async /* comment */ function run() {}", true),
+            ("export default async function run() {}", true),
+            ("// λ\nexport async function* run() {}", true),
+            ("async\nfunction run() {}", false),
+            ("async\r\nfunction run() {}", false),
+            ("async /*\n*/ function run() {}", false),
+            ("async\u{2028}function run() {}", false),
+            ("async\u{2029}function run() {}", false),
+            ("function run() {}", false),
+        ] {
+            let mut parser = MeteredParserState::new("src/modifiers.ts".to_owned(), source.to_owned());
+            parser.parse_source_file_with_execution_checkpoint(&Unlimited).map_err(|e| format!("parse: {e:?}"))?;
+            assert!(parser.get_diagnostics().is_empty(), "{source}");
+            let functions = parser.arena.nodes.iter().filter_map(|node| {
+                let function = parser.arena.get_function(node)?;
+                let name = parser.arena.get_identifier_at(function.name)?;
+                (name.escaped_text == "run").then_some(function)
+            }).collect::<Vec<_>>();
+            let [function] = functions.as_slice() else { panic!("one declaration for {source}") };
+            assert_eq!(function.is_async, expected_async, "{source}");
+            assert_eq!(function.async_start, expected_async.then(|| source.find("async").unwrap() as u32), "{source}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn function_headers_use_native_body_and_modifier_spans() -> Result<(), Box<dyn Error>> {
         let source = "// λ\nexport async function run(x: { a: number }): Promise<string> { return ''; }\nfunction other() {}\n";
         let headers = function_headers(Path::new("src/main.ts"), source, &Unlimited)?;
