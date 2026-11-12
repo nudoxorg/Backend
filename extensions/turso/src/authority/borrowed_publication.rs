@@ -155,7 +155,11 @@ fn verify_versioned_members(
             let before=budget.memory;
             let (wire,schema,key)=header_object_bounded(store,pin,artifact.manifest_id,&[VERSIONED_PLANE_MANIFEST_SCHEMA],artifact.manifest.len(),&mut budget,cancelled)?;
             let temporary=before.checked_sub(budget.memory).ok_or("plane manifest charge underflow")?;
-            if wire.as_ref()!=artifact.manifest { return Err("plane manifest object differs from selected bytes".into()); }
+            if wire.len()!=artifact.manifest.len() { return Err("plane manifest extent differs".into()); }
+            for (actual, expected) in wire.chunks(64*1024).zip(artifact.manifest.chunks(64*1024)) {
+                header_checkpoint(&budget.work,cancelled).map_err(|e|format!("plane manifest comparison stopped: {e:?}"))?;
+                if actual!=expected { return Err("plane manifest object differs from selected bytes".into()); }
+            }
             verified_payload_key_checkpointed(schema,&wire,&key,&mut budget,cancelled)?;
             drop(wire); budget.memory=budget.memory.checked_add(temporary).ok_or("plane manifest refund overflow")?;
         }
