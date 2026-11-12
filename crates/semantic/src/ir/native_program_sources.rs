@@ -660,6 +660,23 @@ mod tests {
     use super::*;
     #[test]
     fn borrowed_path_validation_handles_utf8_chunk_boundaries_and_stop() {
+        for prefix in 4093..=4097 {
+            for character in ["é", "€", "🦀"] {
+                let mut boundary = vec![b'a'; prefix];
+                boundary.extend_from_slice(character.as_bytes());
+                boundary.extend_from_slice(b"/name.ts");
+                assert!(valid_path(std::str::from_utf8(&boundary).unwrap()));
+                assert!(validate_borrowed_path(&boundary, &mut |_| Ok::<_, ()>(())).is_ok());
+            }
+        }
+        for invalid in [
+            b"x/\xc0\x80".as_slice(),
+            b"x/\xe2\x82",
+            b"x/\xf0\x80\x80\x80",
+        ] {
+            assert!(std::str::from_utf8(invalid).is_err());
+            assert!(validate_borrowed_path(invalid, &mut |_| Ok::<_, ()>(())).is_err());
+        }
         let mut path = vec![b'a'; 4095];
         path.extend_from_slice("é/name.ts".as_bytes());
         assert!(validate_borrowed_path(&path, &mut |_| Ok::<_, ()>(())).is_ok());
