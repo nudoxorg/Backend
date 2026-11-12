@@ -509,7 +509,10 @@ fn exercise_header_controls(fixture: &OwnerFixture) {
         header_tab_to(&mut rig, &targets, "view-code");
         let bounds = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("view-page", cx)).expect("old painted Page");
         let native = header_node(&mut rig, "Show Page view");
-        let (original_focus, observed_frame, retained_frame) = rig.cx.update(|window, cx| {
+        let deferred_observed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let observed = deferred_observed.clone();
+        let store = rig.graph.store.clone();
+        rig.cx.update(|window, cx| {
             let before = window.focused(cx);
             assert_eq!(targets.native_focused(window).as_deref(), Some("view-code"));
             let armed_frame = window.a11y_frame_number();
@@ -561,15 +564,17 @@ fn exercise_header_controls(fixture: &OwnerFixture) {
             if retained { assert_eq!(window.a11y_frame_number(), armed_frame, "retained input must not paint a new AX capability"); }
             assert_eq!(window.focused(cx), before, "retired input does not transfer keyboard ownership");
             assert_eq!(rig.graph.store.read(cx).snapshot().route(), &Route::World, "old controls cannot navigate");
-            (before, window.a11y_frame_number(), retained)
+            let observed_frame = window.a11y_frame_number();
+            // Queued after the actual input's deferred focus work, this runs
+            // after region borrows return and before test-support's eager paint.
+            window.defer(cx, move |window, cx| {
+                assert_eq!(window.focused(cx), before, "retired deferred input cannot steal native focus");
+                if retained { assert_eq!(window.a11y_frame_number(), observed_frame); }
+                assert_eq!(store.read(cx).snapshot().route(), &Route::World);
+                observed.set(true);
+            });
         });
-        // Observe the real deferred Tab/activation phase after region borrows
-        // return, before pumping the owner watcher or a later native event.
-        rig.cx.update(|window, cx| {
-            assert_eq!(window.focused(cx), original_focus, "retired deferred input cannot steal native focus");
-            if retained_frame { assert_eq!(window.a11y_frame_number(), observed_frame); }
-            assert_eq!(rig.graph.store.read(cx).snapshot().route(), &Route::World);
-        });
+        assert!(deferred_observed.get(), "the deferred input observation must run");
         rig.cx.run_until_parked();
         assert_eq!(rig.route(), Route::World);
     }
