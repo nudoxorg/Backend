@@ -10,6 +10,9 @@ use backend_version::{ContentId, Schema, SourceFactDomain, ToolchainDomain};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+mod borrowed;
+pub use borrowed::{BorrowedProgramGraph, BorrowedProgramGraphNode, BorrowedProgramGraphScratch};
+
 const MAGIC: &[u8; 8] = b"BKNPSF01";
 const PROJECT_SET_MAGIC: &[u8; 8] = b"BKNPSU01";
 /// Same bounded number of configuration nodes as project-host admission.
@@ -596,6 +599,54 @@ impl<'a> Input<'a> {
 mod tests {
     use super::*;
     use crate::ir::{NativeProgramSource, SourceIdentity};
+    #[test]
+    fn borrowed_graph_matches_owned_and_stops_on_budget() {
+        let toolchain = ContentId::from_canonical_bytes(b"compiler");
+        let graph = NativeProgramSources::from_forest(toolchain, 1, nodes())
+            .unwrap()
+            .with_image_bindings(vec![("src/app.ts".to_owned(), [7; 32])])
+            .unwrap();
+        let shape = BorrowedProgramGraph::scratch(graph.as_bytes(), |_| Ok::<_, ()>(())).unwrap();
+        let mut nodes = vec![None; shape.nodes];
+        let mut rows = vec![None; shape.rows];
+        let mut paths = vec![None; shape.leaf_paths];
+        let view = BorrowedProgramGraph::decode(
+            graph.as_bytes(),
+            &mut nodes,
+            &mut rows,
+            &mut paths,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+        assert_eq!(view.membership_identity(), graph.membership_identity());
+        assert_eq!(view.toolchain(), graph.toolchain());
+        let mut borrowed = Vec::new();
+        view.visit_sources(
+            |_| Ok::<_, ()>(()),
+            |row| {
+                borrowed.push(row);
+                Ok(())
+            },
+        )
+        .unwrap();
+        let mut owned = graph.sources().collect::<Vec<_>>();
+        borrowed.sort_by_key(|row| row.program_path);
+        owned.sort_by_key(|row| row.program_path);
+        assert_eq!(borrowed, owned);
+        assert!(
+            view.image_matches("src/app.ts", &[7; 32], |_| Ok::<_, ()>(()))
+                .unwrap()
+        );
+        assert!(
+            !view
+                .image_matches("src/app.ts", &[8; 32], |_| Ok::<_, ()>(()))
+                .unwrap()
+        );
+        assert!(matches!(
+            BorrowedProgramGraph::scratch(graph.as_bytes(), |_| Err(())),
+            Err(crate::ir::BorrowedNativeProgramError::Stopped(()))
+        ));
+    }
     fn leaf(path: &str) -> NativeProgramSourceManifest {
         NativeProgramSourceManifest::from_sources(
             ContentId::from_canonical_bytes(b"compiler"),

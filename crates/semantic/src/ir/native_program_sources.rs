@@ -87,6 +87,7 @@ pub enum BorrowedNativeProgramError<E> {
 }
 
 /// A validated single-program manifest borrowing its pinned canonical bytes.
+#[derive(Clone, Copy)]
 pub struct BorrowedNativeProgramSourceManifest<'a> {
     bytes: &'a [u8],
     program: [u8; 32],
