@@ -4457,6 +4457,54 @@ mod tests {
     }
 
     #[test]
+    fn native_lines_selected_cold_reopen_checks_member_budget_and_source() {
+        use backend_semantic::ir::{NativeProgramSource, NativeProgramSourceManifest, NativeProgramSourceManifestSchema, SourceIdentity};
+        use backend_semantic::native_source_lines::{NativeSourceLineAggregate, NativeSourceLineAggregateSchema, NativeSourceLineFile, NativeSourceLineAggregateView};
+        let source_bytes = b"a\r\nb\nc";
+        let source = SourceIdentity::from_bytes(source_bytes).unwrap();
+        let aggregate = NativeSourceLineAggregate { files: vec![NativeSourceLineFile { path: "src/main.ts".into(), source, line_starts: vec![0, 3, 5] }] };
+        let object = TypedObject::from_value(&ObjectKey::<NativeSourceLineAggregateSchema>::from_value(&aggregate), &aggregate);
+        let line_member = CompilerNativeLinesMember { object_id: *object.id().as_bytes(), byte_length: object.bytes().len() as u32 };
+        let program = NativeProgramSourceManifest::from_sources(ContentId::from_canonical_bytes(b"compiler"), vec![NativeProgramSource {
+            program_path: "src/main.ts".into(), package_path: Some("src/main.ts".into()), source,
+        }]).unwrap();
+        let program_object = TypedObject::from_value(&ObjectKey::<NativeProgramSourceManifestSchema>::from_value(program.as_bytes()), program.as_bytes());
+        let directory = scratch_store();
+        let store = FileStore::open(&directory, 8 * 1024 * 1024).unwrap();
+        store.write_object(&program_object).unwrap();
+        let program_member = CompilerProgramSourceMember::from_verified_object(store.verify_object_claim(UntrustedObjectId::from_bytes(*program_object.id().as_bytes())).unwrap(), &program).unwrap();
+        let (image, image_object) = compiler_image();
+        let metadata = metadata(image).with_native_program_sources(program_member).unwrap().with_native_lines(line_member).unwrap();
+        let attempt = attempt();
+        let envelope = CompilerPublicationEnvelope::new(&attempt, &metadata).unwrap();
+        let mut objects = vec![image_object.clone(), program_object.clone(), object.clone(), metadata.typed_object(), envelope.typed_object()];
+        objects.sort_by_key(|o| (o.schema(), *o.key(), *o.version()));
+        let closure = store.write_closure(&ClosureManifest::new(objects).unwrap()).unwrap();
+        let selected = selected_generation(&attempt, &envelope.candidate(attempt.clone(), *closure.as_bytes()).unwrap(), 1);
+        drop(store);
+        let store = FileStore::open(&directory, 8 * 1024 * 1024).unwrap();
+        let mut credit = SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000);
+        let witness = reopen_selected_native_lines_budgeted(&store, &selected, &mut credit, &|| false).unwrap().unwrap();
+        assert_eq!(witness.object_id(), line_member.object_id());
+        let view = NativeSourceLineAggregateView::parse(witness.as_bytes(), &mut |_| Ok::<(), ()>(())).unwrap();
+        let file = view.find_file("src/main.ts", &mut |_| Ok::<(), ()>(())).unwrap().unwrap();
+        assert!(file.matches_source(source_bytes, &mut |_| Ok::<(), ()>(())).unwrap());
+        assert!(!file.matches_source(b"z\r\nb\nc", &mut |_| Ok::<(), ()>(())).unwrap());
+        let used = 100_000 - credit.remaining_work();
+        assert!(reopen_selected_native_lines_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, used - 1), &|| false).is_err());
+        assert!(reopen_selected_native_lines_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, used), &|| false).is_ok());
+        assert!(reopen_selected_native_lines_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(0, 100_000), &|| false).is_err());
+        assert!(reopen_selected_native_lines_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000), &|| true).is_err());
+        let mut missing = vec![image_object, program_object, metadata.typed_object(), envelope.typed_object()];
+        missing.sort_by_key(|o| (o.schema(), *o.key(), *o.version()));
+        let missing_closure = store.write_closure(&ClosureManifest::new(missing).unwrap()).unwrap();
+        let missing_selected = selected_generation(&attempt, &envelope.candidate(attempt.clone(), *missing_closure.as_bytes()).unwrap(), 2);
+        assert!(reopen_selected_native_lines_budgeted(&store, &missing_selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000), &|| false).is_err());
+        drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn selected_metadata_keeps_snapshot_payload_lazy_but_explicit_reopen_refuses_missing_bytes() {
         use backend_semantic::ir::{
             NativeProgramSource, NativeProgramSourceManifest, NativeProgramSourceManifestSchema,
