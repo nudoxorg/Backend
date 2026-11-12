@@ -200,15 +200,20 @@ impl LazyTreeMetadataShape {
         let spill_entries = self
             .max_entries_per_node
             .checked_mul(self.max_spill_nodes_per_level)?;
-        let row_scratch = size_of::<R::Key>()
-            .checked_mul(2)?
-            .checked_add(size_of::<R::Value>())?
+        // Spill collection may retain an old and a grown Vec buffer while a
+        // sibling decode contributes a third cell buffer. Payload heaps move
+        // with their cells; edit before/after clones are charged separately.
+        let row_scratch = size_of::<R::Key>().checked_add(size_of::<R::Value>())?
+            .checked_mul(3)?
             .checked_add(self.max_key_bytes.checked_mul(2)?)?
             .checked_add(self.max_value_bytes)?
-            .checked_add(64)?; // Up to four bounded per-row allocation headers.
-        let branch_scratch = size_of::<CommittedChild<R>>()
-            .checked_add(size_of::<R::Key>())?
-            .checked_add(self.max_key_bytes)?;
+            .checked_add(64)?;
+        // Branch rewriting holds children plus key and probe-key arrays; Vec
+        // growth can temporarily retain both old and new child buffers.
+        let branch_scratch = size_of::<CommittedChild<R>>().checked_mul(3)?
+            .checked_add(size_of::<R::Key>().checked_mul(2)?)?
+            .checked_add(self.max_key_bytes.checked_mul(3)?)?
+            .checked_add(64)?;
         let scratch_per_level = spill_entries
             .checked_mul(row_scratch.max(branch_scratch))?
             .checked_add(self.max_spill_nodes_per_level.checked_mul(node_bytes)?)?

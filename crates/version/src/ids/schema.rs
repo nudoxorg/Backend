@@ -91,6 +91,7 @@ pub trait CanonicalRelation: Relation {
 /// Implementors must also bound temporary whole-node decoding and encoding by
 /// `NODE_DECODE_SCRATCH` for a canonical node under the standard cut policy.
 pub trait BoundedCanonicalRelation: CanonicalRelation {
+    /// Conservative temporary bytes for one bounded canonical node decode.
     const NODE_DECODE_SCRATCH: usize;
 }
 
