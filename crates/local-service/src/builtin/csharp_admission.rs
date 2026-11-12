@@ -222,6 +222,10 @@ pub(super) fn validate_selected_attempt(
 }
 
 impl<'a> CSharpSelectedCompile<'a> {
+    pub(super) fn attempt(&self) -> &backend_extension_turso::CandidateAttempt {
+        self.completed.attempt()
+    }
+
     pub(super) fn capture(
         base: &WorkspaceSnapshot,
         completed: &'a super::commands::adapter::index_profile_worker::CSharpCompletedWorkerResult,

@@ -40,6 +40,26 @@ impl CSharpCompletedWorkerResult {
     pub(in crate::builtin) fn ticket_matches_witness(&self) -> bool { self.ticket.matches_csharp_witness(&self.witness) }
 }
 
+/// The selected compiler result remains borrowed through this closed owner
+/// handoff. No durable unit receipt is issued without the missing SDK and
+/// execution custody for the same staged result.
+fn refuse_selected_csharp(
+    selected: &super::super::super::csharp_admission::CSharpSelectedCompile<'_>,
+    authority: &mut super::super::super::semantic_authority::SemanticAuthority,
+) -> Result<(), DeferredProfileFailure> {
+    refuse_csharp_attempt(selected.attempt(), authority,
+        "selected C# project output awaits SDK and execution closure admission")
+}
+
+fn refuse_csharp_attempt(
+    attempt: &backend_extension_turso::CandidateAttempt,
+    authority: &mut super::super::super::semantic_authority::SemanticAuthority,
+    detail: &str,
+) -> Result<(), DeferredProfileFailure> {
+    authority.retire_candidate_attempt(attempt, backend_extension_turso::CandidateAttemptRetirementReason::Refused)?;
+    Err(BuiltinModelError(detail.to_owned()).into())
+}
+
 pub(super) struct ProfileIdentity {
     pub(super) attempt: backend_extension_turso::CandidateAttempt,
     pub(super) profile: LanguageProfile,
@@ -143,18 +163,23 @@ impl ProfileWork {
                     self.semantic.as_mut().expect("owned semantic writer").authority_mut(), completed.ticket, detail,
                 ));
             }
-            let selected = if completed.staged().is_some() {
-                super::super::super::csharp_admission::CSharpSelectedCompile::capture(
+            if completed.staged().is_some() {
+                let selected = super::super::super::csharp_admission::CSharpSelectedCompile::capture(
                     &self.snapshot, &completed, self.semantic.as_mut().expect("owned semantic writer").authority_mut(),
-                ).is_ok()
-            } else { true };
-            if self.cancelled.load(Ordering::Acquire) { return ProfileOutcome::Cancelled; }
-            if !selected {
-                return ProfileOutcome::Admitted(refuse_stale_csharp_capture(
-                    self.semantic.as_mut().expect("owned semantic writer").authority_mut(), completed.ticket,
-                    BuiltinModelError("C# compiler invocation differs from selected source custody".to_owned()),
-                ));
+                );
+                if self.cancelled.load(Ordering::Acquire) { return ProfileOutcome::Cancelled; }
+                return match selected {
+                    Ok(selected) => ProfileOutcome::Admitted(refuse_selected_csharp(
+                        &selected, self.semantic.as_mut().expect("owned semantic writer").authority_mut(),
+                    )),
+                    Err(_) => ProfileOutcome::Admitted(refuse_csharp_attempt(
+                        completed.attempt(), self.semantic.as_mut().expect("owned semantic writer").authority_mut(),
+                        "C# compiler invocation differs from selected source custody",
+                    )),
+                };
             }
+            // Compiler failures carry no staged output and use the ordinary
+            // terminal path; successful outputs never shed their envelope.
             (completed.ticket, completed.compiled)
         } else {
             let compiled = run_deferred_compile(&self.compiler, sources, Arc::clone(&self.cancelled));
