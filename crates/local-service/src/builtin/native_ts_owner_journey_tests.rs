@@ -1284,7 +1284,7 @@ fn native_ts_last_file_deletion_retires_selected_evidence() -> Result<(), Box<dy
 }
 
 /// This is deliberately a real owner/index/cold-reopen fixture.  If the
-/// compiler emits an image for the recursive-alias input, the fixture must fail:
+/// compiler emits an image for the over-width input, the fixture must fail:
 /// it has not exercised the member-only case.
 #[test]
 #[ignore = "native owner journey; run alone with the frontend failpoint"]
@@ -1339,18 +1339,18 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
     fs::create_dir_all(project.join("src/app"))?;
     fs::create_dir_all(project.join("src/components"))?;
     fs::create_dir_all(project.join("src/types"))?;
-    // Exact native TSZ source-local gap fixture used by
-    // application::compiler_coverage_tests::linked_tsz_tsx_cycle_is_an_exact_file_gap_while_navbar_and_caller_publish.
+    // A parser-valid tuple over the native lowering width limit produces a
+    // source-local gap without inventing a Program member or compiler fact.
     fs::write(project.join("tsconfig.json"), r#"{"compilerOptions":{"noLib":true,"types":[],"module":"ESNext","moduleResolution":"bundler","jsx":"preserve"},"files":["src/app/layout.tsx","src/app/page.tsx","src/components/NavBar.tsx","src/types/react-node.tsx"]}"#)?;
-    let member = "import type { ReactNode } from \"../types/react-node\";\nexport type Layout = ReactNode;\n";
+    let member = format!("export declare const wide: [{}];\n", std::iter::repeat_n("unknown", 256).collect::<Vec<_>>().join(", "));
     let image = "export function NavBar() { return \"nav\"; }\n";
-    let changed_member = "import type { ReactNode } from \"../types/react-node\";\nexport type Layout = ReactNodf;\n";
+    let changed_member = member.replacen("unknown", "unknowm", 1);
     let changed_image = "export function NavBar() { return \"nax\"; }\n";
     fs::write(project.join("src/types/react-node.tsx"), "export type ReactNode = { readonly children?: ReactNode };\n")?;
     fs::write(project.join("src/app/page.tsx"), "import { NavBar } from \"../components/NavBar\";\nexport function Page() { return NavBar(); }\n")?;
     assert_eq!(member.len(), changed_member.len());
     assert_eq!(image.len(), changed_image.len());
-    fs::write(project.join("src/app/layout.tsx"), member)?;
+    fs::write(project.join("src/app/layout.tsx"), &member)?;
     fs::write(project.join("src/components/NavBar.tsx"), image)?;
     let paths = backend_runtime::WorkspacePaths::discover(
         Some(fixture.path().join("owner")), Some(fixture.path().join("state")),
