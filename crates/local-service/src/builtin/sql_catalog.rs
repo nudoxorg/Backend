@@ -462,7 +462,10 @@ pub(super) struct BoundedSqlHost {
 }
 pub(super) struct BoundedProjectSql {
     pub(super) root: String,
+    /// Complete only when the retained selection and latest attempt both support it.
     pub(super) inventory_complete: bool,
+    /// The latest attempt observed the retained selection rather than failing.
+    pub(super) latest_observed: bool,
     pub(super) implicit: bool,
     pub(super) gaps: SqlGapCounts,
     pub(super) hosts: Slots<BoundedSqlHost>,
@@ -919,6 +922,7 @@ pub(super) fn load_projects_bounded(
         plan.sql = Some(BoundedProjectSql {
             root: String::new(),
             inventory_complete: false,
+            latest_observed: plan.attempt_observed,
             implicit: false,
             gaps: SqlGapCounts::default(),
             hosts,
@@ -961,7 +965,8 @@ pub(super) fn load_projects_bounded(
                     }
                     let sql = plan.sql.as_mut().ok_or("SQL selection count changed")?;
                     sql.root = source_root;
-                    sql.inventory_complete = matches!(inventory, SqlInventory::Complete);
+                    sql.inventory_complete =
+                        sql.latest_observed && matches!(inventory, SqlInventory::Complete);
                     sql.implicit = implicit;
                     sql.gaps = gaps;
                     plan.filled_selection = true;
