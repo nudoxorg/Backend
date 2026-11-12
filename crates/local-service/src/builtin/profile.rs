@@ -5627,6 +5627,7 @@ fn admit_persisted_transition_with_layout(
         persisted_intent,
         untrusted_manifest,
         layout,
+        shutdown,
     )
 }
 
@@ -5729,6 +5730,7 @@ fn admit_persisted_relations(
     persisted_intent: BuiltinIntent,
     untrusted_manifest: backend_version::UntrustedWorkspaceManifest,
     layout: SourceFileKeyLayout,
+    shutdown: Option<&crate::listener::ListenerShutdown>,
 ) -> Result<PreparedTransition, BuiltinModelError> {
     let target_root = untrusted_manifest
         .relations()
