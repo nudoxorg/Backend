@@ -4546,15 +4546,6 @@ fn prepare_stylo_relation_update(
         let update = relation
             .prepare_update(&changes)
             .map_err(|error| BuiltinModelError(format!("prepare native Stylo delta: {error}")))?;
-        // The checked update's peak covers its frontier; reserve the exact
-        // encoded-node copies and output slots before making TypedObjects.
-        let output = update.changed_nodes().iter().try_fold(0usize, |total, node| {
-            total.checked_add(node.as_bytes().len().checked_mul(2)?)?
-                .checked_add(std::mem::size_of::<TypedObject>() + 256)
-        }).ok_or_else(|| BuiltinModelError("native node output overflow".into()))?;
-        if update.work().peak_metadata_bytes.checked_add(output).is_none_or(|n| n > read_budget) {
-            return Err(BuiltinModelError("native node output budget exceeded".into()));
-        }
         let node_objects = update
             .changed_nodes()
             .iter()
@@ -4853,6 +4844,15 @@ fn prepare_native_evidence_relation_update(
         let update = relation.prepare_update_bounded(&changes, update_budget).map_err(|error| {
             BuiltinModelError(format!("prepare native evidence delta: {error}"))
         })?;
+        // The checked update's peak covers its frontier; reserve the exact
+        // encoded-node copies and output slots before making TypedObjects.
+        let output = update.changed_nodes().iter().try_fold(0usize, |total, node| {
+            total.checked_add(node.as_bytes().len().checked_mul(2)?)?
+                .checked_add(std::mem::size_of::<TypedObject>() + 256)
+        }).ok_or_else(|| BuiltinModelError("native node output overflow".into()))?;
+        if update.work().peak_metadata_bytes.checked_add(output).is_none_or(|n| n > read_budget) {
+            return Err(BuiltinModelError("native node output budget exceeded".into()));
+        }
         let node_objects = update
             .changed_nodes()
             .iter()
