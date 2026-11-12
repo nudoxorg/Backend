@@ -1230,11 +1230,18 @@ impl Engine for Fake {
                         backend_library::CommandFailure::NotFound,
                     ));
                 }
-                let mut value = self.document_override.clone().unwrap_or_else(document);
                 if self.document_matches_request && self.document_override.is_none() {
-                    value.symbol = symbol_key(at);
+                    let catalog = self.page_catalog.as_ref().ok_or_else(|| ClientError::Protocol("document fixture needs its selected catalog".to_owned()))?;
+                    let symbol = symbol_key(at);
+                    let row = catalog.view().row(RowId::Symbol(symbol)).ok_or(ClientError::CommandFailed(backend_library::CommandFailure::NotFound))?;
+                    let value = catalog.document(backend_library::DocumentQuery::new(symbol, catalog.revision_root()))
+                        .map_err(|error| ClientError::Protocol(error.to_string()))?;
+                    let selection = backend_library::DocumentSelection::from_row(&row, value.source_basis().expect("catalog document source"))
+                        .expect("selected catalog document row");
+                    CommandReply::Document(value.with_selection(selection).expect("document and selected catalog row share a basis"))
+                } else {
+                    CommandReply::Document(self.document_override.clone().unwrap_or_else(document))
                 }
-                CommandReply::Document(value)
             }
             Probe::Source(at) => {
                 if at == MISSING {
