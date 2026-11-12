@@ -3776,38 +3776,49 @@ impl SemanticAuthority {
 
         // The line map is computed by the same compiler attempt from exact
         // selected source bytes. Its typed member joins this closure before seal.
-        let native_lines_member = if staged.native_typescript_lines().next().is_some() {
+        let deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
+        let work = std::cell::Cell::new(128usize * 1024 * 1024);
+        let check = || -> Result<(), backend_extension_turso::CompilerEnvelopeError> {
+            if std::time::Instant::now() >= deadline { return Err(backend_extension_turso::CompilerEnvelopeError::Stopped); }
+            work.set(work.get().checked_sub(1).ok_or(backend_extension_turso::CompilerEnvelopeError::Stopped)?);
+            Ok(())
+        };
+        let slots = staged.native_typescript_line_slots();
+        let mut retained = 0usize;
+        let mut line_count = 0usize;
+        for ordinal in 0..slots {
+            check().map_err(|e| BuiltinModelError(format!("native line inventory stopped: {e}")))?;
+            if let Some(file) = staged.native_typescript_line_at(ordinal) {
+                retained = retained.checked_add(file.path.capacity()).and_then(|n| n.checked_add(file.line_starts.capacity().checked_mul(std::mem::size_of::<u32>())?))
+                    .ok_or_else(|| BuiltinModelError("native line retained size overflow".into()))?;
+                line_count = line_count.checked_add(1).ok_or_else(|| BuiltinModelError("native line count overflow".into()))?;
+            }
+        }
+        let native_lines_member = if line_count != 0 {
             if staged.profile().language() != backend_semantic::vocabulary::Language::TypeScript || program_member.is_none() {
                 return Err(BuiltinModelError("native source lines require the selected TypeScript program".into()));
             }
-            let retained = staged.native_typescript_lines().try_fold(0usize, |total, file| {
-                total.checked_add(file.path.capacity())?.checked_add(file.line_starts.capacity().checked_mul(std::mem::size_of::<u32>())?)
-            }).ok_or_else(|| BuiltinModelError("native line retained size overflow".into()))?;
             let mut budget = (128usize * 1024 * 1024).checked_sub(retained)
                 .ok_or_else(|| BuiltinModelError("native line staging budget exceeded".into()))?;
-            let slots = staged.native_typescript_line_slots();
+            check().map_err(|e| BuiltinModelError(format!("native line allocation stopped: {e}")))?;
             let mut order = backend_store::try_allocate_exact_zeroed_u32_budgeted(slots, &mut budget)
                 .map_err(|e| BuiltinModelError(format!("native line order allocation: {e:?}")))?;
             let mut count = 0usize;
             for ordinal in 0..slots {
+                check().map_err(|e| BuiltinModelError(format!("native line ordering stopped: {e}")))?;
                 if staged.native_typescript_line_at(ordinal).is_some() {
                     order[count] = u32::try_from(ordinal).map_err(|_| BuiltinModelError("native line ordinal overflow".into()))?;
                     count += 1;
                 }
             }
-            let deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
-            let work = std::cell::Cell::new(128usize * 1024 * 1024);
-            let check = || -> Result<(), backend_extension_turso::CompilerEnvelopeError> {
-                if std::time::Instant::now() >= deadline { return Err(backend_extension_turso::CompilerEnvelopeError::Stopped); }
-                work.set(work.get().checked_sub(1).ok_or(backend_extension_turso::CompilerEnvelopeError::Stopped)?);
-                Ok(())
-            };
+            if count != line_count { return Err(BuiltinModelError("native line inventory changed".into())); }
             sort_native_line_ordinals(&mut order[..count], staged, &check)?;
             let files = || order[..count].iter().filter_map(|ordinal| staged.native_typescript_line_at(*ordinal as usize));
             let mut checkpoint = |_: usize| check();
             let (length, observed_count) = backend_semantic::native_source_lines::encoded_len_files(files(), &mut checkpoint)
                 .map_err(|e| BuiltinModelError(format!("plan native source lines: {e:?}")))?;
             if observed_count != count { return Err(BuiltinModelError("native line inventory changed".into())); }
+            check().map_err(|e| BuiltinModelError(format!("native line wire allocation stopped: {e}")))?;
             let mut bytes = backend_store::try_allocate_exact_zeroed_bytes_budgeted(length, &mut budget)
                 .map_err(|e| BuiltinModelError(format!("native line wire allocation: {e:?}")))?;
             backend_semantic::native_source_lines::encode_files_into(files(), &mut bytes, &mut checkpoint)
