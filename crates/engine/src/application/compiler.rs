@@ -1864,8 +1864,14 @@ impl StagedSemanticPackage {
     }
 
     /// Source-line claims captured from selected TypeScript compiler inputs.
-    pub fn native_typescript_lines(&self) -> impl Iterator<Item = &backend_semantic::native_source_lines::NativeSourceLineFile> {
+    pub fn native_typescript_lines(&self) -> impl Iterator<Item = &backend_semantic::native_source_lines::NativeSourceLineFile> + Clone {
         self.staged.artifacts.iter().filter_map(|artifact| artifact.native_lines.as_ref())
+    }
+    /// Number of staged artifact slots, used to budget canonical line ordering.
+    pub fn native_typescript_line_slots(&self) -> usize { self.staged.artifacts.len() }
+    /// Returns a line claim for one exact staged artifact ordinal.
+    pub fn native_typescript_line_at(&self, ordinal: usize) -> Option<&backend_semantic::native_source_lines::NativeSourceLineFile> {
+        self.staged.artifacts.get(ordinal)?.native_lines.as_ref()
     }
 
     /// Exact full native program membership, including libraries and dependencies.
