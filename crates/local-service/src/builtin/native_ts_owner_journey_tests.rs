@@ -1454,7 +1454,8 @@ fn omitted_program_member_cold_replay(mixed: bool) -> Result<(), Box<dyn Error>>
         assert_eq!(selected.sources.iter().filter(|(path, _, id, len)| path.ends_with("src/app/layout.tsx") && id == digest.as_ref() && *len as usize == member.len()).count(), 1);
         if mixed {
             let digest = backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(shared.as_bytes());
-            assert_eq!(selected.sources.iter().filter(|(path, _, id, len)| path.ends_with("src/types/shared.ts") && id == digest.as_ref() && *len as usize == shared.len()).count(), 1, "TSX selected Program must include exact imported TS source");
+            let imported = selected.sources.iter().find(|(path, _, id, len)| path.ends_with("src/types/shared.ts") && id == digest.as_ref() && *len as usize == shared.len()).ok_or("TSX Program imported TS source")?;
+            assert!(imported.1.is_none(), "dependency program path must not mint a TSX package mapping");
         }
     }
     drop(session);
