@@ -4325,7 +4325,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         let mut captured_global_json: Option<&str> = None;
         let mut restored_csharp_references = None;
         let sdk_observation = if let Some(probes) = package.csharp_sdk_probes {
-            captured_global_json = probes.iter().find(|probe| probe.path.ends_with("global.json")).and_then(|probe| probe.text);
+            captured_global_json = probes.iter().find_map(|probe| probe.text);
             let config = package.csharp_config.ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "captured C# project configuration" })?;
             let options = super::csharp_sdk_options::simple_csharp_sdk_options(
                 config.first().and_then(|entry| entry.text).ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "captured C# project configuration" })?,

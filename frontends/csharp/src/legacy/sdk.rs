@@ -542,7 +542,7 @@ pub fn resolve_references_with_sdk_diagnostics(
     cancelled: &AtomicBool,
     mut diagnostics: Option<&mut dyn FnMut(&str)>,
 ) -> Result<CSharpResolvedReferenceSnapshot, &'static str> {
-    if !valid_sdk_property(nullable, &["enable", "disable", "annotations"])
+    if !valid_sdk_property(nullable, &["enable", "disable", "warnings", "annotations"])
         || !valid_sdk_property(language_version, &["default", "latest"])
         || !valid_sdk_property(output_type, &["Library", "Exe", "WinExe", "Module"])
         || nullable.len() > 32
@@ -654,10 +654,7 @@ pub fn resolve_references_with_sdk_diagnostics(
         fs::create_dir(&obj).map_err(|_| "SDK scratch unavailable")?;
         fs::write(obj.join("project.assets.json"), bytes).map_err(|_| "SDK scratch unavailable")?;
     }
-    if let Some(global_json) = captured_global_json {
-        fs::write(scratch.path().join("global.json"), global_json.as_bytes())
-            .map_err(|_| "SDK global.json unavailable")?;
-    }
+    write_resolver_global_json(scratch.path(), captured_global_json)?;
     let project = scratch.path().join("resolve.csproj");
     let sdk_name = match sdk_kind {
         CSharpSdkKind::Standard => "Microsoft.NET.Sdk",
@@ -926,6 +923,13 @@ pub fn resolve_references_with_sdk_diagnostics(
             selected_fusion_names: selected_fusion_names.into_boxed_slice(),
         },
     })
+}
+
+fn write_resolver_global_json(root: &Path, captured: Option<&str>) -> Result<(), &'static str> {
+    // An empty sentinel prevents unrelated ancestors of the scratch directory
+    // from silently selecting an SDK when the captured chain was absent.
+    fs::write(root.join("global.json"), captured.unwrap_or("{}").as_bytes())
+        .map_err(|_| "SDK global.json unavailable")
 }
 
 fn resolver_command(dotnet: &Path, args: Vec<OsString>, scratch: &Path) -> CaptureCommand {
@@ -1595,6 +1599,17 @@ pub fn observe_csharp_sdk_with(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn resolver_writes_global_json_absence_sentinel_or_exact_pin() {
+        let scratch = tempfile::tempdir().unwrap();
+        write_resolver_global_json(scratch.path(), None).unwrap();
+        assert_eq!(fs::read(scratch.path().join("global.json")).unwrap(), b"{}");
+        let pin = r#"{"sdk":{"version":"10.0.403"}}"#;
+        write_resolver_global_json(scratch.path(), Some(pin)).unwrap();
+        assert_eq!(fs::read(scratch.path().join("global.json")).unwrap(), pin.as_bytes());
+        assert!(valid_sdk_property("warnings", &["enable", "disable", "warnings", "annotations"]));
+    }
+
     #[test]
     fn candidate_source_revalidation_rejects_changed_bytes() {
         let source = tempfile::tempdir().unwrap();
