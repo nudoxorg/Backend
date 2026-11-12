@@ -64,7 +64,7 @@ fn native_ts_index_polling_reconnects_without_resubmitting() -> Result<(), Box<d
     let mut session = Session::connect(owner.endpoint())?;
     index(&mut session, &project, 0x53)?;
     let key = IndexOperationKey::from_bytes([0x53; 32]).map_err(|e| io::Error::other(e.to_string()))?;
-    assert!(matches!(session.index_operation_status(key)?, IndexOperationObservation::Known(known) if matches!(known.state, IndexOperationState::Published(_))));
+    assert!(matches!(poll_index_status(&mut session, key)?, IndexOperationObservation::Known(known) if matches!(known.state, IndexOperationState::Published(_))));
     drop(session);
     let report = owner.close()?;
     assert!(report.connections >= 2, "one-frame budget must rotate connections");
@@ -101,12 +101,15 @@ fn index(session: &mut Session, project: &Path, byte: u8) -> Result<(), Box<dyn 
             return Err("index deadline".into());
         }
         thread::sleep(Duration::from_millis(30));
-        if session.connection_frames_remaining() == Some(0) {
-            session.reconnect().map_err(|e| io::Error::other(format!("reconnect index status: {e:?}")))?;
-        }
-        status = session.index_operation_status(key)
-            .map_err(|e| io::Error::other(format!("index status request: {e:?}")))?;
+        status = poll_index_status(session, key)?;
     }
+}
+
+pub(super) fn poll_index_status(session: &mut Session, key: IndexOperationKey) -> Result<IndexOperationObservation, Box<dyn Error>> {
+    if session.connection_frames_remaining() == Some(0) {
+        session.reconnect().map_err(|e| io::Error::other(format!("reconnect index status: {e:?}")))?;
+    }
+    session.index_operation_status(key).map_err(|e| io::Error::other(format!("index status request: {e:?}")).into())
 }
 
 /// Resolve the actual returned native Function row, then prove its selected
@@ -1309,8 +1312,7 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
             }
             if Instant::now() >= deadline { return Err("index deadline".into()); }
             thread::sleep(Duration::from_millis(30));
-            if session.connection_frames_remaining() == Some(0) { session.reconnect()?; }
-            status = session.index_operation_status(key)?;
+            status = poll_index_status(session, key)?;
         }
     }
     use backend_engine::builtin::{native_source_evidence_key, native_source_evidence_relation, NativeSourceEvidenceKind};
