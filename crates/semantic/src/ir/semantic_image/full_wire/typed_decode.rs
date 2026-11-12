@@ -489,7 +489,7 @@ pub(crate) fn logical_count(
     }
     let grouped = edges.grouped.as_ref().expect("grouped index was built");
     let after = grouped
-        .keys
+        .keys[..grouped.groups]
         .partition_point(|key| (*key >> 32) <= u64::from(role));
     if after == 0 || (grouped.keys[after - 1] >> 32) != u64::from(role) {
         return Ok(0);
@@ -818,9 +818,10 @@ pub(super) struct Edges<'a> {
 /// the k-th entry of a group is exactly the k-th match of the former linear
 /// scan.
 struct GroupedEdges<'a> {
-    keys: Vec<u64>,
-    starts: Vec<u32>,
-    order: Vec<u32>,
+    keys: Box<[u64]>,
+    starts: Box<[u32]>,
+    order: Box<[u32]>,
+    groups: usize,
     _scratch: Option<Reservation<'a>>,
 }
 
@@ -831,7 +832,7 @@ impl<'a> GroupedEdges<'a> {
 
     fn build(edges: &Edges<'a>) -> Result<Self, FullSemanticImageFault> {
         let count = edges.count as usize;
-        let scratch = count.checked_mul(core::mem::size_of::<(u64, u32)>()
+        let scratch = count.checked_mul(core::mem::size_of::<u128>()
             + core::mem::size_of::<u64>() + 2 * core::mem::size_of::<u32>())
             .and_then(|bytes| bytes.checked_add(core::mem::size_of::<u32>()))
             .ok_or(FullSemanticImageFault::LengthOverflow { field: FullSemanticImageField::TypedEdges })?;
@@ -839,69 +840,55 @@ impl<'a> GroupedEdges<'a> {
             work(meter, 1)?;
             Some(Reservation::new(meter, scratch)?)
         } else { None };
-        let reserve = |elements, cause| FullSemanticImageFault::TypedEdgeIndexAllocation {
-            elements,
-            cause,
-        };
-        let mut ordinals: Vec<(u64, u32)> = Vec::new();
-        ordinals
-            .try_reserve_exact(count)
-            .map_err(|e| reserve(count, e))?;
+        let allocation = |elements| FullSemanticImageFault::TypedEdgeIndexAllocation { elements };
+        if let Some(meter) = edges.meter {
+            work(meter, u64::try_from(scratch.div_ceil(1024)).unwrap_or(u64::MAX))?;
+        }
+        // A 128-bit sortable cell encodes the key and ordinal without padding
+        // ambiguity. All four arrays use exact requested allocator layouts.
+        let mut ordinals = bytemuck::allocation::try_zeroed_slice_box::<u128>(count)
+            .map_err(|_| allocation(count))?;
         for ordinal in 0..edges.count {
             let edge = edges.edge(ordinal)?;
-            ordinals.push((Self::key(edge.role_tag, edge.role_index), ordinal));
+            ordinals[ordinal as usize] = (u128::from(Self::key(edge.role_tag, edge.role_index)) << 32) | u128::from(ordinal);
         }
-        // The ordinal is a tie breaker, preserving emission order without the
-        // additional temporary allocation required by a stable sort.
         if let Some(meter) = edges.meter {
             metered_heap_sort(&mut ordinals, meter)?;
         } else {
             ordinals.sort_unstable();
         }
-        let mut keys = Vec::new();
-        keys.try_reserve_exact(count)
-            .map_err(|e| reserve(count, e))?;
-        let mut starts = Vec::new();
-        let starts_count = count
-            .checked_add(1)
-            .ok_or(FullSemanticImageFault::LengthOverflow {
-                field: FullSemanticImageField::TypedEdges,
-            })?;
-        starts
-            .try_reserve_exact(starts_count)
-            .map_err(|e| reserve(starts_count, e))?;
-        let mut order = Vec::new();
-        order
-            .try_reserve_exact(count)
-            .map_err(|e| reserve(count, e))?;
-        for (position, (key, ordinal)) in ordinals.into_iter().enumerate() {
+        let starts_count = count.checked_add(1).ok_or(FullSemanticImageFault::LengthOverflow {
+            field: FullSemanticImageField::TypedEdges,
+        })?;
+        let mut keys = bytemuck::allocation::try_zeroed_slice_box::<u64>(count)
+            .map_err(|_| allocation(count))?;
+        let mut starts = bytemuck::allocation::try_zeroed_slice_box::<u32>(starts_count)
+            .map_err(|_| allocation(starts_count))?;
+        let mut order = bytemuck::allocation::try_zeroed_slice_box::<u32>(count)
+            .map_err(|_| allocation(count))?;
+        let mut groups = 0_usize;
+        for (position, cell) in ordinals.iter().copied().enumerate() {
             if let Some(meter) = edges.meter { work(meter, 1)?; }
-            if keys.last().map_or(true, |previous| *previous != key) {
-                starts.push(u32::try_from(position).map_err(|_| {
-                    FullSemanticImageFault::LengthOverflow {
-                        field: FullSemanticImageField::TypedEdges,
-                    }
-                })?);
-                keys.push(key);
+            let key = (cell >> 32) as u64;
+            let ordinal = cell as u32;
+            if groups == 0 || keys[groups - 1] != key {
+                starts[groups] = u32::try_from(position).map_err(|_| FullSemanticImageFault::LengthOverflow {
+                    field: FullSemanticImageField::TypedEdges,
+                })?;
+                keys[groups] = key;
+                groups += 1;
             }
-            order.push(ordinal);
+            order[position] = ordinal;
         }
-        starts.push(u32::try_from(order.len()).map_err(|_| {
-            FullSemanticImageFault::LengthOverflow {
-                field: FullSemanticImageField::TypedEdges,
-            }
-        })?);
-        Ok(Self {
-            keys,
-            starts,
-            order,
-            _scratch: scratch_reservation,
-        })
+        starts[groups] = u32::try_from(count).map_err(|_| FullSemanticImageFault::LengthOverflow {
+            field: FullSemanticImageField::TypedEdges,
+        })?;
+        Ok(Self { keys, starts, order, groups, _scratch: scratch_reservation })
     }
 
     fn find(&self, role: u8, index: u32) -> Option<(u32, u32)> {
         let key = Self::key(role, index);
-        let group = self.keys.binary_search(&key).ok()?;
+        let group = self.keys[..self.groups].binary_search(&key).ok()?;
         let start = *self.starts.get(group)?;
         let end = *self.starts.get(group.checked_add(1)?)?;
         Some((start, end))
@@ -910,11 +897,11 @@ impl<'a> GroupedEdges<'a> {
 
 // Sort by `(key, ordinal)` without hidden allocations, checking cancellation
 // and work on each heap step. The ordinal preserves stored edge order.
-pub(super) fn metered_heap_sort(
-    values: &mut [(u64, u32)],
+pub(super) fn metered_heap_sort<T: Ord>(
+    values: &mut [T],
     meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<(), FullSemanticImageFault> {
-    fn sift(values: &mut [(u64, u32)], mut root: usize, end: usize, meter: &dyn SemanticImageAdmissionMeter) -> Result<(), FullSemanticImageFault> {
+    fn sift<T: Ord>(values: &mut [T], mut root: usize, end: usize, meter: &dyn SemanticImageAdmissionMeter) -> Result<(), FullSemanticImageFault> {
         loop {
             work(meter, 1)?;
             let Some(mut child) = root.checked_mul(2).and_then(|n| n.checked_add(1)) else { return Ok(()); };

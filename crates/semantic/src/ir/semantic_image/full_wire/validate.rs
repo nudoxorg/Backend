@@ -15,7 +15,6 @@ mod header;
 #[path = "validate_typed.rs"]
 mod typed;
 
-use alloc::vec::Vec;
 use core::cmp::Ordering;
 
 use crate::ir::{
@@ -296,15 +295,11 @@ fn validate_signature_carrier_bindings(
         })?
         .div_ceil(4);
     let _role_reservation = Reservation::new(meter, role_bytes)?;
-    let mut derived_roles = Vec::new();
-    derived_roles.try_reserve_exact(role_bytes).map_err(|_| {
-        FullSemanticImageFault::SignatureCarrierBindingScratch { bytes: role_bytes }
-    })?;
-    while derived_roles.len() < role_bytes {
-        work(meter, 1)?;
-        let end = role_bytes.min(derived_roles.len().saturating_add(1024));
-        derived_roles.resize(end, 0_u8);
-    }
+    // The allocator receives exactly Layout::array::<u8>(role_bytes).
+    // Debit the bounded zero-fill work before entering the allocator.
+    work(meter, u64::try_from(role_bytes.div_ceil(1024)).unwrap_or(u64::MAX))?;
+    let mut derived_roles = bytemuck::allocation::try_zeroed_slice_box::<u8>(role_bytes)
+        .map_err(|_| FullSemanticImageFault::SignatureCarrierBindingScratch { bytes: role_bytes })?;
 
     let mut range_row = 0_u32;
     let mut target_cursor = 0_u32;

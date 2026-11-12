@@ -66,7 +66,7 @@ pub(super) struct AdmittedSemanticImage {
 /// the `OnceLock` directly; the mutex is touched only by concurrent cold misses.
 #[derive(Debug)]
 pub struct SemanticImageProofOwner {
-    bytes: Vec<u8>,
+    bytes: Box<[u8]>,
     proof: OnceLock<AdmittedSemanticImage>,
     admission: Mutex<()>,
 }
@@ -76,7 +76,7 @@ impl SemanticImageProofOwner {
     #[must_use]
     pub fn new(bytes: Box<[u8]>) -> Self {
         Self {
-            bytes: bytes.into_vec(),
+            bytes,
             proof: OnceLock::new(),
             admission: Mutex::new(()),
         }
@@ -91,12 +91,12 @@ impl SemanticImageProofOwner {
     ) -> Result<RetainedSemanticImage<'meter>, FullSemanticImageError> {
         validate::work(meter, 1)?;
         let retention = validate::Reservation::new(meter, bytes.len())?;
-        let mut retained = Vec::new();
-        retained.try_reserve_exact(bytes.len()).map_err(|cause|
-            super::FullSemanticImageFault::ImageStorageAllocation { bytes: bytes.len(), cause })?;
-        for chunk in bytes.chunks(1024) {
+        validate::work(meter, u64::try_from(bytes.len().div_ceil(1024)).unwrap_or(u64::MAX))?;
+        let mut retained = bytemuck::allocation::try_zeroed_slice_box::<u8>(bytes.len())
+            .map_err(|_| super::FullSemanticImageFault::ImageStorageAllocation { bytes: bytes.len() })?;
+        for (destination, source) in retained.chunks_mut(1024).zip(bytes.chunks(1024)) {
             validate::work(meter, 1)?;
-            retained.extend_from_slice(chunk);
+            destination.copy_from_slice(source);
         }
         let owner = Self { bytes: retained, proof: OnceLock::new(), admission: Mutex::new(()) };
         let view = SemanticImageView::reopen_bounded(owner.as_bytes(), meter)?;

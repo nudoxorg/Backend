@@ -2559,6 +2559,18 @@ fn bounded_reopen_charges_work_scratch_and_retained_backing() -> Result<(), crat
     let preflight = Meter::new(u64::MAX, 0, u64::MAX);
     assert_eq!(super::semantic_image_admission_scratch(&bytes, &preflight).expect("preflight"), scratch);
     assert!(work > 1 && scratch > 0);
+    let observed = allocation_counter::measure(|| {
+        let meter = Meter::new(u64::MAX, scratch, u64::MAX);
+        let view = SemanticImageView::reopen_bounded(&bytes, &meter).expect("measured admission");
+        core::hint::black_box(view);
+    });
+    assert_eq!(observed.bytes_max, scratch as u64);
+    let retained_allocations = allocation_counter::measure(|| {
+        let meter = Meter::new(u64::MAX, bytes.len() + scratch, u64::MAX);
+        let owner = SemanticImageProofOwner::copy_bounded(&bytes, &meter).expect("measured retention");
+        core::hint::black_box(owner);
+    });
+    assert_eq!(retained_allocations.bytes_max, (bytes.len() + scratch) as u64);
     assert_eq!(measure.used.get(), 0);
     assert!(SemanticImageView::reopen_bounded(&bytes, &Meter::new(work, scratch, u64::MAX)).is_ok());
     assert!(stopped(SemanticImageView::reopen_bounded(&bytes, &Meter::new(work - 1, scratch, u64::MAX))));
