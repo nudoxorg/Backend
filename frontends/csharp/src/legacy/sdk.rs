@@ -221,20 +221,24 @@ fn account_pack_bytes(total: &mut usize, length: usize) -> Result<(), &'static s
 // The SDK can consult pack metadata as well as reference DLLs. Bind the
 // complete private pack layout, with stable reads and deterministic ordering.
 fn pack_layout_digest(root: &Path, deadline: Instant, cancelled: &AtomicBool) -> Result<[u8; 32], &'static str> {
+    pack_layout_digest_with_limit(root, deadline, cancelled, 32768)
+}
+
+fn pack_layout_digest_with_limit(root: &Path, deadline: Instant, cancelled: &AtomicBool, max_entries: usize) -> Result<[u8; 32], &'static str> {
     fn visit(root: &Path, dir: &Path, hash: &mut sha2::Sha256, count: &mut usize,
-        total: &mut usize, depth: usize, deadline: Instant, cancelled: &AtomicBool) -> Result<(), &'static str> {
+        total: &mut usize, depth: usize, deadline: Instant, cancelled: &AtomicBool,
+        max_entries: usize) -> Result<(), &'static str> {
         if depth > 32 { return Err("SDK pack snapshot depth"); }
         let mut entries = Vec::new();
         for entry in fs::read_dir(dir).map_err(|_| "SDK pack snapshot unavailable")? {
             if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline { return Err("SDK pack snapshot cancelled"); }
-            if entries.len() >= 32768usize.saturating_sub(*count) { return Err("SDK pack snapshot limit"); }
+            *count = count.checked_add(1).ok_or("SDK pack snapshot limit")?;
+            if *count > max_entries { return Err("SDK pack snapshot limit"); }
             entries.push(entry.map_err(|_| "SDK pack snapshot unavailable")?);
         }
         entries.sort_by_key(|entry| entry.file_name());
         for entry in entries {
             if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline { return Err("SDK pack snapshot cancelled"); }
-            *count = count.checked_add(1).ok_or("SDK pack snapshot limit")?;
-            if *count > 32768 { return Err("SDK pack snapshot limit"); }
             let path = entry.path();
             let kind = entry.file_type().map_err(|_| "SDK pack snapshot unavailable")?;
             if kind.is_symlink() { return Err("SDK pack snapshot symlink"); }
@@ -245,7 +249,7 @@ fn pack_layout_digest(root: &Path, deadline: Instant, cancelled: &AtomicBool) ->
                 hash.update([0]);
                 hash.update((name.len() as u64).to_le_bytes());
                 hash.update(name);
-                visit(root, &path, hash, count, total, depth + 1, deadline, cancelled)?;
+                visit(root, &path, hash, count, total, depth + 1, deadline, cancelled, max_entries)?;
             } else if kind.is_file() {
                 hash.update([1]);
                 let bytes = backend_platform::durable::read_regular_bounded_stable(&path, 32 * 1024 * 1024)
@@ -262,7 +266,7 @@ fn pack_layout_digest(root: &Path, deadline: Instant, cancelled: &AtomicBool) ->
     let mut hash = sha2::Sha256::new();
     hash.update(b"csharp.sdk-private-pack-layout.v1\0");
     let (mut count, mut total) = (0, 0);
-    visit(root, root, &mut hash, &mut count, &mut total, 0, deadline, cancelled)?;
+    visit(root, root, &mut hash, &mut count, &mut total, 0, deadline, cancelled, max_entries)?;
     Ok(hash.finalize().into())
 }
 
@@ -1674,6 +1678,22 @@ pub fn observe_csharp_sdk_with(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pack_digest_counts_collected_parents_before_descending() {
+        let root = tempfile::tempdir().unwrap();
+        for name in ["a", "b", "c"] { fs::create_dir(root.path().join(name)).unwrap(); }
+        fs::write(root.path().join("a/one"), b"one").unwrap();
+        fs::write(root.path().join("a/two"), b"two").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let cancelled = AtomicBool::new(false);
+        assert_eq!(pack_layout_digest_with_limit(root.path(), deadline, &cancelled, 4),
+            Err("SDK pack snapshot limit"));
+        assert!(pack_layout_digest_with_limit(root.path(), deadline, &cancelled, 5).is_ok());
+        cancelled.store(true, Ordering::Release);
+        assert_eq!(pack_layout_digest_with_limit(root.path(), deadline, &cancelled, 5),
+            Err("SDK pack snapshot cancelled"));
+    }
+
     #[test]
     fn sdk_json_budget_scales_with_admitted_candidates_and_is_bounded() {
         assert_eq!(resolver_stdout_limit(0), 512 * 1024);
