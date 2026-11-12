@@ -4441,6 +4441,7 @@ impl SemanticAuthority {
             &backend_extension_turso::CandidateGeneration,
         ) -> Result<(), BuiltinModelError>,
     ) -> Result<(SemanticPublicationClaim, SelectedGeneration), BuiltinModelError> {
+        if stopped() { return Err(BuiltinModelError("compiler publication stopped".into())); }
         let AdmittedCompilation {
             attempt,
             metadata,
@@ -4532,6 +4533,7 @@ impl SemanticAuthority {
                     })
             },
             |_| {
+                if stopped() { return Err(BuiltinModelError("compiler publication stopped".into())); }
                 self.publish_selected_closure(
                     selected_pin.receipt().closure(),
                     closure_id,
@@ -4541,7 +4543,9 @@ impl SemanticAuthority {
                 )
             },
         )?;
+        if stopped() { return Err(BuiltinModelError("compiler publication stopped".into())); }
         admit_before_select(&candidate)?;
+        if stopped() { return Err(BuiltinModelError("compiler publication stopped".into())); }
         let frontier = futures_executor::block_on(
             self.writer_authority_mut()?
                 .compare_and_select(candidate, receipt),

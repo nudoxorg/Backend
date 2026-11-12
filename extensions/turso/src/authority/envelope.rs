@@ -2279,6 +2279,7 @@ impl DurableClosureVerifier for FileStoreCompilerPublicationVerifier<'_, '_, '_>
     type Error = String;
 
     fn verify_closure(&self, claim: &ClosureClaim) -> Result<(), Self::Error> {
+        if self.stopped.is_some_and(|stop| stop()) { return Err("compiler candidate verification stopped".into()); }
         if !self.expected.matches_claim(claim) || self.expected.object_id() != *claim.candidate_id()
         {
             return Err("compiler envelope differs from the exact candidate claim".to_owned());
@@ -2366,6 +2367,7 @@ impl DurableClosureVerifier for FileStoreCompilerPublicationVerifier<'_, '_, '_>
             observed.member_ids(),
             stored.object_count(),
         )?;
+        if self.stopped.is_some_and(|stop| stop()) { return Err("compiler candidate verification stopped".into()); }
         Ok(())
     }
 }
