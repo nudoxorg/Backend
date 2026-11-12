@@ -28,10 +28,15 @@ p.add_argument('--nullable', default='enable')
 p.add_argument('--language', default='default')
 p.add_argument('--output', default='Exe')
 p.add_argument('--frameworks', default='', help='explicit project framework references, comma separated')
+p.add_argument('--inherited-frameworks', default='', help='component-only inherited project context, comma separated')
 p.add_argument('--exclude-project-output', help='exact project output path excluded from this component-only comparison')
 a = p.parse_args()
 pack = a.pack_list.split(os.pathsep)
 packages = a.package_list.split(os.pathsep) if a.package_list else []
+inherited = list(filter(None, a.inherited_frameworks.split(',')))
+if inherited:
+    print('component context receipt:', json.dumps(dict(provenance='inherited project context', frameworks=inherited), sort_keys=True), flush=True)
+    a.frameworks = ','.join(filter(None, [a.frameworks, a.inherited_frameworks]))
 excluded = Path(a.exclude_project_output).resolve() if a.exclude_project_output else None
 if excluded:
     print('scope: component-only; excluding exact project output', excluded, flush=True)
