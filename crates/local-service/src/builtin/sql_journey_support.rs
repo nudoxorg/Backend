@@ -16,6 +16,7 @@ pub(super) struct Reopened {
     pub(super) analysis: bool,
     pub(super) tables: Vec<String>,
     pub(super) balance_dropped: bool,
+    pub(super) sql_root_level: u16,
 }
 
 pub(super) fn reopen_and_query(workspace: &Path, project: &Path) -> Result<Reopened, Box<dyn Error>> {
@@ -67,7 +68,7 @@ pub(super) fn reopen_and_query(workspace: &Path, project: &Path) -> Result<Reope
         }
     };
     let Some(table_hits) = page(SqlObjectKind::Table)? else {
-        return Ok(Reopened { analysis: false, tables: Vec::new(), balance_dropped: false });
+        return Ok(Reopened { analysis: false, tables: Vec::new(), balance_dropped: false, sql_root_level: 0 });
     };
     // Exercise the actual selected catalog after a cold owner reopen. Tiny
     // credit and cancellation must not produce a partial catalog.
@@ -110,5 +111,7 @@ pub(super) fn reopen_and_query(workspace: &Path, project: &Path) -> Result<Reope
     let balance_dropped = page(SqlObjectKind::Column)?.unwrap_or_default().into_iter().any(|hit| {
         matches!(hit.fact, SqlFact::Definition(d) if d.name == "balance" && matches!(d.action, SqlDefinitionAction::AddColumn | SqlDefinitionAction::Create) && !d.live_at_head)
     });
-    Ok(Reopened { analysis: true, tables, balance_dropped })
+    let sql_root_level = backend_engine::builtin::sql_analysis_relation(&snapshot)?
+        .ok_or("cold SQL relation missing")?.root_node()?.level();
+    Ok(Reopened { analysis: true, tables, balance_dropped, sql_root_level })
 }

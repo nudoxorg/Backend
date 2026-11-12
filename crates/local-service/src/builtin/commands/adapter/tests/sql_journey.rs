@@ -427,6 +427,28 @@ fn many_sql_facts_publish_discover_and_reopen_with_bounded_catalog() {
     assert!(reopened.analysis);
     assert_eq!(reopened.tables.len(), 180);
     assert!(reopened.tables.iter().any(|name| name == "catalog_item_179"));
+    assert!(reopened.sql_root_level > 0, "SQL relation must physically span multiple leaves");
+
+    // Reopen the production adapter and use its ordinary search surface.
+    let mut fixture = AdapterFixture::open(root, false);
+    let view = fixture.parts().1.engine().daemon().library().view().clone();
+    let deadline = std::time::Instant::now() + TERMINAL_WAIT;
+    let (adapter, daemon) = fixture.parts();
+    loop {
+        assert!(std::time::Instant::now() < deadline, "cold search preparation deadline");
+        match adapter.local_search_lane.prepare(&view, &mut adapter.product_state) {
+            None => break,
+            Some(backend_library::CommandFailure::QueryPreparation { basis, .. }) if basis == view.root() =>
+                std::thread::sleep(std::time::Duration::from_millis(2)),
+            other => panic!("cold search preparation: {other:?}"),
+        }
+    }
+    let (reply, _) = adapter.surface(daemon, backend_library::SurfaceCommand::IndexSearch {
+        query: backend_library::ProductText::new("catalog_item_179").unwrap(), limit: 20, cursor: None,
+    }, 0xc500).expect("cold ordinary SQL search");
+    let CommandReply::Surface(backend_library::SurfaceReply::IndexSearchPage(page)) = reply else { panic!("cold search page") };
+    assert!(page.hits.iter().any(|hit| matches!(hit,
+        backend_library::RegistrySearchHit::LocalDeclaration(row) if row.name.as_str() == "catalog_item_179")));
 }
 
 #[test]
