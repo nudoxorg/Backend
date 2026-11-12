@@ -4532,6 +4532,14 @@ mod tests {
         assert!(reopen_selected_native_lines_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, used - 1), &|| false).is_err());
         assert!(reopen_selected_native_lines_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, used), &|| false).is_ok());
         assert!(reopen_selected_native_lines_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(0, 100_000), &|| false).is_err());
+        let mut low = 0usize;
+        let mut high = 8 * 1024 * 1024;
+        while low + 1 < high {
+            let mid = low + (high - low) / 2;
+            if reopen_selected_native_lines_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(mid, 100_000), &|| false).is_ok() { high = mid; } else { low = mid; }
+        }
+        assert!(reopen_selected_native_lines_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(high, 100_000), &|| false).is_ok());
+        assert!(reopen_selected_native_lines_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(high - 1, 100_000), &|| false).is_err());
         assert!(reopen_selected_native_lines_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000), &|| true).is_err());
         let mut missing = vec![image_object, program_object, metadata.typed_object(), envelope.typed_object()];
         missing.sort_by_key(|o| (o.schema(), *o.key(), *o.version()));
