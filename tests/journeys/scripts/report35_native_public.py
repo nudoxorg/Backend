@@ -249,7 +249,11 @@ def main() -> int:
                 ("graph", "backend.graph", {"coordinate": path_coordinate}),
                 ("related", "backend.related", {"coordinate": path_coordinate}),
             ):
-                result = tool("path-" + label, tool_name, arguments)
+                try:
+                    result = tool("path-" + label, tool_name, arguments)
+                except Exception as error:
+                    check("mcp:path-identity:" + label, False, str(error))
+                    continue
                 check("mcp:path-identity:" + label,
                       any("generateSchedule" in part for part in strings(result)), result)
         mcp_status = tool("status", "backend.status", {})
