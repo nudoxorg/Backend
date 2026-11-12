@@ -10,6 +10,8 @@
 
 mod image;
 mod oracle;
+#[cfg(target_os = "linux")]
+mod landlock_candidate;
 mod producer;
 mod restore;
 mod sdk;

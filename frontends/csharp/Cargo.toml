@@ -19,3 +19,6 @@ thiserror = { workspace = true }
 tree-sitter-c-sharp = "=0.23.5"
 [lib]
 path = "lib.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "=0.4.7"
