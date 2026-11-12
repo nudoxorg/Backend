@@ -969,6 +969,7 @@ impl generation_residence::SelectedSemanticImageLoader for CapturedClosureImageL
 #[cfg(test)]
 thread_local! {
     static TEST_FORGE_LINE_SOURCE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TEST_OMIT_NATIVE_LINES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn load_selected_native_lines(
@@ -3808,7 +3809,11 @@ impl SemanticAuthority {
                 }
             }
         }
-        let native_lines_member = if line_count != 0 {
+        #[cfg(test)]
+        let omit_native_lines = TEST_OMIT_NATIVE_LINES.with(|omit| omit.replace(false));
+        #[cfg(not(test))]
+        let omit_native_lines = false;
+        let native_lines_member = if line_count != 0 && !omit_native_lines {
             if staged.profile().language() != backend_semantic::vocabulary::Language::TypeScript || program_member.is_none() {
                 return Err(BuiltinModelError("native source lines require the selected TypeScript program".into()));
             }
@@ -5763,6 +5768,18 @@ mod tests {
         let selections = authority.image_loader.selections.read().expect("selection snapshot after final stop");
         assert!(SelectedClosureImageLoader::committed_pair_optional_in(&selections, &key).expect("selection lookup").is_none(), "final stop must not select a generation");
         drop(selections);
+        // Use the ordinary publisher to select a legacy closure with no
+        // optional NLM member, while retaining the real Program and images.
+        TEST_OMIT_NATIVE_LINES.with(|omit| omit.set(true));
+        let (_, legacy_selection) = authority
+            .publish_staged(&key, attempt, &staged, |_| Ok(()))
+            .expect("select legacy closure without native lines");
+        let legacy_metadata = reopen_selected_compiler_metadata(&authority.store, &legacy_selection)
+            .expect("reopen selected legacy metadata");
+        assert!(legacy_metadata.metadata().native_lines().is_none());
+        assert!(legacy_metadata.metadata().native_program_sources().is_some());
+        let attempt = authority.begin_candidate_attempt(&key, &observation)
+            .expect("begin wrong-line attempt");
         TEST_FORGE_LINE_SOURCE.with(|forge| forge.set(true));
         let (_, wrong_line_selection) = authority
             .publish_staged(&key, attempt, &staged, |_| Ok(()))
@@ -5999,6 +6016,9 @@ mod tests {
         ).is_ok(), "a fresh Program may retire an omitted path");
         let mut with_lines = current.clone();
         with_lines.line_starts = Some(main_line_starts.clone());
+        let mut legacy_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(super::super::MAX_REBUILD_BYTES, NATIVE_HEADER_WORK_UNITS);
+        bounded_replay::admit(&replay_store, &legacy_selection, &capture, &[&with_lines], &[&removed], &mut legacy_budget, &|| false)
+            .expect("legacy selected closure replays matching inline lines without NLM");
         assert!(admit_replayed_native_evidence(
             &workspace_store, std::slice::from_ref(&capture), &[&with_lines], &[&removed],
         ).is_ok(), "selected line-map evidence must replay");
