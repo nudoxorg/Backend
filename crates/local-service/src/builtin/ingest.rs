@@ -5994,6 +5994,48 @@ mod tests {
     use super::*;
     use backend_engine::CanonicalRelation;
 
+    #[cfg(unix)]
+    #[test]
+    fn selected_line_map_host_check_refuses_symlinks_and_stops() {
+        use backend_semantic::{ir::SourceIdentity, native_source_lines::{NativeSourceLineAggregate, NativeSourceLineAggregateView, NativeSourceLineFile}};
+        use backend_engine::builtin::{NativeSourceEvidence, NativeSourceEvidenceKind};
+        use backend_extension_turso::SelectedNativeHeaderBudget;
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("root");
+        let root = temp.path().canonicalize().expect("canonical root");
+        let bytes = b"export const x = 1;\r\n";
+        std::fs::write(root.join("a.ts"), bytes).expect("source");
+        let source = SourceIdentity::from_bytes(bytes).expect("source identity");
+        let evidence = NativeSourceEvidence {
+            project: [1; 32], profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+            path: "a.ts".into(), input_digest: typed_of::<InputContentSchema>(bytes.as_slice()).to_bytes(),
+            source_digest: *source.identity.as_ref(), byte_length: bytes.len() as u32,
+            kind: NativeSourceEvidenceKind::Image, line_starts: None, headers: None,
+        };
+        let aggregate = NativeSourceLineAggregate { files: vec![NativeSourceLineFile {
+            path: "a.ts".into(), source, line_starts: vec![0, bytes.len() as u32],
+        }] };
+        let size = aggregate.encoded_len_checkpointed(&mut |_| Ok::<(), ()>(())).expect("wire size");
+        let mut wire = vec![0; size];
+        aggregate.encode_into(&mut wire, &mut |_| Ok::<(), ()>(())).expect("wire");
+        let view = NativeSourceLineAggregateView::parse(&wire, &mut |_| Ok::<(), ()>(())).expect("view");
+        let file = view.find_file("a.ts", &mut |_| Ok::<(), ()>(())).expect("lookup").expect("file");
+        let check = |root: &Path, evidence: &NativeSourceEvidence, memory, stopped: &dyn Fn() -> bool| {
+            let mut budget = SelectedNativeHeaderBudget::new(memory, 1_000_000);
+            native_line_map_matches_host(root, evidence, source, file, &mut budget, stopped)
+        };
+        assert_eq!(check(&root, &evidence, bytes.len(), &|| false), Ok(true));
+        assert!(check(&root, &evidence, bytes.len() - 1, &|| false).is_err());
+        assert!(check(&root, &evidence, 0, &|| true).is_err());
+        let root_link = root.join("root-link");
+        symlink(&root, &root_link).expect("root link");
+        assert_eq!(check(&root_link, &evidence, bytes.len(), &|| false), Ok(false));
+        std::fs::remove_file(root.join("a.ts")).expect("remove source");
+        symlink(root.join("root-link").join("a.ts"), root.join("a.ts")).expect("file link");
+        assert_eq!(check(&root, &evidence, bytes.len(), &|| false), Ok(false));
+    }
+
     #[test]
     fn structural_readiness_preserves_baseline_until_a_manifest_is_observed() {
         use backend_engine::{CapabilityFamily, CapabilityInventory, CapabilityLifecycle, CapabilityTarget};
