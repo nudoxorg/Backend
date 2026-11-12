@@ -1581,7 +1581,7 @@ fn native_ts_large_crlf_line_map_source_show_read_and_cold() -> Result<(), Box<d
     assert_eq!(document.location.captured().ok_or("warm source location")?.start_line(), 20_001);
     let CommandReply::Document(shown) = session.document(&coordinate)?.reply else { return Err("Show reply".into()) };
     assert_eq!(shown.location.captured().ok_or("warm Show location")?.start_line(), 20_001);
-    let request = || SurfaceCommand::Read { locators: vec![ProductText::new(coordinate.clone()).map_err(|e| io::Error::other(e.to_string()))?].into_boxed_slice() };
+    let request = || -> Result<SurfaceCommand, io::Error> { Ok(SurfaceCommand::Read { locators: vec![ProductText::new(coordinate.clone()).map_err(|e| io::Error::other(e.to_string()))?].into_boxed_slice() }) };
     let SurfaceReply::Read(records) = session.surface(request()?)? else { return Err("Read reply".into()) };
     assert!(records.first().and_then(|record| record.extent.as_ref()).is_some(), "fresh native Read extent");
     drop(session);
