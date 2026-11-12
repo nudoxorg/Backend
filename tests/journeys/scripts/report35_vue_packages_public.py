@@ -180,16 +180,25 @@ def main():
             if not repeatable or attempt == 6:
                 break
             time.sleep(10)
-        require(label + ' MCP success', not result.get('isError') and isinstance(content, dict), result)
+        require(label + ' MCP success', ('isError' not in result or result['isError'] is False) and isinstance(content, dict) and content.get('answer') != 'fault', result)
         return content
+
+    def require_full_search(label, reply, query):
+        require(label + ' typed full lexical search',
+                isinstance(reply, dict) and reply.get('answer') == 'records'
+                and reply.get('query') == query and isinstance(reply.get('records'), list)
+                and reply.get('search_scope') != 'published_names_only'
+                and reply.get('full_search') != 'preparing', reply)
 
     def verify(phase):
         rc, search, raw = journey.cli(phase + '-search', ['search', 'mounted', '--limit', '100'])
+        require_full_search(phase + ' CLI', search, 'mounted')
         rows = declarations(search, 'mounted', {'function'}, None)
         rows = [row for row in rows if 'App.vue' in str(row.get('identity', {}))]
         require(phase + ' CLI search', rc == 0 and len(rows) == 1, raw)
         coord = rows[0]['identity']['coordinate']
         result = mcp('backend.search', {'query': 'mounted', 'limit': 100}, phase + '-mcp-search')
+        require_full_search(phase + ' MCP', result, 'mounted')
         require(phase + ' MCP search', coord in json.dumps(result), result)
         rc, _, raw = journey.cli(phase + '-source', ['source', coord])
         require(phase + ' CLI source', rc == 0 and "return 'é漢'" in raw and '<template>' not in raw, raw)
@@ -258,9 +267,11 @@ def main():
         rc, state, raw = index_published(journey, project, 'edited')
         require('edit published', rc == 0 and state == 'published', raw)
         rc, result, raw = journey.cli('edited-search', ['search', 'mounted', '--limit', '100'])
-        require('edit retires declaration', rc == 0 and not declarations(result, 'mounted', {'function'}, None), raw)
+        require_full_search('edit CLI', result, 'mounted')
+        require('edit retires declaration', rc == 0 and result.get('more') is False and not declarations(result, 'mounted', {'function'}, None), raw)
         result = mcp('backend.search', {'query': 'mounted', 'limit': 100}, 'edited-mcp-search')
-        require('MCP edit retires declaration', not declarations(result, 'mounted', {'function'}, None), result)
+        require_full_search('edit MCP', result, 'mounted')
+        require('MCP edit retires declaration', result.get('more') is False and not declarations(result, 'mounted', {'function'}, None), result)
     except Exception as error:
         checks.append({'name': 'journey completed', 'pass': False, 'detail': repr(error)})
     finally:
