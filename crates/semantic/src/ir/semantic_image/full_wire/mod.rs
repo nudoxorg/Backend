@@ -34,7 +34,7 @@ pub use mapping::{
     load_semantic_image_mmap_from_ranges, open_semantic_image_mmap,
 };
 pub(crate) use typed::FullTypedPlan;
-pub use validate::SemanticImageAdmissionMeter;
+pub use validate::{SemanticImageAdmissionMeter, semantic_image_admission_scratch};
 pub use view::{
     RetainedSemanticImage, SemanticImageProofOwner, SemanticImageView, reset_semantic_image_validations,
     semantic_image_validations,

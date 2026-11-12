@@ -258,7 +258,7 @@ pub use semantic_image::{
     SemanticImageAdmissionMeter, SemanticImageEncodeError, SemanticImageIdentity, SemanticImageProofOwner,
     SemanticImageReopenError, SemanticImageView, TerminalPoolDomain, TerminalPoolFault,
     encode_full_semantic_image, full_semantic_image_len, reset_semantic_image_validations,
-    semantic_image_validations,
+    semantic_image_admission_scratch, semantic_image_validations,
 };
 #[cfg(feature = "mmap")]
 pub use semantic_image::{

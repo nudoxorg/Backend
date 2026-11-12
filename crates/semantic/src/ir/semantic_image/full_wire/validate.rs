@@ -138,6 +138,30 @@ impl SemanticImageAdmissionMeter for Unlimited {
     fn release(&self, _: usize) {}
 }
 
+fn has_carrier_bindings(layout: FullImageLayout) -> bool {
+    layout.schema == SCHEMA_CARRIER_BINDINGS
+        || (layout.schema >= SCHEMA_TYPED_NAMES
+            && layout.entry(FullDirectoryKind::SignatureCarrierBindingRanges).count != 0)
+}
+
+/// Returns the exact scratch reservation needed by bounded full-image
+/// admission. This performs only fixed-size directory checks and does not
+/// admit the image: the caller must subsequently call `reopen_bounded` on
+/// the same immutable bytes. No bytes are retained by this preflight.
+pub fn semantic_image_admission_scratch(
+    bytes: &[u8],
+    meter: &dyn SemanticImageAdmissionMeter,
+) -> Result<usize, FullSemanticImageError> {
+    work(meter, 1)?;
+    let layout = header::directory(bytes)?;
+    header::validate_lane_widths(layout)?;
+    work(meter, 1)?;
+    if !has_carrier_bindings(layout) { return Ok(0); }
+    let entities = usize::try_from(layout.entry(FullDirectoryKind::Entities).count)
+        .map_err(|_| FullSemanticImageFault::LengthOverflow { field: FullSemanticImageField::SignatureCarrierRoles })?;
+    Ok(entities.div_ceil(4))
+}
+
 pub(crate) fn reopen_full_semantic_image(
     bytes: &[u8],
 ) -> Result<ValidatedFullImage, FullSemanticImageError> {
@@ -158,13 +182,7 @@ pub(crate) fn reopen_full_semantic_image_with_meter(
     typed_decode::validate_semantic_nodes(bytes, layout, typed, meter)?;
     validate_entities(bytes, layout, typed, meter)?;
     validate_signature_carrier_roles(bytes, layout, meter)?;
-    if layout.schema == SCHEMA_CARRIER_BINDINGS
-        || (layout.schema >= SCHEMA_TYPED_NAMES
-            && layout
-                .entry(FullDirectoryKind::SignatureCarrierBindingRanges)
-                .count
-                != 0)
-    {
+    if has_carrier_bindings(layout) {
         validate_signature_carrier_bindings(bytes, layout, typed, meter)?;
     }
     validate_terminal_lists(bytes, layout, typed, meter)?;
