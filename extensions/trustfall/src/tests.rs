@@ -168,6 +168,35 @@ fn compiler_external_corpus_with_authority(
     source_observed: bool,
     external_observed: bool,
 ) -> Result<SemanticQueryCorpus, SemanticQueryError> {
+    SemanticQueryCorpus::admit(workspace(), compiler_external_facts(package, image, external_image, source_observed, external_observed))
+}
+
+#[test]
+fn budgeted_corpus_reserves_qualification_error_allocation() {
+    let package = backend_library::package_key("qualification-budget");
+    let facts = compiler_external_facts(package, [7; 32], [7; 32], false, true);
+    let limits = Limits::default();
+    let retained = measure_semantic_query_facts_with_quota_controlled(&facts, facts.capacity(), limits, 64, &|| false).unwrap();
+    let overhead = semantic_query_corpus_admission_overhead(facts.len(), 64).unwrap();
+    let mut result = None;
+    let measured = allocation_counter::measure(|| {
+        result = Some(SemanticQueryCorpus::admit_with_budget_controlled(
+            workspace(), facts, limits,
+            SemanticQueryAdmissionBudget { maximum_requested_bytes: retained + overhead, allocation_quota_per_allocation: 64 },
+            &|| false,
+        ));
+    });
+    assert!(matches!(result, Some(Err(SemanticQueryError::Evidence(ref message))) if message.contains("qualification")));
+    assert!(measured.bytes_max <= overhead as u64, "error-path peak exceeded reserved overhead");
+}
+
+fn compiler_external_facts(
+    package: backend_library::PackageKey,
+    image: [u8; 32],
+    external_image: [u8; 32],
+    source_observed: bool,
+    external_observed: bool,
+) -> Vec<SemanticQueryFact> {
     let (coordinate, profile, declaration, target, facts) = compiler_external_fixture();
     let project_id = backend_library::RowId::Package(package).stable_key();
     let external = if external_observed {
@@ -203,9 +232,7 @@ fn compiler_external_corpus_with_authority(
         CompilerSemanticEvidence::new(package, coordinate, profile, declaration, image, facts)
     };
     let source_id = source.row_id();
-    SemanticQueryCorpus::admit(
-        workspace(),
-        vec![
+    vec![
             SemanticQueryFact::new(
                 SemanticQueryEvidence::Package(PackageScopeEvidence::new(package)),
                 SemanticQueryPresentation {
@@ -251,8 +278,7 @@ fn compiler_external_corpus_with_authority(
                     related: Box::new([]),
                 },
             ),
-        ],
-    )
+        ]
 }
 
 #[test]
