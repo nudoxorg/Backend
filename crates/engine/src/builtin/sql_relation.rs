@@ -382,12 +382,17 @@ impl CanonicalRelation for SqlAnalysisRelation {
         if bytes.len() > MAX_SQL_ROW_BYTES || !bytes.starts_with(MAGIC) {
             return Err(RelationDecodeError::Malformed);
         }
-        // Escaped strings use an explicitly sized caller-owned scratch buffer.
-        // A decoded JSON string cannot be longer than its encoded source.
+        // Unescaped JSON can be borrowed without any unescape buffer. For
+        // escaped strings use a fixed-size scratch allocation: decoded UTF-8
+        // cannot exceed the encoded row's byte length.
         let input = &bytes[MAGIC.len()..];
-        let mut scratch = Box::new([0u8; MAX_SQL_ROW_BYTES]);
-        let (value, consumed) = serde_json_core::from_slice_escaped::<super::sql_decode::DirectRow>(input, &mut scratch[..])
-            .map_err(|_| RelationDecodeError::Malformed)?;
+        let decoded = if input.contains(&b'\\') {
+            let mut scratch = Box::new([0u8; MAX_SQL_ROW_BYTES]);
+            serde_json_core::from_slice_escaped::<super::sql_decode::DirectRow>(input, &mut scratch[..])
+        } else {
+            serde_json_core::from_slice::<super::sql_decode::DirectRow>(input)
+        };
+        let (value, consumed) = decoded.map_err(|_| RelationDecodeError::Malformed)?;
         if consumed != input.len() {
             return Err(RelationDecodeError::Malformed);
         }
@@ -1425,6 +1430,23 @@ mod tests {
         let mut budget = required;
         assert_eq!(sql_decode_row_with_payload_budget(&malformed, &mut budget), Err(SqlRowBudgetError::Malformed));
         assert_eq!(budget, required);
+    }
+
+    #[test]
+    fn unescaped_row_decodes_without_allocating_unescape_buffer() {
+        let row = SqlAnalysisRecord::Fact {
+            host: [1; 32], ordinal: 0,
+            fact: SqlFact::SqliteRelation { name: "table".into(), relation_kind: backend_semantic::sql_analysis::SqliteRelationKind::Table },
+        };
+        let mut encoded = Vec::new();
+        SqlAnalysisRelation::encode_value(&row, &mut encoded);
+        assert!(!encoded.contains(&b'\\'));
+        let allocation = allocation_counter::measure(|| {
+            let decoded = SqlAnalysisRelation::decode_value(std::hint::black_box(&encoded)).unwrap();
+            assert_eq!(decoded, row);
+            std::hint::black_box(decoded);
+        });
+        assert!(allocation.bytes_max < MAX_SQL_ROW_BYTES as u64, "{allocation:?}");
     }
 
     #[test]

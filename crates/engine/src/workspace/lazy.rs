@@ -368,8 +368,7 @@ impl<R: CanonicalRelation> WorkspacePreflightRelationHandle<R> {
         V: FnMut(&R::Key, R::Value, &mut usize) -> Result<(), StoreError>,
     {
         if limit == 0 || limit > 64 || max_depth == 0 || max_depth > 32 { return Err(WorkspaceRelationError::Store(StoreError::Bounds)); }
-        let stack = std::mem::size_of::<backend_version::CommittedChild<R>>()
-            .checked_mul(32).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
+        let stack = std::mem::size_of::<arrayvec::ArrayVec<backend_version::CommittedChild<R>, 32>>();
         if stack > 64 * 1024 { return Err(WorkspaceRelationError::Store(StoreError::Bounds)); }
         let reserve = Self::ENVELOPE_SCRATCH.checked_add(stack).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
         *budget = budget.checked_sub(reserve).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;

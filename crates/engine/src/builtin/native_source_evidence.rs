@@ -278,7 +278,13 @@ mod tests {
         let mut visited = Vec::new();
         let mut cursor = None;
         let mut visitor = |key: &[u8; 32], row: NativeSourceEvidence, budget: &mut usize| {
-            let retained = row.checked_heap_bytes().and_then(|n| n.checked_add(std::mem::size_of::<NativeSourceEvidence>() + 128)).ok_or(StoreError::Bounds)?;
+            let line_bytes = match &row.line_starts {
+                Some(lines) => lines.capacity().checked_mul(std::mem::size_of::<u32>()).ok_or(StoreError::Bounds)?,
+                None => 0,
+            };
+            let retained = row.path.capacity().checked_add(line_bytes)
+                .and_then(|n| n.checked_add(std::mem::size_of::<NativeSourceEvidence>() + 128))
+                .ok_or(StoreError::Bounds)?;
             *budget = budget.checked_sub(retained).ok_or(StoreError::Bounds)?;
             visited.push((*key, row));
             Ok(())

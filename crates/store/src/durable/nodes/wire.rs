@@ -132,7 +132,7 @@ pub(super) fn decode_tree_descriptor(
     })
 }
 
-pub(super) fn relation_ref_encoded_len() -> usize {
+pub(super) const fn relation_ref_encoded_len() -> usize {
     RELATION_REF_MAGIC.len() + 1 + 2 + 1 + 32 + 32 + 32
 }
 
