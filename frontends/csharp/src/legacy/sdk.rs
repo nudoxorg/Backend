@@ -671,34 +671,7 @@ pub fn resolve_references_with_sdk(
         OsString::from("-p:ImportUserLocationsByWildcardBeforeMicrosoftVisualBasicTargets=false"),
         OsString::from("-p:ImportUserLocationsByWildcardAfterMicrosoftVisualBasicTargets=false"),
     ];
-    let command = CaptureCommand {
-        program: dotnet.as_os_str().to_owned(),
-        args,
-        cwd: Some(scratch.path().to_path_buf()),
-        environment: CaptureEnvironment::Clear,
-        overrides: [
-            ("HOME".into(), Some(scratch.path().as_os_str().to_owned())),
-            (
-                "DOTNET_CLI_HOME".into(),
-                Some(scratch.path().as_os_str().to_owned()),
-            ),
-            (
-                "NUGET_PACKAGES".into(),
-                Some(scratch.path().as_os_str().to_owned()),
-            ),
-            (
-                "DOTNET_CLI_TELEMETRY_OPTOUT".into(),
-                Some(OsString::from("1")),
-            ),
-            (
-                "DOTNET_SKIP_FIRST_TIME_EXPERIENCE".into(),
-                Some(OsString::from("1")),
-            ),
-            ("DOTNET_NOLOGO".into(), Some(OsString::from("1"))),
-        ]
-        .into_iter()
-        .collect(),
-    };
+    let command = resolver_command(dotnet, args, scratch.path());
     let output = capture(
         &command,
         CaptureLimits {
@@ -870,6 +843,40 @@ pub fn resolve_references_with_sdk(
             selected_fusion_names: selected_fusion_names.into_boxed_slice(),
         },
     })
+}
+
+fn resolver_command(dotnet: &Path, args: Vec<OsString>, scratch: &Path) -> CaptureCommand {
+    CaptureCommand {
+        program: dotnet.as_os_str().to_owned(),
+        args,
+        cwd: Some(scratch.to_path_buf()),
+        environment: CaptureEnvironment::Clear,
+        overrides: [
+            (
+                "DOTNET_CLI_HOME".into(),
+                Some(scratch.as_os_str().to_owned()),
+            ),
+            (
+                "NUGET_PACKAGES".into(),
+                Some(scratch.as_os_str().to_owned()),
+            ),
+            (
+                "NUGET_HTTP_CACHE_PATH".into(),
+                Some(scratch.join("nuget-http-cache").into_os_string()),
+            ),
+            (
+                "DOTNET_CLI_TELEMETRY_OPTOUT".into(),
+                Some(OsString::from("1")),
+            ),
+            (
+                "DOTNET_SKIP_FIRST_TIME_EXPERIENCE".into(),
+                Some(OsString::from("1")),
+            ),
+            ("DOTNET_NOLOGO".into(), Some(OsString::from("1"))),
+        ]
+        .into_iter()
+        .collect(),
+    }
 }
 
 fn valid_sdk_property(value: &str, words: &[&str]) -> bool {
@@ -1504,6 +1511,24 @@ pub fn observe_csharp_sdk_with(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn resolver_child_environment_is_private_without_home_override() {
+        let scratch = tempfile::tempdir().unwrap();
+        let command = resolver_command(Path::new("/usr/bin/env"), Vec::new(), scratch.path());
+        let output = capture(&command, CaptureLimits {
+            deadline: Instant::now() + Duration::from_secs(10),
+            stdout_bytes: 8192,
+            stderr_bytes: 8192,
+        }, &AtomicBool::new(false)).unwrap();
+        assert!(output.status.success());
+        let text = std::str::from_utf8(&output.stdout).unwrap();
+        assert!(!text.lines().any(|line| line.starts_with("HOME=")));
+        assert!(text.lines().any(|line| line == format!("DOTNET_CLI_HOME={}", scratch.path().display())));
+        assert!(text.lines().any(|line| line == format!("NUGET_PACKAGES={}", scratch.path().display())));
+        assert!(text.lines().any(|line| line == format!("NUGET_HTTP_CACHE_PATH={}", scratch.path().join("nuget-http-cache").display())));
+    }
+
     #[test]
     fn resolver_receipt_rejects_selected_file_mutation() {
         let directory = tempfile::tempdir().unwrap();
