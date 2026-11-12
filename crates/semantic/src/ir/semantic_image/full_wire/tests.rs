@@ -2576,6 +2576,11 @@ fn bounded_reopen_charges_work_scratch_and_retained_backing() -> Result<(), crat
     let short = Meter::new(u64::MAX, bytes.len() - 1, u64::MAX);
     assert!(SemanticImageProofOwner::copy_bounded(&bytes, &short).is_err());
     assert_eq!(short.used.get(), 0);
+    let copy_cancelled = Meter::new(u64::MAX, usize::MAX, 2);
+    assert!(SemanticImageProofOwner::copy_bounded(&bytes, &copy_cancelled).is_err());
+    assert_eq!(copy_cancelled.used.get(), 0);
+    let zero = Meter::new(0, usize::MAX, u64::MAX);
+    assert!(stopped(SemanticImageView::reopen_bounded(&bytes, &zero)));
     let mut corrupt = bytes.clone();
     corrupt[0] ^= 1;
     assert!(matches!(SemanticImageView::reopen_bounded(&corrupt, &Meter::new(u64::MAX, usize::MAX, u64::MAX)),
