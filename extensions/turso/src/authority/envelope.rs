@@ -1528,6 +1528,37 @@ impl<'store, 'envelope, 'metadata>
     }
 }
 
+/// Requested allocations for envelope decode, excluding authenticated input
+/// and closure-index traversal. The complete row extent is checked first.
+fn compiler_envelope_decode_bound(bytes: &[u8]) -> Result<usize, CompilerEnvelopeError> {
+    let mut input = Decoder::new(bytes);
+    if input.take(MAGIC.len())? != MAGIC { return Err(CompilerEnvelopeError::Magic); }
+    if input.u16()? != ENVELOPE_VERSION { return Err(CompilerEnvelopeError::Version); }
+    let mut names = 0usize;
+    let mut profile_len = 0usize;
+    for index in 0..5 {
+        if index == 4 && input.u8()? != 1 { return Err(CompilerEnvelopeError::Profile); }
+        let n = input.u32()? as usize;
+        if n == 0 || n > if index == 4 { MAX_PROFILE_BYTES } else { 4096 } { return Err(CompilerEnvelopeError::Truncated); }
+        let name = input.take(n)?;
+        std::str::from_utf8(name).map_err(|_| CompilerEnvelopeError::Truncated)?;
+        names = names.checked_add(n).ok_or(CompilerEnvelopeError::MemberCount)?;
+        if index == 4 { profile_len = n; }
+    }
+    input.take(16 + 8 + 32 * 4)?;
+    match input.u8()? { 0 => {}, 1 => { input.take(32)?; }, _ => return Err(CompilerEnvelopeError::VersionedPlaneMetadata) }
+    input.take(32)?;
+    let count = input.u32()? as usize;
+    if count == 0 || count > MAX_MEMBER_IDS { return Err(CompilerEnvelopeError::MemberCount); }
+    let row_bytes = count.checked_mul(32).ok_or(CompilerEnvelopeError::MemberCount)?;
+    input.take(row_bytes)?;
+    if !input.is_empty() { return Err(CompilerEnvelopeError::TrailingBytes); }
+    bytes.len().checked_add(names.checked_mul(2).ok_or(CompilerEnvelopeError::MemberCount)?)
+        .and_then(|n| n.checked_add(profile_len))
+        .and_then(|n| n.checked_add(row_bytes.checked_mul(2)?))
+        .ok_or(CompilerEnvelopeError::MemberCount)
+}
+
 /// Cold-reopens one Turso-selected envelope and metadata from its verified closure.
 pub fn reopen_selected_compiler_publication(
     store: &FileStore,
