@@ -2385,11 +2385,13 @@ fn verify_native_lines_for_admission(
     if length == 0 || length > MAX_COMPILER_NATIVE_LINES_BYTES || length as u64 > policy.max_payload_bytes {
         return Err("native line member extent exceeds candidate budget".into());
     }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let stopped = || external_stop.is_some_and(|stop| stop()) || std::time::Instant::now() >= deadline;
+    if stopped() { return Err("candidate line verification stopped".into()); }
     manifest.admit_claim(UntrustedObjectId::from_bytes(*member.object_id()))
         .map_err(|e| format!("admit candidate line member: {e:?}"))?
         .ok_or("candidate line member absent from closure")?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    let stopped = || external_stop.is_some_and(|stop| stop()) || std::time::Instant::now() >= deadline;
+    if stopped() { return Err("candidate line verification stopped".into()); }
     let mut budget = SelectedNativeHeaderBudget::new(MAX_COMPILER_NATIVE_LINES_BYTES + 4 * 1024 * 1024, 128 * 1024 * 1024);
     let pin = store.pin_garbage_collection_bounded(&mut budget.memory, |_| header_checkpoint(&budget.work, &stopped))
         .map_err(|e| format!("pin candidate line member: {e:?}"))?;
