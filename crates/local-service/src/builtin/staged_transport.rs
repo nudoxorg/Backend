@@ -523,6 +523,78 @@ fn stage_inner(
     Ok(intent)
 }
 
+/// Authenticate the staged set and require the candidate to be exactly its
+/// union with the control frontier, allowing exact identity overlap.
+pub(super) fn validate_staged_membership_union(
+    store: &FileStore,
+    manifest_id: ObjectId,
+    basis: StageBasis,
+    cancelled: &AtomicBool,
+    membership: &DurableClosureManifest,
+    controls: &backend_store::ClosureManifest,
+) -> Result<(), BuiltinModelError> {
+        let manifest = store
+            .read_object(manifest_id)
+            .map_err(|e| error("read exact staged manifest", e))?;
+        let staged_count = staged_intent::staged_member_count(&manifest)
+            .map_err(|e| error("stage member count", e))?;
+        let (pages, payload) = staged_intent::staged_scope_limits(&manifest)
+            .map_err(|e| error("staged union scope", e))?;
+        let (artifact_budget, _) =
+            budgets(pages, payload).map_err(|e| error("staged union budgets", e))?;
+        // Reauthenticate the manifest's exact members against the candidate
+        // closure. Reopen may already include control objects, so the closure's
+        // full membership alone cannot identify the staged subset.
+        let staged_ids = staged_intent::visit_staged_scope_ids(
+            store,
+            manifest_id,
+            membership.id(),
+            basis,
+            artifact_budget,
+            Some(staged_count),
+            Some(cancelled),
+            |_, _| Ok(()),
+        )
+        .map_err(|e| error("authenticate staged union members", e))?;
+        let mut count = u64::try_from(staged_ids.len())
+            .map_err(|_| error("staged union count", StoreError::Bounds))?;
+        for object in controls.objects() {
+            if object.schema().domain() == 0x96
+                && matches!(object.schema().ty(), 10..=14)
+                && object.id() != manifest_id
+            {
+                return Err(BuiltinModelError(
+                    "staged page entered typed control frontier".to_owned(),
+                ));
+            }
+            if !membership
+                .contains(object.id())
+                .map_err(|e| error("control membership", e))?
+            {
+                return Err(error(
+                    "control object missing from staged union",
+                    StoreError::Corrupt,
+                ));
+            }
+            if !staged_ids.contains(&object.id()) {
+                count = count
+                    .checked_add(1)
+                    .ok_or_else(|| error("staged union count", StoreError::Bounds))?;
+            }
+        }
+        if membership.object_count() != count {
+            return Err(BuiltinModelError(format!(
+                "selected membership is not exact union of controls and staged evidence: \
+                 membership {} objects, expected {} (controls {}, staged members {})",
+                membership.object_count(),
+                count,
+                controls.objects().len(),
+                staged_count,
+            )));
+        }
+        Ok(())
+}
+
 impl StagedIntent {
     pub(super) fn validate_control_union(
         &self,
@@ -536,45 +608,7 @@ impl StagedIntent {
         membership: &DurableClosureManifest,
         controls: &backend_store::ClosureManifest,
     ) -> Result<(), BuiltinModelError> {
-        let manifest = self
-            .store
-            .read_object(self.manifest)
-            .map_err(|e| error("read exact staged manifest", e))?;
-        let mut count = staged_intent::staged_member_count(&manifest)
-            .map_err(|e| error("stage member count", e))?;
-        for object in controls.objects() {
-            if object.id() == self.manifest {
-                continue;
-            }
-            if object.schema().domain() == 0x96 && matches!(object.schema().ty(), 10..=14) {
-                return Err(BuiltinModelError(
-                    "staged page entered typed control frontier".to_owned(),
-                ));
-            }
-            count = count
-                .checked_add(1)
-                .ok_or_else(|| error("staged union count", StoreError::Bounds))?;
-            if !membership
-                .contains(object.id())
-                .map_err(|e| error("control membership", e))?
-            {
-                return Err(error(
-                    "control object missing from staged union",
-                    StoreError::Corrupt,
-                ));
-            }
-        }
-        if membership.object_count() != count {
-            return Err(BuiltinModelError(format!(
-                "selected membership is not exact union of controls and staged evidence: \
-                 membership {} objects, expected {} (controls {}, staged members {})",
-                membership.object_count(),
-                count,
-                controls.objects().len(),
-                staged_intent::staged_member_count(&manifest).unwrap_or(0),
-            )));
-        }
-        Ok(())
+        validate_staged_membership_union(&self.store, self.manifest, self.basis, self.cancelled.as_ref(), membership, controls)
     }
     pub(super) fn decode(
         bytes: &[u8],
