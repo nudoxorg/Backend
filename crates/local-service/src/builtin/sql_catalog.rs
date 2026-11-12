@@ -195,6 +195,28 @@ pub(super) fn progress(
     Ok(has_hosts.then_some(summary))
 }
 
+/// Allocation-free failure from the bounded SQL catalog. Storage errors retain
+/// their typed cause; local validation and quota refusals use static messages.
+#[derive(Debug)]
+pub(super) enum SqlCatalogError {
+    Reason(&'static str),
+    Read(backend_engine::WorkspaceRelationError),
+}
+impl From<&'static str> for SqlCatalogError {
+    fn from(value: &'static str) -> Self {
+        Self::Reason(value)
+    }
+}
+impl std::fmt::Display for SqlCatalogError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Reason(reason) => f.write_str(reason),
+            Self::Read(error) => std::fmt::Display::fmt(error, f),
+        }
+    }
+}
+impl std::error::Error for SqlCatalogError {}
+
 // Fixed-size boxed chunks make each requested allocation layout explicit. The
 // logical array length is counted before allocation; no Vec growth or BTree
 // node-size assumption participates in the catalog budget.
@@ -228,7 +250,7 @@ impl<T> Slots<T> {
         remaining: &mut usize,
         bookkeeping: usize,
         cancelled: &dyn Fn() -> bool,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, SqlCatalogError> {
         if cancelled() {
             return Err("SQL read cancelled".into());
         }
@@ -332,7 +354,7 @@ impl<T> Slots<T> {
     fn get_mut(&mut self, index: usize) -> Option<&mut T> {
         self.slot_mut(index)?.as_mut()
     }
-    fn is_full(&self, cancelled: &dyn Fn() -> bool) -> Result<bool, String> {
+    fn is_full(&self, cancelled: &dyn Fn() -> bool) -> Result<bool, SqlCatalogError> {
         for i in 0..self.capacity {
             if cancelled() {
                 return Err("SQL read cancelled".into());
@@ -363,7 +385,7 @@ impl<T> Slots<T> {
         &mut self,
         compare: impl Fn(&T, &T) -> std::cmp::Ordering,
         cancelled: &dyn Fn() -> bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), SqlCatalogError> {
         // In-place heapsort needs no temporary allocation.
         fn sift<T>(
             slots: &mut Slots<T>,
@@ -371,7 +393,7 @@ impl<T> Slots<T> {
             end: usize,
             cmp: &impl Fn(&T, &T) -> std::cmp::Ordering,
             cancelled: &dyn Fn() -> bool,
-        ) -> Result<(), String> {
+        ) -> Result<(), SqlCatalogError> {
             let mut root = start;
             loop {
                 if cancelled() {
@@ -414,7 +436,7 @@ impl<T> Slots<T> {
             next: 0,
         }
     }
-    fn refund(self, remaining: &mut usize) -> Result<(), String> {
+    fn refund(self, remaining: &mut usize) -> Result<(), SqlCatalogError> {
         let charge = self.charged;
         drop(self);
         *remaining = remaining.checked_add(charge).ok_or("SQL budget overflow")?;
@@ -567,7 +589,7 @@ fn scan_sql(
     bookkeeping: usize,
     cancelled: &dyn Fn() -> bool,
     mut row_fn: impl FnMut(&[u8; 32], SqlAnalysisRecord, &mut usize) -> Result<(), &'static str>,
-) -> Result<(), String> {
+) -> Result<(), SqlCatalogError> {
     use backend_engine::builtin::sql_visit_preflighted;
     let mut after = None;
     let mut rows = 0usize;
@@ -606,7 +628,7 @@ fn scan_sql(
         if let Some(error) = failure {
             return Err(error.into());
         }
-        let next = result.map_err(|error| error.to_string())?;
+        let next = result.map_err(SqlCatalogError::Read)?;
         match next {
             None => break,
             Some(key) if after.is_none_or(|previous| previous < key) => after = Some(key),
@@ -817,7 +839,7 @@ fn plan_projects<'a>(
     remaining: &mut usize,
     allocation_bookkeeping_bytes: usize,
     cancelled: &dyn Fn() -> bool,
-) -> Result<SqlProjects, String> {
+) -> Result<SqlProjects, SqlCatalogError> {
     let mut result = SqlProjects {
         plans: Slots::new(
             projects.len(),
@@ -873,7 +895,7 @@ pub(super) fn load_projects_bounded<'a>(
     cancelled: &dyn Fn() -> bool,
     max_bytes: usize,
     allocation_bookkeeping_bytes: usize,
-) -> Result<(SqlProjects, usize), String> {
+) -> Result<(SqlProjects, usize), SqlCatalogError> {
     use backend_engine::builtin::{sql_analysis_preflight_relation, sql_host_key};
     let mut remaining = max_bytes;
     let mut result = plan_projects(
@@ -882,7 +904,8 @@ pub(super) fn load_projects_bounded<'a>(
         allocation_bookkeeping_bytes,
         cancelled,
     )?;
-    let Some(relation) = sql_analysis_preflight_relation(snapshot).map_err(|e| e.to_string())?
+    let Some(relation) =
+        sql_analysis_preflight_relation(snapshot).map_err(SqlCatalogError::Read)?
     else {
         return Ok((result, max_bytes - remaining));
     };
@@ -1478,9 +1501,7 @@ mod bounded_catalog_tests {
         let failed = allocation_counter::measure(|| {
             assert!(Slots::<u64>::new(N, &mut short, HEADER, &|| false).is_err());
         });
-        // Constructing the error String itself may allocate; no slot payload
-        // or partial tree is admitted when the precharge fails.
-        assert!(failed.bytes_max < std::mem::size_of::<SlotChunk<u64>>() as u64);
+        assert_eq!(failed.bytes_max, 0, "quota refusal must not allocate");
         assert_eq!(short, expected - 1);
         for initial in [expected, expected + 1] {
             let mut budget = initial;
