@@ -96,7 +96,7 @@ pub(super) fn append(
         remaining,
         SQL_ALLOCATION_QUOTA_PER_ALLOCATION,
     )
-    .map_err(BuiltinModelError)?;
+    .map_err(|error| BuiltinModelError(error.to_string()))?;
     for (project, indexed) in &sources.projects {
         let Some(sql) = selected.get(project) else {
             continue;
@@ -166,7 +166,7 @@ pub(super) fn append_query(
         remaining_bytes,
         SQL_ALLOCATION_QUOTA_PER_ALLOCATION,
     )
-    .map_err(BuiltinModelError)?;
+    .map_err(|error| BuiltinModelError(error.to_string()))?;
     let mut projected_bytes = catalog_bytes;
     let added_rows = selected.values().try_fold(0usize, |count, sql| {
         let rows = sql.facts.iter().filter(|(_, _, fact)| matches!(fact, SqlFact::Definition(definition) if definition.live_at_head && matches!(definition.action, SqlDefinitionAction::Create | SqlDefinitionAction::AddColumn))).count();
