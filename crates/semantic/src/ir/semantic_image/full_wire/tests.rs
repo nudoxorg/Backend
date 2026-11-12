@@ -2567,6 +2567,11 @@ fn bounded_reopen_charges_work_scratch_and_retained_backing() -> Result<(), crat
     assert!(stopped(SemanticImageView::reopen_bounded(&bytes, &cancelled)));
     assert_eq!(cancelled.calls.get(), 5);
     assert_eq!(cancelled.used.get(), 0);
+    let halfway = (measure.calls.get() / 2).max(6);
+    let cancelled_mid_validation = Meter::new(u64::MAX, usize::MAX, halfway);
+    assert!(stopped(SemanticImageView::reopen_bounded(&bytes, &cancelled_mid_validation)));
+    assert_eq!(cancelled_mid_validation.calls.get(), halfway);
+    assert_eq!(cancelled_mid_validation.used.get(), 0);
     let retained = Meter::new(u64::MAX, bytes.len() + scratch, u64::MAX);
     {
         let owner = SemanticImageProofOwner::copy_bounded(&bytes, &retained).expect("retained admission");
