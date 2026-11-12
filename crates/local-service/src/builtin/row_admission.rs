@@ -133,6 +133,7 @@ mod tests {
     #[test]
     fn exact_row_has_only_its_five_retained_allocations() {
         let (initial, _) = super::super::initial_view().expect("initial view");
+        let package = backend_engine::package_key("pkg");
         let plan = plan();
         let bytes = plan.retained_requested_bytes();
         let allocations = plan.allocation_count();
@@ -157,12 +158,13 @@ mod tests {
                 .expect("document")
                 .allocate(format_args!("SQL table in schema.sql"))
                 .expect("document");
-            let id = RowId::Symbol(backend_engine::symbol_key(&identity));
+            let id =
+                RowId::Symbol(backend_library::symbol_key_borrowed(&identity).expect("symbol key"));
             row = Some(
                 plan.build(
                     id,
                     initial.basis(),
-                    backend_engine::package_key("pkg"),
+                    package,
                     DeclarationKind::Unknown,
                     ProjectedRowTexts {
                         label,

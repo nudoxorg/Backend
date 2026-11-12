@@ -177,11 +177,7 @@ pub(super) fn identity_matches(fact: &SemanticQueryFact) -> bool {
                 return false;
             };
             tail.strip_prefix(b"\0sql:") == Some(suffix)
-                && stable_id_matches(
-                    &row.id,
-                    "symbol:",
-                    backend_library::symbol_key(&value.identity_preimage).as_bytes(),
-                )
+                && symbol_id_matches(&row.id, value.identity_preimage.as_bytes())
         }
     }
 }
@@ -190,11 +186,8 @@ fn symbol_id_matches(id: &str, preimage: &[u8]) -> bool {
     let Ok(preimage) = std::str::from_utf8(preimage) else {
         return false;
     };
-    stable_id_matches(
-        id,
-        "symbol:",
-        backend_library::symbol_key(preimage).as_bytes(),
-    )
+    backend_library::symbol_key_borrowed(preimage)
+        .is_ok_and(|key| stable_id_matches(id, "symbol:", key.as_bytes()))
 }
 
 fn stable_id_matches(id: &str, prefix: &str, bytes: &[u8; 32]) -> bool {
