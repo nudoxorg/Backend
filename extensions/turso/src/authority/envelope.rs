@@ -1929,6 +1929,93 @@ pub fn reopen_selected_native_headers_budgeted(
     Ok(Some(VerifiedNativeHeadersWitness { bytes, object_id: id }))
 }
 
+/// Selected-closure authenticated header claims borrowed from caller scratch.
+pub struct VerifiedNativeHeadersView<'a> { view: backend_semantic::native_ts_headers::NativeTsHeaderAggregateView<'a>, object_id: AuthorityHash }
+impl<'a> VerifiedNativeHeadersView<'a> {
+    pub const fn object_id(&self) -> &AuthorityHash { &self.object_id }
+    pub fn view(&self) -> &backend_semantic::native_ts_headers::NativeTsHeaderAggregateView<'a> { &self.view }
+}
+fn header_object_into_scratch<'a>(store: &FileStore, pin: &backend_store::GcPinGuard, id: AuthorityHash,
+    schemas: &[SchemaIdentity], maximum: usize, budget: &mut SelectedNativeHeaderBudget,
+    cancelled: &dyn Fn() -> bool, scratch: &'a mut [u8]) -> Result<(&'a [u8], &'a mut [u8], SchemaIdentity, AuthorityHash), String> {
+    let work = &budget.work;
+    let reader = store.open_bounded_nonrelation_object(pin, UntrustedObjectId::from_bytes(id), schemas, None, maximum,
+        &mut budget.memory, |_| header_checkpoint(work, cancelled)).map_err(|e| format!("open bounded compiler object: {e:?}"))?;
+    let len = reader.payload_len();
+    if len > scratch.len() { return Err("selected compiler scratch capacity exceeded".into()); }
+    let (payload, remaining) = scratch.split_at_mut(len);
+    let (schema, key, checked_id) = reader.read_into(payload, &mut budget.memory,
+        |_, _| header_checkpoint(work, cancelled), |view, _| Ok((view.schema(), *view.key(), *view.id().as_bytes())))
+        .map_err(|e| format!("read bounded compiler object: {e:?}"))?;
+    if checked_id != id { return Err("verified compiler object identity differs".into()); }
+    Ok((payload, remaining, schema, key))
+}
+
+/// Reopens selected claims in caller-provisioned, operation-charged scratch.
+/// The returned borrowed view cannot outlive that scratch. Metadata decoding
+/// still uses owned vectors and needs independent capacity assurance.
+pub fn reopen_selected_native_headers_in_scratch<'a>(
+    store: &FileStore, selected: &SelectedGeneration, budget: &mut SelectedNativeHeaderBudget,
+    cancelled: &dyn Fn() -> bool, scratch: &'a mut [u8],
+) -> Result<Option<VerifiedNativeHeadersView<'a>>, String> {
+    let initial = budget.memory;
+    let scratch_charge = scratch.len();
+    header_reserve(&mut budget.memory, scratch_charge)?;
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
+    let pin = store.pin_garbage_collection_bounded(&mut budget.memory, |_| header_checkpoint(&budget.work, cancelled))
+        .map_err(|e| format!("pin selected compiler closure: {e:?}"))?;
+    let closure = backend_store::ClosureId::from_bytes(*selected.closure_id());
+    let count = header_member_bounded(store, &pin, closure, *selected.candidate_id(), budget, cancelled)?;
+    if count == 0 || count > (MAX_MEMBER_IDS as u64 + 1) { return Err("selected compiler closure count exceeds limit".into()); }
+    let envelope_max = MAGIC.len() + 2 + 5 * 4 + 4 * 4096 + MAX_PROFILE_BYTES + 1 + 16 + 8 + 32 * 6 + 1 + 4 + MAX_MEMBER_IDS * 32;
+    let (envelope_wire, remaining_scratch, schema, key) = header_object_into_scratch(store, &pin, *selected.candidate_id(), &[COMPILER_PUBLICATION_ENVELOPE_SCHEMA], envelope_max, budget, cancelled, scratch)?;
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected envelope stopped: {e:?}"))?;
+    verified_payload_key(schema, &envelope_wire, &key)?;
+    let envelope = borrowed_selected_envelope(&envelope_wire, selected, selected.candidate_id(), &|| {
+        header_checkpoint(&budget.work, cancelled).map_err(|_| CompilerEnvelopeError::Stopped)
+    }).map_err(|e| e.to_string())?;
+    if count != u64::try_from(envelope.member_wire.len() / 32).map_err(|_| "member count overflow")? + 1 { return Err("selected compiler closure count differs".into()); }
+    let metadata_id = envelope.metadata_id;
+    header_member_bounded(store, &pin, closure, metadata_id, budget, cancelled)?;
+    let metadata_max = MAX_MANIFEST_BYTES + 64 * 1024 * 1024 + MAX_MEMBER_IDS * 72 + 1024;
+    let schemas = [COMPILER_PUBLICATION_METADATA_SCHEMA, COMPILER_PROGRAM_METADATA_SCHEMA, COMPILER_COVERAGE_METADATA_SCHEMA,
+        COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA, COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA, COMPILER_NATIVE_HEADERS_METADATA_SCHEMA];
+    let (wire, _, schema, key) = header_object_into_scratch(store, &pin, metadata_id, &schemas, metadata_max, budget, cancelled, &mut *remaining_scratch)?;
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected metadata stopped: {e:?}"))?;
+    verified_payload_key(schema, &wire, &key)?;
+    let charge = compiler_metadata_decode_bound(&wire).map_err(|e| e.to_string())?;
+    header_reserve(&mut budget.memory, charge)?;
+    let metadata = CompilerPublicationMetadata::decode(&wire).map_err(|e| e.to_string())?;
+    if metadata.schema() != schema { return Err("compiler metadata schema differs".into()); }
+    let plane_slots = metadata.versioned_planes.as_ref().map_or(0, |p| p.segment_count() + p.artifacts().len());
+    let inventory = metadata.images.len().checked_add(plane_slots).and_then(|n| n.checked_add(6)).and_then(|n| n.checked_mul(32)).ok_or("compiler inventory budget overflow")?;
+    header_reserve(&mut budget.memory, inventory)?;
+    let inventory = metadata_member_ids_with_id(&metadata, metadata_id);
+    if envelope.logical_generation != metadata.binding_identity || envelope.semantic_root != metadata.semantic_manifest_root().copied()
+        || envelope.member_wire.len() / 32 != inventory.len() { return Err("selected compiler metadata differs from envelope".into()); }
+    for (actual, expected) in envelope.members().zip(inventory.iter().copied()) {
+        header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected inventory stopped: {e:?}"))?;
+        if actual != expected { return Err("selected compiler metadata differs from envelope".into()); }
+    }
+    drop(inventory);
+    for id in envelope.members() {
+        if header_member_bounded(store, &pin, closure, id, budget, cancelled)? != count { return Err("selected closure count changed".into()); }
+    }
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
+    let Some(member) = metadata.native_headers() else { budget.memory = initial.checked_sub(scratch_charge).ok_or("scratch budget exceeded")?; return Ok(None) };
+    let id = *member.object_id();
+    let length = member.byte_length() as usize;
+    let (wire, _, schema, key) = header_object_into_scratch(store, &pin, id, &[COMPILER_NATIVE_HEADERS_SCHEMA], length, budget, cancelled, &mut *remaining_scratch)?;
+    if schema != COMPILER_NATIVE_HEADERS_SCHEMA || wire.len() != length { return Err("selected header extent differs".into()); }
+    verified_payload_key(schema, &wire, &key)?;
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
+    // Validate all canonical NHA1 framing without materializing decoded rows.
+    let view = backend_semantic::native_ts_headers::NativeTsHeaderAggregateView::parse_canonical(wire).map_err(|e| e.to_owned())?;
+    header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected header stopped: {e:?}"))?;
+    budget.memory = initial.checked_sub(scratch_charge).ok_or("scratch budget exceeded")?;
+    Ok(Some(VerifiedNativeHeadersView { view, object_id: id }))
+}
+
 /// Reopens the aggregate only from the selected authenticated compiler closure.
 pub fn reopen_selected_native_headers(store: &FileStore, selected: &SelectedGeneration, max_bytes: usize) -> Result<Option<VerifiedNativeHeadersWitness>, String> {
     let reopened = reopen_selected_compiler_metadata(store, selected)?;
@@ -4047,6 +4134,15 @@ mod tests {
         drop(store);
         // This is a synthetic selected-generation fixture, not an owner receipt.
         let store = FileStore::open(&directory, 8 * 1024 * 1024).unwrap();
+        let mut scratch = vec![0u8; 4 * 1024 * 1024];
+        let mut scratch_budget = SelectedNativeHeaderBudget::new(64 * 1024 * 1024, 100_000);
+        let borrowed_header = reopen_selected_native_headers_in_scratch(&store, &selected, &mut scratch_budget, &|| false, &mut scratch).unwrap().unwrap();
+        assert_eq!(borrowed_header.object_id(), header_member.object_id());
+        assert_eq!(borrowed_header.view().file("src/main.ts").unwrap().entry(15_999).unwrap().entity_id, 15_999);
+        drop(borrowed_header);
+        assert_eq!(scratch_budget.remaining_memory(), 60 * 1024 * 1024);
+        let mut tiny = [0u8; 1];
+        assert!(reopen_selected_native_headers_in_scratch(&store, &selected, &mut SelectedNativeHeaderBudget::new(64 * 1024 * 1024, 100_000), &|| false, &mut tiny).is_err());
         assert!(reopen_selected_native_headers_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(0, 100_000), &|| false).is_err());
         assert!(reopen_selected_native_headers_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(64 * 1024 * 1024, 100_000), &|| true).is_err());
         let mut budget = SelectedNativeHeaderBudget::new(64 * 1024 * 1024, 100_000);
