@@ -104,6 +104,8 @@ def main():
     parser.add_argument("--output", required=True, help="new directory for transcripts and result")
     parser.add_argument("--build-receipt", required=True, help="successful exact Cargo build receipt")
     parser.add_argument("--source-commit", required=True, help="exact checked-out source commit")
+    parser.add_argument("--preserve-on-failure", action="store_true", help="retain private fixture and owner state for diagnosis")
+    parser.add_argument("--trace-related", action="store_true", help="enable bounded related request stage timing")
     args = parser.parse_args()
     source = pathlib.Path(__file__).resolve().parents[3]
     output = pathlib.Path(args.output)
@@ -121,7 +123,7 @@ def main():
         return verified
 
     build = verify_build()
-    j = Journey(args.bin_dir, args.output, label="related-edge")
+    j = Journey(args.bin_dir, args.output, env_extra={"NUDOX_RELATED_TRACE": "1"} if args.trace_related else None, label="related-edge")
     result = {"status": "failed", "expected_callers": COUNT,
               "build_receipt_sha256": build["receipt_sha256"],
               "source_commit": args.source_commit, "artifacts": build["artifacts"]}
@@ -179,9 +181,15 @@ def main():
         result.update(error=repr(error), records=j.records)
         raise
     finally:
-        j.close()
+        preserve = args.preserve_on_failure and result["status"] != "passed"
+        if preserve:
+            j.stop_mcp()
+            j.stop_owner()
+            result["preserved_private_workspace"] = str(j.root)
+        else:
+            j.close()
         try:
-            if any("cleanup_error" in record for record in j.records) or j.root.exists():
+            if any("cleanup_error" in record for record in j.records) or (not preserve and j.root.exists()):
                 raise RuntimeError("journey-owned processes or private workspace were not retired")
             verified_after = verify_build()
             if verified_after["receipt_sha256"] != build["receipt_sha256"]:
