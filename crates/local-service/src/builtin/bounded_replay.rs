@@ -299,14 +299,6 @@ fn admit_inner(
                 step(budget, stopped, 1)?;
                 if file.line_start(index) != Some(expected) { return Err("native replay line offsets differ".into()); }
             }
-            plan.flags[i] |= 16;
-        }
-        for i in 0..count {
-            step(budget, stopped, 1)?;
-            let ordinal = index_at(&source_index, i);
-            if rows[ordinal].line_starts.is_some() && plan.flags[ordinal] & 16 == 0 {
-                return Err("native replay line file absent".into());
-            }
         }
     }
     let mut seen_claim = false;
