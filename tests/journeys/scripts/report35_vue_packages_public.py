@@ -229,7 +229,8 @@ def main():
             require(label + ' valid response', rc == 0 and state != 'invalid', raw)
             if state == 'full':
                 return reply
-            time.sleep(min(.25, max(0, deadline - time.monotonic())))
+            interval = min(5.0, .25 * (2 ** min(attempt - 1, 5)))
+            time.sleep(min(interval, max(0, deadline - time.monotonic())))
         raise TimeoutError(f'{phase}: full lexical search never became ready within 600 seconds')
 
     def verify(phase):
