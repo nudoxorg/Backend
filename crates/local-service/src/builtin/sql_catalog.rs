@@ -332,8 +332,16 @@ impl<T> Slots<T> {
     fn get_mut(&mut self, index: usize) -> Option<&mut T> {
         self.slot_mut(index)?.as_mut()
     }
-    fn is_full(&self) -> bool {
-        (0..self.capacity).all(|i| self.get(i).is_some())
+    fn is_full(&self, cancelled: &dyn Fn() -> bool) -> Result<bool, String> {
+        for i in 0..self.capacity {
+            if cancelled() {
+                return Err("SQL read cancelled".into());
+            }
+            if self.get(i).is_none() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
     fn swap(&mut self, a: usize, b: usize) {
         if a == b {
@@ -843,7 +851,7 @@ fn plan_projects<'a>(
             },
         )?;
     }
-    if !result.plans.is_full() {
+    if !result.plans.is_full(cancelled)? {
         return Err("SQL project key count changed".into());
     }
     Ok(result)
@@ -1118,7 +1126,9 @@ pub(super) fn load_projects_bounded<'a>(
         let Some(sql) = plan.sql.as_mut() else {
             continue;
         };
-        if !plan.filled_selection || plan.filled_hosts != plan.counted_hosts || !sql.hosts.is_full()
+        if !plan.filled_selection
+            || plan.filled_hosts != plan.counted_hosts
+            || !sql.hosts.is_full(cancelled)?
         {
             return Err("SQL selection or host slot missing".into());
         }
@@ -1164,7 +1174,7 @@ pub(super) fn load_projects_bounded<'a>(
             }
         }
     }
-    if host_index_count != total_hosts || !host_index.is_full() {
+    if host_index_count != total_hosts || !host_index.is_full(cancelled)? {
         return Err("SQL host index missing".into());
     }
     host_index.sort_by(|a, b| a.key.cmp(&b.key), cancelled)?;
@@ -1261,7 +1271,7 @@ pub(super) fn load_projects_bounded<'a>(
             Ok(())
         },
     )?;
-    if digest_count != expected_fact_total || !digest_rows.is_full() {
+    if digest_count != expected_fact_total || !digest_rows.is_full(cancelled)? {
         return Err("SQL digest row missing".into());
     }
     digest_rows.sort_by(
@@ -1376,7 +1386,7 @@ pub(super) fn load_projects_bounded<'a>(
         let Some(sql) = plan.sql.as_mut() else {
             continue;
         };
-        if plan.filled_facts != plan.counted_facts || !sql.facts.is_full() {
+        if plan.filled_facts != plan.counted_facts || !sql.facts.is_full(cancelled)? {
             return Err("SQL definition slot missing".into());
         }
         sql.facts
@@ -1522,14 +1532,14 @@ mod bounded_catalog_tests {
         for i in 0..1025 {
             slots.put(i, 1024 - i).unwrap();
         }
-        assert!(slots.is_full());
+        assert!(slots.is_full(&|| false).unwrap());
         assert!(slots.put(0, 9).is_err());
         slots.sort_by(Ord::cmp, &|| false).unwrap();
         assert!(slots.iter().copied().eq(0..1025));
         assert!(slots.sort_by(Ord::cmp, &|| true).is_err());
         let mut missing = Slots::<usize>::new(2, &mut budget, 64, &|| false).unwrap();
         missing.put(0, 1).unwrap();
-        assert!(!missing.is_full());
+        assert!(!missing.is_full(&|| false).unwrap());
     }
 
     #[test]
