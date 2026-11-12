@@ -1625,7 +1625,10 @@ fn reopen_native_headers_bounded(store: &FileStore, closure: &backend_store::Dur
     let mut decoded_budget = max_bytes.checked_sub(encoded_and_key).ok_or("header aggregate exceeds caller budget")?;
     let claim = UntrustedObjectId::from_bytes(*member.object_id());
     closure.admit_claim(claim).map_err(|e| format!("admit header aggregate: {e:?}"))?.ok_or("header aggregate absent from selected closure")?;
+    // Allocate the declared bounded extent once; incremental Vec growth can
+    // otherwise temporarily retain both old and new backing allocations.
     let mut bytes = Vec::new();
+    bytes.try_reserve_exact(len).map_err(|_| "header aggregate allocation failed".to_owned())?;
     let verified = store.write_verified_object_payload(claim, u64::from(member.byte_length()), &mut bytes).map_err(|e| format!("read header aggregate: {e:?}"))?;
     let _aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical_budgeted(&bytes, &mut decoded_budget).map_err(|e| e.to_string())?;
     let key = native_headers_key(&bytes)?;
