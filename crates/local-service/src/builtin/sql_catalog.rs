@@ -1737,3 +1737,7 @@ mod bounded_catalog_tests {
         assert!(verify_fact(&key, &changed, 1, &fact).is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "sql_catalog_snapshot_tests.rs"]
+mod snapshot_tests;
