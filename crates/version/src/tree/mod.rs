@@ -25,7 +25,7 @@ pub use node::{
     CommittedChild, NodeError,
 };
 pub use view::{
-    CanonicalChildWireIter, CanonicalChildWireRef, CanonicalLeafField, CanonicalNodeView,
+    CanonicalChildWireIter, CanonicalChildWireRef, CanonicalLeafField, CanonicalLeafFieldIter, CanonicalNodeView,
 };
 
 pub(crate) use cut::{

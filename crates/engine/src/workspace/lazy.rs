@@ -14,6 +14,7 @@ use backend_version::{
 };
 use std::fmt;
 use std::ops::ControlFlow;
+use std::cell::RefCell;
 use std::sync::Arc;
 
 /// The canonical relation a rejected node belongs to.
@@ -303,6 +304,71 @@ fn refine_rejection<R: Relation>(
 pub struct WorkspaceRelationHandle<R: CanonicalRelation> {
     store: Arc<FileStore>,
     root: PersistedTreeRoot<R>,
+}
+
+/// Selected relation pointer whose nodes are opened only through an explicit
+/// per-node preflight. It does not itself admit the pointed root.
+pub struct WorkspacePreflightRelationHandle<R: CanonicalRelation> {
+    store: Arc<FileStore>,
+    root: UntrustedId<R>,
+}
+
+struct PreflightLoader<'a, P> {
+    store: &'a FileStore,
+    preflight: RefCell<&'a mut P>,
+}
+
+impl<R, P> backend_version::TreeNodeLoader<R> for PreflightLoader<'_, P>
+where
+    R: CanonicalRelation,
+    P: for<'a> FnMut(&backend_version::CanonicalNodeView<'a>) -> Result<(), StoreError>,
+{
+    type Error = StoreError;
+    fn load(&self, claim: UntrustedId<R>) -> Result<backend_version::CheckedCanonicalRoot<R>, StoreError> {
+        self.store.read_relation_node_claim_preflight(claim, |node| (self.preflight.borrow_mut())(node))
+    }
+}
+
+impl<R: CanonicalRelation> WorkspacePreflightRelationHandle<R> {
+    /// Fixed envelope and hashing scratch, reserved before any store read.
+    pub const ENVELOPE_SCRATCH: usize = 256 * 1024;
+    pub(crate) fn new(store: Arc<FileStore>, root: [u8; 32]) -> Result<Self, WorkspaceRelationError> {
+        let root = UntrustedId::from_wire(&root, IdContext::relation::<R>())
+            .map_err(|_| WorkspaceRelationError::InvalidRoot)?;
+        Ok(Self { store, root })
+    }
+
+    /// Looks up one row, invoking preflight on the root and every loaded node
+    /// before typed decoding. The callback must reserve whole-node decoding,
+    /// branch/path work, and retained result/clones against the same budget.
+    /// Callback charges are not refunded by this method.
+    pub fn lookup<P>(&self, key: &R::Key, max_depth: usize, budget: &mut usize, preflight: &mut P) -> Result<Option<R::Value>, WorkspaceRelationError>
+    where P: for<'a> FnMut(&backend_version::CanonicalNodeView<'a>, &mut usize) -> Result<(), StoreError> {
+        *budget = budget.checked_sub(Self::ENVELOPE_SCRATCH).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
+        let result = {
+            let mut gate = |node: &backend_version::CanonicalNodeView<'_>| preflight(node, budget);
+            let loader = PreflightLoader { store: &self.store, preflight: RefCell::new(&mut gate) };
+            let tree = LazyTree::open(&loader, self.root).map_err(|error| map_tree_error::<R>(error, None))?;
+            tree.lookup_with_depth_limit(key, max_depth)
+                .map_err(|error| map_tree_error::<R>(error, Some(RelationKeyPrefix::of::<R>(key))))?
+        };
+        *budget = budget.checked_add(Self::ENVELOPE_SCRATCH).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
+        Ok(result)
+    }
+
+    /// Reads at most one row with the same preflight and depth guarantees.
+    pub fn page_one<P>(&self, after: Option<&R::Key>, max_depth: usize, budget: &mut usize, preflight: &mut P) -> Result<LazyTreePage<R>, WorkspaceRelationError>
+    where P: for<'a> FnMut(&backend_version::CanonicalNodeView<'a>, &mut usize) -> Result<(), StoreError> {
+        *budget = budget.checked_sub(Self::ENVELOPE_SCRATCH).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
+        let result = {
+            let mut gate = |node: &backend_version::CanonicalNodeView<'_>| preflight(node, budget);
+            let loader = PreflightLoader { store: &self.store, preflight: RefCell::new(&mut gate) };
+            let tree = LazyTree::open(&loader, self.root).map_err(|error| map_tree_error::<R>(error, None))?;
+            tree.page_one_with_depth_limit(after, max_depth).map_err(|error| map_tree_error::<R>(error, None))?
+        };
+        *budget = budget.checked_add(Self::ENVELOPE_SCRATCH).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
+        Ok(result)
+    }
 }
 
 impl<R: CanonicalRelation> Clone for WorkspaceRelationHandle<R> {

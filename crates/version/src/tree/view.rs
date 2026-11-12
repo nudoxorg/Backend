@@ -181,6 +181,13 @@ impl<'a> CanonicalNodeView<'a> {
         reader.finish()?;
         Ok(fields)
     }
+
+    /// Iterates borrowed leaf fields without allocating a vector. The view
+    /// validates framing and raw key order, not relation-specific values.
+    pub fn leaf_field_iter(&self) -> Result<CanonicalLeafFieldIter<'a>, NodeError> {
+        if !self.is_leaf() { return Err(NodeError::InvalidBranch); }
+        Ok(CanonicalLeafFieldIter { reader: Reader::new(self.body) })
+    }
     /// Returns a borrowed iterator over branch anchors and raw commitments.
     ///
     /// # Errors
@@ -193,6 +200,17 @@ impl<'a> CanonicalNodeView<'a> {
             reader: Reader::new(self.body),
             level: self.level.saturating_sub(1),
         })
+    }
+}
+
+/// Allocation-free traversal of framed leaf key/value fields.
+pub struct CanonicalLeafFieldIter<'a> { reader: Reader<'a> }
+
+impl<'a> Iterator for CanonicalLeafFieldIter<'a> {
+    type Item = Result<CanonicalLeafField<'a>, NodeError>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.reader.bytes.is_empty() { return None; }
+        Some((|| Ok((self.reader.field()?, self.reader.field()?)))())
     }
 }
 

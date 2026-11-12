@@ -330,10 +330,11 @@ pub(super) fn encode_object(object: &TypedObject, max_bytes: usize) -> Result<Ve
 
 /// Parses and authenticates one complete object envelope while retaining only
 /// borrows into its caller-owned, already bounded byte buffer.
-fn verify_object_view<'a>(
+// Internal only: authenticates the physical object but does not admit its
+// relation grammar. Callers must not expose the borrowed view as authority.
+fn verify_object_envelope<'a>(
     bytes: &'a [u8],
     max_bytes: usize,
-    registry: &RelationAdmissionRegistry,
     expected: Option<UntrustedObjectId>,
 ) -> Result<VerifiedObjectView<'a>, StoreError> {
     if bytes.len() > max_bytes || !bytes.starts_with(OBJECT_MAGIC) {
@@ -366,12 +367,6 @@ fn verify_object_view<'a>(
     }
 
     let schema = SchemaIdentity::new(domain, ty, version_tag);
-    if registry.contains_schema(schema) {
-        registry.admit_relation_object(schema, &key, &version, payload)?;
-    } else {
-        admit_backend_object_version(schema, payload, &version)?;
-    }
-
     let actual = object_commitment_view(schema, &key, &version, payload)?;
     if actual != claimed || expected.is_some_and(|expected| expected.as_bytes() != &claimed) {
         return Err(StoreError::Corrupt);
@@ -383,6 +378,15 @@ fn verify_object_view<'a>(
         version,
         bytes: payload,
     })
+}
+
+fn admit_object_view(view: VerifiedObjectView<'_>, registry: &RelationAdmissionRegistry) -> Result<(), StoreError> {
+    if registry.contains_schema(view.schema()) {
+        registry.admit_relation_object(view.schema(), view.key(), view.version(), view.bytes())?;
+    } else {
+        admit_backend_object_version(view.schema(), view.bytes(), view.version())?;
+    }
+    Ok(())
 }
 
 /// Computes the same physical commitment as `TypedObject::id` directly over
@@ -570,6 +574,22 @@ impl FileStore {
         self.with_verified_object_file(file, claim, maximum, visit)
     }
 
+    /// Invokes an internal preflight after envelope authentication but before
+    /// relation decoding. The returned value is still visited only after the
+    /// ordinary registry admission succeeds.
+    pub(in crate::durable) fn with_relation_object_preflight<T, P, F>(
+        &self, claim: UntrustedObjectId, preflight: P, visit: F,
+    ) -> Result<T, StoreError>
+    where
+        P: for<'a> FnOnce(VerifiedObjectView<'a>) -> Result<(), StoreError>,
+        F: for<'a> FnOnce(VerifiedObjectView<'a>) -> Result<T, StoreError>,
+    {
+        let id = ObjectId::from_bytes(*claim.as_bytes());
+        let file = super::artifact_fs::open_object(self, id)?.ok_or(StoreError::Corrupt)?;
+        let maximum = self.object_envelope_limit()?.min(super::relation_object_limit()?);
+        self.with_verified_object_file_before(file, claim, maximum, preflight, visit)
+    }
+
     /// Admits one object from an already-open immutable object descriptor.
     ///
     /// Keeping the descriptor through bounded reading and envelope admission
@@ -577,12 +597,27 @@ impl FileStore {
     /// a potentially different file by name.
     fn with_verified_object_file<T, F>(
         &self,
-        mut file: File,
+        file: File,
         claim: UntrustedObjectId,
         maximum: usize,
         visit: F,
     ) -> Result<T, StoreError>
     where
+        F: for<'a> FnOnce(VerifiedObjectView<'a>) -> Result<T, StoreError>,
+    {
+        self.with_verified_object_file_before(file, claim, maximum, |_| Ok(()), visit)
+    }
+
+    fn with_verified_object_file_before<T, P, F>(
+        &self,
+        mut file: File,
+        claim: UntrustedObjectId,
+        maximum: usize,
+        preflight: P,
+        visit: F,
+    ) -> Result<T, StoreError>
+    where
+        P: for<'a> FnOnce(VerifiedObjectView<'a>) -> Result<(), StoreError>,
         F: for<'a> FnOnce(VerifiedObjectView<'a>) -> Result<T, StoreError>,
     {
         let metadata = file.metadata().map_err(|error| io_error(&error))?;
@@ -610,7 +645,9 @@ impl FileStore {
                 StoreError::Corrupt
             });
         }
-        let object = verify_object_view(&envelope, maximum, &self.relation_registry, Some(claim))?;
+        let object = verify_object_envelope(&envelope, maximum, Some(claim))?;
+        preflight(object)?;
+        admit_object_view(object, &self.relation_registry)?;
         visit(object)
     }
 

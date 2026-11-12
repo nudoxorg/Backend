@@ -277,6 +277,40 @@ impl FileStore {
             .map(|(_, _, node)| node)
     }
 
+    /// Authenticates a relation object's envelope, schema, root claim and raw
+    /// node framing before invoking `preflight`, then performs the ordinary
+    /// registry and typed canonical admissions. The callback is an allocation
+    /// gate only; its borrowed fields never become an authority capability.
+    ///
+    /// The caller must reserve the bounded relation envelope before calling.
+    /// This path requires canonical key bytes to preserve the key order used by
+    /// the relation; raw framing rejects other encodings conservatively.
+    pub fn read_relation_node_claim_preflight<R, P>(
+        &self, claim: UntrustedId<R>, preflight: P,
+    ) -> Result<CheckedCanonicalRoot<R>, StoreError>
+    where
+        R: CanonicalRelation,
+        P: for<'a> FnOnce(&backend_version::CanonicalNodeView<'a>) -> Result<(), StoreError>,
+    {
+        let schema = SchemaIdentity::of_relation::<R>();
+        if claim.context() != IdContext::relation::<R>() || !self.relation_registry.contains_schema(schema) {
+            return Err(StoreError::Corrupt);
+        }
+        let object_id = self.read_relation_ref(schema, claim.as_bytes())?;
+        self.with_relation_object_preflight(
+            crate::UntrustedObjectId::from_bytes(*object_id.as_bytes()),
+            |object| {
+                if object.schema() != schema || object.version() != claim.as_bytes()
+                    || object.key() != &crate::closure::relation_key(schema)
+                { return Err(StoreError::Corrupt); }
+                StateRoot::<R>::admit_canonical_bytes(claim, object.bytes()).map_err(|_| StoreError::Corrupt)?;
+                let node = backend_version::CanonicalNodeView::parse(object.bytes(), schema).map_err(|_| StoreError::Corrupt)?;
+                preflight(&node)
+            },
+            |object| admit_canonical_root_claim(claim, object.bytes()).map_err(|_| StoreError::Corrupt),
+        )
+    }
+
     pub(super) fn read_relation_node_claim_parts<R: CanonicalRelation>(
         &self,
         claim: UntrustedId<R>,
@@ -696,6 +730,60 @@ mod tests {
     use backend_version::{ObjectKey, Schema};
     use std::fs::File;
     use std::path::PathBuf;
+
+    static PREFLIGHT_DECODE_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    struct PreflightTestRelation;
+    impl backend_version::Relation for PreflightTestRelation {
+        const DOMAIN: u8 = 0xf4;
+        const TYPE: u16 = 0x5104;
+        type Key = [u8; 32];
+        type Value = Vec<u8>;
+        fn encode_key(value: &Self::Key, out: &mut Vec<u8>) { out.extend_from_slice(value); }
+        fn encode_value(value: &Self::Value, out: &mut Vec<u8>) { out.extend_from_slice(value); }
+    }
+    impl backend_version::CanonicalRelation for PreflightTestRelation {
+        fn decode_key(bytes: &[u8]) -> Result<Self::Key, backend_version::RelationDecodeError> {
+            bytes.try_into().map_err(|_| backend_version::RelationDecodeError::Malformed)
+        }
+        fn decode_value(bytes: &[u8]) -> Result<Self::Value, backend_version::RelationDecodeError> {
+            PREFLIGHT_DECODE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(bytes.to_vec())
+        }
+    }
+
+    #[test]
+    fn preflight_refusal_precedes_typed_relation_decode() {
+        use std::sync::atomic::Ordering;
+        let (_cleanup, initial, root) = test_store("preflight-order");
+        drop(initial);
+        let registry = crate::RelationAdmissionRegistry::new().with_relation::<PreflightTestRelation>().expect("register");
+        let store = FileStore::open_with_registry(&root, 1024 * 1024, registry).expect("store");
+        let state = backend_version::RelationState::<PreflightTestRelation>::from_entries(
+            [([1; 32], vec![7; 4096]), ([2; 32], vec![8; 4096])],
+            backend_version::CoverageWitness::Partial(backend_version::partial_coverage(1)),
+        ).expect("state");
+        store.write_relation_state(&state).expect("persist");
+        let claim = UntrustedId::<PreflightTestRelation>::from_wire(state.root().as_bytes(), IdContext::relation::<PreflightTestRelation>()).expect("claim");
+        PREFLIGHT_DECODE_CALLS.store(0, Ordering::Relaxed);
+        let denied = store.read_relation_node_claim_preflight(claim, |node| {
+            assert!(node.is_leaf());
+            assert_eq!(node.leaf_field_iter().expect("fields").count(), 2);
+            Err(StoreError::Bounds)
+        });
+        assert!(matches!(denied, Err(StoreError::Bounds)));
+        assert_eq!(PREFLIGHT_DECODE_CALLS.load(Ordering::Relaxed), 0);
+        store.read_relation_node_claim_preflight(claim, |_| Ok(())).expect("admit after preflight");
+        assert!(PREFLIGHT_DECODE_CALLS.load(Ordering::Relaxed) > 0);
+        let object = store.read_relation_node(state.root()).expect("root object");
+        let mut bytes = fs::read(store.object_path(object.id())).expect("envelope");
+        let last = bytes.len() - 1; bytes[last] ^= 1;
+        replace_object(&store, object.id(), &bytes);
+        let called = std::cell::Cell::new(false);
+        let corrupt = store.read_relation_node_claim_preflight(claim, |_| { called.set(true); Ok(()) });
+        assert!(corrupt.is_err());
+        assert!(!called.get(), "unauthenticated bytes must not reach preflight");
+        let _ = remove_store_fixture(root);
+    }
 
     struct BytesSchema;
 
