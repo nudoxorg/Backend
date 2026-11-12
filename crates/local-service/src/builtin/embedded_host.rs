@@ -66,9 +66,6 @@ pub(super) fn owner_open_refusal_with_shutdown(
     error: crate::LocaldError,
     shutdown: Option<crate::listener::ListenerShutdown>,
 ) -> ProcessError {
-    if shutdown.as_ref().is_some_and(crate::listener::ListenerShutdown::is_requested) {
-        return ProcessError::Profile(error.to_string());
-    }
     if matches!(
         &error,
         crate::LocaldError::Workspace(backend_engine::WorkspaceError::AlreadyOwned)
@@ -76,6 +73,9 @@ pub(super) fn owner_open_refusal_with_shutdown(
         return ProcessError::OwnerContended {
             workspace: workspace.to_path_buf(),
         };
+    }
+    if shutdown.as_ref().is_some_and(crate::listener::ListenerShutdown::is_requested) {
+        return ProcessError::Profile(error.to_string());
     }
     if matches!(
         &error,
