@@ -52,6 +52,47 @@ fn index(session: &mut Session, project: &std::path::Path, byte: u8) -> Result<(
     }
 }
 
+#[test]
+fn vue_index_rotates_small_frame_budget() -> Result<(), Box<dyn Error>> {
+    const CHILD: &str = "NUDOX_VUE_FRAME_CONTROL_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        // Isolate the owner/client test hook from other tests and preserve the
+        // caller's account-gate environment in the child process.
+        let status = std::process::Command::new(std::env::current_exe()?)
+            .env(CHILD, "1")
+            .env(backend_client::CONNECTION_FRAME_BUDGET_ENV, "1")
+            .args([
+                "--exact",
+                "builtin::vue_owner_journey_tests::vue_index_rotates_small_frame_budget",
+                "--nocapture",
+            ])
+            .status()?;
+        assert!(status.success(), "small-frame child failed: {status}");
+        return Ok(());
+    }
+    let fixture = tempfile::Builder::new()
+        .prefix("vue-frame-")
+        .tempdir_in("/tmp")?;
+    let project = fixture.path().join("project");
+    fs::create_dir(&project)?;
+    fs::write(
+        project.join("App.vue"),
+        "<script setup>function mounted() { return 1; }</script>",
+    )?;
+    let paths = backend_runtime::WorkspacePaths::discover(
+        Some(fixture.path().join("owner")),
+        Some(fixture.path().join("state")),
+        Some(fixture.path().join("owner.sock")),
+    )?;
+    paths.initialize()?;
+    let owner = super::native_ts_owner_journey_tests::start_owner(&paths)?;
+    let mut session = Session::connect(owner.endpoint())?;
+    index(&mut session, &project, 0x83)?;
+    drop(session);
+    assert_eq!(owner.close()?.failures, 0);
+    Ok(())
+}
+
 fn verify(session: &mut Session, project: &std::path::Path) -> Result<(), Box<dyn Error>> {
     let CommandReply::Names(names) = session.names("mounted", 100)?.reply else {
         return Err("names reply".into());
