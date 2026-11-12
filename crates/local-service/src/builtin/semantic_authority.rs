@@ -1622,10 +1622,7 @@ impl AdmittedCompilation {
             expected_members.insert(id);
         }
         if let Some(member) = metadata.native_lines() {
-            let id = payload_index.admit_claim(UntrustedObjectId::from_bytes(*member.object_id()))
-                .map_err(|error| BuiltinModelError(format!("admit native line membership: {error:?}")))?
-                .ok_or_else(|| BuiltinModelError("native source lines are absent from their output closure".into()))?;
-            let length = member.byte_length() as usize;
+             let length = member.byte_length() as usize;
             let mut credit = 68usize * 1024 * 1024;
             let work = std::cell::Cell::new(128usize * 1024 * 1024);
             let check = || -> Result<(), backend_store::StoreError> {
@@ -1633,6 +1630,11 @@ impl AdmittedCompilation {
                 work.set(work.get().checked_sub(1).ok_or(backend_store::StoreError::Bounds)?);
                 Ok(())
             };
+            check().map_err(|error| BuiltinModelError(format!("native line membership stopped: {error:?}")))?;
+            let id = payload_index.admit_claim(UntrustedObjectId::from_bytes(*member.object_id()))
+                .map_err(|error| BuiltinModelError(format!("admit native line membership: {error:?}")))?
+                .ok_or_else(|| BuiltinModelError("native source lines are absent from their output closure".into()))?;
+            check().map_err(|error| BuiltinModelError(format!("native line membership stopped: {error:?}")))?;
             let reader = store.open_bounded_nonrelation_object(&gc_pin, UntrustedObjectId::from_bytes(*member.object_id()),
                 &[backend_extension_turso::COMPILER_NATIVE_LINES_SCHEMA], None, length, &mut credit, |_| check())
                 .map_err(|error| BuiltinModelError(format!("open native line member: {error:?}")))?;
