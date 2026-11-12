@@ -624,8 +624,21 @@ pub fn function_headers_from_arena(
         let Some(export) = arena.get_export_decl(node) else { continue };
         let Some(index) = u32::try_from(index).ok().map(NodeIndex) else { return Err("native TSZ node index overflow".into()) };
         let Some((start, _)) = arena.pos_end_at(index) else { continue };
-        // Default exports require their own declaration/identity proof.
-        let value = (!export.is_default_export).then_some(start);
+        // A default wrapper is admissible only for its named function declaration;
+        // expressions and anonymous defaults have no matching function identity.
+        let valid_default = !export.is_default_export || (|| {
+            let default = export.default_keyword_pos?;
+            let declaration = arena.get(export.export_clause)?;
+            if declaration.kind != syntax_kind_ext::FUNCTION_DECLARATION { return None; }
+            let function = arena.get_function(declaration)?;
+            let (declaration_start, _) = arena.pos_end_at(export.export_clause)?;
+            arena.pos_end_at(function.name)?;
+            let default_end = (default as usize).checked_add(7)?;
+            (start < default && default < declaration_start
+                && text.get(default as usize..default_end) == Some("default"))
+                .then_some(())
+        })().is_some();
+        let value = valid_default.then_some(start);
         if !export_starts.contains_key(&export.export_clause.0) && export_starts.len() == MAX_HEADERS {
             poll(checkpoint, 0)?;
             return Err("native TSZ export limit exceeded".into());
@@ -1381,7 +1394,9 @@ mod tests {
         for (path, source, expected) in [
             ("src/main.ts", "const async = 1; async\nfunction plain() {}", None),
             ("src/main.ts", "const async = 1; async; function plain() {}", Some("function plain()")),
-            ("src/main.ts", "export default async function* plain(): Promise<number> { yield 1; }", None),
+            ("src/main.ts", "export default function plain() {}", Some("export default function plain()")),
+            ("src/main.ts", "export default async function* plain(): Promise<number> { yield 1; }", Some("export default async function* plain(): Promise<number>")),
+            ("src/main.tsx", "export default function plain() { return <div />; }", Some("export default function plain()")),
             ("src/main.ts", "export async /* comment */ function plain(): Promise<number> { return 1; }", Some("export async /* comment */ function plain(): Promise<number>")),
             ("src/main.ts", "const pattern = /`/; export async function plain() {}", Some("export async function plain()")),
             ("src/main.ts", "const text = `before ${1}`; export async function plain() {}", Some("export async function plain()")),
@@ -1398,6 +1413,7 @@ mod tests {
             )?.ok_or("compiler function missing")?;
             assert_eq!(selected_function_header(&rows, source, compiler_extent, "plain", &Unlimited)?, expected, "{source}");
         }
+        assert!(function_headers(Path::new("src/main.ts"), "export default function () {}", &Unlimited)?.is_empty());
         Ok(())
     }
 

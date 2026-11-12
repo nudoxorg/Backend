@@ -573,6 +573,50 @@ fn native_ts_listener_references_uninstrumented_control() -> Result<(), Box<dyn 
 }
 
 #[test]
+fn native_ts_default_export_signatures_survive_cold_owner() -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child(module_path!(), "native_ts_default_export_signatures_survive_cold_owner")? { return Ok(()); }
+    let _guard = FrontendFailpoint;
+    super::ingest::TEST_REJECT_STRUCTURAL_FRONTENDS.store(true, Ordering::Release);
+    let fixture = tempfile::Builder::new().prefix("tsx-default-").tempdir_in("/tmp")?;
+    let project = fixture.path().join("project");
+    fs::create_dir(&project)?;
+    fs::write(project.join("tsconfig.json"), "{\"compilerOptions\":{\"strict\":true,\"jsx\":\"preserve\"},\"include\":[\"*.tsx\"]}")?;
+    fs::write(project.join("NavBar.tsx"), "export default function NavBar() { return null; }\n")?;
+    fs::write(project.join("AsyncView.tsx"), "export default async function AsyncView(): Promise<string> { return 'ready'; }\n")?;
+    let paths = backend_runtime::WorkspacePaths::discover(Some(fixture.path().join("owner")), Some(fixture.path().join("state")), Some(fixture.path().join("owner.sock")))?;
+    paths.initialize()?;
+    let authority = backend_engine::read_authority_secret(paths.authority_secret())?;
+    let owner = start_owner(&paths)?;
+    let mut session = Session::connect(owner.endpoint())?;
+    index(&mut session, &project, 0x53)?;
+    for (name, path, expected) in [
+        ("NavBar", "NavBar.tsx", "export default function NavBar()"),
+        ("AsyncView", "AsyncView.tsx", "export default async function AsyncView(): Promise<string>"),
+    ] {
+        let (coordinate, source) = select_native_document(&mut session, &authority, name, path)?;
+        assert_eq!(source.signature.as_deref(), Some(expected));
+        let CommandReply::Document(shown) = session.document(&coordinate)?.reply else { return Err("default Document reply".into()); };
+        assert_eq!(shown.signature.as_deref(), Some(expected));
+    }
+    drop(session);
+    assert_eq!(owner.close()?.failures, 0);
+    let owner = start_owner(&paths)?;
+    let mut session = Session::connect(owner.endpoint())?;
+    for (name, path, expected) in [
+        ("NavBar", "NavBar.tsx", "export default function NavBar()"),
+        ("AsyncView", "AsyncView.tsx", "export default async function AsyncView(): Promise<string>"),
+    ] {
+        let (coordinate, source) = select_native_document(&mut session, &authority, name, path)?;
+        assert_eq!(source.signature.as_deref(), Some(expected));
+        let CommandReply::Document(shown) = session.document(&coordinate)?.reply else { return Err("cold default Document reply".into()); };
+        assert_eq!(shown.signature.as_deref(), Some(expected));
+    }
+    drop(session);
+    assert_eq!(owner.close()?.failures, 0);
+    Ok(())
+}
+
+#[test]
 fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
 -> Result<(), Box<dyn Error>> {
     if crate::test_support::run_test_in_child(

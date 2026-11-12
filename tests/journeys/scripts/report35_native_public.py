@@ -158,11 +158,11 @@ def main() -> int:
         )
         route_text = (
             'import { generateSchedule } from "@/scheduler";\n'
-            'export async function POST(): Promise<string> { return generateSchedule("request"); }\n'
+            'export default async function POST(): Promise<string> { return generateSchedule("request"); }\n'
         )
         navbar_text = (
             'import { loadSectionsCsv } from "@/data";\n'
-            'export function NavBar(): string { return loadSectionsCsv(); }\n'
+            'export default function NavBar(): string { return loadSectionsCsv(); }\n'
         )
         for path, text in (("src/data.ts", data_text), ("src/scheduler.ts", scheduler_text),
                            ("src/route.ts", route_text), ("src/NavBar.tsx", navbar_text)):
@@ -191,6 +191,22 @@ def main() -> int:
         require_json("outline", outline)
         check("outline:tsx", any(row.get("name") == "NavBar" and row.get("coordinate") == coordinates.get("NavBar")
                                  for row in outline_rows(outline)), outline)
+        if coordinates.get("NavBar"):
+            navbar_show, _ = cli("default-show", "show", coordinates["NavBar"])
+            require_json("default-show", navbar_show)
+            check("default:show-signature", isinstance(navbar_show.get("signature"), str)
+                  and navbar_show["signature"].rstrip().removesuffix("{").rstrip() == "export default function NavBar(): string"
+                  and navbar_show.get("kind") == "function", navbar_show)
+            navbar_source, _ = cli("default-source", "source", coordinates["NavBar"])
+            check("default:source", any(navbar_text.splitlines()[1] in part for part in strings(navbar_source)), navbar_source)
+        if coordinates.get("POST"):
+            post_show, _ = cli("default-async-show", "show", coordinates["POST"])
+            require_json("default-async-show", post_show)
+            check("default:async-show-signature", isinstance(post_show.get("signature"), str)
+                  and post_show["signature"].rstrip().removesuffix("{").rstrip() == "export default async function POST(): Promise<string>"
+                  and post_show.get("kind") == "function", post_show)
+            post_source, _ = cli("default-async-source", "source", coordinates["POST"])
+            check("default:async-source", any(route_text.splitlines()[1] in part for part in strings(post_source)), post_source)
         query = "{ Declaration { id @output name @output coordinate @output state @output } }"
         for name, caller in (("generateSchedule", "POST"), ("loadSectionsCsv", "generateSchedule")):
             coordinate = coordinates.get(name)
@@ -248,6 +264,12 @@ def main() -> int:
         check("mcp:cli-search-parity", row_fingerprint(body) == row_fingerprint(cli_search),
               {"mcp": row_fingerprint(body), "cli": row_fingerprint(cli_search)})
         mcp_query = tool("query", "backend.query", {"query": query})
+        if coordinates.get("NavBar"):
+            navbar_mcp = tool("default-source", "backend.source", {"coordinate": coordinates["NavBar"]})
+            check("mcp:default-source", any(navbar_text.splitlines()[1] in part for part in strings(navbar_mcp)), navbar_mcp)
+        if coordinates.get("POST"):
+            post_mcp = tool("default-async-source", "backend.source", {"coordinate": coordinates["POST"]})
+            check("mcp:default-async-source", any(route_text.splitlines()[1] in part for part in strings(post_mcp)), post_mcp)
         check("mcp:query:declaration", "generateSchedule" in query_names(mcp_query), query_names(mcp_query))
         check("mcp:query:tsx", "NavBar" in query_names(mcp_query), query_names(mcp_query))
         outline_facts = {(row.get("name"), row.get("coordinate"),
