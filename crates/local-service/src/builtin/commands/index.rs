@@ -2608,6 +2608,11 @@ impl DeferredProfileTicket {
         &self.attempt
     }
 
+    pub(super) fn is_csharp_unit(&self) -> bool { self.csharp_unit_claim_only }
+    pub(super) fn matches_csharp_witness(&self, witness: &CapturedCSharpUnitAdmission) -> bool {
+        self.csharp_unit_claim_only && witness.key() == &self.key
+    }
+
     #[must_use]
     pub(super) const fn profile(&self) -> LanguageProfile {
         self.key.profile()
@@ -2671,13 +2676,19 @@ impl DeferredIndex {
         })
     }
 
+    pub(super) fn csharp_witness(&self) -> Option<Arc<CapturedCSharpUnitAdmission>> {
+        self.csharp_selected_source.as_ref().map(Arc::clone)
+    }
+
     /// Worker-only recheck. No probe I/O occurs in the owner wrapper.
     pub(super) fn csharp_capture_is_current(
         &self, ticket: &DeferredProfileTicket, snapshot: &WorkspaceSnapshot, cancellation: &Arc<AtomicBool>,
     ) -> Result<bool, BuiltinModelError> {
         if !ticket.csharp_unit_claim_only { return Ok(true); }
         let Some(witness) = &self.csharp_selected_source else { return Ok(false); };
-        if witness.key() != &ticket.key || !witness.revalidate(snapshot, cancellation)? { return Ok(false); }
+        if witness.key() != &ticket.key
+            || witness.pending_capture.as_ref().is_none_or(|capture| capture.input_digest() != ticket.attempt.input_digest())
+            || !witness.revalidate(snapshot, cancellation)? { return Ok(false); }
         let selected = self.csharp_capture.as_ref().ok_or_else(|| BuiltinModelError("C# capture custody is missing".to_owned()))?;
         selected.revalidate(&self.revision_fence, cancellation.as_ref()).map_err(BuiltinModelError)
     }
@@ -3147,10 +3158,6 @@ pub(super) fn finish_deferred_profile_for_snapshot(
         )
         .into());
     }
-    if profile.csharp_unit_claim_only {
-        semantic_authority.retire_candidate_attempt(&profile.attempt, backend_extension_turso::CandidateAttemptRetirementReason::Refused)?;
-        return Err(BuiltinModelError("selected C# project output awaits unit-scoped admission".to_owned()).into());
-    }
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic publications: {error}")))?;
@@ -3169,6 +3176,10 @@ pub(super) fn finish_deferred_profile_for_snapshot(
                 });
             }
         };
+    if profile.csharp_unit_claim_only {
+        semantic_authority.retire_candidate_attempt(&profile.attempt, backend_extension_turso::CandidateAttemptRetirementReason::Refused)?;
+        return Err(BuiltinModelError("selected C# project output awaits SDK and execution closure admission".to_owned()).into());
+    }
     let cargo_alias_evidence = match staged_cargo_alias_evidence(
         profile.profile(),
         *profile.attempt.input_digest(),
@@ -3582,18 +3593,20 @@ impl ResolvedCSharpProjectGraph {
 
     fn closure(&self, root: &str) -> Result<Vec<&ResolvedCSharpProjectNode>, BuiltinModelError> {
         fn visit<'a>(graph: &'a ResolvedCSharpProjectGraph, path: &str, depth: usize,
-            visiting: &mut BTreeSet<String>, visited: &mut BTreeSet<String>, output: &mut Vec<&'a ResolvedCSharpProjectNode>) -> Result<(), BuiltinModelError> {
+            visiting: &mut BTreeSet<String>, deepest: &mut BTreeMap<String, usize>,
+            emitted: &mut BTreeSet<String>, output: &mut Vec<&'a ResolvedCSharpProjectNode>) -> Result<(), BuiltinModelError> {
             if depth > 16 || visiting.contains(path) { return Err(BuiltinModelError("C# graph cycle or depth limit".to_owned())); }
-            if !visited.insert(path.to_owned()) { return Ok(()); }
+            if deepest.get(path).is_some_and(|previous| *previous >= depth) { return Ok(()); }
+            deepest.insert(path.to_owned(), depth);
             let node = graph.node(path).ok_or_else(|| BuiltinModelError("C# graph reference is missing".to_owned()))?;
             visiting.insert(path.to_owned());
-            for dependency in &node.project_references { visit(graph, dependency, depth + 1, visiting, visited, output)?; }
+            for dependency in &node.project_references { visit(graph, dependency, depth + 1, visiting, deepest, emitted, output)?; }
             visiting.remove(path);
-            output.push(node);
+            if emitted.insert(path.to_owned()) { output.push(node); }
             Ok(())
         }
         let mut output = Vec::new();
-        visit(self, root, 0, &mut BTreeSet::new(), &mut BTreeSet::new(), &mut output)?;
+        visit(self, root, 0, &mut BTreeSet::new(), &mut BTreeMap::new(), &mut BTreeSet::new(), &mut output)?;
         Ok(output)
     }
 
@@ -3602,16 +3615,17 @@ impl ResolvedCSharpProjectGraph {
     fn source_project_path(&self, path: &str) -> Option<&str> {
         let mut selected = None;
         let mut depth = None;
+        let mut tied = false;
         for node in &self.nodes {
             let directory = node.project_path.rsplit_once('/').map_or("", |(directory, _)| directory);
             if !directory.is_empty() && !path.strip_prefix(directory).is_some_and(|suffix| suffix.starts_with('/')) { continue; }
             let candidate_depth = directory.len();
-            if depth == Some(candidate_depth) { return None; }
+            if depth == Some(candidate_depth) { tied = true; }
             if depth.is_none_or(|current| candidate_depth > current) {
-                selected = Some(node.project_path.as_str()); depth = Some(candidate_depth);
+                selected = Some(node.project_path.as_str()); depth = Some(candidate_depth); tied = false;
             }
         }
-        selected
+        if tied { None } else { selected }
     }
 
     fn retained_bytes(&self) -> Option<usize> {
@@ -3697,6 +3711,12 @@ pub(in crate::builtin) struct CapturedCSharpUnitAdmission {
 
 impl CapturedCSharpUnitAdmission {
     pub(in crate::builtin) fn key(&self) -> &ProductSemanticPublicationKey { &self.key }
+    pub(in crate::builtin) fn pending_capture(&self) -> Option<&SemanticSourceCapture> { self.pending_capture.as_ref() }
+    pub(in crate::builtin) fn source_request(&self) -> [u8; 32] { self.receipt.request_identity() }
+    pub(in crate::builtin) fn operation_key(&self) -> Option<[u8; 32]> { self.receipt.operation_key().map(|key| key.to_bytes()) }
+    pub(in crate::builtin) fn shares_cancellation(&self, cancellation: &Arc<AtomicBool>) -> bool { Arc::ptr_eq(&self.cancellation, cancellation) }
+    pub(in crate::builtin) fn cancellation_token(&self) -> &Arc<AtomicBool> { &self.cancellation }
+
     pub(in crate::builtin) fn target(&self) -> &CompilerPackageTargetV2 { &self.target }
     pub(in crate::builtin) fn project_key(&self) -> [u8; 32] { self.project_key }
     pub(in crate::builtin) fn project_commitment(&self) -> [u8; 32] { self.project_commitment }
@@ -3730,6 +3750,35 @@ impl CapturedCSharpUnitAdmission {
             .checked_add(self.target.package().as_str().len())?
             .checked_add(self.project.project_path.as_str().len())?
             .checked_add(1024)
+    }
+
+    /// Joins a compiler's claim-only CSE1 aggregate to this exact selected
+    /// source and configuration custody. This is necessary but does not prove
+    /// SDK, helper, runtime or reference execution custody.
+    pub(in crate::builtin) fn matches_staged_invocation(&self, staged: &StagedSemanticPackage, input: [u8; 32]) -> bool {
+        if self.cancellation.load(Ordering::Acquire) { return false; }
+        let Some(bytes) = staged.csharp_invocation_evidence_object(input) else { return false; };
+        if self.cancellation.load(Ordering::Acquire) { return false; }
+        let Some(claim) = backend_engine::application::decode_csharp_evidence(&bytes) else { return false; };
+        self.matches_invocation_claim(&claim, input)
+    }
+
+    fn matches_invocation_claim(&self, claim: &backend_engine::application::CSharpEvidenceClaim<'_>, input: [u8; 32]) -> bool {
+        use sha2::Digest;
+        if self.cancellation.load(Ordering::Acquire) { return false; }
+        if claim.target != *self.target.target().as_ref() || claim.input != input
+            || claim.profile != self.key.profile() || claim.project_path != self.project.project_path
+            || claim.sources.len() != self.sources.len() { return false; }
+        let probes = self.project.config.probes().collect::<Vec<_>>();
+        if claim.config.len() != probes.len() || claim.config.iter().zip(probes).any(|(actual, (path, text))| {
+            actual.path != path || actual.text.map(str::as_bytes) != text
+        }) { return false; }
+        claim.sources.iter().zip(&self.sources).all(|(actual, source)| {
+            !self.cancellation.load(Ordering::Acquire) && actual.path == source.relative_path && actual.byte_length as usize == source.source.len()
+                && actual.source_fact == *source.source_fact_identity.as_ref()
+                && actual.input_content == source.content
+                && actual.source_sha256 == <[u8; 32]>::from(sha2::Sha256::digest(&source.source))
+        }) && !self.cancellation.load(Ordering::Acquire)
     }
 
     /// Worker-only: checks the exact still-selected snapshot and original

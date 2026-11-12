@@ -473,6 +473,7 @@ pub struct BuiltinIntent {
     // Transient source capability; serialized SQL rows remain untrusted claims.
     sql_proof: Option<SqlLiveProofRef>,
     sql_extension: Option<super::sql_intent::SqlIntentExtension>,
+    csharp_extension: Option<super::csharp_intent::CSharpReceiptIntentExtension>,
     semantic_selection: Option<BuiltinSemanticSelectionIntent>,
     operation_key: Option<[u8; 32]>,
     capture_basis: Option<BuiltinCaptureBasis>,
@@ -694,6 +695,7 @@ impl BuiltinIntent {
     const STYLO_ANALYSIS_VERSION: u8 = 12;
     const NATIVE_EVIDENCE_VERSION: u8 = 13;
     const SQL_VERSION: u8 = super::sql_intent::SQL_INTENT_VERSION;
+    const CSHARP_VERSION: u8 = super::csharp_intent::CSHARP_INTENT_VERSION;
     const MAX_NATIVE_EVIDENCE_CHANGES: usize = 2 * backend_engine::builtin::MAX_NATIVE_EVIDENCE_ROWS;
     const MAX_NATIVE_EVIDENCE_DELTA_BYTES: usize = 2 * backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES + Self::MAX_NATIVE_EVIDENCE_CHANGES * 42;
     // New v13 policy ceiling for inherited sections, not a claim that all
@@ -1062,6 +1064,7 @@ impl BuiltinIntent {
                 | Self::STYLO_ANALYSIS_VERSION
                 | Self::NATIVE_EVIDENCE_VERSION
                 | Self::SQL_VERSION
+                | Self::CSHARP_VERSION
         ) || (encoding_version < Self::VERSION
             && (matches!(operation, BuiltinIntentOperation::SelectSemanticGeneration)
                 || semantic_selection.is_some()))
@@ -1077,6 +1080,7 @@ impl BuiltinIntent {
                 && encoding_version != Self::STYLO_ANALYSIS_VERSION
                 && encoding_version != Self::NATIVE_EVIDENCE_VERSION
                 && encoding_version != Self::SQL_VERSION
+                && encoding_version != Self::CSHARP_VERSION
                 && operation_key.is_some())
             || (encoding_version == Self::CAPTURE_BASIS_VERSION
                 && (capture_changes.is_empty() || capture_basis.is_none()))
@@ -1290,6 +1294,7 @@ impl BuiltinIntent {
             native_evidence_proof: None,
             sql_proof: None,
             sql_extension: None,
+            csharp_extension: None,
             semantic_selection,
             operation_key,
             capture_basis,
@@ -1437,6 +1442,7 @@ impl BuiltinIntent {
             Self::STYLO_ANALYSIS_VERSION => b"BPIC",
             Self::NATIVE_EVIDENCE_VERSION => b"BPID",
             Self::SQL_VERSION => super::sql_intent::SQL_INTENT_MAGIC,
+            Self::CSHARP_VERSION => super::csharp_intent::CSHARP_INTENT_MAGIC,
             _ => b"BPI9",
         });
         bytes.push(self.encoding_version);
@@ -1584,7 +1590,7 @@ impl BuiltinIntent {
             if self.encoding_version == Self::STYLO_ANALYSIS_VERSION
                 || (self.encoding_version >= Self::NATIVE_EVIDENCE_VERSION && self.stylo_basis.is_some())
             {
-                let length_position = if self.encoding_version == Self::SQL_VERSION {
+                let length_position = if matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION) {
                     let position = bytes.len(); bytes.extend_from_slice(&[0; 4]); Some(position)
                 } else { None };
                 let basis = self
@@ -1611,12 +1617,12 @@ impl BuiltinIntent {
                     bytes[position..position+4].copy_from_slice(&length.to_be_bytes());
                 }
             }
-            if self.encoding_version == Self::SQL_VERSION {
+            if matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION) {
                 bytes.push(u8::from(self.native_evidence_basis.is_some()));
             }
             if self.encoding_version == Self::NATIVE_EVIDENCE_VERSION
-                || (self.encoding_version == Self::SQL_VERSION && self.native_evidence_basis.is_some()) {
-                let length_position = if self.encoding_version == Self::SQL_VERSION {
+                || (matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION) && self.native_evidence_basis.is_some()) {
+                let length_position = if matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION) {
                     let position = bytes.len(); bytes.extend_from_slice(&[0; 4]); Some(position)
                 } else { None };
                 let basis = self.native_evidence_basis.expect("native evidence basis validated");
@@ -1638,7 +1644,7 @@ impl BuiltinIntent {
                     bytes[position..position+4].copy_from_slice(&length.to_be_bytes());
                 }
             }
-            if self.encoding_version == Self::SQL_VERSION {
+            if matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION) {
                 match &self.sql_extension {
                     None => bytes.push(0),
                     Some(extension) => {
@@ -1648,6 +1654,14 @@ impl BuiltinIntent {
                         bytes.extend_from_slice(&encoded);
                     }
                 }
+            }
+            if self.encoding_version == Self::CSHARP_VERSION {
+                if let Some(extension) = &self.csharp_extension {
+                    bytes.push(1);
+                    let encoded = extension.encode().expect("C# extension admitted at attachment");
+                    bytes.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
+                    bytes.extend_from_slice(&encoded);
+                } else { bytes.push(0); }
             }
         }
         (bytes, source_end)
@@ -1670,6 +1684,7 @@ impl BuiltinIntent {
             self.stylo_changes = Box::new([]);
             self.native_evidence_changes = Box::new([]);
             self.sql_extension = None;
+            self.csharp_extension = None;
         }
     }
 
@@ -1687,6 +1702,7 @@ impl BuiltinIntent {
             self.stylo_changes = Box::new([]);
             self.native_evidence_changes = Box::new([]);
             self.sql_extension = None;
+            self.csharp_extension = None;
             self.semantic_selection = None;
         }
         self
@@ -1839,7 +1855,7 @@ impl BuiltinIntent {
         changes: Vec<super::stylo_admission::StyloAnalysisChange>,
     ) -> Result<(), BuiltinModelError> {
         if self.native_evidence_basis.is_some()
-            || !matches!(self.encoding_version, Self::STYLO_ANALYSIS_VERSION | Self::NATIVE_EVIDENCE_VERSION | Self::SQL_VERSION)
+            || !matches!(self.encoding_version, Self::STYLO_ANALYSIS_VERSION | Self::NATIVE_EVIDENCE_VERSION | Self::SQL_VERSION | Self::CSHARP_VERSION)
             || basis.workspace_root == [0; 32]
             || basis.closure == [0; 32]
             || basis.sequence == u64::MAX
@@ -1888,7 +1904,7 @@ impl BuiltinIntent {
         changes: Vec<NativeEvidenceChange>,
     ) -> Result<(), BuiltinModelError> {
         if self.native_evidence_basis.is_some()
-            || !matches!(self.encoding_version, Self::NATIVE_EVIDENCE_VERSION | Self::SQL_VERSION)
+            || !matches!(self.encoding_version, Self::NATIVE_EVIDENCE_VERSION | Self::SQL_VERSION | Self::CSHARP_VERSION)
             || basis.workspace_root == [0; 32]
             || basis.closure == [0; 32]
             || basis.sequence == u64::MAX
@@ -2038,14 +2054,23 @@ impl BuiltinIntent {
         Ok(self)
     }
 
+    /// Until SDK and execution custody are available from the same staged
+    /// compiler output, serialized unit claims cannot enter the stage.
+    pub(super) fn validate_csharp_stage_custody(&self, _base: &WorkspaceSnapshot, _cancellation: &Arc<std::sync::atomic::AtomicBool>) -> Result<(), BuiltinModelError> {
+        if self.encoding_version == Self::CSHARP_VERSION {
+            return Err(BuiltinModelError("C# staging requires selected SDK and execution custody".into()));
+        }
+        Ok(())
+    }
+
     /// Native evidence staging and hydration belong on the publication worker.
     pub(super) fn has_native_ts_evidence(&self) -> bool {
         self.encoding_version == Self::NATIVE_EVIDENCE_VERSION
-            || (self.encoding_version == Self::SQL_VERSION && self.native_evidence_basis.is_some())
+            || (matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION) && self.native_evidence_basis.is_some())
     }
     /// SQL proof hydration and source revalidation must run on the worker.
     pub(super) fn has_sql_evidence(&self) -> bool {
-        self.encoding_version == Self::SQL_VERSION && (self.sql_proof.is_some() || self.sql_extension.is_some())
+        matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION) && (self.sql_proof.is_some() || self.sql_extension.is_some())
     }
     /// Whether the full live intent actually replaces one project's SQL rows.
     /// A proof-bound no-op must retain its existing receipt.
@@ -2058,7 +2083,7 @@ impl BuiltinIntent {
     /// A staged v14 carrier can shed its sections and private proof. Refuse
     /// synchronous hydration based on its durable version, not in-memory data.
     pub(super) fn requires_v14_worker(&self) -> bool {
-        self.encoding_version == Self::SQL_VERSION
+        matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION)
     }
 
     pub(super) fn validate_native_stage_cancellation(
@@ -2155,6 +2180,15 @@ impl BuiltinIntent {
         let (stylo_basis, stylo_changes) = decoder.stylo_changes()?;
         let (native_evidence_basis, native_evidence_changes) = decoder.native_evidence_changes()?;
         let sql_extension = decoder.sql_extension()?;
+        let csharp_extension = decoder.csharp_extension()?;
+        if let Some(section) = &csharp_extension {
+            if operation != BuiltinIntentOperation::Index || section.changes.iter().flat_map(|change| [&change.expected, &change.after]).flatten().any(|row| {
+                match row {
+                    backend_engine::builtin::CSharpReceiptRecord::Unit { project, .. }
+                    | backend_engine::builtin::CSharpReceiptRecord::Member { project, .. } => *project != package.to_bytes(),
+                }
+            }) { return Err(BuiltinModelError("C# intent has a different project owner".into())); }
+        }
         if encoding_version == Self::SQL_VERSION && stylo_basis.is_none()
             && native_evidence_basis.is_none() && sql_extension.is_none() {
             return Err(BuiltinModelError("empty v14 native section set".into()));
@@ -2181,6 +2215,7 @@ impl BuiltinIntent {
             intent.set_native_evidence_changes(basis, native_evidence_changes)?;
         }
         intent.sql_extension = sql_extension;
+        intent.csharp_extension = csharp_extension;
         if encoding_version < Self::CAPTURE_VERSION && !intent.capture_changes.is_empty() {
             return Err(BuiltinModelError(
                 "capture markers require the v6 intent encoding".to_owned(),
@@ -2633,6 +2668,8 @@ impl<'a> IntentDecoder<'a> {
                     + BuiltinIntent::MAX_NATIVE_EVIDENCE_FIRST_METADATA)
             || (version == BuiltinIntent::SQL_VERSION
                 && bytes.len() > BuiltinIntent::MAX_NATIVE_EVIDENCE_INTENT_BYTES + 64 * 1024 * 1024)
+            || (version == BuiltinIntent::CSHARP_VERSION
+                && bytes.len() > BuiltinIntent::MAX_NATIVE_EVIDENCE_INTENT_BYTES + 128 * 1024 * 1024)
             || !matches!(
                 (bytes.get(..4), version),
                 (Some(b"BPI3"), 3)
@@ -2647,6 +2684,7 @@ impl<'a> IntentDecoder<'a> {
                     | (Some(b"BPIC"), 12)
                     | (Some(b"BPID"), 13)
                     | (Some(b"BPIE"), 14)
+                    | (Some(b"BPIG"), 16)
             )
         {
             return Err(BuiltinModelError(
@@ -3019,7 +3057,7 @@ impl<'a> IntentDecoder<'a> {
         if self.version < BuiltinIntent::NATIVE_EVIDENCE_VERSION {
             return Ok((None, Vec::new()));
         }
-        if self.version == BuiltinIntent::SQL_VERSION {
+        if matches!(self.version, BuiltinIntent::SQL_VERSION | BuiltinIntent::CSHARP_VERSION) {
             match self.take(1)?[0] {
                 0 => return Ok((None, Vec::new())),
                 1 => {
@@ -3489,6 +3527,15 @@ impl<'a> IntentDecoder<'a> {
             }
             _ => Err(BuiltinModelError("invalid SQL extension tag".into())),
         }
+    }
+
+    fn csharp_extension(&mut self) -> Result<Option<super::csharp_intent::CSharpReceiptIntentExtension>, BuiltinModelError> {
+        if self.version != BuiltinIntent::CSHARP_VERSION { return Ok(None); }
+        if self.take(1)?[0] != 1 { return Err(BuiltinModelError("missing C# extension".into())); }
+        let length = self.read_u32()? as usize;
+        if length > 64 * 1024 * 1024 { return Err(BuiltinModelError("C# extension exceeds byte budget".into())); }
+        super::csharp_intent::CSharpReceiptIntentExtension::decode(self.take(length)?)
+            .map(Some).map_err(BuiltinModelError)
     }
 
     fn finish(self) -> Result<(), BuiltinModelError> {
@@ -4168,6 +4215,9 @@ fn prepare_transition_with_owner_context(
     update: LazyPreparedUpdate<BuiltinWorkspaceRelation>,
     owner_context: Option<&super::owner_receipt_context::OwnerReceiptContext>,
 ) -> Result<PreparedTransition, BuiltinModelError> {
+    if intent.encoding_version == BuiltinIntent::CSHARP_VERSION {
+        return Err(BuiltinModelError("C# unit publication requires an owner-selected live capability".into()));
+    }
     if intent.encoding_version == BuiltinIntent::SQL_VERSION && intent.staged().is_none() && intent.sql_proof.is_none() {
         // A SQL intent is only meaningful with its live proof, or as the hydrated
         // form of a staged carrier. Bare bytes carry no authority to publish.
@@ -4920,6 +4970,7 @@ fn checked_product_change_count(
         intent.stylo_changes.len(),
         intent.native_evidence_changes.len(),
         intent.sql_extension.as_ref().map_or(0, |section| section.changes.len()),
+        intent.csharp_extension.as_ref().map_or(0, |section| section.changes.len()),
     ]
     .into_iter()
     .try_fold(0_usize, usize::checked_add)
@@ -5652,6 +5703,9 @@ fn admit_persisted_intent(objects: &[TypedObject]) -> Result<BuiltinIntent, Buil
     }
     let persisted_intent = BuiltinIntent::decode(intent_object.bytes())
         .map_err(|error| BuiltinModelError(format!("decode persisted builtin intent: {error}")))?;
+    if persisted_intent.encoding_version == BuiltinIntent::CSHARP_VERSION {
+        return Err(BuiltinModelError("C# unit intent has no authenticated recovery capability".into()));
+    }
     if persisted_intent.encoding_version == BuiltinIntent::SQL_VERSION {
         // SQL transitions are always persisted as staged carriers (`BPS1`), which
         // take the other admission path. An unstaged SQL intent cannot be genuine.
@@ -8238,6 +8292,36 @@ mod persisted_intent_tests {
         fn encode(value: &Self::Value, output: &mut Vec<u8>) {
             output.extend_from_slice(value);
         }
+    }
+
+    #[test]
+    fn csharp_v16_envelope_is_atomic_and_owner_bound() {
+        let label = "/tmp/csharp-v16";
+        let package = backend_engine::PackageKey::from_value(label);
+        let mut intent = BuiltinIntent::new_with_version(
+            BuiltinIntent::CSHARP_VERSION, BuiltinIntentOperation::Index, package, label,
+            vec![], vec![], None, None, None, vec![], vec![], vec![],
+        ).unwrap();
+        intent.csharp_extension = Some(super::super::csharp_intent::tests::example(package.to_bytes()));
+        let encoded = intent.canonical_bytes();
+        assert_eq!(&encoded[..5], b"BPIG\x10");
+        let decoded = BuiltinIntent::decode(&encoded).unwrap();
+        assert_eq!(decoded, intent);
+        // The durable representation is a claim: decoding cannot recreate the
+        // private source/attempt custody required even for staging.
+        let base = super::super::genesis().unwrap().snapshot();
+        let cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        assert!(decoded.validate_csharp_stage_custody(&base, &cancellation).is_err());
+        assert!(BuiltinIntent::decode(&encoded[..encoded.len() - 1]).is_err());
+        let mut trailing = encoded.clone(); trailing.push(0);
+        assert!(BuiltinIntent::decode(&trailing).is_err());
+        let mut foreign = intent.clone();
+        foreign.csharp_extension = Some(super::super::csharp_intent::tests::example([9; 32]));
+        assert!(BuiltinIntent::decode(&foreign.canonical_bytes()).is_err());
+        assert_eq!(checked_product_change_count(0, 0, &intent).unwrap(), 1);
+        assert!(intent.requires_v14_worker());
+        let mut wrong_magic = encoded; wrong_magic[..4].copy_from_slice(b"BPIF");
+        assert!(BuiltinIntent::decode(&wrong_magic).is_err());
     }
 
     #[test]

@@ -188,3 +188,66 @@ pub(super) fn plan_untrusted_csharp_replacement(
     }
     Ok(changes)
 }
+
+/// Ephemeral handoff from the selected-source worker. This borrows the actual
+/// staged compiler output and cannot be reconstructed from a durable claim.
+/// It proves source and attempt correlation only; SDK and execution custody
+/// are still required before any publication grant.
+pub(super) struct CSharpSelectedCompile<'a> {
+    completed: &'a super::commands::adapter::index_profile_worker::CSharpCompletedWorkerResult,
+}
+
+/// Rechecks the real selected Pending and authoritative attempt on the worker.
+pub(super) fn validate_selected_attempt(
+    base: &WorkspaceSnapshot,
+    witness: &super::commands::index::CapturedCSharpUnitAdmission,
+    attempt: &backend_extension_turso::CandidateAttempt,
+    authority: &super::semantic_authority::SemanticAuthority,
+    cancellation: &std::sync::Arc<AtomicBool>,
+) -> Result<(), String> {
+    let capture = witness.pending_capture().ok_or("C# Pending capture missing")?;
+    let key = witness.key();
+    let namespace = super::semantic_authority::SemanticAuthority::namespace(key.package(), key.coordinate(), key.profile())
+        .map_err(|error| error.to_string())?;
+    if !witness.shares_cancellation(cancellation) || cancellation.load(Ordering::Acquire)
+        || witness.operation_key().is_none() || capture.operation_key().copied() != witness.operation_key()
+        || capture.input_digest() != attempt.input_digest()
+        || capture.observation_sequence() != attempt.observation().sequence()
+        || attempt.namespace() != &namespace || attempt.observation().observation().namespace() != &namespace
+        || authority.recover_candidate_attempt(&attempt.recovery_claim()).map_err(|error| error.to_string())? != *attempt
+        || !witness.revalidate(base, cancellation).map_err(|error| error.to_string())?
+        || cancellation.load(Ordering::Acquire)
+    { return Err("C# selected attempt changed".into()); }
+    Ok(())
+}
+
+impl<'a> CSharpSelectedCompile<'a> {
+    pub(super) fn attempt(&self) -> &backend_extension_turso::CandidateAttempt {
+        self.completed.attempt()
+    }
+
+    /// The same worker-owned package whose CSE1 was checked at capture. Its
+    /// eventual SDK and execution custody must be read from this package,
+    /// never supplied separately alongside the selected-source witness.
+    pub(super) fn staged(&self) -> &backend_engine::application::StagedSemanticPackage {
+        self.completed.staged().expect("selected compiler output remains owned")
+    }
+
+    pub(super) fn capture(
+        base: &WorkspaceSnapshot,
+        completed: &'a super::commands::adapter::index_profile_worker::CSharpCompletedWorkerResult,
+        authority: &super::semantic_authority::SemanticAuthority,
+    ) -> Result<Self, String> {
+        let witness = completed.witness();
+        let attempt = completed.attempt();
+        let cancellation = completed.cancellation();
+        if !completed.ticket_matches_witness() { return Err("C# worker ticket differs from source custody".into()); }
+        validate_selected_attempt(base, witness, attempt, authority, cancellation)?;
+        let staged = completed.staged().ok_or("C# compiler produced no staged output")?;
+        if !witness.matches_staged_invocation(staged, *attempt.input_digest()) {
+            return Err("C# staged invocation differs from selected source".into());
+        }
+        validate_selected_attempt(base, witness, attempt, authority, cancellation)?;
+        Ok(Self { completed })
+    }
+}

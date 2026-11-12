@@ -308,6 +308,7 @@ fn stage_inner(
     owner: Option<&super::owner_receipt_context::OwnerReceiptContext>,
 ) -> Result<BuiltinIntent, BuiltinModelError> {
     intent.validate_native_stage_cancellation(&cancellation)?;
+    intent.validate_csharp_stage_custody(snapshot, &cancellation)?;
     if intent.staged().is_some() {
         return Ok(intent);
     }

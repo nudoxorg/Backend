@@ -69,6 +69,7 @@ mod owner_receipt_context;
 mod sql_capture;
 mod sql_admission;
 mod sql_intent;
+mod csharp_intent;
 mod sql_receipt;
 mod sql_receipt_index;
 mod sql_catalog;
@@ -127,6 +128,8 @@ pub(super) fn product_relation_registry() -> Result<RelationAdmissionRegistry, B
         .map_err(|error| BuiltinModelError(format!("register native source evidence relation: {error:?}")))?
         .with_relation::<backend_engine::builtin::SqlAnalysisRelation>()
         .map_err(|error| BuiltinModelError(format!("register native SQL relation: {error:?}")))?
+        .with_relation::<backend_engine::builtin::CSharpReceiptRelation>()
+        .map_err(|error| BuiltinModelError(format!("register C# receipt relation: {error:?}")))?
         .with_relation::<backend_engine::builtin::SqlReceiptIndexRelation>()
         .map_err(|error| BuiltinModelError(format!("register SQL receipt index: {error:?}")))?
         .with_relation::<backend_frontend_vue::VueInventoryRelation>()
