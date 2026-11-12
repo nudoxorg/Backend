@@ -1591,11 +1591,25 @@ fn omitted_program_member_cold_replay(mixed: bool) -> Result<(), Box<dyn Error>>
     stopped_config.authority_secret = Some(paths.authority_secret().to_path_buf());
     let shutdown = crate::listener::ListenerShutdown::new();
     shutdown.request();
-    let error = match EmbeddedLocalService::start_with_shutdown(stopped_config, shutdown) {
+    let error = match EmbeddedLocalService::start_with_shutdown(stopped_config.clone(), shutdown) {
         Ok(owner) => { drop(owner); return Err("cancelled cold owner unexpectedly started".into()); }
         Err(error) => error,
     };
     assert!(error.to_string().contains("native replay stopped: owner shutdown"), "unexpected cold refusal: {error}");
+    let shutdown = crate::listener::ListenerShutdown::new();
+    let worker_shutdown = shutdown.clone();
+    super::semantic_authority::TEST_COLD_REPLAY_REACHED.store(false, Ordering::Release);
+    super::semantic_authority::TEST_COLD_REPLAY_PAUSE.store(true, Ordering::Release);
+    let worker = thread::spawn(move || EmbeddedLocalService::start_with_shutdown(stopped_config, worker_shutdown));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !super::semantic_authority::TEST_COLD_REPLAY_REACHED.load(Ordering::Acquire) && Instant::now() < deadline { thread::yield_now(); }
+    let reached = super::semantic_authority::TEST_COLD_REPLAY_REACHED.load(Ordering::Acquire);
+    shutdown.request();
+    super::semantic_authority::TEST_COLD_REPLAY_PAUSE.store(false, Ordering::Release);
+    let result = worker.join().map_err(|_| "cold owner worker panicked")?;
+    assert!(reached, "cold replay did not reach its live checkpoint");
+    let error = match result { Ok(owner) => { drop(owner); return Err("mid-replay shutdown unexpectedly started owner".into()); }, Err(error) => error };
+    assert!(error.to_string().contains("native replay stopped"), "unexpected live cold refusal: {error}");
     let owner = start_owner(&paths)?;
     let mut session = Session::connect(owner.endpoint())?;
     let (cold_coordinate, cold) = select_native_document(&mut session, &authority, "NavBar", "src/components/NavBar.tsx")?;

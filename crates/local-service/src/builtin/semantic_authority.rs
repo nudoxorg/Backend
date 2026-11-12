@@ -1149,6 +1149,11 @@ pub(super) fn admit_replayed_native_evidence(
     admit_replayed_native_evidence_with_shutdown(workspace_store, captures, rows, retirements, None)
 }
 
+#[cfg(test)]
+pub(super) static TEST_COLD_REPLAY_PAUSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+pub(super) static TEST_COLD_REPLAY_REACHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub(super) fn admit_replayed_native_evidence_with_shutdown(
     workspace_store: &FileStore,
     captures: &[super::profile::BuiltinCaptureChange],
@@ -1179,7 +1184,16 @@ pub(super) fn admit_replayed_native_evidence_with_shutdown(
     let store = FileStore::open(cas_path, 128 * 1024 * 1024)
         .map_err(|error| BuiltinModelError(format!("open native replay compiler CAS: {error:?}")))?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(900);
-    let stopped = || std::time::Instant::now() >= deadline || shutdown.is_some_and(crate::listener::ListenerShutdown::is_requested);
+    let stopped = || {
+        #[cfg(test)]
+        if TEST_COLD_REPLAY_PAUSE.load(std::sync::atomic::Ordering::Acquire) {
+            TEST_COLD_REPLAY_REACHED.store(true, std::sync::atomic::Ordering::Release);
+            while TEST_COLD_REPLAY_PAUSE.load(std::sync::atomic::Ordering::Acquire)
+                && !shutdown.is_some_and(crate::listener::ListenerShutdown::is_requested)
+                && std::time::Instant::now() < deadline { std::thread::yield_now(); }
+        }
+        std::time::Instant::now() >= deadline || shutdown.is_some_and(crate::listener::ListenerShutdown::is_requested)
+    };
     let mut header_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(super::MAX_REBUILD_BYTES, NATIVE_HEADER_WORK_UNITS);
     let mut row_proofs = bounded_replay::proof_buffer(rows.len(), &mut header_budget, &stopped)?;
     let mut retirement_proofs = bounded_replay::proof_buffer(retirements.len(), &mut header_budget, &stopped)?;
