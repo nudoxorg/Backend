@@ -5,6 +5,9 @@
 //! startup reconciles that projection to the exact product claims before any
 //! query can reopen a semantic image.
 
+#[path = "bounded_replay.rs"]
+mod bounded_replay;
+
 use super::s3_publication::{
     PublicationFence, RemoteClosureSelection, S3ClosurePublisher, SelectedClosurePublisher,
 };
@@ -60,6 +63,17 @@ const MAX_OBJECTS: usize = 100_002;
 const MAX_PAYLOAD_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_OBJECT_BYTES: usize = 512 * 1024 * 1024;
 const MAX_METADATA_BYTES: u64 = 64 * 1024 * 1024;
+pub(super) const NATIVE_HEADER_WORK_UNITS: u64 = 16_000_000;
+
+pub(super) fn charge_native_header_work(
+    budget: &backend_extension_turso::SelectedNativeHeaderBudget,
+    stopped: &dyn Fn() -> bool,
+    bytes: usize,
+) -> Result<(), String> {
+    let units = bytes.saturating_add(65535) / 65536;
+    budget.checkpoint(u64::try_from(units.max(1)).map_err(|_| "native header work overflow")?, stopped)
+        .map_err(|error| format!("native header work stopped: {error:?}"))
+}
 
 fn native_header_reader_admissible(bytes: &[u8], reader_budget: usize, writer_budget: usize) -> bool {
     let Some(mut credit) = bytes.len().checked_mul(2)
@@ -263,6 +277,52 @@ fn stream_typed_object(
     stream
         .finish()
         .map_err(|error| BuiltinModelError(format!("finish semantic output object: {error:?}")))
+}
+
+#[cfg(test)]
+static TEST_BEFORE_LOCAL_SELECTION: std::sync::OnceLock<std::sync::Mutex<Option<(std::sync::mpsc::SyncSender<()>, std::sync::mpsc::Receiver<()>)>>> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+pub(super) fn test_install_before_local_selection_gate(reached: std::sync::mpsc::SyncSender<()>, release: std::sync::mpsc::Receiver<()>) {
+    *TEST_BEFORE_LOCAL_SELECTION.get_or_init(|| std::sync::Mutex::new(None)).lock().expect("selection gate lock") = Some((reached, release));
+}
+
+#[cfg(test)]
+fn test_wait_before_local_selection() {
+    let gate = TEST_BEFORE_LOCAL_SELECTION.get_or_init(|| std::sync::Mutex::new(None)).lock().expect("selection gate lock").take();
+    if let Some((reached, release)) = gate {
+        let _ = reached.send(());
+        let _ = release.recv_timeout(std::time::Duration::from_secs(120));
+    }
+}
+
+// In-place heap sort permits cancellation at every bounded path comparison.
+fn sort_native_line_ordinals(
+    order: &mut [u32], staged: &backend_engine::application::StagedSemanticPackage,
+    check: &impl Fn() -> Result<(), backend_extension_turso::CompilerEnvelopeError>,
+) -> Result<(), BuiltinModelError> {
+    fn sift(order: &mut [u32], mut root: usize, end: usize, staged: &backend_engine::application::StagedSemanticPackage,
+        check: &impl Fn() -> Result<(), backend_extension_turso::CompilerEnvelopeError>) -> Result<(), BuiltinModelError> {
+        while root < end / 2 {
+            let left = root * 2 + 1;
+            let mut child = left;
+            let compare = |a: u32, b: u32| -> Result<std::cmp::Ordering, BuiltinModelError> {
+                check().map_err(|e| BuiltinModelError(format!("native line sorting stopped: {e}")))?;
+                let a = staged.native_typescript_line_at(a as usize).ok_or_else(|| BuiltinModelError("native line ordinal missing".into()))?;
+                let b = staged.native_typescript_line_at(b as usize).ok_or_else(|| BuiltinModelError("native line ordinal missing".into()))?;
+                Ok(a.path.cmp(&b.path))
+            };
+            if left + 1 < end && compare(order[left], order[left + 1])?.is_lt() { child = left + 1; }
+            if !compare(order[root], order[child])?.is_lt() { break; }
+            order.swap(root, child);
+            root = child;
+        }
+        Ok(())
+    }
+    let n = order.len();
+    for root in (0..n / 2).rev() { sift(order, root, n, staged, check)?; }
+    for end in (1..n).rev() { order.swap(0, end); sift(order, 0, end, staged, check)?; }
+    Ok(())
 }
 
 fn closure_composition_budget(
@@ -870,6 +930,10 @@ impl generation_residence::SelectedSemanticImageLoader for SelectedClosureImageL
     ) -> Result<generation_residence::SelectedSemanticImages, BuiltinModelError> {
         load_selected_images(&self.store, selection, max_bytes, max_images)
     }
+
+    fn native_lines(&self, selection: &generation_residence::SelectedSemanticImageSelection, budget: &mut backend_extension_turso::SelectedNativeHeaderBudget, stopped: &dyn Fn() -> bool) -> Result<Option<backend_extension_turso::VerifiedNativeLinesWitness>, BuiltinModelError> {
+        load_selected_native_lines(&self.store, selection, budget, stopped)
+    }
 }
 
 impl generation_residence::SelectedSemanticImageLoader for CapturedClosureImageLoader {
@@ -895,6 +959,31 @@ impl generation_residence::SelectedSemanticImageLoader for CapturedClosureImageL
         max_images: usize,
     ) -> Result<generation_residence::SelectedSemanticImages, BuiltinModelError> {
         load_selected_images(&self.store, selection, max_bytes, max_images)
+    }
+
+    fn native_lines(&self, selection: &generation_residence::SelectedSemanticImageSelection, budget: &mut backend_extension_turso::SelectedNativeHeaderBudget, stopped: &dyn Fn() -> bool) -> Result<Option<backend_extension_turso::VerifiedNativeLinesWitness>, BuiltinModelError> {
+        load_selected_native_lines(&self.store, selection, budget, stopped)
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_FORGE_LINE_SOURCE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TEST_OMIT_NATIVE_LINES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn load_selected_native_lines(
+    store: &FileStore,
+    selection: &generation_residence::SelectedSemanticImageSelection,
+    budget: &mut backend_extension_turso::SelectedNativeHeaderBudget,
+    stopped: &dyn Fn() -> bool,
+) -> Result<Option<backend_extension_turso::VerifiedNativeLinesWitness>, BuiltinModelError> {
+    match selection {
+        generation_residence::SelectedSemanticImageSelection::Admitted(selected) =>
+            backend_extension_turso::reopen_selected_native_lines_budgeted(store, selected, budget, stopped)
+                .map_err(|error| BuiltinModelError(format!("reopen selected native lines: {error}"))),
+        #[cfg(test)]
+        generation_residence::SelectedSemanticImageSelection::Fixture(_) => Ok(None),
     }
 }
 
@@ -1057,6 +1146,28 @@ pub(super) fn admit_replayed_native_evidence(
     rows: &[&backend_engine::builtin::NativeSourceEvidence],
     retirements: &[&backend_engine::builtin::NativeSourceEvidence],
 ) -> Result<(), BuiltinModelError> {
+    admit_replayed_native_evidence_with_shutdown(workspace_store, captures, rows, retirements, None)
+}
+
+#[cfg(test)]
+pub(super) static TEST_COLD_REPLAY_PAUSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+pub(super) static TEST_COLD_REPLAY_REACHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+pub(super) static TEST_COLD_REPLAY_IMAGE_PHASE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+pub(super) static TEST_COLD_REPLAY_STOP_OBSERVED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(super) fn admit_replayed_native_evidence_with_shutdown(
+    workspace_store: &FileStore,
+    captures: &[super::profile::BuiltinCaptureChange],
+    rows: &[&backend_engine::builtin::NativeSourceEvidence],
+    retirements: &[&backend_engine::builtin::NativeSourceEvidence],
+    shutdown: Option<&crate::listener::ListenerShutdown>,
+) -> Result<(), BuiltinModelError> {
+    if shutdown.is_some_and(crate::listener::ListenerShutdown::is_requested) {
+        return Err(BuiltinModelError("native replay stopped: owner shutdown".into()));
+    }
     if rows.is_empty() && retirements.is_empty() {
         return Ok(());
     }
@@ -1074,122 +1185,60 @@ pub(super) fn admit_replayed_native_evidence(
     // Recovery runs under the workspace owner lease; it does not select a head.
     let authority = futures_executor::block_on(TursoAuthority::open(&authority_path))
         .map_err(|error| BuiltinModelError(format!("open native replay history: {error}")))?;
-    let metadata_store = FileStore::open(&cas_path, 8 * 1024 * 1024)
-        .map_err(|error| BuiltinModelError(format!("open bounded native replay metadata CAS: {error:?}")))?;
     let store = FileStore::open(cas_path, 128 * 1024 * 1024)
         .map_err(|error| BuiltinModelError(format!("open native replay compiler CAS: {error:?}")))?;
-    let mut header_budget = super::MAX_REBUILD_BYTES;
-    for capture in captures {
-        let matching = rows.iter().copied().filter(|row| {
-            row.project == capture.key.package_key().to_bytes() && row.profile == capture.key.profile()
-        }).collect::<Vec<_>>();
-        let removed = retirements.iter().copied().filter(|row| {
-            row.project == capture.key.package_key().to_bytes() && row.profile == capture.key.profile()
-        }).collect::<Vec<_>>();
-        if matching.is_empty() && removed.is_empty() { continue; }
-        if matching.is_empty() {
-            return Err(BuiltinModelError("native replay retirement requires a nonempty selected Program".into()));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(900);
+    let stopped = || {
+        #[cfg(test)]
+        if TEST_COLD_REPLAY_PAUSE.load(std::sync::atomic::Ordering::Acquire)
+            && TEST_COLD_REPLAY_IMAGE_PHASE.load(std::sync::atomic::Ordering::Acquire) {
+            TEST_COLD_REPLAY_REACHED.store(true, std::sync::atomic::Ordering::Release);
+            while TEST_COLD_REPLAY_PAUSE.load(std::sync::atomic::Ordering::Acquire)
+                && !shutdown.is_some_and(crate::listener::ListenerShutdown::is_requested)
+                && std::time::Instant::now() < deadline { std::thread::yield_now(); }
+            if shutdown.is_some_and(crate::listener::ListenerShutdown::is_requested) {
+                TEST_COLD_REPLAY_STOP_OBSERVED.store(true, std::sync::atomic::Ordering::Release);
+            }
         }
-        let backend_engine::builtin::ProductSemanticCaptureOutcome::Published { coverage, claim } = capture.outcome else {
+        std::time::Instant::now() >= deadline || shutdown.is_some_and(crate::listener::ListenerShutdown::is_requested)
+    };
+    let mut header_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(super::MAX_REBUILD_BYTES, NATIVE_HEADER_WORK_UNITS);
+    let mut row_proofs = bounded_replay::proof_buffer(rows.len(), &mut header_budget, &stopped)?;
+    let mut retirement_proofs = bounded_replay::proof_buffer(retirements.len(), &mut header_budget, &stopped)?;
+    for capture in captures {
+        let project = capture.key.package_key().to_bytes();
+        let mut has_matching = false;
+        let mut has_image = false;
+        let mut has_retirement = false;
+        for row in rows {
+            header_budget.checkpoint(1, &stopped).map_err(|e| BuiltinModelError(format!("native replay stopped: {e:?}")))?;
+            let matches = row.project == project && row.profile == capture.key.profile();
+            has_matching |= matches;
+            has_image |= matches && row.admits_image();
+        }
+        for row in retirements {
+            header_budget.checkpoint(1, &stopped).map_err(|e| BuiltinModelError(format!("native replay stopped: {e:?}")))?;
+            has_retirement |= row.project == project && row.profile == capture.key.profile();
+        }
+        if !has_matching && !has_retirement { continue; }
+        if !has_matching { return Err(BuiltinModelError("native replay retirement requires a nonempty selected Program".into())); }
+        let backend_engine::builtin::ProductSemanticCaptureOutcome::Published { claim, .. } = capture.outcome else {
+            // A source without an image can be proven by another selected
+            // same-project Program, including one with a different TS profile.
+            if !has_image && !has_retirement { continue; }
             return Err(BuiltinModelError("native replay capture is not published".into()));
         };
         let namespace = SemanticAuthority::namespace(capture.key.package(), capture.key.coordinate(), capture.key.profile())?;
-        let expected = ProductSemanticPublicationRecord::Published { coverage, claim };
         let binding = *claim.binding().identity.as_ref();
         let selected = futures_executor::block_on(authority.selected_generation_for_binding(
             &namespace, &binding, capture.capture.input_digest(),
         )).map_err(|error| BuiltinModelError(format!("read native replay history: {error}")))?
             .ok_or_else(|| BuiltinModelError("native replay compiler generation is absent".into()))?;
-        let closure = metadata_store.open_closure_claim(ArtifactClosureClaim::from_bytes(*selected.closure_id()))
-            .map_err(|error| BuiltinModelError(format!("open native replay metadata closure: {error:?}")))?;
-        if closure.entry_count().is_none_or(|count| count > 8192) {
-            return Err(BuiltinModelError("native replay metadata closure exceeds admission limit".into()));
-        }
-        let (actual_claim, record) = reopen_record(&metadata_store, &selected)?;
-        if actual_claim != claim || record != expected || selected.input_digest() != capture.capture.input_digest() {
-            return Err(BuiltinModelError("native replay compiler history differs from capture".into()));
-        }
-        let loaded = load_selected_images(&store, generation_residence::SelectedSemanticImageSelection::Admitted(selected.clone()), 128 * 1024 * 1024, 4096)?;
-        let program = loaded.native_program_sources.as_ref().ok_or_else(|| BuiltinModelError("native replay Program is unavailable".into()))?;
-        let mut remaining = std::collections::BTreeMap::new();
-        for row in matching {
-            if remaining.insert(row.path.as_str(), row).is_some() {
-                return Err(BuiltinModelError("duplicate native replay source path".into()));
-            }
-        }
-        let mut removed_paths = std::collections::BTreeSet::new();
-        for row in removed {
-            if remaining.contains_key(row.path.as_str()) || !removed_paths.insert(row.path.as_str()) {
-                return Err(BuiltinModelError("duplicate native replay retirement path".into()));
-            }
-        }
-        let mut members = std::collections::BTreeMap::new();
-        for entry in program.sources() {
-            let Some(path) = entry.package_path else { continue };
-            if removed_paths.contains(path) {
-                return Err(BuiltinModelError("native replay retired path remains in Program".into()));
-            }
-            let Some(row) = remaining.get(path) else { continue };
-            if entry.source.byte_len != row.byte_length
-                || entry.source.identity.as_ref() != row.source_digest.as_slice()
-                || members.insert(path, entry.source).is_some() {
-                return Err(BuiltinModelError("native replay Program source differs from evidence".into()));
-            }
-        }
-        let witness = backend_extension_turso::reopen_selected_native_headers(&store, &selected, header_budget)
-            .map_err(|error| BuiltinModelError(format!("open replay native headers: {error}")))?;
-        let header_aggregate = if let Some(witness) = witness {
-            header_budget = header_budget.checked_sub(witness.as_bytes().len().saturating_add(2 * std::mem::size_of::<usize>()))
-                .ok_or_else(|| BuiltinModelError("replay native header budget exceeded".into()))?;
-            let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical_budgeted(witness.as_bytes(), &mut header_budget)
-                .map_err(|error| BuiltinModelError(format!("decode replay native headers: {error}")))?;
-            Some((aggregate, *witness.object_id()))
-        } else { None };
-        let mut header_paths = std::collections::BTreeSet::new();
-        let mut witnessed = std::collections::BTreeSet::new();
-        for image in &loaded.images {
-            let view = image.reopen().map_err(|error| BuiltinModelError(format!("open native replay image: {error}")))?;
-            let ImageProvenance::Captured { source, recipe, scope, .. } = view.image_facts().provenance else { continue };
-            let Some(path) = view.atom(scope.path).and_then(|bytes| std::str::from_utf8(bytes).ok()) else { continue };
-            if witnessed.contains(path) {
-                return Err(BuiltinModelError("duplicate native replay image path".into()));
-            }
-            let Some(row) = remaining.remove(path) else { continue };
-            witnessed.insert(path.to_owned());
-            if !row.admits_image() {
-                return Err(BuiltinModelError("native replay Program member unexpectedly has an image".into()));
-            }
-            capture.key.admit_image(&view).map_err(|error| BuiltinModelError(format!("bind native replay image: {error}")))?;
-            if members.remove(path) != Some(source) || recipe.profile != row.profile
-                || recipe.tool != backend_semantic::vocabulary::NativeTool::TypeScriptCompiler
-                || recipe.toolchain != program.toolchain()
-                || !program.image_matches(path, backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(image.as_ref()).as_ref()) {
-                return Err(BuiltinModelError("native replay image differs from Program or evidence".into()));
-            }
-            if let Some(headers) = &row.headers {
-                let (aggregate, digest) = header_aggregate.as_ref().ok_or_else(|| BuiltinModelError("native replay header witness absent".into()))?;
-                let file = super::native_ts_headers::witnessed_file(row, aggregate, *digest)
-                    .map_err(|error| BuiltinModelError(format!("native replay header: {error}")))?;
-                super::native_ts_headers::admit_image(row, headers, file, &view, image.as_ref())
-                    .map_err(|error| BuiltinModelError(format!("native replay header: {error}")))?;
-                header_paths.insert(path.to_owned());
-            } else if header_aggregate.as_ref().is_some_and(|(aggregate, _)| aggregate.file(path).is_some()) {
-                return Err(BuiltinModelError("native replay lost compiler header reference".into()));
-            }
-        }
-        if header_aggregate.as_ref().is_some_and(|(aggregate, _)| aggregate.files.iter().any(|file| !header_paths.contains(&file.path))) {
-            return Err(BuiltinModelError("native replay did not consume compiler header files".into()));
-        }
-        for (path, row) in remaining {
-            // Non-emitted inputs still bind the exact Program, but cannot
-            // authorize an image or source projection.
-            if row.admits_image() || members.remove(path).is_none() {
-                return Err(BuiltinModelError("native replay source lacks its claimed Program evidence".into()));
-            }
-        }
-        if !members.is_empty() {
-            return Err(BuiltinModelError("native replay Program evidence was not consumed".into()));
-        }
+        bounded_replay::admit_with_proofs(&store, &selected, capture, rows, retirements, &mut row_proofs, &mut retirement_proofs, &mut header_budget, &stopped)?;
+    }
+    for proof in row_proofs.iter().chain(retirement_proofs.iter()) {
+        header_budget.checkpoint(1, &stopped).map_err(|e| BuiltinModelError(format!("native replay stopped: {e:?}")))?;
+        if *proof == 0 { return Err(BuiltinModelError("native replay evidence has no selected Program proof".into())); }
     }
     Ok(())
 }
@@ -1411,6 +1460,7 @@ impl AdmittedCompilation {
         claim: SemanticPublicationClaim,
         runtime_admission: CompilerRuntimeAdmission,
         store: &FileStore,
+        stopped: &dyn Fn() -> bool,
     ) -> Result<Self, BuiltinModelError> {
         let namespace =
             SemanticAuthority::namespace(key.package(), key.coordinate(), key.profile())?;
@@ -1552,6 +1602,38 @@ impl AdmittedCompilation {
             if verified.id() != id || verified.schema() != backend_extension_turso::COMPILER_NATIVE_HEADERS_SCHEMA
                 || verified.payload_len() != u64::from(member.byte_length()) {
                 return Err(BuiltinModelError("native header member schema or extent mismatch".to_owned()));
+            }
+            expected_members.insert(id);
+        }
+        if let Some(member) = metadata.native_lines() {
+             let length = member.byte_length() as usize;
+            let mut credit = 68usize * 1024 * 1024;
+            let work = std::cell::Cell::new(128usize * 1024 * 1024);
+            let check = || -> Result<(), backend_store::StoreError> {
+                if stopped() { return Err(backend_store::StoreError::Bounds); }
+                work.set(work.get().checked_sub(1).ok_or(backend_store::StoreError::Bounds)?);
+                Ok(())
+            };
+            check().map_err(|error| BuiltinModelError(format!("native line membership stopped: {error:?}")))?;
+            let id = payload_index.admit_claim(UntrustedObjectId::from_bytes(*member.object_id()))
+                .map_err(|error| BuiltinModelError(format!("admit native line membership: {error:?}")))?
+                .ok_or_else(|| BuiltinModelError("native source lines are absent from their output closure".into()))?;
+            check().map_err(|error| BuiltinModelError(format!("native line membership stopped: {error:?}")))?;
+            let reader = store.open_bounded_nonrelation_object(&gc_pin, UntrustedObjectId::from_bytes(*member.object_id()),
+                &[backend_extension_turso::COMPILER_NATIVE_LINES_SCHEMA], None, length, &mut credit, |_| check())
+                .map_err(|error| BuiltinModelError(format!("open native line member: {error:?}")))?;
+            if reader.payload_len() != length { return Err(BuiltinModelError("native line member extent differs".into())); }
+            let mut wire = backend_store::try_allocate_exact_zeroed_bytes_budgeted(length, &mut credit)
+                .map_err(|error| BuiltinModelError(format!("allocate native line member: {error:?}")))?;
+            let admitted = reader.read_into(&mut wire, &mut credit, |_, _| check(), |view, _| {
+                backend_extension_turso::CompilerNativeLinesMember::from_verified_view(view, &mut |_| check().map_err(|_| backend_extension_turso::CompilerEnvelopeError::Stopped))
+                    .map_err(|error| match error {
+                        backend_extension_turso::CompilerEnvelopeError::Stopped => backend_store::StoreError::Bounds,
+                        _ => backend_store::StoreError::Corrupt,
+                    })
+            }).map_err(|error| BuiltinModelError(format!("verify native line member: {error:?}")))?;
+            if admitted != *member || id.as_bytes() != member.object_id() {
+                return Err(BuiltinModelError("native line member identity differs".into()));
             }
             expected_members.insert(id);
         }
@@ -2110,14 +2192,30 @@ impl SemanticAuthority {
         &self,
         key: &ProductSemanticPublicationKey,
         claim: SemanticPublicationClaim,
-        budget: &mut usize,
-    ) -> Result<Option<(backend_semantic::native_ts_headers::NativeTsHeaderAggregate, [u8; 32])>, BuiltinModelError> {
+        budget: &mut backend_extension_turso::SelectedNativeHeaderBudget,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<Option<backend_extension_turso::VerifiedNativeHeadersWitness>, BuiltinModelError> {
         if !key.is_selected() || !matches!(key.profile(), LanguageProfile::TypeScript(_)) {
             return Err(BuiltinModelError("native header publication is not selected TypeScript".into()));
         }
         let (actual, selected) = self.read_selected_pair(key)?;
         if actual != claim { return Err(BuiltinModelError("native header selected claim differs".into())); }
-        self.native_header_aggregate_for_admitted(&selected, budget)
+        self.native_header_aggregate_for_admitted(&selected, budget, stopped)
+    }
+
+    /// Reopens the exact selected compiler's bounded source-line claim.
+    /// Consumers must independently join the returned map to exact host bytes.
+    pub(super) fn selected_native_lines(
+        &self, key: &ProductSemanticPublicationKey, claim: SemanticPublicationClaim,
+        budget: &mut backend_extension_turso::SelectedNativeHeaderBudget, stopped: &dyn Fn() -> bool,
+    ) -> Result<Option<backend_extension_turso::VerifiedNativeLinesWitness>, BuiltinModelError> {
+        if !key.is_selected() || !matches!(key.profile(), LanguageProfile::TypeScript(_)) {
+            return Err(BuiltinModelError("native line publication is not selected TypeScript".into()));
+        }
+        let (actual, selected) = self.read_selected_pair(key)?;
+        if actual != claim { return Err(BuiltinModelError("native line selected claim differs".into())); }
+        backend_extension_turso::reopen_selected_native_lines_budgeted(&self.store, &selected, budget, stopped)
+            .map_err(|error| BuiltinModelError(format!("reopen selected native lines: {error}")))
     }
 
     /// Caller must have admitted this exact generation against the pending
@@ -2125,16 +2223,11 @@ impl SemanticAuthority {
     pub(super) fn native_header_aggregate_for_admitted(
         &self,
         selected: &backend_extension_turso::SelectedGeneration,
-        budget: &mut usize,
-    ) -> Result<Option<(backend_semantic::native_ts_headers::NativeTsHeaderAggregate, [u8; 32])>, BuiltinModelError> {
-        let witness = backend_extension_turso::reopen_selected_native_headers(&self.store, selected, *budget)
-            .map_err(|error| BuiltinModelError(format!("reopen selected native headers: {error}")))?;
-        let Some(witness) = witness else { return Ok(None) };
-        *budget = budget.checked_sub(witness.as_bytes().len().saturating_add(2 * std::mem::size_of::<usize>()))
-            .ok_or_else(|| BuiltinModelError("native header witness budget exceeded".into()))?;
-        let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical_budgeted(witness.as_bytes(), budget)
-            .map_err(|error| BuiltinModelError(format!("decode selected native headers: {error}")))?;
-        Ok(Some((aggregate, *witness.object_id())))
+        budget: &mut backend_extension_turso::SelectedNativeHeaderBudget,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<Option<backend_extension_turso::VerifiedNativeHeadersWitness>, BuiltinModelError> {
+        backend_extension_turso::reopen_selected_native_headers_budgeted(&self.store, selected, budget, stopped)
+            .map_err(|error| BuiltinModelError(format!("reopen selected native headers: {error}")))
     }
 
     /// Reopens only a structurally correlated C# evidence claim from the exact
@@ -3409,15 +3502,26 @@ impl SemanticAuthority {
         Ok(current.as_ref() == Some(expected))
     }
 
+    #[cfg(test)]
     pub(crate) fn publish_staged(
+        &mut self, key: &ProductSemanticPublicationKey, attempt: CandidateAttempt,
+        staged: &backend_engine::application::StagedSemanticPackage,
+        admit_before_select: impl FnOnce(&backend_extension_turso::CandidateGeneration) -> Result<(), BuiltinModelError>,
+    ) -> Result<(SemanticPublicationClaim, SelectedGeneration), BuiltinModelError> {
+        self.publish_staged_with_stop(key, attempt, staged, &|| false, admit_before_select)
+    }
+
+    pub(crate) fn publish_staged_with_stop(
         &mut self,
         key: &ProductSemanticPublicationKey,
         attempt: CandidateAttempt,
         staged: &backend_engine::application::StagedSemanticPackage,
+        stopped: &dyn Fn() -> bool,
         admit_before_select: impl FnOnce(
             &backend_extension_turso::CandidateGeneration,
         ) -> Result<(), BuiltinModelError>,
     ) -> Result<(SemanticPublicationClaim, SelectedGeneration), BuiltinModelError> {
+        if stopped() { return Err(BuiltinModelError("compiler publication cancelled".into())); }
         let namespace = Self::namespace(key.package(), key.coordinate(), key.profile())?;
         if attempt.namespace() != &namespace {
             return Err(BuiltinModelError(
@@ -3730,6 +3834,111 @@ impl SemanticAuthority {
             }
         } else { None };
 
+        // The line map is computed by the same compiler attempt from exact
+        // selected source bytes. Its typed member joins this closure before seal.
+        let deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
+        let work = std::cell::Cell::new(128usize * 1024 * 1024);
+        let check = || -> Result<(), backend_extension_turso::CompilerEnvelopeError> {
+            if stopped() || std::time::Instant::now() >= deadline { return Err(backend_extension_turso::CompilerEnvelopeError::Stopped); }
+            work.set(work.get().checked_sub(1).ok_or(backend_extension_turso::CompilerEnvelopeError::Stopped)?);
+            Ok(())
+        };
+        let slots = staged.native_typescript_line_slots();
+        let mut retained = 0usize;
+        let mut line_count = 0usize;
+        if staged.profile().language() == backend_semantic::vocabulary::Language::TypeScript {
+            for ordinal in 0..slots {
+                check().map_err(|e| BuiltinModelError(format!("native line inventory stopped: {e}")))?;
+                if let Some(file) = staged.native_typescript_line_at(ordinal) {
+                    retained = retained.checked_add(file.path.capacity()).and_then(|n| n.checked_add(file.line_starts.capacity().checked_mul(std::mem::size_of::<u32>())?))
+                        .ok_or_else(|| BuiltinModelError("native line retained size overflow".into()))?;
+                    line_count = line_count.checked_add(1).ok_or_else(|| BuiltinModelError("native line count overflow".into()))?;
+                }
+            }
+        }
+        #[cfg(test)]
+        let omit_native_lines = TEST_OMIT_NATIVE_LINES.with(|omit| omit.replace(false));
+        #[cfg(not(test))]
+        let omit_native_lines = false;
+        let native_lines_member = if line_count != 0 && !omit_native_lines {
+            if staged.profile().language() != backend_semantic::vocabulary::Language::TypeScript || program_member.is_none() {
+                return Err(BuiltinModelError("native source lines require the selected TypeScript program".into()));
+            }
+            let mut budget = (128usize * 1024 * 1024).checked_sub(retained)
+                .ok_or_else(|| BuiltinModelError("native line staging budget exceeded".into()))?;
+            check().map_err(|e| BuiltinModelError(format!("native line allocation stopped: {e}")))?;
+            let mut order = backend_store::try_allocate_exact_zeroed_u32_budgeted(slots, &mut budget)
+                .map_err(|e| BuiltinModelError(format!("native line order allocation: {e:?}")))?;
+            let mut count = 0usize;
+            for ordinal in 0..slots {
+                check().map_err(|e| BuiltinModelError(format!("native line ordering stopped: {e}")))?;
+                if staged.native_typescript_line_at(ordinal).is_some() {
+                    order[count] = u32::try_from(ordinal).map_err(|_| BuiltinModelError("native line ordinal overflow".into()))?;
+                    count += 1;
+                }
+            }
+            if count != line_count { return Err(BuiltinModelError("native line inventory changed".into())); }
+            sort_native_line_ordinals(&mut order[..count], staged, &check)?;
+            let files = || order[..count].iter().filter_map(|ordinal| staged.native_typescript_line_at(*ordinal as usize));
+            let mut checkpoint = |_: usize| check();
+            let (length, observed_count) = backend_semantic::native_source_lines::encoded_len_files(files(), &mut checkpoint)
+                .map_err(|e| BuiltinModelError(format!("plan native source lines: {e:?}")))?;
+            if observed_count != count { return Err(BuiltinModelError("native line inventory changed".into())); }
+            check().map_err(|e| BuiltinModelError(format!("native line wire allocation stopped: {e}")))?;
+            let mut bytes = backend_store::try_allocate_exact_zeroed_bytes_budgeted(length, &mut budget)
+                .map_err(|e| BuiltinModelError(format!("native line wire allocation: {e:?}")))?;
+            backend_semantic::native_source_lines::encode_files_into(files(), &mut bytes, &mut checkpoint)
+                .map_err(|e| BuiltinModelError(format!("encode native source lines: {e:?}")))?;
+            // The fixture selects a fully authenticated but inconsistent line object
+            // to exercise the replay join, including the inline-None case.
+            #[cfg(test)]
+            TEST_FORGE_LINE_SOURCE.with(|forge| {
+                if forge.replace(false) {
+                    let mut limit = 1024 * 1024;
+                    let mut aggregate = backend_semantic::native_source_lines::NativeSourceLineAggregate::decode_budgeted(&bytes, &mut limit).expect("fixture line aggregate");
+                    let alternate = vec![b'x'; aggregate.files[0].source.byte_len as usize];
+                    aggregate.files[0].source = backend_semantic::ir::SourceIdentity::from_bytes(&alternate).expect("fixture source");
+                    aggregate.encode_into(&mut bytes, &mut |_| Ok::<(), ()>(())).expect("forge canonical fixture lines");
+                }
+            });
+            if !payload_ids.len().checked_add(2).is_some_and(|n| n <= backend_extension_turso::MAX_COMPILER_PUBLICATION_MEMBER_IDS)
+                || !u64::try_from(bytes.len()).is_ok_and(|len| streamed_payload_bytes.checked_add(len).is_some_and(|total| total <= MAX_PAYLOAD_BYTES)) {
+                return Err(BuiltinModelError("native source lines exceed compiler closure budget".into()));
+            }
+            let schema = backend_extension_turso::COMPILER_NATIVE_LINES_SCHEMA;
+            let mut key = backend_version::ObjectKeyHasher::new(schema, bytes.len()).map_err(|e| BuiltinModelError(format!("native line key: {e:?}")))?;
+            let mut version = backend_version::ObjectVersionHasher::new(schema, bytes.len()).map_err(|e| BuiltinModelError(format!("native line version: {e:?}")))?;
+            for chunk in bytes.chunks(64 * 1024) {
+                checkpoint(chunk.len()).map_err(|e| BuiltinModelError(format!("native line hashing: {e}")))?;
+                key.update(chunk).map_err(|e| BuiltinModelError(format!("native line key: {e:?}")))?;
+                version.update(chunk).map_err(|e| BuiltinModelError(format!("native line version: {e:?}")))?;
+            }
+            let claim = ArtifactObjectClaim::new(schema,
+                key.finish().map_err(|e| BuiltinModelError(format!("native line key: {e:?}")))?,
+                version.finish().map_err(|e| BuiltinModelError(format!("native line version: {e:?}")))?, bytes.len() as u64);
+            let mut stream = builder.begin_object(claim).map_err(|e| BuiltinModelError(format!("begin native line object: {e:?}")))?;
+            for chunk in bytes.chunks(MAX_CHUNK_BYTES) {
+                checkpoint(chunk.len()).map_err(|e| BuiltinModelError(format!("native line write stopped: {e}")))?;
+                stream.write(chunk).map_err(|e| BuiltinModelError(format!("write native line object: {e:?}")))?;
+            }
+            let object_id = stream.finish().map_err(|e| BuiltinModelError(format!("finish native line object: {e:?}")))?;
+            account_streamed_payload(&mut streamed_payload_bytes, &bytes);
+            payload_ids.insert(object_id);
+            let pin = self.store.pin_garbage_collection_bounded(&mut budget, |_| check().map_err(|_| backend_store::StoreError::Bounds))
+                .map_err(|e| BuiltinModelError(format!("pin native line object: {e:?}")))?;
+            let reader = self.store.open_bounded_nonrelation_object(&pin, UntrustedObjectId::from_bytes(*object_id.as_bytes()), &[schema], None, bytes.len(), &mut budget,
+                |_| check().map_err(|_| backend_store::StoreError::Bounds))
+                .map_err(|e| BuiltinModelError(format!("open native line object: {e:?}")))?;
+            let member = reader.read_into(&mut bytes, &mut budget,
+                |_, _| check().map_err(|_| backend_store::StoreError::Bounds),
+                |view, _| backend_extension_turso::CompilerNativeLinesMember::from_verified_view(view, &mut checkpoint).map_err(|e| match e {
+                    backend_extension_turso::CompilerEnvelopeError::Stopped => backend_store::StoreError::Bounds,
+                    _ => backend_store::StoreError::Corrupt,
+                }))
+                .map_err(|e| BuiltinModelError(format!("verify native source lines: {e:?}")))?;
+            Some(member)
+        } else { None };
+
         // A C# captured-input attempt must retain its complete checked
         // invocation aggregate in the same compiler closure. Missing or
         // over-budget evidence is a refusal, never a silent completeness claim.
@@ -3813,6 +4022,10 @@ impl SemanticAuthority {
             metadata = metadata.with_native_headers(member)
                 .map_err(|error| BuiltinModelError(format!("bind native header metadata: {error}")))?;
         }
+        if let Some(member) = native_lines_member {
+            metadata = metadata.with_native_lines(member)
+                .map_err(|error| BuiltinModelError(format!("bind native source lines: {error}")))?;
+        }
         if let Some(member) = csharp_evidence_member {
             metadata = metadata.with_csharp_evidence(member)
                 .map_err(|error| BuiltinModelError(format!("bind C# invocation evidence: {error}")))?;
@@ -3831,8 +4044,16 @@ impl SemanticAuthority {
             claim,
             runtime_admission,
             &self.store,
+            stopped,
         )?;
-        self.select_verified_closure(key, admitted, admit_before_select)
+        #[cfg(test)]
+        test_wait_before_local_selection();
+        self.select_verified_closure(key, admitted, stopped, move |candidate| {
+            if stopped() { return Err(BuiltinModelError("compiler publication cancelled".into())); }
+            admit_before_select(candidate)?;
+            if stopped() { return Err(BuiltinModelError("compiler publication cancelled".into())); }
+            Ok(())
+        })
     }
 
     /// Admits a remote result after the coordinator has reopened and typed its
@@ -4158,6 +4379,8 @@ impl SemanticAuthority {
             environment: input_manifest.environment(),
             target_platform: input_manifest.target_platform(),
         };
+        let deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
+        let stopped = || std::time::Instant::now() >= deadline;
         let admitted_compilation = AdmittedCompilation::new(
             key,
             attempt,
@@ -4169,6 +4392,7 @@ impl SemanticAuthority {
             claim,
             runtime_admission,
             &self.store,
+            &stopped,
         )?;
         let policy_path = self.compiler_trust_policy.clone();
         let scope = (
@@ -4181,7 +4405,7 @@ impl SemanticAuthority {
             input_manifest.environment(),
             input_manifest.target_platform(),
         );
-        self.select_verified_closure(key, admitted_compilation, move |candidate| {
+        self.select_verified_closure(key, admitted_compilation, &stopped, move |candidate| {
             if !Self::authorizes_remote_scope_at(&policy_path, scope)? {
                 return Err(BuiltinModelError(
                     "remote compiler peer trust changed before semantic selection".to_owned(),
@@ -4247,10 +4471,12 @@ impl SemanticAuthority {
         &mut self,
         key: &ProductSemanticPublicationKey,
         admitted: AdmittedCompilation,
+        stopped: &dyn Fn() -> bool,
         admit_before_select: impl FnOnce(
             &backend_extension_turso::CandidateGeneration,
         ) -> Result<(), BuiltinModelError>,
     ) -> Result<(SemanticPublicationClaim, SelectedGeneration), BuiltinModelError> {
+        if stopped() { return Err(BuiltinModelError("compiler publication stopped".into())); }
         let AdmittedCompilation {
             attempt,
             metadata,
@@ -4328,19 +4554,21 @@ impl SemanticAuthority {
         let receipt = verify_then_publish_selected_closure(
             || {
                 self.writer_authority()?
-                    .verify_compiler_publication(
+                    .verify_compiler_publication_with_stop(
                         &candidate,
                         &admitted_attempt,
                         &self.store,
                         artifact_budget(),
                         &envelope,
                         &metadata,
+                        stopped,
                     )
                     .map_err(|error| {
                         BuiltinModelError(format!("verify semantic publication closure: {error}"))
                     })
             },
             |_| {
+                if stopped() { return Err(BuiltinModelError("compiler publication stopped".into())); }
                 self.publish_selected_closure(
                     selected_pin.receipt().closure(),
                     closure_id,
@@ -4350,7 +4578,9 @@ impl SemanticAuthority {
                 )
             },
         )?;
+        if stopped() { return Err(BuiltinModelError("compiler publication stopped".into())); }
         admit_before_select(&candidate)?;
+        if stopped() { return Err(BuiltinModelError("compiler publication stopped".into())); }
         let frontier = futures_executor::block_on(
             self.writer_authority_mut()?
                 .compare_and_select(candidate, receipt),
@@ -5569,12 +5799,56 @@ mod tests {
         let attempt = authority
             .begin_candidate_attempt(&key, &observation)
             .expect("begin exact compiler attempt");
+        let stops = std::cell::Cell::new(0usize);
+        let stopped = || { let next = stops.get() + 1; stops.set(next); next > 3 };
+        assert!(authority.publish_staged_with_stop(&key, attempt.clone(), &staged, &stopped, |_| Ok(())).is_err());
+        assert!(stops.get() > 3, "stop must occur after staged publication began");
+        let selections = authority.image_loader.selections.read().expect("selection snapshot");
+        assert!(SelectedClosureImageLoader::committed_pair_optional_in(&selections, &key).expect("selection lookup").is_none(), "cancelled publication must not select a generation");
+        drop(selections);
+        let final_stop = std::sync::atomic::AtomicBool::new(false);
+        let final_stopped = || final_stop.load(std::sync::atomic::Ordering::Acquire);
+        assert!(authority.publish_staged_with_stop(&key, attempt.clone(), &staged, &final_stopped, |_| {
+            final_stop.store(true, std::sync::atomic::Ordering::Release);
+            Ok(())
+        }).is_err());
+        let selections = authority.image_loader.selections.read().expect("selection snapshot after final stop");
+        assert!(SelectedClosureImageLoader::committed_pair_optional_in(&selections, &key).expect("selection lookup").is_none(), "final stop must not select a generation");
+        drop(selections);
+        // Use the ordinary publisher to select a legacy closure with no
+        // optional NLM member, while retaining the real Program and images.
+        TEST_OMIT_NATIVE_LINES.with(|omit| omit.set(true));
+        let (_, legacy_selection) = authority
+            .publish_staged(&key, attempt, &staged, |_| Ok(()))
+            .expect("select legacy closure without native lines");
+        let legacy_metadata = reopen_selected_compiler_metadata(&authority.store, &legacy_selection)
+            .expect("reopen selected legacy metadata");
+        assert!(legacy_metadata.metadata().native_lines().is_none());
+        assert!(legacy_metadata.metadata().native_program_sources().is_some());
+        assert!(legacy_metadata.metadata().native_headers().is_some());
+        let attempt = authority.begin_candidate_attempt(&key, &observation)
+            .expect("begin wrong-line attempt");
+        TEST_FORGE_LINE_SOURCE.with(|forge| forge.set(true));
+        let (_, wrong_line_selection) = authority
+            .publish_staged(&key, attempt, &staged, |_| Ok(()))
+            .expect("select authenticated wrong-source line fixture");
+        let attempt = authority.begin_candidate_attempt(&key, &observation)
+            .expect("begin valid retry attempt");
         let (claim, selected) = authority
             .publish_staged(&key, attempt, &staged, |_| Ok(()))
             .expect("real admission counts the declared accelerator in the exact payload set");
         let reopened = reopen_selected_compiler_metadata(&authority.store, &selected)
             .expect("selected metadata remains lazy");
         assert!(reopened.metadata().typescript_snapshot_witness().is_some());
+        assert!(reopened.metadata().native_lines().is_some(), "strict output inventory must retain compiler line member");
+        let mut line_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(64 * 1024 * 1024, 1_000_000);
+        let lines = backend_extension_turso::reopen_selected_native_lines_budgeted(&authority.store, &selected, &mut line_budget, &|| false)
+            .expect("reopen selected line member").expect("selected line map");
+        let view = backend_semantic::native_source_lines::NativeSourceLineAggregateView::parse(lines.as_bytes(), &mut |_| Ok::<(), ()>(())).expect("canonical line map");
+        let file = view.find_file("src/main.ts", &mut |_| Ok::<(), ()>(())).expect("line lookup").expect("main line map");
+        assert!(file.matches_source(SOURCE.as_bytes(), &mut |_| Ok::<(), ()>(())).expect("source match"));
+        assert!(!file.matches_source(SPARE.as_bytes(), &mut |_| Ok::<(), ()>(())).expect("changed source refusal"));
+        let main_line_starts: Vec<u32> = (0..file.line_count()).map(|index| file.line_start(index).expect("validated line")).collect();
         let selected_certificate =
             backend_extension_turso::reopen_selected_typescript_snapshot_witness(
                 &authority.store,
@@ -5761,9 +6035,73 @@ mod tests {
         }
         let workspace_store = FileStore::open(workspace.0.join("objects"), 8 * 1024 * 1024)
             .expect("open copied workspace object store");
+        let replay_store = FileStore::open(workspace.0.join(CAS_DIRECTORY), 128 * 1024 * 1024)
+            .expect("open selected compiler store");
+        // This is an authenticated selected closure produced through the normal
+        // publication path; its NLM source differs while inline evidence is absent.
+        assert!(current.line_starts.is_none());
+        let mut wrong_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(super::super::MAX_REBUILD_BYTES, NATIVE_HEADER_WORK_UNITS);
+        let error = bounded_replay::admit(&replay_store, &wrong_line_selection, &capture, &[&current], &[&removed], &mut wrong_budget, &|| false)
+            .expect_err("selected line source mismatch must refuse without inline offsets");
+        assert!(error.0.contains("native replay line source differs from Program"), "unexpected refusal: {error:?}");
+        let checks = std::cell::Cell::new(0usize);
+        let count_checks = || { checks.set(checks.get() + 1); false };
+        let mut replay_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(super::super::MAX_REBUILD_BYTES, NATIVE_HEADER_WORK_UNITS);
+        bounded_replay::admit(&replay_store, &selected, &capture, &[&current], &[&removed], &mut replay_budget, &count_checks)
+            .expect("real selected replay before cancellation");
+        let stop_at = (checks.get() / 2).max(2);
+        let stopped_checks = std::cell::Cell::new(0usize);
+        let stop_during_replay = || { let next = stopped_checks.get() + 1; stopped_checks.set(next); next >= stop_at };
+        let mut replay_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(super::super::MAX_REBUILD_BYTES, NATIVE_HEADER_WORK_UNITS);
+        assert!(bounded_replay::admit(&replay_store, &selected, &capture, &[&current], &[&removed], &mut replay_budget, &stop_during_replay).is_err(),
+            "live cancellation during selected replay must stop admission");
+        assert!(stopped_checks.get() >= stop_at);
+        let mut replay_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(super::super::MAX_REBUILD_BYTES, NATIVE_HEADER_WORK_UNITS);
+        bounded_replay::admit(&replay_store, &selected, &capture, &[&current], &[&removed], &mut replay_budget, &|| false)
+            .expect("cancelled replay leaves selected publication reusable");
         assert!(admit_replayed_native_evidence(
             &workspace_store, std::slice::from_ref(&capture), &[&current], &[&removed],
         ).is_ok(), "a fresh Program may retire an omitted path");
+        let mut unbound_row = current.clone();
+        unbound_row.project = [0xa5; 32];
+        let error = admit_replayed_native_evidence(
+            &workspace_store, std::slice::from_ref(&capture), &[&current, &unbound_row], &[&removed],
+        ).expect_err("a row from an uncaptured project must not pass replay");
+        assert_eq!(error.0, "native replay evidence has no selected Program proof");
+        let mut unbound_retirement = removed.clone();
+        unbound_retirement.project = [0xa5; 32];
+        let error = admit_replayed_native_evidence(
+            &workspace_store, std::slice::from_ref(&capture), &[&current], &[&removed, &unbound_retirement],
+        ).expect_err("a retirement from an uncaptured project must not pass replay");
+        assert_eq!(error.0, "native replay evidence has no selected Program proof");
+        let mut wrong_profile_image = current.clone();
+        wrong_profile_image.profile = LanguageProfile::TypeScript(TypeScriptSource::Tsx);
+        let error = admit_replayed_native_evidence(
+            &workspace_store, std::slice::from_ref(&capture), &[&current, &wrong_profile_image], &[&removed],
+        ).expect_err("a different-profile image cannot borrow Program membership");
+        assert_eq!(error.0, "native replay evidence has no selected Program proof");
+        let mut wrong_profile_retirement = removed.clone();
+        wrong_profile_retirement.profile = LanguageProfile::TypeScript(TypeScriptSource::Tsx);
+        let error = admit_replayed_native_evidence(
+            &workspace_store, std::slice::from_ref(&capture), &[&current], &[&removed, &wrong_profile_retirement],
+        ).expect_err("a different-profile retirement cannot borrow absence from this Program");
+        assert_eq!(error.0, "native replay evidence has no selected Program proof");
+        let mut with_lines = current.clone();
+        with_lines.line_starts = Some(main_line_starts.clone());
+        let mut legacy_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(super::super::MAX_REBUILD_BYTES, NATIVE_HEADER_WORK_UNITS);
+        bounded_replay::admit(&replay_store, &legacy_selection, &capture, &[&with_lines], &[&removed], &mut legacy_budget, &|| false)
+            .expect("legacy selected closure replays matching inline lines without NLM");
+        assert!(admit_replayed_native_evidence(
+            &workspace_store, std::slice::from_ref(&capture), &[&with_lines], &[&removed],
+        ).is_ok(), "selected line-map evidence must replay");
+        let mut tampered_lines = with_lines.clone();
+        tampered_lines.line_starts.as_mut().expect("line evidence")[0] = 1;
+        assert!(admit_replayed_native_evidence(
+            &workspace_store, std::slice::from_ref(&capture), &[&tampered_lines], &[&removed],
+        ).is_err(), "changed line-map evidence must refuse");
+        assert!(admit_replayed_native_evidence(
+            &workspace_store, std::slice::from_ref(&capture), &[&with_lines], &[&removed],
+        ).is_ok(), "late line-map failure must not alter selected replay state");
         assert!(admit_replayed_native_evidence(
             &workspace_store, std::slice::from_ref(&capture), &[&spare], &[&current],
         ).is_err(), "a path still present in the Program cannot retire");
@@ -5775,6 +6113,12 @@ mod tests {
         assert!(admit_replayed_native_evidence(
             &workspace_store, std::slice::from_ref(&capture), &[&missing_header], &[],
         ).is_err(), "selected compiler header cannot be removed from evidence");
+        // The header mismatch occurs after the selected Program and image have
+        // already been inspected. A retry must observe the original selected
+        // publication, with no partial state from the failed detached plan.
+        assert!(admit_replayed_native_evidence(
+            &workspace_store, std::slice::from_ref(&capture), &[&current], &[&removed],
+        ).is_ok(), "late replay failure must leave the selected publication unchanged");
         for mutate_start in [false, true] {
             let mut altered = native_aggregate.clone();
             let file = altered.files.iter_mut().find(|file| file.path == "src/main.ts").expect("header file");

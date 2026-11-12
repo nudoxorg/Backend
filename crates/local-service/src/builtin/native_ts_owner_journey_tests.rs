@@ -42,8 +42,13 @@ fn start_owner_with_frame_budget(
 }
 
 #[test]
-#[ignore = "real owner index with a one-frame connection budget"]
 fn native_ts_index_polling_reconnects_without_resubmitting() -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child_with_env(
+        module_path!(), "native_ts_index_polling_reconnects_without_resubmitting",
+        &[(backend_client::CONNECTION_FRAME_BUDGET_ENV, "1")],
+    )? {
+        return Ok(());
+    }
     if backend_client::connection_frame_budget() != 1 {
         return Err("run with BACKEND_LOCALD_MAX_FRAMES_PER_CONNECTION=1".into());
     }
@@ -524,33 +529,58 @@ fn native_ts_listener_journey(
 }
 
 #[test]
-#[ignore = "native owner journey; run this test alone with the test-only frontend failpoint"]
 fn native_ts_listener_cold_reopen_and_edit_without_frontends() -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child(
+        module_path!(),
+        "native_ts_listener_cold_reopen_and_edit_without_frontends",
+    )? {
+        return Ok(());
+    }
     native_ts_listener_journey(true, false)
 }
 
 #[test]
-#[ignore = "native owner journey uninstrumented control"]
 fn native_ts_listener_cold_reopen_and_edit_control() -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child(
+        module_path!(),
+        "native_ts_listener_cold_reopen_and_edit_control",
+    )? {
+        return Ok(());
+    }
     native_ts_listener_journey(false, false)
 }
 
 #[test]
-#[ignore = "native owner reference journey with test-only frontend failpoint"]
 fn native_ts_listener_references_without_structural_frontends() -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child(
+        module_path!(),
+        "native_ts_listener_references_without_structural_frontends",
+    )? {
+        return Ok(());
+    }
     native_ts_listener_journey(true, true)
 }
 
 #[test]
-#[ignore = "native owner reference journey uninstrumented control"]
 fn native_ts_listener_references_uninstrumented_control() -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child(
+        module_path!(),
+        "native_ts_listener_references_uninstrumented_control",
+    )? {
+        return Ok(());
+    }
     native_ts_listener_journey(false, true)
 }
 
 #[test]
-#[ignore = "native source range, retained selection and stale-source guard"]
 fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
 -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child(
+        module_path!(),
+        "native_ts_owner_explicit_range_retained_selection_and_stale_refusal",
+    )? {
+        return Ok(());
+    }
     use backend_library::{
         DeclarationRead, DeclarationSelector, ReferenceCoverage, SelectedSymbolId,
         SourceAvailability, SourceRangeRequest, SourceRangeScope,
@@ -753,8 +783,13 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
 }
 
 #[test]
-#[ignore = "native source-qualified Read plus same-length stale host edit"]
 fn native_ts_read_owner_policy_and_same_length_stale_refusal() -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child(
+        module_path!(),
+        "native_ts_read_owner_policy_and_same_length_stale_refusal",
+    )? {
+        return Ok(());
+    }
     let _guard = FrontendFailpoint;
     super::ingest::TEST_REJECT_STRUCTURAL_FRONTENDS.store(true, Ordering::Release);
     let mut builder = tempfile::Builder::new();
@@ -860,8 +895,13 @@ fn native_ts_read_owner_policy_and_same_length_stale_refusal() -> Result<(), Box
 }
 
 #[test]
-#[ignore = "native TS readiness after index with test-only frontend construction failpoint"]
 fn native_ts_health_without_structural_frontends() -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child(
+        module_path!(),
+        "native_ts_health_without_structural_frontends",
+    )? {
+        return Ok(());
+    }
     let _guard = FrontendFailpoint;
     super::ingest::TEST_REJECT_STRUCTURAL_FRONTENDS.store(true, Ordering::Release);
     let mut builder = tempfile::Builder::new();
@@ -1217,26 +1257,46 @@ fn assert_native_search_and_query(
 }
 
 #[test]
-#[ignore = "native same-profile deletion, selected NSE retirement and cold reopen"]
 fn native_ts_deleted_file_retires_evidence_and_old_handle() -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child(
+        module_path!(),
+        "native_ts_deleted_file_retires_evidence_and_old_handle",
+    )? {
+        return Ok(());
+    }
     native_ts_retirement_journey(false, false)
 }
 
 #[test]
-#[ignore = "native same-profile config exclusion, selected NSE retirement and cold reopen"]
 fn native_ts_excluded_file_retires_evidence_and_old_handle() -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child(
+        module_path!(),
+        "native_ts_excluded_file_retires_evidence_and_old_handle",
+    )? {
+        return Ok(());
+    }
     native_ts_retirement_journey(true, false)
 }
 
 #[test]
-#[ignore = "native exclusion search diagnostic; run alone with frontend failpoint"]
 fn native_ts_exclusion_kept_symbol_remains_searchable() -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child(
+        module_path!(),
+        "native_ts_exclusion_kept_symbol_remains_searchable",
+    )? {
+        return Ok(());
+    }
     native_ts_retirement_journey(true, true)
 }
 
 #[test]
-#[ignore = "last native TypeScript source deletion and cold owner retirement"]
 fn native_ts_last_file_deletion_retires_selected_evidence() -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child(
+        module_path!(),
+        "native_ts_last_file_deletion_retires_selected_evidence",
+    )? {
+        return Ok(());
+    }
     let _guard = FrontendFailpoint;
     super::ingest::TEST_REJECT_STRUCTURAL_FRONTENDS.store(true, Ordering::Release);
     let fixture = tempfile::Builder::new().prefix("tsx-last-retire-").tempdir_in("/tmp")?;
@@ -1287,8 +1347,20 @@ fn native_ts_last_file_deletion_retires_selected_evidence() -> Result<(), Box<dy
 /// compiler emits an image for the over-width input, the fixture must fail:
 /// it has not exercised the member-only case.
 #[test]
-#[ignore = "native owner journey; run alone with the frontend failpoint"]
 fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> {
+    omitted_program_member_cold_replay(false)
+}
+#[test]
+fn native_ts_mixed_profile_program_member_cold_replay() -> Result<(), Box<dyn Error>> {
+    omitted_program_member_cold_replay(true)
+}
+fn omitted_program_member_cold_replay(mixed: bool) -> Result<(), Box<dyn Error>> {
+    let test_name = if mixed { "native_ts_mixed_profile_program_member_cold_replay" } else { "native_ts_omitted_program_member_cold_replay" };
+    if crate::test_support::run_test_in_child(
+        module_path!(), test_name,
+    )? {
+        return Ok(());
+    }
     fn index_member_fixture(session: &mut Session, project: &Path) -> Result<(), Box<dyn Error>> {
         let package = PackageReference::parse(project.to_string_lossy().into_owned()).map_err(|e| io::Error::other(e.to_string()))?;
         let key = IndexOperationKey::from_bytes([0x91; 32]).map_err(|e| io::Error::other(e.to_string()))?;
@@ -1334,27 +1406,35 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
 
     let _guard = FrontendFailpoint;
     super::ingest::TEST_REJECT_STRUCTURAL_FRONTENDS.store(true, Ordering::Release);
-    let fixture = tempfile::Builder::new().prefix("nse-member-").tempdir_in("/tmp")?;
-    let project = fixture.path().join("project");
+    let fixture = tempfile::Builder::new().prefix("nse-member-").tempdir_in("/tmp")?.keep();
+    eprintln!("retained native member fixture: {}", fixture.display());
+    let project = fixture.as_path().join("project");
     fs::create_dir_all(project.join("src/app"))?;
     fs::create_dir_all(project.join("src/components"))?;
     fs::create_dir_all(project.join("src/types"))?;
     // A parser-valid tuple over the native lowering width limit produces a
     // source-local gap without inventing a Program member or compiler fact.
-    fs::write(project.join("tsconfig.json"), r#"{"compilerOptions":{"noLib":true,"types":[],"module":"ESNext","moduleResolution":"bundler","jsx":"preserve"},"files":["src/app/layout.tsx","src/app/page.tsx","src/components/NavBar.tsx","src/types/react-node.tsx"]}"#)?;
+    let config = if mixed { r#"{"compilerOptions":{"noLib":true,"types":[],"module":"ESNext","moduleResolution":"bundler","jsx":"preserve"},"files":["src/app/layout.tsx","src/app/page.tsx","src/components/NavBar.tsx","src/types/react-node.tsx","src/types/shared.ts","src/types/valid.ts"]}"# } else { r#"{"compilerOptions":{"noLib":true,"types":[],"module":"ESNext","moduleResolution":"bundler","jsx":"preserve"},"files":["src/app/layout.tsx","src/app/page.tsx","src/components/NavBar.tsx","src/types/react-node.tsx"]}"# };
+    fs::write(project.join("tsconfig.json"), config)?;
     let member = format!("export declare const wide: [{}];\n", std::iter::repeat_n("unknown", 256).collect::<Vec<_>>().join(", "));
     let image = "export function NavBar() { return \"nav\"; }\n";
     let changed_member = member.replacen("unknown", "unknowm", 1);
     let changed_image = "export function NavBar() { return \"nax\"; }\n";
     fs::write(project.join("src/types/react-node.tsx"), "export type ReactNode = { readonly children?: ReactNode };\n")?;
-    fs::write(project.join("src/app/page.tsx"), "import { NavBar } from \"../components/NavBar\";\nexport function Page() { return NavBar(); }\n")?;
+    let shared = format!("export declare const shared: [{}];\n", std::iter::repeat_n("unknown", 256).collect::<Vec<_>>().join(", "));
+    if mixed {
+        fs::write(project.join("src/types/shared.ts"), &shared)?;
+        fs::write(project.join("src/types/valid.ts"), "export const valid = 1;\n")?;
+    }
+    let page = if mixed { "import { NavBar } from \"../components/NavBar\";\nimport type { shared } from \"../types/shared\";\nimport { valid } from \"../types/valid\";\nexport function Page() { return NavBar(); }\n" } else { "import { NavBar } from \"../components/NavBar\";\nexport function Page() { return NavBar(); }\n" };
+    fs::write(project.join("src/app/page.tsx"), page)?;
     assert_eq!(member.len(), changed_member.len());
     assert_eq!(image.len(), changed_image.len());
     fs::write(project.join("src/app/layout.tsx"), &member)?;
     fs::write(project.join("src/components/NavBar.tsx"), image)?;
     let paths = backend_runtime::WorkspacePaths::discover(
-        Some(fixture.path().join("owner")), Some(fixture.path().join("state")),
-        Some(fixture.path().join("owner.sock")),
+        Some(fixture.as_path().join("owner")), Some(fixture.as_path().join("state")),
+        Some(fixture.as_path().join("owner.sock")),
     )?;
     paths.initialize()?;
     let authority = backend_engine::read_authority_secret(paths.authority_secret())?;
@@ -1371,7 +1451,12 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
         let observed = super::ingest::TEST_NATIVE_PROGRAMS.lock().map_err(|_| "program lock")?;
         let selected = observed.iter().find(|entry| entry.membership == membership && entry.binding == binding).ok_or("selected Program was not observed at admitted image join")?;
         let digest = backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(member.as_bytes());
-        assert_eq!(selected.sources.iter().filter(|(path, id, len)| path.ends_with("src/app/layout.tsx") && id == digest.as_ref() && *len as usize == member.len()).count(), 1);
+        assert_eq!(selected.sources.iter().filter(|(path, _, id, len)| path.ends_with("src/app/layout.tsx") && id == digest.as_ref() && *len as usize == member.len()).count(), 1);
+        if mixed {
+            let digest = backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(shared.as_bytes());
+            let imported = selected.sources.iter().find(|(path, _, id, len)| path.ends_with("src/types/shared.ts") && id == digest.as_ref() && *len as usize == shared.len()).ok_or("TSX Program imported TS source")?;
+            assert!(imported.1.is_none(), "dependency program path must not mint a TSX package mapping");
+        }
     }
     drop(session);
     assert_eq!(owner.close()?.failures, 0);
@@ -1425,6 +1510,7 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
         use backend_semantic::ir::{SourceCoverageGapCause, SourceCoverageRow};
         let observed = selected_authority.selected_source_coverage(selected_key, claim)?
             .ok_or("selected compiler coverage absent")?;
+        // Coverage is per selected profile: TS files have their own capture.
         assert_eq!((observed.source_count(), observed.completed()), (4, 3));
         let catalog = observed.catalog().ok_or("selected compiler gap catalog absent")?;
         assert_eq!(catalog.rows().iter().filter(|row| matches!(row,
@@ -1438,16 +1524,38 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
         cargo_target: None, key: selected_key.clone(), expected: Some(selected_capture.clone()),
         capture: selected_capture.capture(), outcome: selected_capture.outcome(), compiler_failure: None,
     };
+    let mut changes = vec![change.clone()];
+    if mixed {
+        let ts_profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
+        let (key, capture) = capture_page.entries().iter().find(|(key, capture)| key.package_key().to_bytes() == project_key && key.profile() == ts_profile && key.is_selected() && matches!(capture.outcome(), backend_engine::builtin::ProductSemanticCaptureOutcome::Published { .. })).ok_or("published selected TS capture")?;
+        let backend_engine::builtin::ProductSemanticCaptureOutcome::Published { claim, .. } = capture.outcome() else { return Err("TS capture unpublished".into()) };
+        let observed = super::ingest::TEST_NATIVE_PROGRAMS.lock().map_err(|_| "program lock")?;
+        let program = observed.iter().find(|entry| entry.binding.as_slice() == claim.binding().identity.as_ref()).ok_or("selected TS Program observation")?;
+        let digest = backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(shared.as_bytes());
+        assert_eq!(program.sources.iter().filter(|(_, package, identity, length)| package.as_deref() == Some("src/types/shared.ts") && identity == digest.as_ref() && *length as usize == shared.len()).count(), 1, "TS selected Program owns exact shared.ts mapping");
+        changes.push(super::profile::BuiltinCaptureChange { cargo_target: None, key: key.clone(), expected: Some(capture.clone()), capture: capture.capture(), outcome: capture.outcome(), compiler_failure: None });
+    }
     let store = backend_engine::FileStore::open(paths.data().join("objects"), 8 * 1024 * 1024)
         .map_err(|error| io::Error::other(format!("open selected object store: {error:?}")))?;
     let page = relation.page(None, backend_engine::MAX_SNAPSHOT_PAGE_ROWS)?;
     assert!(page.next().is_none(), "fixture evidence page must be complete");
     let rows = page.entries().iter().map(|(_, row)| row.clone())
-        .filter(|row| row.project == project_key && row.profile == ts).collect::<Vec<_>>();
+        .filter(|row| row.project == project_key && (row.profile == ts || (mixed && row.profile == LanguageProfile::TypeScript(TypeScriptSource::TypeScript)))).collect::<Vec<_>>();
     assert!(rows.iter().any(|row| row == &member_row));
     assert!(rows.iter().any(|row| row == &image_row));
     let refs = rows.iter().collect::<Vec<_>>();
-    super::semantic_authority::admit_replayed_native_evidence(&store, std::slice::from_ref(&change), &refs, &[])?;
+    if mixed {
+        let shared_row = rows.iter().find(|row| row.path == "src/types/shared.ts" && row.profile == LanguageProfile::TypeScript(TypeScriptSource::TypeScript)).ok_or("missing cross-profile TS ProgramMember")?;
+        assert_eq!(shared_row.kind, NativeSourceEvidenceKind::ProgramMember);
+    }
+    super::semantic_authority::admit_replayed_native_evidence(&store, &changes, &refs, &[])?;
+    if mixed {
+        let mut altered = rows.clone();
+        altered.iter_mut().find(|row| row.path == "src/types/shared.ts").ok_or("shared row")?.source_digest[0] ^= 1;
+        let altered_refs = altered.iter().collect::<Vec<_>>();
+        let error = super::semantic_authority::admit_replayed_native_evidence(&store, &changes, &altered_refs, &[]).err().ok_or("altered cross-profile source unexpectedly admitted")?;
+        assert_eq!(error.0, "native replay Program source differs from evidence");
+    }
     for (path, kind_only, expected) in [
         ("src/app/layout.tsx", false, "native replay Program source differs from evidence"),
         ("src/components/NavBar.tsx", false, "native replay Program source differs from evidence"),
@@ -1462,7 +1570,7 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
             row.source_digest[0] ^= 1;
         }
         let refs = altered.iter().collect::<Vec<_>>();
-        let error = super::semantic_authority::admit_replayed_native_evidence(&store, std::slice::from_ref(&change), &refs, &[]).err().ok_or("tampered replay unexpectedly admitted")?;
+        let error = super::semantic_authority::admit_replayed_native_evidence(&store, &changes, &refs, &[]).err().ok_or("tampered replay unexpectedly admitted")?;
         assert_eq!(error.0, expected, "tamper path {path}");
     }
     drop(relation);
@@ -1470,6 +1578,72 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
     drop(selected_authority);
     drop(daemon);
 
+    // A real pre-start lifecycle stop reaches durable native replay; after it
+    // refuses, a fresh capability must reopen the same selected state.
+    let mut stopped_config = ProcessConfig::parse([
+        "--endpoint".to_owned(), paths.endpoint().to_string_lossy().into_owned(),
+        "--workspace".to_owned(), paths.data().to_string_lossy().into_owned(),
+        "--registry-offline".to_owned(), "--registry-discovery-offline".to_owned(),
+        "--advisory-offline".to_owned(), "--forge-offline".to_owned(),
+    ])?;
+    stopped_config.profile = "builtin".to_owned();
+    stopped_config.worker_endpoint = None;
+    stopped_config.authority_secret = Some(paths.authority_secret().to_path_buf());
+    let shutdown = crate::listener::ListenerShutdown::new();
+    shutdown.request();
+    let error = match EmbeddedLocalService::start_with_shutdown(stopped_config.clone(), shutdown) {
+        Ok(owner) => { drop(owner); return Err("cancelled cold owner unexpectedly started".into()); }
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("native replay stopped: owner shutdown"), "unexpected cold refusal: {error}");
+    struct ColdReplayPauseGuard;
+    impl Drop for ColdReplayPauseGuard {
+        fn drop(&mut self) { super::semantic_authority::TEST_COLD_REPLAY_PAUSE.store(false, Ordering::Release); }
+    }
+    let _pause_guard = ColdReplayPauseGuard;
+    let shutdown = crate::listener::ListenerShutdown::new();
+    let worker_shutdown = shutdown.clone();
+    super::semantic_authority::TEST_COLD_REPLAY_REACHED.store(false, Ordering::Release);
+    super::semantic_authority::TEST_COLD_REPLAY_IMAGE_PHASE.store(false, Ordering::Release);
+    super::semantic_authority::TEST_COLD_REPLAY_STOP_OBSERVED.store(false, Ordering::Release);
+    super::semantic_authority::TEST_COLD_REPLAY_PAUSE.store(true, Ordering::Release);
+    let embedded_config = stopped_config.clone();
+    let worker = thread::spawn(move || EmbeddedLocalService::start_with_shutdown(embedded_config, worker_shutdown));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !super::semantic_authority::TEST_COLD_REPLAY_REACHED.load(Ordering::Acquire) && Instant::now() < deadline { thread::yield_now(); }
+    let reached = super::semantic_authority::TEST_COLD_REPLAY_REACHED.load(Ordering::Acquire);
+    shutdown.request();
+    super::semantic_authority::TEST_COLD_REPLAY_PAUSE.store(false, Ordering::Release);
+    let result = worker.join().map_err(|_| "cold owner worker panicked")?;
+    assert!(reached, "cold replay did not reach image admission");
+    assert!(super::semantic_authority::TEST_COLD_REPLAY_STOP_OBSERVED.load(Ordering::Acquire), "replay must observe the actual owner shutdown");
+    let error = match result { Ok(owner) => { drop(owner); return Err("mid-replay shutdown unexpectedly started owner".into()); }, Err(error) => error };
+    assert!(error.to_string().contains("native replay stopped"), "unexpected live cold refusal: {error}");
+    // This test already runs in its own child process. Exercise the daemon's
+    // real signal handler while the same persisted image decoder is active.
+    super::semantic_authority::TEST_COLD_REPLAY_REACHED.store(false, Ordering::Release);
+    super::semantic_authority::TEST_COLD_REPLAY_IMAGE_PHASE.store(false, Ordering::Release);
+    super::semantic_authority::TEST_COLD_REPLAY_STOP_OBSERVED.store(false, Ordering::Release);
+    super::semantic_authority::TEST_COLD_REPLAY_PAUSE.store(true, Ordering::Release);
+    let signal_shutdown = crate::listener::ListenerShutdown::new();
+    let worker_shutdown = signal_shutdown.clone();
+    let worker = thread::spawn(move || super::run_with_lifecycle(stopped_config, worker_shutdown));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !super::semantic_authority::TEST_COLD_REPLAY_REACHED.load(Ordering::Acquire) && Instant::now() < deadline { thread::yield_now(); }
+    let reached = super::semantic_authority::TEST_COLD_REPLAY_REACHED.load(Ordering::Acquire);
+    let started = Instant::now();
+    let signal_result = if reached { rustix::process::kill_process(rustix::process::getpid(), rustix::process::Signal::TERM) } else { signal_shutdown.request(); Ok(()) };
+    if signal_result.is_err() { signal_shutdown.request(); }
+    // The real handler requests the shared lifecycle. The test-only pause
+    // waits for that request, not for a fabricated cancellation result.
+    let status = worker.join().map_err(|_| "signal cold owner worker panicked")?;
+    let elapsed = started.elapsed();
+    super::semantic_authority::TEST_COLD_REPLAY_PAUSE.store(false, Ordering::Release);
+    signal_result?;
+    assert!(reached, "signal control did not reach image admission");
+    assert!(super::semantic_authority::TEST_COLD_REPLAY_STOP_OBSERVED.load(Ordering::Acquire), "decoder must observe signal's shared shutdown");
+    assert!(elapsed < crate::termination::TERMINATION_GRACE, "signal retirement exceeded existing grace");
+    assert_ne!(status, std::process::ExitCode::SUCCESS, "signalled cold startup must stop");
     let owner = start_owner(&paths)?;
     let mut session = Session::connect(owner.endpoint())?;
     let (cold_coordinate, cold) = select_native_document(&mut session, &authority, "NavBar", "src/components/NavBar.tsx")?;
@@ -1498,5 +1672,110 @@ fn native_ts_omitted_program_member_cold_replay() -> Result<(), Box<dyn Error>> 
     assert_ne!(member_row.source_digest.as_slice(), changed_member_id.as_ref());
     drop(session);
     assert_eq!(owner.close()?.failures, 0);
+    Ok(())
+}
+
+#[test]
+fn native_ts_large_crlf_line_map_source_show_read_and_cold() -> Result<(), Box<dyn Error>> {
+    if crate::test_support::run_test_in_child(module_path!(), "native_ts_large_crlf_line_map_source_show_read_and_cold")? { return Ok(()); }
+    use backend_engine::builtin::{native_source_evidence_key, native_source_evidence_relation, ProductSemanticCaptureOutcome};
+    use backend_semantic::vocabulary::{LanguageProfile, TypeScriptSource};
+    let _guard = FrontendFailpoint;
+    super::ingest::TEST_REJECT_STRUCTURAL_FRONTENDS.store(true, Ordering::Release);
+    let fixture = tempfile::Builder::new().prefix("native-lines-").tempdir_in("/tmp")?;
+    let project = fixture.path().join("project");
+    fs::create_dir(&project)?;
+    fs::write(project.join("tsconfig.json"), r#"{"compilerOptions":{"strict":true},"include":["*.ts"]}"#)?;
+    let mut source = " ".repeat(30_000);
+    source.push_str(&"\r\n".repeat(20_000));
+    source.push_str("export function Greeting() { return 'before'; }\r\n");
+    fs::write(project.join("view.ts"), &source)?;
+    for (path, text) in [("bare.ts", "// one\rexport function Bare() { return 1; }"), ("sep.ts", "// one\u{2028}export function Sep() { return 2; }"), ("para.ts", "// one\u{2029}export function Para() { return 3; }")] {
+        fs::write(project.join(path), text)?;
+    }
+    let paths = backend_runtime::WorkspacePaths::discover(Some(fixture.path().join("owner")), Some(fixture.path().join("state")), Some(fixture.path().join("owner.sock")))?;
+    paths.initialize()?;
+    let authority_secret = backend_engine::read_authority_secret(paths.authority_secret())?;
+    let owner = start_owner(&paths)?;
+    let mut session = Session::connect(owner.endpoint())?;
+    index(&mut session, &project, 0x72)?;
+    let (coordinate, document) = select_native_document(&mut session, &authority_secret, "Greeting", "view.ts")?;
+    assert_eq!(document.location.captured().ok_or("warm source location")?.start_line(), 20_001);
+    let CommandReply::Names(warm_names) = session.names("Greeting", 100)?.reply else { return Err("warm Names reply".into()) };
+    let warm_row = warm_names.root.rows().iter().find(|row| row.label.as_str() == coordinate).ok_or("warm native Names row")?;
+    assert_eq!(warm_row.source.captured().ok_or("warm Names location")?.start_line(), 20_001);
+    let CommandReply::Document(shown) = session.document(&coordinate)?.reply else { return Err("Show reply".into()) };
+    assert_eq!(shown.location.captured().ok_or("warm Show location")?.start_line(), 20_001);
+    for (name, path) in [("Bare", "bare.ts"), ("Sep", "sep.ts"), ("Para", "para.ts")] {
+        let (_, unsupported) = select_native_document(&mut session, &authority_secret, name, path)?;
+        assert!(unsupported.location.captured().is_none(), "unsupported terminator must not claim a line location");
+    }
+    let request = || -> Result<SurfaceCommand, io::Error> { Ok(SurfaceCommand::Read { locators: vec![ProductText::new(coordinate.clone()).map_err(|e| io::Error::other(e.to_string()))?].into_boxed_slice() }) };
+    let SurfaceReply::Read(records) = session.surface(request()?)? else { return Err("Read reply".into()) };
+    let [record] = records.as_ref() else { return Err("warm Read result count".into()) };
+    assert!(record.extent.is_some(), "fresh native Read extent");
+    assert!(record.signature.as_ref().is_some_and(|text| text.as_str().contains("Greeting") && text.as_str().contains("before")));
+    drop(session);
+    assert_eq!(owner.close()?.failures, 0);
+
+    let profile = super::profile_descriptor(super::BuiltinProfile::Product)?;
+    let dispatcher = super::builtin_dispatcher(Some(super::ECHO_AUTHORITY_SECRET), profile, 60_000)?;
+    let mut daemon = crate::Locald::open_with_dispatcher_and_registry(paths.data(), super::BuiltinModel, super::genesis()?, dispatcher, backend_engine::DaemonConfig::default(), super::product_relation_registry()?)?;
+    let mut authority = super::semantic_authority::SemanticAuthority::open(paths.data())?;
+    authority.reconcile_workspace(&mut daemon)?;
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let project_key = backend_engine::PackageKey::from_value(project.canonicalize()?.to_str().ok_or("project path")?).to_bytes();
+    let ts = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
+    let relation = native_source_evidence_relation(&snapshot)?.ok_or("native evidence")?;
+    let row = relation.lookup(&native_source_evidence_key(project_key, ts, "view.ts").map_err(io::Error::other)?)?.ok_or("native image row")?;
+    assert!(row.line_starts.is_none(), "large line index must not be inline");
+    let captures = backend_engine::builtin::semantic_capture_relation(&snapshot)?.ok_or("capture relation")?;
+    let page = captures.page(None, backend_engine::MAX_SNAPSHOT_PAGE_ROWS)?;
+    assert!(page.next().is_none());
+    let (key, capture) = page.entries().iter().find(|(key, capture)| key.package_key().to_bytes() == project_key && key.profile() == ts && key.is_selected() && matches!(capture.outcome(), ProductSemanticCaptureOutcome::Published { .. })).ok_or("selected TS capture")?;
+    let ProductSemanticCaptureOutcome::Published { claim, .. } = capture.outcome() else { return Err("publication claim".into()) };
+    let mut budget = backend_extension_turso::SelectedNativeHeaderBudget::new(64 * 1024 * 1024, 10_000_000);
+    let witness = authority.selected_native_lines(key, claim, &mut budget, &|| false)?.ok_or("selected compiler line map")?;
+    let view = backend_semantic::native_source_lines::NativeSourceLineAggregateView::parse(witness.as_bytes(), &mut |_| Ok::<(), ()>(())).map_err(|_| "line map decode")?;
+    for path in ["bare.ts", "sep.ts", "para.ts"] {
+        assert!(view.find_file(path, &mut |_| Ok::<(), ()>(())).map_err(|_| "unsupported line lookup")?.is_none());
+    }
+    let file = view.find_file("view.ts", &mut |_| Ok::<(), ()>(())).map_err(|_| "line lookup")?.ok_or("line map file")?;
+    assert!(file.matches_source(source.as_bytes(), &mut |_| Ok::<(), ()>(())).map_err(|_| "line verification")?);
+    assert_eq!(file.line_count(), 20_002);
+    assert_eq!(file.line_start(20_000), Some(u32::try_from(source.find("export function Greeting").ok_or("declaration offset")?)?));
+    drop(snapshot);
+    drop(authority);
+    drop(daemon);
+
+    let cold_owner = start_owner(&paths)?;
+    let mut cold = Session::connect(cold_owner.endpoint())?;
+    let (_, cold_source) = select_native_document(&mut cold, &authority_secret, "Greeting", "view.ts")?;
+    assert_eq!(cold_source.location.captured().ok_or("cold source location")?.start_line(), 20_001);
+    let CommandReply::Names(cold_names) = cold.names("Greeting", 100)?.reply else { return Err("cold Names reply".into()) };
+    let cold_row = cold_names.root.rows().iter().find(|row| row.label.as_str() == coordinate).ok_or("cold native Names row")?;
+    assert_eq!(cold_row.source.captured().ok_or("cold Names location")?.start_line(), 20_001);
+    let CommandReply::Document(cold_show) = cold.document(&coordinate)?.reply else { return Err("cold Show reply".into()) };
+    assert_eq!(cold_show.location.captured().ok_or("cold Show location")?.start_line(), 20_001);
+    let SurfaceReply::Read(cold_records) = cold.surface(request()?)? else { return Err("cold Read reply".into()) };
+    let [cold_record] = cold_records.as_ref() else { return Err("cold Read result count".into()) };
+    assert!(cold_record.extent.is_some());
+    assert!(cold_record.signature.as_ref().is_some_and(|text| text.as_str().contains("Greeting") && text.as_str().contains("before")));
+    let changed = source.replacen("before", "afters", 1);
+    assert_eq!(source.len(), changed.len());
+    fs::write(project.join("view.ts"), changed)?;
+    match cold.surface(request()?) {
+        Ok(SurfaceReply::Read(stale)) => {
+            let [record] = stale.as_ref() else { return Err("stale Read result count".into()) };
+            assert!(record.extent.is_none() && record.source_policy.is_unknown());
+            assert!(record.signature.as_ref().is_none_or(|text| !text.as_str().contains("before") && !text.as_str().contains("afters")));
+        }
+        Ok(_) => return Err("unexpected stale Read reply".into()),
+        Err(backend_client::ClientError::CommandFailed(backend_library::CommandFailure::InvalidQuery(detail)))
+            if detail.contains("indexed source changed on disk; reindex and retry") => {},
+        Err(error) => return Err(error.into()),
+    }
+    drop(cold);
+    assert_eq!(cold_owner.close()?.failures, 0);
     Ok(())
 }

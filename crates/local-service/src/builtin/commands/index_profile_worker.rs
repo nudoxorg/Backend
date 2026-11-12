@@ -202,6 +202,7 @@ impl ProfileWork {
             &mut self.job,
             ticket,
             compiled,
+            &self.cancelled,
         );
         if let Some(observation) = &self.observation {
             observation.phase("deferred-profile-admission-returned");

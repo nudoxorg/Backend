@@ -100,7 +100,7 @@ pub use semantic_capture_relation::{
     semantic_capture_root_object, semantic_capture_root_pointer_key,
 };
 pub use semantic_relation::{
-    ActivatedSemanticPublication, PartialSemanticCoverage, ProductSemanticPublicationKey,
+    ActivatedSemanticPublication, CheckpointedSemanticTargetError, PartialSemanticCoverage, ProductSemanticPublicationKey,
     ProductSemanticPublicationRecord, ProductSemanticPublicationRelation,
     ProductSemanticPublicationSnapshot, SemanticActivationError, SemanticPublicationClaim,
     SemanticPublicationCoverage, SemanticPublicationInput, SemanticPublicationRetentionFacts,

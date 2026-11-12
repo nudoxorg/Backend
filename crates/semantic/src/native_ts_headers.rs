@@ -128,6 +128,13 @@ pub struct NativeTsHeaderFileView<'a> {
 pub struct NativeTsHeaderFileIter<'a> { reader: Reader<'a>, remaining: usize }
 pub struct NativeTsHeaderEntryIter<'a> { chunks: std::slice::ChunksExact<'a, u8> }
 
+/// Caller-owned file offsets tied to the exact validated aggregate. Constructed
+/// only by a complete checkpointed scan; it grants no compiler authority.
+pub struct NativeTsHeaderFileIndex<'a, 'slots> {
+    bytes: &'a [u8],
+    offsets: &'slots [u32],
+}
+
 impl<'a> NativeTsHeaderAggregateView<'a> {
     /// Validates all records, ordering, extents and framing without allocating.
     /// The caller must reserve work for the complete scan before calling.
@@ -155,8 +162,23 @@ impl<'a> NativeTsHeaderAggregateView<'a> {
     pub fn files(&self) -> NativeTsHeaderFileIter<'a> {
         NativeTsHeaderFileIter { reader: Reader { bytes: self.bytes, at: 8 }, remaining: self.count }
     }
+    /// Builds an allocation-free index in caller-provided, precharged slots.
+    /// Every file visit consumes a checkpoint; cancellation yields no index.
+    pub fn index_files_checkpointed<'slots, E>(&self, slots: &'slots mut [u32], checkpoint: &mut impl FnMut(usize) -> Result<(), E>) -> Result<NativeTsHeaderFileIndex<'a, 'slots>, BorrowedNativeHeadersError<E>> {
+        checkpoint(0).map_err(BorrowedNativeHeadersError::Stopped)?;
+        if slots.len() < self.count { return Err(BorrowedNativeHeadersError::Invalid); }
+        let mut files=self.files();
+        for slot in &mut slots[..self.count] {
+            checkpoint(4096 + 114).map_err(BorrowedNativeHeadersError::Stopped)?;
+            *slot=u32::try_from(files.reader.at).map_err(|_| BorrowedNativeHeadersError::Invalid)?;
+            files.next().ok_or(BorrowedNativeHeadersError::Invalid)?;
+        }
+        checkpoint(0).map_err(BorrowedNativeHeadersError::Stopped)?;
+        Ok(NativeTsHeaderFileIndex { bytes:self.bytes, offsets:&slots[..self.count] })
+    }
     /// Scans file headers with a work/cancellation checkpoint per file.
     pub fn find_file_checkpointed<E>(&self, path: &str, checkpoint: &mut impl FnMut(usize) -> Result<(), E>) -> Result<Option<NativeTsHeaderFileView<'a>>, E> {
+        checkpoint(0)?;
         let mut files = self.files();
         while files.remaining != 0 {
             // Path validation permits at most 4096 bytes; debit its worst case
@@ -171,6 +193,26 @@ impl<'a> NativeTsHeaderAggregateView<'a> {
     /// Finds a path without allocating; caller accounts for the scanned bytes.
     pub fn file(&self, path: &str) -> Option<NativeTsHeaderFileView<'a>> {
         self.files().take_while(|file| file.path <= path).find(|file| file.path == path)
+    }
+}
+
+impl<'a> NativeTsHeaderFileIndex<'a, '_> {
+    /// Binary search over validated path order with a checkpoint per probe.
+    pub fn find_file_checkpointed<E>(&self, path: &str, checkpoint: &mut impl FnMut(usize) -> Result<(), E>) -> Result<Option<NativeTsHeaderFileView<'a>>, E> {
+        let mut low=0usize; let mut high=self.offsets.len();
+        while low<high {
+            checkpoint(4096 + 114)?;
+            let mid=low+(high-low)/2;
+            let mut iter=NativeTsHeaderFileIter { reader:Reader { bytes:self.bytes, at:self.offsets[mid] as usize }, remaining:1 };
+            let Some(file)=iter.next() else { return Ok(None); };
+            match file.path.cmp(path) {
+                std::cmp::Ordering::Less=>low=mid+1,
+                std::cmp::Ordering::Greater=>high=mid,
+                std::cmp::Ordering::Equal=>{ checkpoint(0)?; return Ok(Some(file)); },
+            }
+        }
+        checkpoint(0)?;
+        Ok(None)
     }
 }
 
@@ -281,6 +323,35 @@ mod tests {
                 compiler_extent:(i as u32, i as u32 + 2), header_extent:(i as u32, i as u32 + 1),
             }).collect(),
         }] }
+    }
+    #[test]
+    fn borrowed_file_index_is_bounded_and_tracks_validated_wire() {
+        let template=sample(1).files.remove(0);
+        let aggregate=NativeTsHeaderAggregate { files:(0..4096).map(|n| { let mut file=template.clone(); file.path=format!("src/{n:04}.ts"); file }).collect() };
+        let bytes=aggregate.encode_checked().unwrap();
+        let view=NativeTsHeaderAggregateView::parse_canonical(&bytes).unwrap();
+        let mut slots=vec![0u32; view.len()];
+        let mut visits=0usize;
+        let measured=allocation_counter::measure(|| {
+            let index=view.index_files_checkpointed(&mut slots,&mut |_| {visits+=1; Ok::<(), ()>(())}).unwrap();
+            assert_eq!(visits,4098);
+            let mut probes=0usize;
+            let found=index.find_file_checkpointed("src/4095.ts",&mut |_| {probes+=1; Ok::<(), ()>(())}).unwrap().unwrap();
+            assert_eq!(found.path,"src/4095.ts");
+            assert_eq!(found.entry(0).as_ref(),aggregate.files[4095].entries.first());
+            assert!(probes<=15);
+            assert!(index.find_file_checkpointed("src/missing.ts",&mut |_| Ok::<(), ()>(())).unwrap().is_none());
+            assert!(index.find_file_checkpointed("src/0000.ts",&mut |_| Err::<(), _>("cancel")).is_err());
+        });
+        assert_eq!(measured.bytes_max,0);
+        assert!(matches!(view.index_files_checkpointed(&mut slots[..4095], &mut |_| Ok::<(), ()>(())), Err(BorrowedNativeHeadersError::Invalid)));
+        let mut calls=0;
+        assert!(matches!(view.index_files_checkpointed(&mut slots, &mut |_| {calls+=1; if calls==3 {Err("cancel")} else {Ok(())}}), Err(BorrowedNativeHeadersError::Stopped("cancel"))));
+        let empty=NativeTsHeaderAggregate { files:Vec::new() }.encode_checked().unwrap();
+        let empty_view=NativeTsHeaderAggregateView::parse_canonical(&empty).unwrap();
+        assert!(matches!(empty_view.index_files_checkpointed(&mut [], &mut |_| Err::<(), _>("cancel")), Err(BorrowedNativeHeadersError::Stopped("cancel"))));
+        let empty_index=empty_view.index_files_checkpointed(&mut [], &mut |_| Ok::<(), ()>(())).unwrap();
+        assert!(empty_index.find_file_checkpointed("missing", &mut |_| Err::<(), _>("cancel")).is_err());
     }
     #[test]
     fn borrowed_aggregate_matches_owned_without_allocating() {
