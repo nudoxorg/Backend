@@ -12637,7 +12637,8 @@ pub(super) fn native_line_map_matches_host(
     stopped: &dyn Fn() -> bool,
 ) -> Result<bool, String> {
     use backend_version::Schema as _;
-    use rustix::fs::{Mode, OFlags, openat};
+    use rustix::fs::{Mode, OFlags, open, openat};
+    use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
     if evidence.validate().is_err() || !evidence.admits_image() || evidence.path != lines.path
         || source != lines.source || evidence.byte_length != source.byte_len
         || evidence.source_digest.as_slice() != source.identity.as_ref() { return Ok(false); }
@@ -12645,12 +12646,23 @@ pub(super) fn native_line_map_matches_host(
     SourceAdmissionPolicy::from_environment().map_err(|e| format!("native line source policy: {e}"))?
         .admit_actual_file(expected).map_err(|e| format!("native line source bound: {e:?}"))?;
     budget.checkpoint(1, stopped).map_err(|e| format!("native line source stopped: {e:?}"))?;
-    let root = match ProjectRoot::open(root) { Ok(root) => root, Err(_) => return Ok(false) };
+    let root_bytes = root.as_os_str().as_bytes();
+    if root_bytes.is_empty() || root_bytes.len() > 4096 || root_bytes.contains(&0) { return Ok(false); }
+    let mut root_name = [0u8; 4097];
+    root_name[..root_bytes.len()].copy_from_slice(root_bytes);
+    let root_name = std::ffi::CStr::from_bytes_with_nul(&root_name[..=root_bytes.len()]).map_err(|_| "invalid native line root")?;
+    let mut directory = match open(root_name, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map(fs::File::from) {
+        Ok(directory) => directory, Err(_) => return Ok(false),
+    };
     let mut components = Path::new(&evidence.path).components().peekable();
-    let mut directory = root.directory.try_clone().map_err(|e| format!("native line root: {e}"))?;
     let mut file = loop {
         budget.checkpoint(1, stopped).map_err(|e| format!("native line source stopped: {e:?}"))?;
         let Some(std::path::Component::Normal(name)) = components.next() else { return Ok(false) };
+        let component = name.as_bytes();
+        if component.is_empty() || component.len() > 4096 || component.contains(&0) { return Ok(false); }
+        let mut name_buffer = [0u8; 4097];
+        name_buffer[..component.len()].copy_from_slice(component);
+        let name = std::ffi::CStr::from_bytes_with_nul(&name_buffer[..=component.len()]).map_err(|_| "invalid native line path")?;
         let last = components.peek().is_none();
         let flags = if last { OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC }
             else { OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC };
@@ -12687,6 +12699,10 @@ pub(super) fn native_line_map_matches_host(
             Err(_) => return Ok(false),
         }
     }
+    let after = match file.metadata() { Ok(value) => value, Err(_) => return Ok(false) };
+    if metadata.dev() != after.dev() || metadata.ino() != after.ino() || metadata.len() != after.len()
+        || metadata.mtime() != after.mtime() || metadata.mtime_nsec() != after.mtime_nsec()
+        || metadata.ctime() != after.ctime() || metadata.ctime_nsec() != after.ctime_nsec() { return Ok(false); }
     if input.finish().map_err(|e| format!("native input hash: {e:?}"))? != evidence.input_digest { return Ok(false); }
     lines.matches_source(&bytes, &mut |_| budget.checkpoint(1, stopped).map_err(|e| format!("native line verification stopped: {e:?}")))
 }
