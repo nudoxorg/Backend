@@ -3408,13 +3408,35 @@ mod tests {
         let snapshot = CompilerTypeScriptSnapshotMember { object_id: [0x33; 32], byte_length: 8 };
         let legacy = metadata(image).with_native_program_sources(program).unwrap().with_typescript_snapshot_witness(snapshot).unwrap();
         let legacy_bytes = legacy.canonical_bytes();
-        let bytes = b"NHA1\0\0\0\0";
-        let object = compiler_native_headers_object(bytes, &mut 1024).unwrap();
+        use backend_semantic::native_ts_headers::{NativeTsHeaderAggregate, NativeTsHeaderEntry, NativeTsHeaderFile};
+        use backend_semantic::ir::{DeclarationFamilyId, DeclarationIdentity, SourceIdentity, VariantFingerprint};
+        let aggregate = NativeTsHeaderAggregate { files: vec![NativeTsHeaderFile {
+            path: "src/main.ts".into(), source: SourceIdentity::from_bytes(b"function f() {}\n").unwrap(),
+            image_identity: [7; 32], image_byte_len: 123, producer_recipe: [8; 32],
+            entries: vec![NativeTsHeaderEntry { entity_id: 7,
+                identity: DeclarationIdentity { family: DeclarationFamilyId::from_raw([1; 16]), variant: VariantFingerprint::from_raw([2; 16]) },
+                compiler_extent: (0, 15), header_extent: (0, 12) }],
+        }] };
+        let bytes = aggregate.encode_checked().unwrap();
+        let mut decode_budget = usize::MAX;
+        NativeTsHeaderAggregate::decode_canonical_budgeted(&bytes, &mut decode_budget).unwrap();
+        let decoded = usize::MAX - decode_budget;
+        let writer = bytes.len() * 3 + decoded * 2;
+        let reader = bytes.len() * 2 + decoded;
+        let mut initial_budget = writer;
+        let object = compiler_native_headers_object(&bytes, &mut initial_budget).unwrap();
         let directory = scratch_store();
         let store = FileStore::open(&directory, 1024 * 1024).unwrap();
         store.write_object(&object).unwrap();
         let verified = store.verify_object_claim(UntrustedObjectId::from_bytes(*object.id().as_bytes())).unwrap();
-        let header_member = CompilerNativeHeadersMember::from_verified_object(verified, bytes, &mut 1024).unwrap();
+        let mut exact = writer;
+        compiler_native_headers_object(&bytes, &mut exact).unwrap();
+        let header_member = CompilerNativeHeadersMember::from_verified_object(verified, &bytes, &mut exact).unwrap();
+        assert_eq!(exact, 0);
+        let mut short = writer - 1;
+        compiler_native_headers_object(&bytes, &mut short).unwrap();
+        let verified_short = store.verify_object_claim(UntrustedObjectId::from_bytes(*object.id().as_bytes())).unwrap();
+        assert!(CompilerNativeHeadersMember::from_verified_object(verified_short, &bytes, &mut short).is_err());
         let current = legacy.clone().with_native_headers(header_member).unwrap();
         let without_snapshot = metadata(compiler_image().0).with_native_program_sources(program).unwrap().with_native_headers(header_member).unwrap();
         assert_eq!(CompilerPublicationMetadata::decode(&without_snapshot.canonical_bytes()).unwrap(), without_snapshot);
@@ -3424,7 +3446,9 @@ mod tests {
         assert!(metadata_member_ids(&current).contains(header_member.object_id()));
         let id = store.write_closure(&ClosureManifest::new(vec![object]).unwrap()).unwrap();
         let closure = store.open_closure(id).unwrap();
-        assert_eq!(reopen_native_headers_bounded(&store, &closure, &current, 1024).unwrap().as_deref(), Some(bytes.as_slice()));
+        assert_eq!(reopen_native_headers_bounded(&store, &closure, &current, reader).unwrap().as_deref(), Some(bytes.as_slice()));
+        assert!(reopen_native_headers_bounded(&store, &closure, &current, reader - 1).is_err());
+        assert!(reopen_native_headers_bounded(&store, &closure, &legacy, 0).unwrap().is_none());
         let mut altered = current.clone();
         altered.native_headers.as_mut().unwrap().byte_length += 1;
         assert!(reopen_native_headers_bounded(&store, &closure, &altered, 1024).is_err());
