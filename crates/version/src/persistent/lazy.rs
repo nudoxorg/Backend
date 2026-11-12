@@ -189,7 +189,8 @@ impl LazyTreeMetadataShape {
             .checked_mul(2)?
             .checked_add(size_of::<R::Value>().checked_mul(2)?)?
             .checked_add(self.max_key_bytes.checked_mul(2)?)?
-            .checked_add(self.max_value_bytes.checked_mul(3)?)?;
+            .checked_add(self.max_value_bytes.checked_mul(3)?)?
+            .checked_add(192)?; // Before/after and key allocation headers.
         let changes = change_count.checked_mul(per_change)?;
 
         // A single edit can spill across several sibling nodes at any tree
