@@ -364,7 +364,7 @@ pub use native_program_sources::{
     BorrowedNativeProgramError, BorrowedNativeProgramSourceManifest, BorrowedNativeProgramSourceRef,
     MAX_NATIVE_PROGRAM_MANIFEST_BYTES, MAX_NATIVE_PROGRAM_SOURCES, NativeProgramSource,
     NativeProgramSourceManifest, NativeProgramSourceManifestError,
-    NativeProgramSourceManifestSchema, NativeProgramSourceRef, RetainedNativeProgramSourceManifest,
+    NativeProgramSourceManifestSchema, NativeProgramSourceRef, RetainedIndexedNativeProgramSourceManifest, RetainedNativeProgramSourceManifest,
 };
 
 pub use wire::{FRAGMENT_MAGIC, FRAGMENT_SCHEMA};

@@ -672,6 +672,25 @@ mod tests {
             view.image_matches_bytes(b"vite.config.ts", &vite_image, |_| Ok::<_, ()>(()))
                 .unwrap()
         );
+        let expected_source = graph
+            .sources()
+            .find(|row| row.package_path == Some("vite.config.ts"))
+            .unwrap()
+            .source;
+        assert_eq!(
+            view.source_for_package_bytes(b"vite.config.ts", |_| Ok::<_, ()>(()))
+                .unwrap(),
+            Some(expected_source)
+        );
+        assert_eq!(
+            view.source_for_package_bytes(b"missing.ts", |_| Ok::<_, ()>(()))
+                .unwrap(),
+            None
+        );
+        assert!(
+            view.source_for_package_bytes(b"vite.config.ts", |_| Err::<(), _>("stopped"))
+                .is_err()
+        );
         assert!(
             !view
                 .image_matches_bytes(b"vite.config.ts", &other_image, |_| Ok::<_, ()>(()))
@@ -710,6 +729,17 @@ mod tests {
             retained
                 .image_matches_bytes(b"vite.config.ts", &vite_image, |_| Ok::<_, ()>(()))
                 .unwrap()
+        );
+        assert_eq!(
+            retained
+                .source_for_package_bytes(b"vite.config.ts", |_| Ok::<_, ()>(()))
+                .unwrap(),
+            Some(expected_source)
+        );
+        assert!(
+            retained
+                .source_for_package_bytes(b"vite.config.ts", |_| Err::<(), _>("stopped"))
+                .is_err()
         );
         assert!(
             retained
@@ -765,6 +795,48 @@ mod tests {
         )
         .unwrap();
         assert_eq!(count, graph.sources().count());
+    }
+
+    #[test]
+    fn borrowed_graph_package_lookup_is_logarithmic_at_4096_rows() {
+        let toolchain = ContentId::from_canonical_bytes(b"compiler");
+        let source = SourceIdentity::from_bytes(b"source").unwrap();
+        let rows = (0..4096)
+            .map(|i| NativeProgramSource {
+                program_path: format!("project/file{i:04}.ts"),
+                package_path: Some(format!("src/file{i:04}.ts")),
+                source,
+            })
+            .collect();
+        let mut project = independent_nodes().remove(0);
+        project.program = Some(NativeProgramSourceManifest::from_sources(toolchain, rows).unwrap());
+        let graph = NativeProgramSources::from_project_set(toolchain, 0, vec![project]).unwrap();
+        let shape = BorrowedProgramGraph::scratch(graph.as_bytes(), |_| Ok::<_, ()>(())).unwrap();
+        let mut nodes = vec![0; shape.node_bytes()];
+        let mut rows = vec![0; shape.row_bytes()];
+        let mut paths = vec![0; shape.leaf_paths];
+        let view = BorrowedProgramGraph::decode(
+            graph.as_bytes(),
+            &mut nodes,
+            &mut rows,
+            &mut paths,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+        let mut work = 0;
+        assert_eq!(
+            view.source_for_package_bytes(b"src/file4095.ts", |_| {
+                work += 1;
+                Ok::<_, ()>(())
+            })
+            .unwrap(),
+            Some(source)
+        );
+        assert!(work < 64, "lookup must remain logarithmic: {work}");
+        assert!(
+            view.source_for_package_bytes(b"src/file4095.ts", |_| Err::<(), _>("stopped"))
+                .is_err()
+        );
     }
 
     #[test]

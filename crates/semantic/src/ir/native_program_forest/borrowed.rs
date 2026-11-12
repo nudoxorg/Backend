@@ -126,6 +126,14 @@ impl RetainedProgramGraph {
     ) -> Result<bool, E> {
         self.view().image_matches_bytes(path, image, checkpoint)
     }
+    /// Find the unique package source using the validated retained row index.
+    pub fn source_for_package_bytes<E>(
+        &self,
+        path: &[u8],
+        checkpoint: impl FnMut(u64) -> Result<(), E>,
+    ) -> Result<Option<super::super::SourceIdentity>, E> {
+        self.view().source_for_package_bytes(path, checkpoint)
+    }
 }
 
 fn cmp<E>(
@@ -660,5 +668,38 @@ impl<'a, 's> BorrowedProgramGraph<'a, 's> {
         }
         let offset = get_u32(self.rows, low * 16 + 12);
         Ok(offset != 0 && self.bytes[offset..offset + 32] == *image)
+    }
+
+    /// Find a uniquely owned package source with metered binary lookup.
+    pub fn source_for_package_bytes<E>(
+        &self,
+        path: &[u8],
+        mut checkpoint: impl FnMut(u64) -> Result<(), E>,
+    ) -> Result<Option<super::super::SourceIdentity>, E> {
+        let mut low = 0;
+        let mut high = self.rows.len() / 16;
+        while low < high {
+            let mid = low + (high - low) / 2;
+            checkpoint(1)?;
+            let key = row_at(self.bytes, self.rows, mid)
+                .package_path
+                .unwrap_or(b"");
+            if cmp(key, path, &mut checkpoint)?.is_lt() {
+                low = mid + 1;
+            } else {
+                high = mid;
+            }
+        }
+        if low == self.rows.len() / 16 {
+            return Ok(None);
+        }
+        checkpoint(1)?;
+        let row = row_at(self.bytes, self.rows, low);
+        match row.package_path {
+            Some(candidate) if cmp(candidate, path, &mut checkpoint)?.is_eq() => {
+                Ok(Some(row.source))
+            }
+            _ => Ok(None),
+        }
     }
 }

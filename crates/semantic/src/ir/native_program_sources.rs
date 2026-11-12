@@ -155,6 +155,7 @@ pub struct BorrowedNativeProgramSourceManifest<'a> {
     program: [u8; 32],
     toolchain: ContentId<ToolchainDomain>,
     count: usize,
+    packages: usize,
 }
 
 impl<'a> BorrowedNativeProgramSourceManifest<'a> {
@@ -210,6 +211,7 @@ impl<'a> BorrowedNativeProgramSourceManifest<'a> {
         let mut packages = 0;
         for _ in 0..count {
             checkpoint(1).map_err(Stopped)?;
+            let row_offset = bytes.len() - input.0.len();
             let row = checked_borrowed_row(&mut input, &mut checkpoint)?;
             if let Some(path) = prior {
                 if !less(path, row.program_path, &mut checkpoint).map_err(Stopped)? {
@@ -221,7 +223,7 @@ impl<'a> BorrowedNativeProgramSourceManifest<'a> {
                 let offset = path.as_ptr() as usize - bytes.as_ptr() as usize;
                 let entry = &mut scratch[packages * 8..packages * 8 + 8];
                 entry[..4].copy_from_slice(&(offset as u32).to_le_bytes());
-                entry[4..].copy_from_slice(&(path.len() as u32).to_le_bytes());
+                entry[4..].copy_from_slice(&(row_offset as u32).to_le_bytes());
                 packages += 1;
             }
             hash.update(&(row.program_path.len() as u32).to_le_bytes());
@@ -257,7 +259,7 @@ impl<'a> BorrowedNativeProgramSourceManifest<'a> {
         fn key<'a>(bytes: &'a [u8], values: &[u8], index: usize) -> &'a [u8] {
             let entry = &values[index * 8..index * 8 + 8];
             let offset = u32::from_le_bytes(entry[..4].try_into().unwrap()) as usize;
-            let length = u32::from_le_bytes(entry[4..].try_into().unwrap()) as usize;
+            let length = u32::from_le_bytes(bytes[offset - 4..offset].try_into().unwrap()) as usize;
             &bytes[offset..offset + length]
         }
         fn swap(values: &mut [u8], a: usize, b: usize) {
@@ -321,6 +323,7 @@ impl<'a> BorrowedNativeProgramSourceManifest<'a> {
             program,
             toolchain,
             count,
+            packages,
         })
     }
 
@@ -393,8 +396,123 @@ impl RetainedNativeProgramSourceManifest {
             program: self.program,
             toolchain: self.toolchain,
             count: self.count,
+            packages: 0,
         }
         .visit_sources(checkpoint, visit)
+    }
+}
+
+/// A single Program retaining its validated package-path index with its wire.
+pub struct RetainedIndexedNativeProgramSourceManifest {
+    bytes: Box<[u8]>,
+    index: Box<[u8]>,
+    program: [u8; 32],
+    toolchain: ContentId<ToolchainDomain>,
+    count: usize,
+    packages: usize,
+}
+
+impl RetainedIndexedNativeProgramSourceManifest {
+    /// Admit exact caller-allocated wire and index together under the shared ledger.
+    /// The caller must reserve both allocations before allocation and keep their
+    /// debit live for the lifetime of the returned owner.
+    pub fn admit<E>(
+        bytes: Box<[u8]>,
+        mut index: Box<[u8]>,
+        checkpoint: impl FnMut(u64) -> Result<(), E>,
+    ) -> Result<Self, BorrowedNativeProgramError<E>> {
+        let required = BorrowedNativeProgramSourceManifest::scratch_bytes(&bytes)
+            .map_err(BorrowedNativeProgramError::Manifest)?;
+        if index.len() != required {
+            return Err(BorrowedNativeProgramError::Scratch);
+        }
+        let view = BorrowedNativeProgramSourceManifest::decode(&bytes, &mut index, checkpoint)?;
+        let (program, toolchain, count, packages) =
+            (view.program, view.toolchain, view.count, view.packages);
+        Ok(Self {
+            bytes,
+            index,
+            program,
+            toolchain,
+            count,
+            packages,
+        })
+    }
+    /// Exact native membership identity.
+    pub const fn program(&self) -> [u8; 32] {
+        self.program
+    }
+    /// Compiler toolchain bound by the manifest.
+    pub const fn toolchain(&self) -> ContentId<ToolchainDomain> {
+        self.toolchain
+    }
+    /// Visit actual membership rows with the live operation's work checkpoint.
+    pub fn visit_sources<'a, E>(
+        &'a self,
+        checkpoint: impl FnMut(u64) -> Result<(), E>,
+        visit: impl FnMut(BorrowedNativeProgramSourceRef<'a>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        BorrowedNativeProgramSourceManifest {
+            bytes: &self.bytes,
+            program: self.program,
+            toolchain: self.toolchain,
+            count: self.count,
+            packages: self.packages,
+        }
+        .visit_sources(checkpoint, visit)
+    }
+    /// Find the unique package owner without scanning all Program members.
+    pub fn source_for_package_bytes<E>(
+        &self,
+        path: &[u8],
+        mut checkpoint: impl FnMut(u64) -> Result<(), E>,
+    ) -> Result<Option<SourceIdentity>, E> {
+        fn cmp<E>(
+            a: &[u8],
+            b: &[u8],
+            checkpoint: &mut impl FnMut(u64) -> Result<(), E>,
+        ) -> Result<std::cmp::Ordering, E> {
+            for (a, b) in a.chunks(4096).zip(b.chunks(4096)) {
+                checkpoint(1)?;
+                let order = a.cmp(b);
+                if !order.is_eq() {
+                    return Ok(order);
+                }
+            }
+            checkpoint(1)?;
+            Ok(a.len().cmp(&b.len()))
+        }
+        let key = |index: usize| {
+            let entry = &self.index[index * 8..index * 8 + 8];
+            let offset = u32::from_le_bytes(entry[..4].try_into().unwrap()) as usize;
+            let length =
+                u32::from_le_bytes(self.bytes[offset - 4..offset].try_into().unwrap()) as usize;
+            (
+                &self.bytes[offset..offset + length],
+                u32::from_le_bytes(entry[4..].try_into().unwrap()) as usize,
+            )
+        };
+        let mut low = 0;
+        let mut high = self.packages;
+        while low < high {
+            let mid = low + (high - low) / 2;
+            if cmp(key(mid).0, path, &mut checkpoint)?.is_lt() {
+                low = mid + 1;
+            } else {
+                high = mid;
+            }
+        }
+        if low == self.packages {
+            return Ok(None);
+        }
+        let (candidate, row_offset) = key(low);
+        if !cmp(candidate, path, &mut checkpoint)?.is_eq() {
+            return Ok(None);
+        }
+        checkpoint(1)?;
+        Ok(Some(
+            admitted_borrowed_row(&self.bytes[row_offset..]).source,
+        ))
     }
 }
 
@@ -658,6 +776,60 @@ impl ExactSizeIterator for Sources<'_> {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retained_indexed_single_program_bounds_package_lookup() {
+        let source = SourceIdentity::from_bytes(b"source").unwrap();
+        let rows = (0..4096)
+            .map(|i| NativeProgramSource {
+                program_path: format!("project/file{i:04}.ts"),
+                package_path: Some(format!("src/file{i:04}.ts")),
+                source,
+            })
+            .collect();
+        let owned = NativeProgramSourceManifest::from_sources(
+            ContentId::from_canonical_bytes(b"compiler"),
+            rows,
+        )
+        .unwrap();
+        let required =
+            BorrowedNativeProgramSourceManifest::scratch_bytes(owned.as_bytes()).unwrap();
+        assert!(matches!(
+            RetainedIndexedNativeProgramSourceManifest::admit(
+                owned.as_bytes().into(),
+                vec![0; required - 1].into_boxed_slice(),
+                |_| Ok::<_, ()>(())
+            ),
+            Err(BorrowedNativeProgramError::Scratch)
+        ));
+        let indexed = RetainedIndexedNativeProgramSourceManifest::admit(
+            owned.as_bytes().into(),
+            vec![0; required].into_boxed_slice(),
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+        let mut work = 0;
+        assert_eq!(
+            indexed
+                .source_for_package_bytes(b"src/file4095.ts", |_| {
+                    work += 1;
+                    Ok::<_, ()>(())
+                })
+                .unwrap(),
+            Some(source)
+        );
+        assert!(work < 64, "lookup must remain logarithmic: {work}");
+        assert_eq!(
+            indexed
+                .source_for_package_bytes(b"src/missing.ts", |_| Ok::<_, ()>(()))
+                .unwrap(),
+            None
+        );
+        assert!(
+            indexed
+                .source_for_package_bytes(b"src/file4095.ts", |_| Err::<(), _>("stopped"))
+                .is_err()
+        );
+    }
     #[test]
     fn borrowed_path_validation_handles_utf8_chunk_boundaries_and_stop() {
         for prefix in 4093..=4097 {
