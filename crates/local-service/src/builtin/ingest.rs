@@ -596,7 +596,7 @@ impl NativeTsCapture {
                     producer_recipe: header.producer_recipe, aggregate_digest,
                 };
                 super::native_ts_headers::admit_image(&captured_source.evidence, &reference, header, &view, image.as_ref())?;
-                admitted_headers.insert(path, reference);
+                admitted_headers.insert(path.to_owned(), reference);
             }
         }
         if !header_claims.is_empty() { return Err("native headers lack their selected image".into()); }
@@ -608,7 +608,7 @@ impl NativeTsCapture {
             let source = captured.get(path).ok_or("native program member lost its captured source")?;
             let mut charge = source.evidence.checked_heap_bytes().and_then(|n| n.checked_add(256))
                 .ok_or("native source evidence resident overflow")?;
-            if admitted_headers.contains_key(path) {
+            if admitted_headers.contains_key(*path) {
                 charge = charge.checked_add(128).ok_or("native header resident overflow")?;
             }
             candidate_budget = candidate_budget.checked_sub(charge).ok_or("native evidence candidate budget exceeded")?;
