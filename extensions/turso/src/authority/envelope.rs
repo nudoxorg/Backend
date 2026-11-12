@@ -4486,18 +4486,20 @@ mod tests {
         let selected = selected_generation(&attempt, &envelope.candidate(attempt.clone(), *closure.as_bytes()).unwrap(), 1);
         drop(store);
         let store = FileStore::open(&directory, 8 * 1024 * 1024).unwrap();
-        let mut delivered = (0usize, 0usize);
+        let mut delivered = (0usize, 0usize, 0usize);
         let mut visitor_budget = SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000);
         visit_selected_publication_wire(&store, &selected, &mut visitor_budget, &|| false, 8 * 1024 * 1024, 1, |wire, budget| {
             match wire {
                 SelectedPublicationWire::Program { bytes, .. } => { assert!(!bytes.is_empty()); delivered.0 += 1; }
                 SelectedPublicationWire::Image { bytes, .. } => { assert!(!bytes.is_empty()); delivered.1 += 1; }
+                SelectedPublicationWire::Lines { bytes, .. } => { assert!(!bytes.is_empty()); delivered.2 += 1; }
+                SelectedPublicationWire::Headers { .. } => panic!("unexpected header member"),
             }
             budget.reserve_retained(1).map_err(|e| format!("{e:?}"))?;
             Ok(())
         }).unwrap();
-        assert_eq!(delivered, (1, 1));
-        assert_eq!(visitor_budget.remaining_memory(), 8 * 1024 * 1024 - 2);
+        assert_eq!(delivered, (1, 1, 1));
+        assert_eq!(visitor_budget.remaining_memory(), 8 * 1024 * 1024 - 3);
         let visitor_work = 100_000 - visitor_budget.remaining_work();
         assert!(visit_selected_publication_wire(&store, &selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, visitor_work - 1), &|| false, 8 * 1024 * 1024, 1, |_, _| Ok(())).is_err());
         assert!(visit_selected_publication_wire(&store, &selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000), &|| true, 8 * 1024 * 1024, 1, |_, _| Ok(())).is_err());
