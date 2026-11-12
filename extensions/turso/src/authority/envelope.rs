@@ -1574,6 +1574,7 @@ pub(super) struct FileStoreCompilerPublicationVerifier<'store, 'envelope, 'metad
     budget: ArtifactBudget,
     expected: &'envelope CompilerPublicationEnvelope,
     expected_metadata: &'metadata CompilerPublicationMetadata,
+    stopped: Option<&'store dyn Fn() -> bool>,
 }
 
 impl<'store, 'envelope, 'metadata>
@@ -1592,7 +1593,13 @@ impl<'store, 'envelope, 'metadata>
             budget,
             expected,
             expected_metadata,
+            stopped: None,
         }
+    }
+
+    pub(super) fn with_stop(mut self, stopped: &'store dyn Fn() -> bool) -> Self {
+        self.stopped = Some(stopped);
+        self
     }
 }
 
@@ -2350,7 +2357,7 @@ impl DurableClosureVerifier for FileStoreCompilerPublicationVerifier<'_, '_, '_>
         {
             return Err("compiler coverage input differs from admitted attempt".to_owned());
         }
-        verify_native_lines_for_admission(self.store, &manifest, &observed_metadata, self.budget)?;
+        verify_native_lines_for_admission(self.store, &manifest, &observed_metadata, self.budget, self.stopped)?;
         verify_semantic_image_members(self.store, &manifest, &observed_metadata)?;
         verify_versioned_plane_members(&manifest, &observed_metadata)?;
         verify_exact_member_set(
@@ -2369,6 +2376,7 @@ impl DurableClosureVerifier for FileStoreCompilerPublicationVerifier<'_, '_, '_>
 fn verify_native_lines_for_admission(
     store: &FileStore, manifest: &backend_store::DurableManifest,
     metadata: &CompilerPublicationMetadata, policy: ArtifactBudget,
+    external_stop: Option<&dyn Fn() -> bool>,
 ) -> Result<(), String> {
     let Some(member) = metadata.native_lines() else { return Ok(()) };
     let length = member.byte_length() as usize;
@@ -2379,7 +2387,7 @@ fn verify_native_lines_for_admission(
         .map_err(|e| format!("admit candidate line member: {e:?}"))?
         .ok_or("candidate line member absent from closure")?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    let stopped = || std::time::Instant::now() >= deadline;
+    let stopped = || external_stop.is_some_and(|stop| stop()) || std::time::Instant::now() >= deadline;
     let mut budget = SelectedNativeHeaderBudget::new(MAX_COMPILER_NATIVE_LINES_BYTES + 4 * 1024 * 1024, 128 * 1024 * 1024);
     let pin = store.pin_garbage_collection_bounded(&mut budget.memory, |_| header_checkpoint(&budget.work, &stopped))
         .map_err(|e| format!("pin candidate line member: {e:?}"))?;
@@ -4582,7 +4590,7 @@ mod tests {
         let policy = ArtifactBudget::new(16, 64, 8 * 1024 * 1024, 1024 * 1024, 64);
         let verifier = FileStoreCompilerPublicationVerifier::new(&store, policy, &envelope, &metadata);
         let valid_manifest = store.open_closure(closure).unwrap();
-        verify_native_lines_for_admission(&store, &valid_manifest, &metadata, policy).unwrap();
+        verify_native_lines_for_admission(&store, &valid_manifest, &metadata, policy, None).unwrap();
         drop(valid_manifest);
         // These physically valid object IDs are not sufficient to admit an
         // incorrectly typed or malformed line member before selection.

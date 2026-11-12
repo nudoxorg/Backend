@@ -4014,7 +4014,7 @@ impl SemanticAuthority {
         )?;
         #[cfg(test)]
         test_wait_before_local_selection();
-        self.select_verified_closure(key, admitted, move |candidate| {
+        self.select_verified_closure(key, admitted, stopped, move |candidate| {
             if stopped() { return Err(BuiltinModelError("compiler publication cancelled".into())); }
             admit_before_select(candidate)?;
             if stopped() { return Err(BuiltinModelError("compiler publication cancelled".into())); }
@@ -4368,7 +4368,9 @@ impl SemanticAuthority {
             input_manifest.environment(),
             input_manifest.target_platform(),
         );
-        self.select_verified_closure(key, admitted_compilation, move |candidate| {
+        let deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
+        let stopped = || std::time::Instant::now() >= deadline;
+        self.select_verified_closure(key, admitted_compilation, &stopped, move |candidate| {
             if !Self::authorizes_remote_scope_at(&policy_path, scope)? {
                 return Err(BuiltinModelError(
                     "remote compiler peer trust changed before semantic selection".to_owned(),
@@ -4434,6 +4436,7 @@ impl SemanticAuthority {
         &mut self,
         key: &ProductSemanticPublicationKey,
         admitted: AdmittedCompilation,
+        stopped: &dyn Fn() -> bool,
         admit_before_select: impl FnOnce(
             &backend_extension_turso::CandidateGeneration,
         ) -> Result<(), BuiltinModelError>,
@@ -4515,13 +4518,14 @@ impl SemanticAuthority {
         let receipt = verify_then_publish_selected_closure(
             || {
                 self.writer_authority()?
-                    .verify_compiler_publication(
+                    .verify_compiler_publication_with_stop(
                         &candidate,
                         &admitted_attempt,
                         &self.store,
                         artifact_budget(),
                         &envelope,
                         &metadata,
+                        stopped,
                     )
                     .map_err(|error| {
                         BuiltinModelError(format!("verify semantic publication closure: {error}"))

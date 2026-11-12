@@ -1519,6 +1519,17 @@ impl TursoAuthority {
         self.verify_closure(candidate, &verifier)
     }
 
+    /// Verifies a compiler candidate while observing its live operation stop.
+    pub fn verify_compiler_publication_with_stop(
+        &self, candidate: &CandidateGeneration, admitted_attempt: &CandidateAttempt,
+        store: &FileStore, budget: ArtifactBudget, envelope: &CompilerPublicationEnvelope,
+        metadata: &CompilerPublicationMetadata, stopped: &dyn Fn() -> bool,
+    ) -> Result<ClosureReceipt, AuthorityError> {
+        if candidate.attempt() != admitted_attempt { return Err(AuthorityError::AdmittedInputMismatch); }
+        let verifier = FileStoreCompilerPublicationVerifier::new(store, budget, envelope, metadata).with_stop(stopped);
+        self.verify_closure(candidate, &verifier)
+    }
+
     /// Atomically selects a fully verified candidate against its exact attempt,
     /// input digest, source observation, and base frontier.
     ///
