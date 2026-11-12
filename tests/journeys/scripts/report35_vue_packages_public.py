@@ -32,6 +32,44 @@ def is_full_search(reply, query):
             and reply.get('full_search') in (None, 'ready'))
 
 
+def classify_search(reply, query):
+    if is_full_search(reply, query):
+        return 'full'
+    if (isinstance(reply, dict) and reply.get('answer') == 'records'
+            and reply.get('query') == query and isinstance(reply.get('records'), list)
+            and reply.get('search_scope') == 'published_names_only'
+            and reply.get('full_search') == 'preparing'):
+        return 'preparing'
+    return 'invalid'
+
+
+def wait_full_search(journey, phase, query, readiness_observations, require):
+    # The owner journey already uses a 600-second preparation bound. Each
+    # request retains its existing transport deadline and unique receipt.
+    started = time.monotonic()
+    deadline = started + 600
+    attempt = 0
+    while time.monotonic() < deadline:
+        attempt += 1
+        label = f'{phase}-search-ready-{attempt:04d}'
+        rc, reply, raw = journey.cli(label, ['search', query, '--limit', '100'], deadline=deadline)
+        elapsed = time.monotonic() - started
+        readiness_observations.append({'phase': phase, 'attempt': attempt,
+            'elapsed_seconds': round(elapsed, 3), 'exit': rc,
+            'search_scope': reply.get('search_scope') if isinstance(reply, dict) else None,
+            'full_search': reply.get('full_search') if isinstance(reply, dict) else None,
+            'full_lexical': is_full_search(reply, query), 'observation_label': label})
+        if elapsed >= 600:
+            raise TimeoutError(f'{phase}: full lexical search exceeded the 600-second preparation bound')
+        state = classify_search(reply, query)
+        require(label + ' valid response', rc == 0 and state != 'invalid', raw)
+        if state == 'full':
+            return reply
+        interval = min(5.0, .25 * (2 ** min(attempt - 1, 5)))
+        time.sleep(min(interval, max(0, deadline - time.monotonic())))
+    raise TimeoutError(f'{phase}: full lexical search never became ready within 600 seconds')
+
+
 class StrictJourney(Journey):
     """Retire only process groups started by this journey, and report failures."""
     def _stop(self, proc):
@@ -88,16 +126,19 @@ class StrictJourney(Journey):
         finally:
             path.write_text(json.dumps(observation, ensure_ascii=False, indent=2))
 
-    def cli(self, label, args, project=None, timeout=900):
+    def cli(self, label, args, project=None, timeout=900, deadline=None):
         project = project or self.project
         cmd = [str(self.bin / 'backend-cli'), '--format', 'json', '--project', str(project),
                '--workspace', str(self.workspace), '--endpoint', str(self.endpoint), *args]
         for attempt in range(6):
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(f'CLI {label} readiness deadline expired')
             proc = subprocess.Popen(cmd, cwd=project, env=self.env, stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE, start_new_session=True)
             timed_out = False
             try:
-                out, err = proc.communicate(timeout=timeout)
+                remaining = timeout if deadline is None else min(timeout, max(.001, deadline - time.monotonic()))
+                out, err = proc.communicate(timeout=remaining)
             except subprocess.TimeoutExpired:
                 timed_out = True
                 self._stop(proc)
@@ -123,7 +164,8 @@ class StrictJourney(Journey):
                           and 'can be repeated' in str(obj.get('detail', '')))
             if not repeatable:
                 break
-            time.sleep(10)
+            delay = 10 if deadline is None else min(10, max(0, deadline - time.monotonic()))
+            time.sleep(delay)
         return proc.returncode, obj, raw + '\n' + stderr
 
     def close(self, preserve_fixture):
@@ -166,6 +208,7 @@ def main():
         raise SystemExit('output must be outside the source checkout')
     output.mkdir(parents=True, exist_ok=False)
     checks = []
+    readiness_observations = []
     journey = StrictJourney.__new__(StrictJourney)
     driver_path = pathlib.Path(__file__).resolve(strict=True)
     driver_before = digest(driver_path)
@@ -194,15 +237,26 @@ def main():
         require(label + ' typed full lexical search', is_full_search(reply, query), reply)
 
     def verify(phase):
-        rc, search, raw = journey.cli(phase + '-search', ['search', 'mounted', '--limit', '100'])
+        search = wait_full_search(journey, phase, 'mounted', readiness_observations, require)
         require_full_search(phase + ' CLI', search, 'mounted')
         rows = declarations(search, 'mounted', {'function'}, None)
         rows = [row for row in rows if 'App.vue' in str(row.get('identity', {}))]
-        require(phase + ' CLI search', rc == 0 and len(rows) == 1, raw)
+        require(phase + ' CLI search', len(rows) == 1, search)
         coord = rows[0]['identity']['coordinate']
         result = mcp('backend.search', {'query': 'mounted', 'limit': 100}, phase + '-mcp-search')
         require_full_search(phase + ' MCP', result, 'mounted')
         require(phase + ' MCP search', coord in json.dumps(result), result)
+        # This unique typed parameter is on the declaration's first line and
+        # is not part of its name. It witnesses the indexed signature field.
+        witness = 'uniquelexicalprobe'
+        require(phase + ' lexical-only witness differs from name', witness not in rows[0]['identity']['name'].lower(), rows[0])
+        require(phase + ' lexical-only witness in captured signature', isinstance(rows[0].get('signature'), str) and witness in rows[0]['signature'], rows[0])
+        rc, lexical, raw = journey.cli(phase + '-lexical-only', ['search', witness, '--limit', '100'])
+        require_full_search(phase + ' CLI lexical-only', lexical, witness)
+        require(phase + ' CLI lexical-only witness', rc == 0 and any(r.get('identity', {}).get('coordinate') == coord for r in lexical['records']), raw)
+        lexical_mcp = mcp('backend.search', {'query': witness, 'limit': 100}, phase + '-mcp-lexical-only')
+        require_full_search(phase + ' MCP lexical-only', lexical_mcp, witness)
+        require(phase + ' MCP lexical-only witness', any(r.get('identity', {}).get('coordinate') == coord for r in lexical_mcp['records']), lexical_mcp)
         rc, _, raw = journey.cli(phase + '-source', ['source', coord])
         require(phase + ' CLI source', rc == 0 and "return 'é漢'" in raw and '<template>' not in raw, raw)
         result = mcp('backend.source', {'coordinate': coord}, phase + '-mcp-source')
@@ -268,7 +322,7 @@ def main():
         (python_api / '__init__.py').write_text('from .applications import FastAPI\n')
         (python_api / 'applications.py').write_text('class FastAPI:\n    def get(self, path: str): ...\n')
         (python_api / 'leak.py').symlink_to(outside)
-        (project / 'App.vue').write_bytes('<template><button @click="mounted">Run</button></template>\r\n<script setup lang="ts">\r\n// é漢\r\nfunction mounted() { return \'é漢\'; }\r\nmounted();\r\nfunction wrapper() { mounted(); }\r\nfunction shadow(mounted: () => void) { mounted(); }\r\n</script>\r\n'.encode())
+        (project / 'App.vue').write_bytes('<template><button @click="mounted">Run</button></template>\r\n<script setup lang="ts">\r\n// é漢\r\nfunction mounted(uniquelexicalprobe: number = 0) { return \'é漢\'; }\r\nmounted();\r\nfunction wrapper() { mounted(); }\r\nfunction shadow(mounted: () => void) { mounted(); }\r\n</script>\r\n'.encode())
         journey.start_owner(project)
         journey.start_mcp()
         rc, state, raw = index_published(journey, project, 'vue')
@@ -283,9 +337,9 @@ def main():
         (project / 'App.vue').write_text('<script setup>function replacement() { return 2; }</script>')
         rc, state, raw = index_published(journey, project, 'edited')
         require('edit published', rc == 0 and state == 'published', raw)
-        rc, result, raw = journey.cli('edited-search', ['search', 'mounted', '--limit', '100'])
+        result = wait_full_search(journey, 'edited', 'mounted', readiness_observations, require)
         require_full_search('edit CLI', result, 'mounted')
-        require('edit retires declaration', rc == 0 and result.get('more') is False and not declarations(result, 'mounted', {'function'}, None), raw)
+        require('edit retires declaration', result.get('more') is False and not declarations(result, 'mounted', {'function'}, None), result)
         result = mcp('backend.search', {'query': 'mounted', 'limit': 100}, 'edited-mcp-search')
         require_full_search('edit MCP', result, 'mounted')
         require('MCP edit retires declaration', result.get('more') is False and not declarations(result, 'mounted', {'function'}, None), result)
@@ -307,7 +361,7 @@ def main():
                 shutil.rmtree(journey.root)
             except Exception as error:
                 checks.append({'name': 'fixture cleanup', 'pass': False, 'detail': repr(error)})
-    receipt = {'driver_path': str(driver_path), 'driver_sha256': driver_before, 'source_commit': head, 'source_tree': tree, 'cargo_lock_sha256': digest(repo / 'Cargo.lock'), 'binary_sha256': {name: item['sha256'] for name, item in build['artifacts'].items()}, 'build_receipt': {'path': build['receipt_path'], 'sha256': build['receipt_sha256']}, 'records': getattr(journey, 'records', []), 'fixture_root_if_preserved': str(journey.root) if hasattr(journey, 'root') and journey.root.exists() else None, 'mode': 'development assumed; authenticated account not exercised', 'account_gate_environment_set': 'NUDOX_ACCOUNT_GATE' in getattr(journey, 'env', {}), 'fixture': 'synthetic; package code not executed', 'nuget_public_journey': 'not exercised', 'checks': checks}
+    receipt = {'driver_path': str(driver_path), 'driver_sha256': driver_before, 'source_commit': head, 'source_tree': tree, 'cargo_lock_sha256': digest(repo / 'Cargo.lock'), 'binary_sha256': {name: item['sha256'] for name, item in build['artifacts'].items()}, 'build_receipt': {'path': build['receipt_path'], 'sha256': build['receipt_sha256']}, 'records': getattr(journey, 'records', []), 'search_readiness': readiness_observations, 'fixture_root_if_preserved': str(journey.root) if hasattr(journey, 'root') and journey.root.exists() else None, 'mode': 'development assumed; authenticated account not exercised', 'account_gate_environment_set': 'NUDOX_ACCOUNT_GATE' in getattr(journey, 'env', {}), 'fixture': 'synthetic; package code not executed', 'nuget_public_journey': 'not exercised', 'checks': checks}
     (output / 'receipt.json').write_text(json.dumps(receipt, indent=2))
     print(json.dumps(receipt, indent=2))
     return 0 if checks and all(check['pass'] for check in checks) else 1
