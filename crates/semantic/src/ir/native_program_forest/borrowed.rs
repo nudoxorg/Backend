@@ -317,6 +317,7 @@ impl<'a, 's> BorrowedProgramGraph<'a, 's> {
             }
             previous = Some(path);
             let config = input.take(32).map_err(Manifest)?;
+            ContentId::<SourceFactDomain>::try_from(config).map_err(|_| Manifest(invalid))?;
             let environment = input.take(32).map_err(Manifest)?;
             let reference_count = input.u32().map_err(Manifest)? as usize;
             let references = input.take(reference_count * 4).map_err(Manifest)?;

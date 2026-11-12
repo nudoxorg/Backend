@@ -727,6 +727,44 @@ mod tests {
         .unwrap();
         assert_eq!(count, graph.sources().count());
     }
+
+    #[test]
+    fn borrowed_graph_rejects_invalid_typed_config_even_with_matching_node_hash() {
+        let toolchain = ContentId::from_canonical_bytes(b"compiler");
+        let source_nodes = nodes();
+        let graph = NativeProgramSources::from_forest(toolchain, 1, source_nodes.clone()).unwrap();
+        let mut wire = graph.as_bytes().to_vec();
+        let node = &source_nodes[0];
+        let config_offset = 48 + 4 + node.config_path.len();
+        wire[config_offset..config_offset + 32].fill(0);
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"typescript.program-node.v1\0");
+        hash.update(toolchain.as_ref());
+        hash.update(&(node.config_path.len() as u64).to_le_bytes());
+        hash.update(node.config_path.as_bytes());
+        hash.update(&[0; 32]);
+        hash.update(&node.environment);
+        hash.update(&0u64.to_le_bytes());
+        hash.update(&[1]);
+        hash.update(&node.program.as_ref().unwrap().program());
+        let id_offset = config_offset + 32 + 32 + 4;
+        wire[id_offset..id_offset + 32].copy_from_slice(hash.finalize().as_bytes());
+        assert!(NativeProgramSources::decode(&wire).is_err());
+        let shape = BorrowedProgramGraph::scratch(&wire, |_| Ok::<_, ()>(())).unwrap();
+        let mut node_scratch = vec![0; shape.node_bytes()];
+        let mut row_scratch = vec![0; shape.row_bytes()];
+        let mut paths = vec![0; shape.leaf_paths];
+        assert!(
+            BorrowedProgramGraph::decode(
+                &wire,
+                &mut node_scratch,
+                &mut row_scratch,
+                &mut paths,
+                |_| Ok::<_, ()>(())
+            )
+            .is_err()
+        );
+    }
     fn leaf(path: &str) -> NativeProgramSourceManifest {
         NativeProgramSourceManifest::from_sources(
             ContentId::from_canonical_bytes(b"compiler"),
