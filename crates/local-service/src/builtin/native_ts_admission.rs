@@ -226,7 +226,6 @@ pub(super) fn refresh_native_ts_evidence_plan(
                     ));
                 }
             };
-        let _selected = selected;
         let mut generations = super::generation_residence::SemanticGenerationResidence::default();
         generations.install_selected_loader(Arc::clone(&loader));
         let mut image_rows = super::view_build::ImageRowResidence::default();
@@ -241,6 +240,8 @@ pub(super) fn refresh_native_ts_evidence_plan(
             .native_program_sources
             .as_ref()
             .ok_or_else(|| BuiltinModelError("native TypeScript program is unavailable".into()))?;
+        let mut header_budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
+        let header_witness = semantic_authority.native_header_aggregate_for_admitted(&selected, &mut header_budget)?;
         if program.membership_identity() != candidate.program_identity
             || program_package_paths(program)? != candidate.program_paths
             || !activated
@@ -250,7 +251,7 @@ pub(super) fn refresh_native_ts_evidence_plan(
                 .eq(candidate.image_digests.iter().copied())
             || candidate
                 .revalidated
-                .program_image_evidence(&activated)
+                .program_image_evidence(&activated, header_witness.as_ref().map(|(aggregate, digest)| (aggregate, *digest)))
                 .map_err(BuiltinModelError)?
                 != candidate.evidence
         {
@@ -357,12 +358,21 @@ fn merge_program_source_claim(
 ) -> Result<(), BuiltinModelError> {
     let mut comparable = row.clone();
     comparable.kind = prior.kind;
+    comparable.headers = prior.headers.clone();
     if *prior != comparable {
         return Err(BuiltinModelError(
             "native TypeScript candidates disagree on a source".into(),
         ));
     }
-    if row.admits_image() { prior.kind = row.kind; }
+    if prior.admits_image() && row.admits_image() && prior.headers != row.headers {
+        return Err(BuiltinModelError(
+            "native TypeScript candidates disagree on image headers".into(),
+        ));
+    }
+    if row.admits_image() && !prior.admits_image() {
+        prior.kind = row.kind;
+        prior.headers.clone_from(&row.headers);
+    }
     Ok(())
 }
 
@@ -379,14 +389,23 @@ mod program_source_claim_tests {
             path: "a.ts".into(), input_digest: [2; 32], source_digest: [3; 32],
             byte_length: 5, kind: NativeSourceEvidenceKind::ProgramMember,
             line_starts: Some(vec![0, 3]),
+            headers: None,
         };
         let mut image = member.clone();
         image.kind = NativeSourceEvidenceKind::Image;
+        image.headers = Some(backend_engine::builtin::NativeHeaderEvidence {
+            image_identity: [4; 32], image_byte_len: 1, producer_recipe: [5; 32], aggregate_digest: [6; 32],
+        });
         let mut merged = member.clone();
         merge_program_source_claim(&mut merged, &image).expect("same source");
         assert!(merged.admits_image());
+        assert_eq!(merged.headers, image.headers);
         merge_program_source_claim(&mut merged, &member).expect("same source in reverse order");
         assert!(merged.admits_image());
+        assert_eq!(merged.headers, image.headers);
+        let mut conflicting_image = image.clone();
+        conflicting_image.headers.as_mut().unwrap().image_identity[0] ^= 1;
+        assert!(merge_program_source_claim(&mut merged, &conflicting_image).is_err());
         let mut different = member;
         different.source_digest[0] ^= 1;
         assert!(merge_program_source_claim(&mut merged, &different).is_err());
@@ -435,6 +454,11 @@ pub(super) fn plan_native_ts_evidence(
     let first = &candidates[0];
     let admitted_base = NativeTsBase::from_snapshot(base)?;
     let owner = first.revalidated.project();
+    let mut read_budget = MAX_NATIVE_EVIDENCE_BYTES;
+    for candidate in &candidates {
+        let retained = candidate.checked_retained_bytes().ok_or_else(|| BuiltinModelError("native candidate resident overflow".into()))?;
+        read_budget = read_budget.checked_sub(retained).ok_or_else(|| BuiltinModelError("native candidate resident budget exceeded".into()))?;
+    }
     let mut profiles = BTreeSet::new();
     let mut positive = BTreeMap::<[u8; 32], backend_engine::builtin::NativeSourceEvidence>::new();
     let mut changes = BTreeMap::<[u8; 32], NativeTsEvidenceChange>::new();
@@ -481,6 +505,9 @@ pub(super) fn plan_native_ts_evidence(
                     "native positive evidence exceeds its bound".into(),
                 ));
             }
+            let clone_bytes = row.checked_heap_bytes().and_then(|n| n.checked_add(std::mem::size_of::<backend_engine::builtin::NativeSourceEvidence>() + 256))
+                .ok_or_else(|| BuiltinModelError("native positive clone overflow".into()))?;
+            read_budget = read_budget.checked_sub(clone_bytes).ok_or_else(|| BuiltinModelError("native positive clone budget exceeded".into()))?;
             positive.insert(key, row.clone());
         }
         for change in &candidate.evidence_changes {
@@ -513,6 +540,9 @@ pub(super) fn plan_native_ts_evidence(
                     "native evidence change work exceeds its bound".into(),
                 ));
             }
+            let mut clone_bytes = std::mem::size_of::<NativeTsEvidenceChange>() + 256;
+            charge_change_paths(&mut clone_bytes, change).ok_or_else(|| BuiltinModelError("native change clone overflow".into()))?;
+            read_budget = read_budget.checked_sub(clone_bytes).ok_or_else(|| BuiltinModelError("native change clone budget exceeded".into()))?;
             changes.insert(change.key, change.clone());
         }
     }
@@ -520,12 +550,16 @@ pub(super) fn plan_native_ts_evidence(
     // emits its image. Publish the strongest matching claim once, comparing
     // against the same selected before-row used by each candidate.
     for (key, change) in &mut changes {
-        change.after = positive.get(key).ok_or_else(|| BuiltinModelError(
+        let replacement = positive.get(key).ok_or_else(|| BuiltinModelError(
             "native evidence delta has no positive program member".into(),
-        ))?.clone();
+        ))?;
+        let clone_bytes = replacement.checked_heap_bytes().and_then(|n| n.checked_add(128))
+            .ok_or_else(|| BuiltinModelError("native replacement clone overflow".into()))?;
+        read_budget = read_budget.checked_sub(clone_bytes).ok_or_else(|| BuiltinModelError("native replacement clone budget exceeded".into()))?;
+        change.after = replacement.clone();
     }
     changes.retain(|_, change| change.expected.as_ref() != Some(&change.after));
-    let relation = backend_engine::builtin::native_source_evidence_relation(base)
+    let relation = backend_engine::builtin::native_source_evidence_relation_budgeted(base, &mut read_budget)
         .map_err(|error| BuiltinModelError(format!("open selected native evidence: {error}")))?;
     let mut scan_work = 0usize;
     let mut count = 0usize;
@@ -543,8 +577,7 @@ pub(super) fn plan_native_ts_evidence(
                     "native TypeScript rewalk was cancelled".into(),
                 ));
             }
-            let page = relation
-                .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+            let page = backend_engine::builtin::native_source_evidence_page_budgeted(&relation, after.as_ref(), &mut read_budget)
                 .map_err(|error| {
                     BuiltinModelError(format!("read selected native evidence: {error}"))
                 })?;
@@ -609,6 +642,9 @@ pub(super) fn plan_native_ts_evidence(
                         {
                             return Err(BuiltinModelError("native retirement exceeds its bound".into()));
                         }
+                        let clone_bytes = row.checked_heap_bytes().and_then(|n| n.checked_add(std::mem::size_of::<NativeTsEvidenceRetirement>() + 128))
+                            .ok_or_else(|| BuiltinModelError("native retirement clone overflow".into()))?;
+                        read_budget = read_budget.checked_sub(clone_bytes).ok_or_else(|| BuiltinModelError("native retirement clone budget exceeded".into()))?;
                         retirements.push(NativeTsEvidenceRetirement { key: *key, expected: row.clone() });
                     }
                 }
@@ -884,8 +920,10 @@ pub(super) fn admit_native_ts_owner_candidate(
         &mut generations,
         &mut image_rows,
     )?;
+    let mut header_budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
+    let header_witness = semantic_authority.native_header_aggregate_for_admitted(&selected, &mut header_budget)?;
     let evidence = revalidated
-        .program_image_evidence(&activated)
+        .program_image_evidence(&activated, header_witness.as_ref().map(|(aggregate, digest)| (aggregate, *digest)))
         .map_err(BuiltinModelError)?;
     let program = activated.native_program_sources.as_ref()
         .ok_or_else(|| BuiltinModelError("native TypeScript program is unavailable".into()))?;
@@ -897,8 +935,9 @@ pub(super) fn admit_native_ts_owner_candidate(
         .map(|image| image.content_digest())
         .collect::<Vec<_>>()
         .into_boxed_slice();
-    let evidence_basis = super::profile::native_evidence_basis_for_snapshot(base)?;
-    let selected_evidence = backend_engine::builtin::native_source_evidence_relation(base)
+    let mut read_budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
+    let evidence_basis = super::profile::native_evidence_basis_for_snapshot_budgeted(base, &mut read_budget)?;
+    let selected_evidence = backend_engine::builtin::native_source_evidence_relation_budgeted(base, &mut read_budget)
         .map_err(|error| BuiltinModelError(format!("open selected native evidence: {error}")))?;
     let mut evidence_changes = Vec::with_capacity(evidence.len());
     let mut evidence_work = 0usize;
@@ -908,7 +947,7 @@ pub(super) fn admit_native_ts_owner_candidate(
         let key = row.key().map_err(|error| BuiltinModelError(error.into()))?;
         let expected = selected_evidence
             .as_ref()
-            .map(|relation| relation.lookup(&key))
+            .map(|relation| backend_engine::builtin::native_source_evidence_lookup_budgeted(relation, &key, &mut read_budget))
             .transpose()
             .map_err(|error| BuiltinModelError(format!("read selected native evidence: {error}")))?
             .flatten();
@@ -944,6 +983,9 @@ pub(super) fn admit_native_ts_owner_candidate(
                 "native evidence work exceeds its bound".into(),
             ));
         }
+        let clone_bytes = row.checked_heap_bytes().and_then(|n| n.checked_add(std::mem::size_of::<NativeTsEvidenceChange>() + 128))
+            .ok_or_else(|| BuiltinModelError("native evidence clone overflow".into()))?;
+        read_budget = read_budget.checked_sub(clone_bytes).ok_or_else(|| BuiltinModelError("native evidence clone budget exceeded".into()))?;
         evidence_changes.push(NativeTsEvidenceChange {
             key,
             expected,
@@ -974,4 +1016,81 @@ pub(super) fn admit_native_ts_owner_candidate(
         evidence_changes,
         evidence_work,
     })
+}
+
+#[cfg(test)]
+mod retained_line_map_budget_tests {
+    use super::{charge_allocation, charge_row_path};
+    use backend_engine::builtin::{NativeSourceEvidence, NativeSourceEvidenceKind};
+    use backend_engine::queue::{QueueBudget, QueueUsage};
+    use backend_semantic::vocabulary::{LanguageProfile, TypeScriptSource};
+
+    #[test]
+    fn aggregate_retained_maps_charge_capacity_and_cross_queue_boundary() {
+        let row = |path: &str, spare: usize| {
+            let mut lines = Vec::with_capacity(spare);
+            lines.extend([0, 2, 4]);
+            NativeSourceEvidence {
+                project: [1; 32],
+                profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+                path: path.to_owned(),
+                input_digest: [2; 32],
+                source_digest: [3; 32],
+                byte_length: 4,
+                kind: NativeSourceEvidenceKind::ProgramMember,
+                line_starts: Some(lines),
+                headers: None,
+            }
+        };
+        let a = row("a.ts", 1024);
+        let b = row("b.ts", 2048);
+        let header = 2 * std::mem::size_of::<usize>();
+        let mut a_charge = 0;
+        charge_row_path(&mut a_charge, &a).unwrap();
+        assert_eq!(a_charge, a.path.capacity() + header + a.line_starts.as_ref().unwrap().capacity() * 4 + header);
+        let mut combined = a_charge;
+        charge_row_path(&mut combined, &b).unwrap();
+        assert_eq!(combined, a_charge + b.path.capacity() + header + b.line_starts.as_ref().unwrap().capacity() * 4 + header);
+        assert!(combined > (a.line_starts.as_ref().unwrap().len() + b.line_starts.as_ref().unwrap().len()) * 4);
+        let mut at_limit = QueueUsage::default();
+        assert!(at_limit.admit(QueueBudget::new(2, combined), a_charge));
+        assert!(at_limit.admit(QueueBudget::new(2, combined), combined - a_charge));
+        assert_eq!(at_limit.bytes, combined);
+        let mut below = QueueUsage::default();
+        assert!(below.admit(QueueBudget::new(2, combined - 1), a_charge));
+        assert!(!below.admit(QueueBudget::new(2, combined - 1), combined - a_charge));
+        assert_eq!(below.bytes, a_charge);
+        let mut near_overflow = usize::MAX - 1;
+        assert!(charge_allocation(&mut near_overflow, 1).is_none());
+    }
+}
+
+/// Inspect the actual owner-admitted plan without constructing an authority.
+#[cfg(test)]
+pub(super) fn test_plan_line_map_charge(plan: &NativeTsEvidencePlan) -> Option<(usize, usize)> {
+    let mut maps = 0usize;
+    let mut bytes = 0usize;
+    for candidate in &plan.candidates {
+        for row in &candidate.evidence {
+            if row.line_starts.is_some() { maps += 1; }
+            charge_row_path(&mut bytes, row)?;
+        }
+        for change in &candidate.evidence_changes {
+            for row in change.expected.iter().chain(std::iter::once(&change.after)) {
+                if row.line_starts.is_some() { maps += 1; }
+                charge_row_path(&mut bytes, row)?;
+            }
+        }
+    }
+    for change in &plan.changes {
+        for row in change.expected.iter().chain(std::iter::once(&change.after)) {
+            if row.line_starts.is_some() { maps += 1; }
+            charge_row_path(&mut bytes, row)?;
+        }
+    }
+    for retirement in &plan.retirements {
+        if retirement.expected.line_starts.is_some() { maps += 1; }
+        charge_row_path(&mut bytes, &retirement.expected)?;
+    }
+    Some((maps, bytes))
 }

@@ -515,8 +515,9 @@ impl RevalidatedNativeTsCapture {
     pub(super) fn program_image_evidence(
         &self,
         activated: &super::ActivatedProductSemantics,
+        headers: Option<(&backend_semantic::native_ts_headers::NativeTsHeaderAggregate, [u8; 32])>,
     ) -> Result<Vec<backend_engine::builtin::NativeSourceEvidence>, String> {
-        self.capture.program_image_evidence(activated)
+        self.capture.program_image_evidence(activated, headers)
     }
 }
 
@@ -550,7 +551,16 @@ impl NativeTsCapture {
     pub(super) fn program_image_evidence(
         &self,
         activated: &super::ActivatedProductSemantics,
+        headers: Option<(&backend_semantic::native_ts_headers::NativeTsHeaderAggregate, [u8; 32])>,
     ) -> Result<Vec<backend_engine::builtin::NativeSourceEvidence>, String> {
+        let mut header_claims = BTreeMap::new();
+        if let Some((aggregate, _)) = headers {
+            for header in &aggregate.files {
+                if header_claims.insert(header.path.as_str(), header).is_some() {
+                    return Err("duplicate native header source".into());
+                }
+            }
+        }
         let program = activated.native_program_sources.as_ref()
             .ok_or("native TypeScript program is unavailable")?;
         let captured: BTreeMap<_, _> = self.sources.iter()
@@ -570,6 +580,7 @@ impl NativeTsCapture {
             }
         }
         let mut witnessed = BTreeSet::new();
+        let mut admitted_headers = BTreeMap::new();
         for image in activated.images() {
             let view = image.reopen().map_err(|error| format!("reopen native image: {error}"))?;
             let backend_semantic::ir::ImageProvenance::Captured { source, recipe, scope, .. } =
@@ -586,18 +597,47 @@ impl NativeTsCapture {
             {
                 return Err("native image is not an exact program member".into());
             }
+            if let Some(header) = header_claims.remove(path) {
+                if header.source != source || header.producer_recipe != super::native_ts_headers::producer_recipe() {
+                    return Err("native header producer or source differs".into());
+                }
+                let (_, aggregate_digest) = headers.ok_or("native header closure witness absent")?;
+                let reference = backend_engine::builtin::NativeHeaderEvidence {
+                    image_identity: header.image_identity, image_byte_len: header.image_byte_len,
+                    producer_recipe: header.producer_recipe, aggregate_digest,
+                };
+                super::native_ts_headers::admit_image(&captured_source.evidence, &reference, header, &view, image.as_ref())?;
+                admitted_headers.insert(path.to_owned(), reference);
+            }
         }
+        if !header_claims.is_empty() { return Err("native headers lack their selected image".into()); }
         // A mapped program input is source evidence even when this profile
         // did not emit an image for it. Keep that weaker fact distinct from
         // an admitted image; consumers must not infer declarations from it.
+        let mut candidate_budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
         let mut evidence = members.keys().map(|path| {
-            let mut row = captured.get(path)
-                .ok_or("native program member lost its captured source")?.evidence.clone();
+            let source = captured.get(path).ok_or("native program member lost its captured source")?;
+            let mut charge = source.evidence.checked_heap_bytes().and_then(|n| n.checked_add(256))
+                .ok_or("native source evidence resident overflow")?;
+            if admitted_headers.contains_key(*path) {
+                charge = charge.checked_add(128).ok_or("native header resident overflow")?;
+            }
+            candidate_budget = candidate_budget.checked_sub(charge).ok_or("native evidence candidate budget exceeded")?;
+            let mut row = source.evidence.clone();
             row.kind = if witnessed.contains(*path) {
                 backend_engine::builtin::NativeSourceEvidenceKind::Image
             } else {
                 backend_engine::builtin::NativeSourceEvidenceKind::ProgramMember
             };
+            row.headers = admitted_headers.remove(*path);
+            if row.checked_encoded_len().is_none_or(|len| len > backend_engine::builtin::MAX_NATIVE_EVIDENCE_STORED_VALUE) {
+                // The compiler aggregate retains all headers; avoid dropping
+                // them just because the optional inline line map is large.
+                row.line_starts = None;
+            }
+            if row.checked_encoded_len().is_none_or(|len| len > backend_engine::builtin::MAX_NATIVE_EVIDENCE_STORED_VALUE) {
+                return Err("native source evidence exceeds durable row capacity");
+            }
             Ok(row)
         }).collect::<Result<Vec<_>, &str>>()?;
         evidence.sort_unstable_by(|left, right| left.path.cmp(&right.path));
@@ -727,7 +767,7 @@ fn capture_native_typescript_sources(
             u32::try_from(bytes.len()).map_err(|_| "native TypeScript file length overflow")?;
         let content = typed_of::<InputContentSchema>(&bytes).to_bytes();
         let source_fact_identity = SourceFactIdentity::from_canonical_bytes(&bytes);
-        let evidence = backend_engine::builtin::NativeSourceEvidence {
+        let mut evidence = backend_engine::builtin::NativeSourceEvidence {
             project,
             profile,
             path: normalized.clone(),
@@ -736,7 +776,11 @@ fn capture_native_typescript_sources(
             byte_length,
             kind: backend_engine::builtin::NativeSourceEvidenceKind::Image,
             line_starts: backend_engine::builtin::NativeSourceEvidence::capture_line_starts(&bytes),
+            headers: None,
         };
+        if evidence.checked_encoded_len().is_none_or(|len| len > backend_engine::builtin::MAX_NATIVE_EVIDENCE_STORED_VALUE) {
+            evidence.line_starts = None;
+        }
         evidence.validate().map_err(str::to_owned)?;
         let mut encoded = Vec::new();
         backend_engine::builtin::NativeSourceEvidenceRelation::encode_value(
@@ -2865,6 +2909,26 @@ fn read_native_evidence_host(
     evidence.verify_host(&bytes, image_source.identity)
         .map_err(|_| SourceRangeError::Stale)?;
     Ok(bytes.to_vec())
+}
+
+/// Reads a header extent already joined to the selected compiler entity.
+/// The source is reopened under the same digest and policy as native ranges.
+pub(super) fn read_indexed_native_evidence_header(
+    root: &Path,
+    evidence: &backend_engine::builtin::NativeSourceEvidence,
+    image_source: backend_semantic::ir::SourceIdentity,
+    extent: (u32, u32),
+) -> Result<String, super::source_range::SourceRangeError> {
+    use super::source_range::SourceRangeError;
+    let length = extent.1.checked_sub(extent.0).ok_or(SourceRangeError::InvalidExtent)? as usize;
+    if length == 0 || length > backend_compile::SourceDeclaration::MAX_TEXT_BYTES {
+        return Err(SourceRangeError::InvalidExtent);
+    }
+    let bytes = read_native_evidence_host(root, evidence, image_source)?;
+    let text = std::str::from_utf8(bytes.get(extent.0 as usize..extent.1 as usize)
+        .ok_or(SourceRangeError::InvalidExtent)?)
+        .map_err(|_| SourceRangeError::InvalidExtent)?;
+    Ok(text.to_owned())
 }
 
 /// Reopens one confined indexed host and reads only a verified declaration range.
@@ -5989,6 +6053,7 @@ mod tests {
             byte_length: source.len() as u32,
             kind: backend_engine::builtin::NativeSourceEvidenceKind::Image,
             line_starts: None,
+            headers: None,
         };
         assert_eq!(
             indexed_native_evidence_matches(root.path(), &evidence, image),
@@ -5999,11 +6064,14 @@ mod tests {
             read_indexed_native_evidence_range(root.path(), &evidence, image, extent, 0, 4096)
                 .expect("verified range");
         assert_eq!(page.text.as_bytes(), source);
+        assert_eq!(read_indexed_native_evidence_header(root.path(), &evidence, image, (0, 15)), Ok("package fixture".to_owned()));
+        assert_eq!(read_indexed_native_evidence_header(root.path(), &evidence, image, (0, 0)), Err(super::super::source_range::SourceRangeError::InvalidExtent));
         assert_eq!(
             read_indexed_native_evidence_range(root.path(), &evidence, image, (0, 0), 0, 4096),
             Err(super::super::source_range::SourceRangeError::InvalidExtent)
         );
         std::fs::write(&file, "package fixture\n// λ\n".as_bytes()).expect("same-length change");
+        assert_eq!(read_indexed_native_evidence_header(root.path(), &evidence, image, (0, 15)), Err(super::super::source_range::SourceRangeError::Stale));
         assert_eq!(
             read_indexed_native_evidence_range(root.path(), &evidence, image, extent, 0, 4096),
             Err(super::super::source_range::SourceRangeError::Stale)

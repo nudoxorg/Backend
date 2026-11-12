@@ -2006,6 +2006,10 @@ impl BuiltinIntent {
         self.set_native_evidence_changes(plan.evidence_basis(), changes)?;
         self.native_evidence_proof = Some(NativeTsLiveProof(proof));
         revalidate_native_ts_intent(base, &self)?;
+        #[cfg(test)]
+        if TEST_CAPTURE_NATIVE_INTENT.load(std::sync::atomic::Ordering::Acquire) {
+            if let Ok(mut slot) = TEST_NATIVE_INTENT.lock() { *slot = Some(self.clone()); }
+        }
         Ok(self)
     }
 
@@ -3058,6 +3062,11 @@ impl<'a> IntentDecoder<'a> {
                 "invalid native evidence delta bounds".into(),
             ));
         }
+        let mut resident = count.checked_mul(std::mem::size_of::<NativeEvidenceChange>())
+            .ok_or_else(|| BuiltinModelError("native evidence resident overflow".into()))?;
+        if resident > backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES {
+            return Err(BuiltinModelError("native evidence resident budget exceeded".into()));
+        }
         let mut changes = Vec::with_capacity(count);
         let start = self.at;
         for _ in 0..count {
@@ -3068,8 +3077,8 @@ impl<'a> IntentDecoder<'a> {
                 .take(32)?
                 .try_into()
                 .map_err(|_| BuiltinModelError("invalid evidence key".into()))?;
-            let expected = self.optional_native_evidence()?;
-            let after = self.optional_native_evidence()?;
+            let expected = self.optional_native_evidence(&mut resident)?;
+            let after = self.optional_native_evidence(&mut resident)?;
             changes.push(NativeEvidenceChange {
                 key,
                 expected,
@@ -3091,7 +3100,7 @@ impl<'a> IntentDecoder<'a> {
     }
 
     fn optional_native_evidence(
-        &mut self,
+        &mut self, resident: &mut usize,
     ) -> Result<Option<backend_engine::builtin::NativeSourceEvidence>, BuiltinModelError> {
         match self.take(1)?[0] {
             0 => Ok(None),
@@ -3099,6 +3108,11 @@ impl<'a> IntentDecoder<'a> {
                 let length = self.read_u32()? as usize;
                 if length > backend_engine::builtin::MAX_NATIVE_EVIDENCE_VALUE {
                     return Err(BuiltinModelError("native evidence row too large".into()));
+                }
+                *resident = resident.checked_add(length).and_then(|n| n.checked_add(128))
+                    .ok_or_else(|| BuiltinModelError("native evidence resident overflow".into()))?;
+                if *resident > backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES {
+                    return Err(BuiltinModelError("native evidence resident budget exceeded".into()));
                 }
                 backend_engine::builtin::NativeSourceEvidenceRelation::decode_value(
                     self.take(length)?,
@@ -4596,7 +4610,7 @@ struct PreparedNativeEvidenceRelationUpdate {
 fn precharge_native_evidence_delta(
     selected: Option<&WorkspaceRelationHandle<backend_engine::builtin::NativeSourceEvidenceRelation>>,
     owner: [u8; 32],
-    changes: &[NativeEvidenceChange],
+    changes: &[NativeEvidenceChange], budget: &mut usize,
 ) -> Result<Vec<([u8; 32], backend_engine::builtin::NativeSourceEvidence)>, BuiltinModelError> {
     use backend_engine::builtin::{
         MAX_NATIVE_EVIDENCE_BYTES, MAX_NATIVE_EVIDENCE_PROJECT_ROWS, MAX_NATIVE_EVIDENCE_ROWS,
@@ -4609,8 +4623,7 @@ fn precharge_native_evidence_delta(
     if let Some(relation) = selected {
         let mut after = None;
         loop {
-            let page = relation
-                .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+            let page = backend_engine::builtin::native_source_evidence_page_budgeted(relation, after.as_ref(), budget)
                 .map_err(|error| BuiltinModelError(format!("read native evidence: {error}")))?;
             for (key, row) in page.entries() {
                 if row.key().ok() != Some(*key)
@@ -4622,6 +4635,9 @@ fn precharge_native_evidence_delta(
                     ));
                 }
                 previous_key = Some(*key);
+                if !project_counts.contains_key(&row.project) {
+                    *budget = budget.checked_sub(256).ok_or_else(|| BuiltinModelError("native project map budget exceeded".into()))?;
+                }
                 let count = project_counts.entry(row.project).or_default();
                 *count = count.checked_add(1).ok_or_else(|| {
                     BuiltinModelError("native evidence project count overflow".into())
@@ -4637,6 +4653,9 @@ fn precharge_native_evidence_delta(
                     .checked_add(40)
                     .and_then(|n| n.checked_add(encoded.len()))
                     .ok_or_else(|| BuiltinModelError("native evidence scan overflow".into()))?;
+                let clone_bytes = row.checked_heap_bytes().and_then(|n| n.checked_add(std::mem::size_of::<backend_engine::builtin::NativeSourceEvidence>() + 256))
+                    .ok_or_else(|| BuiltinModelError("native evidence clone overflow".into()))?;
+                *budget = budget.checked_sub(clone_bytes).ok_or_else(|| BuiltinModelError("native evidence map budget exceeded".into()))?;
                 if work > MAX_NATIVE_EVIDENCE_BYTES || entries.insert(*key, row.clone()).is_some() {
                     return Err(BuiltinModelError(
                         "native evidence selected budget exceeded".into(),
@@ -4701,6 +4720,9 @@ fn precharge_native_evidence_delta(
     for change in changes.iter() {
         match &change.after {
             Some(row) => {
+                let clone_bytes = row.checked_heap_bytes().and_then(|n| n.checked_add(std::mem::size_of::<backend_engine::builtin::NativeSourceEvidence>() + 256))
+                    .ok_or_else(|| BuiltinModelError("native evidence clone overflow".into()))?;
+                *budget = budget.checked_sub(clone_bytes).ok_or_else(|| BuiltinModelError("native evidence target budget exceeded".into()))?;
                 entries.insert(change.key, row.clone());
             }
             None => {
@@ -4714,18 +4736,73 @@ fn precharge_native_evidence_delta(
     Ok(target_rows)
 }
 
+// The bounded tree API requires a relation-specific shape. All selected and
+// target rows have already been scanned; a larger unseen sibling is rejected
+// by the tree's per-node shape check rather than decoded without a limit.
+fn native_evidence_shape(
+    rows: &[([u8; 32], backend_engine::builtin::NativeSourceEvidence)],
+    changes: &[NativeEvidenceChange], root_level: usize,
+) -> Result<backend_version::LazyTreeMetadataShape, BuiltinModelError> {
+    let mut width = 1usize;
+    for row in rows.iter().map(|(_, row)| row).chain(changes.iter().filter_map(|c| c.expected.as_ref())) {
+        width = width.max(row.checked_encoded_len().ok_or_else(|| BuiltinModelError("native update width overflow".into()))?);
+    }
+    let entry = width.checked_add(48).ok_or_else(|| BuiltinModelError("native update width overflow".into()))?;
+    let count = rows.len().checked_add(changes.len()).ok_or_else(|| BuiltinModelError("native update count overflow".into()))?;
+    let max_entries = count.max(2).min(1024);
+    let configured_min = 64usize.min(max_entries);
+    let leaf_min = configured_min.min((16_384usize - 32) / entry).max(1);
+    let branch_min = configured_min.min((16_384usize - 32) / 88).max(1);
+    let spill = max_entries / leaf_min.min(branch_min) + 2;
+    let mut levels = 1usize;
+    let mut nodes = count.max(1).div_ceil(leaf_min);
+    while nodes > 1 { nodes = nodes.div_ceil(branch_min.max(2)); levels += 1; }
+    levels = levels.max(root_level + 1);
+    if levels > 32 { return Err(BuiltinModelError("native update depth exceeded".into())); }
+    Ok(backend_version::LazyTreeMetadataShape::new(32, width, configured_min, max_entries, spill, levels))
+}
+fn native_evidence_update_budget(
+    relation: &WorkspaceRelationHandle<backend_engine::builtin::NativeSourceEvidenceRelation>,
+    rows: &[([u8; 32], backend_engine::builtin::NativeSourceEvidence)],
+    changes: &[NativeEvidenceChange], available: usize,
+) -> Result<backend_version::LazyTreeUpdateBudget, BuiltinModelError> {
+    let shape = native_evidence_shape(rows, changes, usize::from(relation.root_level()))?;
+    Ok(backend_version::LazyTreeUpdateBudget::new(changes.len(), available, shape))
+}
+
+fn charge_native_change_clones(changes: &[NativeEvidenceChange], budget: &mut usize) -> Result<(), BuiltinModelError> {
+    let mut required = changes.len().checked_mul(std::mem::size_of::<TreeChange<backend_engine::builtin::NativeSourceEvidenceRelation>>() + 64)
+        .ok_or_else(|| BuiltinModelError("native change clone overflow".into()))?;
+    for row in changes.iter().filter_map(|c| c.after.as_ref()) {
+        required = required.checked_add(row.checked_heap_bytes().ok_or_else(|| BuiltinModelError("native change clone overflow".into()))?)
+            .and_then(|n| n.checked_add(128)).ok_or_else(|| BuiltinModelError("native change clone overflow".into()))?;
+    }
+    *budget = budget.checked_sub(required).ok_or_else(|| BuiltinModelError("native change clone budget exceeded".into()))?;
+    Ok(())
+}
+
+fn charge_native_initial_build(rows: &[([u8; 32], backend_engine::builtin::NativeSourceEvidence)], budget: &mut usize) -> Result<(), BuiltinModelError> {
+    let shape = native_evidence_shape(rows, &[], 0)?;
+    let policy = backend_version::LazyTreeUpdateBudget::new(rows.len(), *budget, shape);
+    let required = policy.decoded_bulk_charge::<backend_engine::builtin::NativeSourceEvidenceRelation>(rows.len())
+        .ok_or_else(|| BuiltinModelError("native initial build bound overflow".into()))?;
+    *budget = budget.checked_sub(required).ok_or_else(|| BuiltinModelError("native initial build budget exceeded".into()))?;
+    Ok(())
+}
+
 fn prepare_native_evidence_relation_update(
     base: &WorkspaceSnapshot,
     intent: &BuiltinIntent,
 ) -> Result<PreparedNativeEvidenceRelationUpdate, BuiltinModelError> {
-    use backend_engine::builtin::{NativeSourceEvidenceRelation, native_source_evidence_relation, native_source_evidence_root_object};
+    use backend_engine::builtin::{NativeSourceEvidenceRelation, native_source_evidence_relation_budgeted, native_source_evidence_root_object};
     if intent.native_evidence_changes.is_empty() {
         return Ok(PreparedNativeEvidenceRelationUpdate {
             node_objects: Vec::new(),
             pointer: None,
         });
     }
-    if intent.native_evidence_basis != Some(native_evidence_basis_for_snapshot(base)?) {
+    let mut read_budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
+    if intent.native_evidence_basis != Some(native_evidence_basis_for_snapshot_budgeted(base, &mut read_budget)?) {
         return Err(BuiltinModelError(
             "native evidence predecessor changed".into(),
         ));
@@ -4748,11 +4825,12 @@ fn prepare_native_evidence_relation_update(
             "invalid native evidence change set".into(),
         ));
     }
-    let selected = native_source_evidence_relation(base)
+    let selected = native_source_evidence_relation_budgeted(base, &mut read_budget)
         .map_err(|error| BuiltinModelError(format!("open native evidence: {error}")))?;
     let target_rows = precharge_native_evidence_delta(
-        selected.as_ref(), owner, &intent.native_evidence_changes,
+        selected.as_ref(), owner, &intent.native_evidence_changes, &mut read_budget,
     )?;
+    charge_native_change_clones(&intent.native_evidence_changes, &mut read_budget)?;
     let changes = intent
         .native_evidence_changes
         .iter()
@@ -4762,9 +4840,19 @@ fn prepare_native_evidence_relation_update(
         })
         .collect::<Vec<_>>();
     if let Some(relation) = selected {
-        let update = relation.prepare_update(&changes).map_err(|error| {
+        let update_budget = native_evidence_update_budget(&relation, &target_rows, &intent.native_evidence_changes, read_budget)?;
+        let update = relation.prepare_update_bounded(&changes, update_budget).map_err(|error| {
             BuiltinModelError(format!("prepare native evidence delta: {error}"))
         })?;
+        // The checked update's peak covers its frontier; reserve the exact
+        // encoded-node copies and output slots before making TypedObjects.
+        let output = update.changed_nodes().iter().try_fold(0usize, |total, node| {
+            total.checked_add(node.as_bytes().len().checked_mul(2)?)?
+                .checked_add(std::mem::size_of::<TypedObject>() + 256)
+        }).ok_or_else(|| BuiltinModelError("native node output overflow".into()))?;
+        if update.work().peak_metadata_bytes.checked_add(output).is_none_or(|n| n > read_budget) {
+            return Err(BuiltinModelError("native node output budget exceeded".into()));
+        }
         let node_objects = update
             .changed_nodes()
             .iter()
@@ -4788,9 +4876,11 @@ fn prepare_native_evidence_relation_update(
                 "invalid initial native evidence delta".into(),
             ));
         }
-        let state = backend_engine::RelationState::<NativeSourceEvidenceRelation>::from_entries(
+        charge_native_initial_build(&target_rows, &mut read_budget)?;
+        let state = backend_engine::RelationState::<NativeSourceEvidenceRelation>::from_sorted_entries_controlled(
             target_rows,
             super::admitted_coverage()?,
+            &mut || Ok::<(), backend_version::TreeError>(()),
         )
         .map_err(|error| BuiltinModelError(format!("build native evidence relation: {error}")))?;
         let mut closure = state.node_closure();
@@ -6342,9 +6432,16 @@ fn selected_native_evidence_root_from_objects(
 pub(super) fn native_evidence_basis_for_snapshot(
     base: &WorkspaceSnapshot,
 ) -> Result<NativeEvidenceBasis, BuiltinModelError> {
+    let mut budget = super::MAX_REBUILD_BYTES;
+    native_evidence_basis_for_snapshot_budgeted(base, &mut budget)
+}
+
+pub(super) fn native_evidence_basis_for_snapshot_budgeted(
+    base: &WorkspaceSnapshot, budget: &mut usize,
+) -> Result<NativeEvidenceBasis, BuiltinModelError> {
     let selected =
         selected_native_evidence_root_from_objects(base.closure().control_manifest().objects())?;
-    let relation = backend_engine::builtin::native_source_evidence_relation(base)
+    let relation = backend_engine::builtin::native_source_evidence_relation_budgeted(base, budget)
         .map_err(|error| BuiltinModelError(format!("open native evidence relation: {error}")))?;
     if relation.as_ref().map(|r| *r.root().as_bytes()) != selected {
         return Err(BuiltinModelError(
@@ -6375,8 +6472,7 @@ pub(super) fn native_evidence_basis_for_snapshot(
                 "native evidence pointer outside closure".into(),
             ));
         }
-        let object = relation
-            .root_object()
+        let object = backend_engine::builtin::native_source_evidence_root_object_budgeted(&relation, budget)
             .map_err(|error| BuiltinModelError(format!("read native evidence root: {error}")))?;
         if !base
             .closure()
@@ -6561,12 +6657,20 @@ fn validate_persisted_native_evidence(
             }
         }
     }
+    let mut read_budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
+    let scratch = backend_engine::builtin::NATIVE_EVIDENCE_READ_SCRATCH;
+    if base_root.is_some() {
+        read_budget = read_budget.checked_sub(scratch).ok_or_else(|| BuiltinModelError("native predecessor open budget exceeded".into()))?;
+    }
     let base = base_root
         .map(|root| persisted.relation::<NativeSourceEvidenceRelation>(store, root))
         .transpose()
         .map_err(|error| BuiltinModelError(format!("open native evidence predecessor: {error}")))?;
+    if base.is_some() {
+        read_budget = read_budget.checked_add(scratch - (2 * 64 * 1024 + 1024)).ok_or_else(|| BuiltinModelError("native predecessor budget overflow".into()))?;
+    }
     if let Some(relation) = &base {
-        let object = relation.root_object().map_err(|error| {
+        let object = backend_engine::builtin::native_source_evidence_root_object_budgeted(relation, &mut read_budget).map_err(|error| {
             BuiltinModelError(format!("read native evidence predecessor root: {error}"))
         })?;
         if !base_membership
@@ -6592,11 +6696,12 @@ fn validate_persisted_native_evidence(
     }
     let root = target_root
         .ok_or_else(|| BuiltinModelError("native evidence target pointer missing".into()))?;
+    read_budget = read_budget.checked_sub(scratch).ok_or_else(|| BuiltinModelError("native target open budget exceeded".into()))?;
     let target = persisted
         .relation::<NativeSourceEvidenceRelation>(store, root)
         .map_err(|error| BuiltinModelError(format!("open native evidence target: {error}")))?;
-    let object = target
-        .root_object()
+    read_budget = read_budget.checked_add(scratch - (2 * 64 * 1024 + 1024)).ok_or_else(|| BuiltinModelError("native target budget overflow".into()))?;
+    let object = backend_engine::builtin::native_source_evidence_root_object_budgeted(&target, &mut read_budget)
         .map_err(|error| BuiltinModelError(format!("read native evidence target root: {error}")))?;
     if !target_membership
         .contains_object_id(object.id())
@@ -6609,9 +6714,10 @@ fn validate_persisted_native_evidence(
         ));
     }
     let bounded_target = precharge_native_evidence_delta(
-        base.as_ref(), intent.package.to_bytes(), &intent.native_evidence_changes,
+        base.as_ref(), intent.package.to_bytes(), &intent.native_evidence_changes, &mut read_budget,
     )?;
     if !intent.native_evidence_changes.is_empty() {
+        charge_native_change_clones(&intent.native_evidence_changes, &mut read_budget)?;
         let changes = intent
             .native_evidence_changes
             .iter()
@@ -6621,8 +6727,9 @@ fn validate_persisted_native_evidence(
             })
             .collect::<Vec<_>>();
         let computed = if let Some(relation) = &base {
+            let update_budget = native_evidence_update_budget(relation, &bounded_target, &intent.native_evidence_changes, read_budget)?;
             *relation
-                .prepare_update(&changes)
+                .prepare_update_bounded(&changes, update_budget)
                 .map_err(|error| {
                     BuiltinModelError(format!("recompute native evidence delta: {error}"))
                 })?
@@ -6639,9 +6746,11 @@ fn validate_persisted_native_evidence(
                     "invalid initial native evidence delta".into(),
                 ));
             }
-            *backend_engine::RelationState::<NativeSourceEvidenceRelation>::from_entries(
+            charge_native_initial_build(&bounded_target, &mut read_budget)?;
+            *backend_engine::RelationState::<NativeSourceEvidenceRelation>::from_sorted_entries_controlled(
                 bounded_target,
                 super::admitted_coverage()?,
+                &mut || Ok::<(), backend_version::TreeError>(()),
             )
             .map_err(|error| {
                 BuiltinModelError(format!("recompute native evidence initial root: {error}"))
@@ -6657,13 +6766,13 @@ fn validate_persisted_native_evidence(
         for change in &intent.native_evidence_changes {
             let before = base
                 .as_ref()
-                .map(|tree| tree.lookup(&change.key))
+                .map(|tree| backend_engine::builtin::native_source_evidence_lookup_budgeted(tree, &change.key, &mut read_budget))
                 .transpose()
                 .map_err(|error| {
                     BuiltinModelError(format!("read native evidence before row: {error}"))
                 })?
                 .flatten();
-            let after = target.lookup(&change.key).map_err(|error| {
+            let after = backend_engine::builtin::native_source_evidence_lookup_budgeted(&target, &change.key, &mut read_budget).map_err(|error| {
                 BuiltinModelError(format!("read native evidence after row: {error}"))
             })?;
             if before != change.expected || after != change.after {
@@ -8269,6 +8378,7 @@ mod persisted_intent_tests {
             ), path: "main.ts".into(), input_digest: [4; 32], source_digest: [5; 32], byte_length: 1,
             kind: backend_engine::builtin::NativeSourceEvidenceKind::Image,
             line_starts: None,
+            headers: None,
         };
         let evidence_key = evidence.key().expect("evidence key");
         assert!(mixed.set_native_evidence_changes(
@@ -8302,6 +8412,7 @@ mod persisted_intent_tests {
             byte_length: 9,
             kind: backend_engine::builtin::NativeSourceEvidenceKind::Image,
             line_starts: None,
+            headers: None,
         };
         let key = row.key().expect("evidence key");
         let basis = NativeEvidenceBasis {
@@ -9095,3 +9206,33 @@ mod membership_tests;
 #[cfg(test)]
 #[path = "profile_source_facts_tests.rs"]
 mod source_facts_tests;
+
+// Observation only: a real validated owner intent is retained for this
+// isolated test; this hook does not create or admit a native capability.
+#[cfg(test)]
+pub(super) static TEST_CAPTURE_NATIVE_INTENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+pub(super) static TEST_NATIVE_INTENT: std::sync::Mutex<Option<BuiltinIntent>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+pub(super) fn test_native_intent_budget_control() -> Result<(), BuiltinModelError> {
+    use backend_engine::queue::{BoundedQueue, QueueBudget, QueueError, QueueSized};
+    let intent = TEST_NATIVE_INTENT.lock().map_err(|_| BuiltinModelError("native intent observation poisoned".into()))?
+        .take().ok_or_else(|| BuiltinModelError("real native intent not observed".into()))?;
+    let proof = &intent.native_evidence_proof.as_ref().ok_or_else(|| BuiltinModelError("native proof missing".into()))?.0;
+    let plan = proof.plan();
+    let plan_bytes = plan.checked_retained_bytes().ok_or_else(|| BuiltinModelError("plan accounting overflow".into()))?;
+    let (maps, map_bytes) = super::native_ts_admission::test_plan_line_map_charge(plan)
+        .ok_or_else(|| BuiltinModelError("map accounting overflow".into()))?;
+    if maps < 2 || plan_bytes < map_bytes { return Err(BuiltinModelError("actual retained plan omitted line map allocations".into())); }
+    let proof_bytes = proof.checked_retained_bytes().ok_or_else(|| BuiltinModelError("proof accounting overflow".into()))?;
+    let charged = intent.checked_queue_bytes().map_err(|error| BuiltinModelError(format!("intent accounting: {error:?}")))?;
+    if charged < proof_bytes || proof_bytes < plan_bytes { return Err(BuiltinModelError("intent omitted retained native proof".into())); }
+    let exact = BoundedQueue::new(QueueBudget::new(1, charged));
+    exact.try_push(intent.clone()).map_err(|error| BuiltinModelError(format!("exact queue refused: {error:?}")))?;
+    let short = BoundedQueue::new(QueueBudget::new(1, charged - 1));
+    if !matches!(short.try_push(intent), Err(QueueError::Bytes)) {
+        return Err(BuiltinModelError("below-bound native intent was not refused".into()));
+    }
+    Ok(())
+}

@@ -5,6 +5,7 @@
 //! host bytes in both content domains. Missing rows mean unknown inventory.
 use crate::workspace::{WorkspaceRelationError, WorkspaceRelationHandle, WorkspaceSnapshot};
 use backend_semantic::vocabulary::LanguageProfile;
+use backend_semantic::ir::{DeclarationFamilyId, DeclarationIdentity, VariantFingerprint};
 use backend_store::TypedObject;
 use backend_version::{
     CanonicalRelation, ObjectKey, Relation, RelationDecodeError, Schema, SchemaIdentity, StateRoot,
@@ -13,6 +14,9 @@ use std::collections::BTreeMap;
 
 const MAGIC: &[u8; 4] = b"NSE1";
 const MAGIC_V2: &[u8; 4] = b"NSE2";
+const MAGIC_V3: &[u8; 4] = b"NSE3";
+pub const MAX_NATIVE_HEADER_ENTRIES: usize = 4096;
+const HEADER_ENTRY_BYTES: usize = 52;
 /// Maximum retained line starts per file.
 pub const MAX_NATIVE_EVIDENCE_LINES: usize = 1_000_000;
 const ROOT_KEY: [u8; 32] = [0x45; 32];
@@ -25,7 +29,9 @@ pub const MAX_NATIVE_EVIDENCE_ROWS: usize = 262_144;
 pub const MAX_NATIVE_EVIDENCE_PROJECT_ROWS: usize = 100_000;
 /// Maximum canonical row value; framing and key are charged separately.
 pub const MAX_NATIVE_EVIDENCE_VALUE: usize =
-    4 + 32 + 2 + 2 + MAX_NATIVE_EVIDENCE_PATH + 32 + 32 + 4 + 1 + 1 + 4 + MAX_NATIVE_EVIDENCE_LINES * 4;
+    4 + 32 + 2 + 2 + MAX_NATIVE_EVIDENCE_PATH + 32 + 32 + 4 + 1 + 1 + 4 + MAX_NATIVE_EVIDENCE_LINES * 4 + 32 + 8 + 32 + 4 + MAX_NATIVE_HEADER_ENTRIES * HEADER_ENTRY_BYTES;
+/// A relation node has a smaller capacity than the standalone legacy codec.
+pub const MAX_NATIVE_EVIDENCE_STORED_VALUE: usize = 64 * 1024 - 72;
 
 /// Independently selected native-source claim relation.
 #[derive(Debug)]
@@ -51,6 +57,22 @@ pub enum NativeSourceEvidenceKind {
     Image,
 }
 
+/// Untrusted header claims; consumption requires an independent compiler/image join.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeHeaderEvidence {
+    pub image_identity: [u8; 32],
+    pub image_byte_len: u64,
+    pub producer_recipe: [u8; 32],
+    pub aggregate_digest: [u8; 32],
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeHeaderEntry {
+    pub entity_id: u32,
+    pub identity: DeclarationIdentity,
+    pub compiler_extent: (u32, u32),
+    pub header_extent: (u32, u32),
+}
+
 /// Untrusted persisted claims, not a verified source capability.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeSourceEvidence {
@@ -66,10 +88,27 @@ pub struct NativeSourceEvidence {
     pub kind: NativeSourceEvidenceKind,
     /// Complete line-start offsets captured from these exact bytes, if representable.
     pub line_starts: Option<Vec<u32>>,
+    pub headers: Option<NativeHeaderEvidence>,
 }
 impl NativeSourceEvidence {
     /// Whether this claim names a separately admitted program image.
     pub fn admits_image(&self) -> bool { self.kind == NativeSourceEvidenceKind::Image }
+
+    /// Exact canonical value length, without allocating an encoded copy.
+    pub fn checked_encoded_len(&self) -> Option<usize> {
+        let base = 4usize.checked_add(32 + 2 + 2)?.checked_add(self.path.len())?.checked_add(32 + 32 + 4 + 1)?;
+        if self.headers.is_none() && self.kind == NativeSourceEvidenceKind::Image && self.line_starts.is_none() { return Some(base); }
+        let lines = self.line_starts.as_ref().map_or(0, Vec::len);
+        let mut size = base.checked_add(1 + 4)?.checked_add(lines.checked_mul(4)?)?;
+        if self.headers.is_some() { size = size.checked_add(104)?; }
+        Some(size)
+    }
+
+    /// Heap owned by this row, excluding the row itself and allocator metadata.
+    pub fn checked_heap_bytes(&self) -> Option<usize> {
+        let lines = self.line_starts.as_ref().map_or(Some(0), |v| v.capacity().checked_mul(std::mem::size_of::<u32>()))?;
+        self.path.capacity().checked_add(lines)
+    }
 
     /// Captures a bounded complete line map when line endings are representable.
     pub fn capture_line_starts(bytes: &[u8]) -> Option<Vec<u32>> {
@@ -102,6 +141,9 @@ impl NativeSourceEvidence {
                 || lines.windows(2).any(|pair| pair[0] >= pair[1])
                 || lines.last().is_some_and(|last| *last > self.byte_length)
             { return Err("invalid native source line map"); }
+        }
+        if self.headers.is_some() && !self.admits_image() {
+            return Err("native program member cannot carry header evidence");
         }
         native_source_evidence_key(self.project, self.profile, &self.path).map(|_| ())
     }
@@ -171,8 +213,8 @@ impl Relation for NativeSourceEvidenceRelation {
         output.extend_from_slice(value);
     }
     fn encode_value(value: &Self::Value, output: &mut Vec<u8>) {
-        let legacy = value.kind == NativeSourceEvidenceKind::Image && value.line_starts.is_none();
-        output.extend_from_slice(if legacy { MAGIC } else { MAGIC_V2 });
+        let legacy = value.headers.is_none() && value.kind == NativeSourceEvidenceKind::Image && value.line_starts.is_none();
+        output.extend_from_slice(if value.headers.is_some() { MAGIC_V3 } else if legacy { MAGIC } else { MAGIC_V2 });
         output.extend_from_slice(&value.project);
         output.extend_from_slice(&<[u8; 2]>::from(value.profile));
         output.extend_from_slice(&(value.path.len() as u16).to_be_bytes());
@@ -186,7 +228,23 @@ impl Relation for NativeSourceEvidenceRelation {
         let lines = value.line_starts.as_deref().unwrap_or(&[]);
         output.extend_from_slice(&(lines.len() as u32).to_be_bytes());
         for line in lines { output.extend_from_slice(&line.to_be_bytes()); }
+        if let Some(headers) = &value.headers {
+            output.extend_from_slice(&headers.image_identity);
+            output.extend_from_slice(&headers.image_byte_len.to_be_bytes());
+            output.extend_from_slice(&headers.producer_recipe);
+            output.extend_from_slice(&headers.aggregate_digest);
+        }
     }
+}
+// The decoder preflights all declared counts against the complete bounded wire
+// row before allocation. Native row heap is bounded by encoded path, line-map
+// and fixed header bytes; the scratch bound includes a whole 64 KiB node and
+// its decoded row cells plus traversal copies.
+impl backend_version::BoundedCanonicalRelation for NativeSourceEvidenceRelation {
+    // Eight copies cover the bounded node wire/encoding buffers and transient
+    // cell/key arrays while a single canonical node is loaded and validated.
+    const NODE_DECODE_SCRATCH: usize = 8 * 64 * 1024
+        + 8 * 1024 * (std::mem::size_of::<NativeSourceEvidence>() + 32 + 64);
 }
 impl CanonicalRelation for NativeSourceEvidenceRelation {
     fn decode_key(bytes: &[u8]) -> Result<Self::Key, RelationDecodeError> {
@@ -194,28 +252,36 @@ impl CanonicalRelation for NativeSourceEvidenceRelation {
     }
     fn decode_value(bytes: &[u8]) -> Result<Self::Value, RelationDecodeError> {
         fn parse(bytes: &[u8]) -> Option<NativeSourceEvidence> {
-            if bytes.len() > MAX_NATIVE_EVIDENCE_VALUE || (bytes.get(..4)? != MAGIC && bytes.get(..4)? != MAGIC_V2) {
+            if bytes.len() > MAX_NATIVE_EVIDENCE_VALUE || (bytes.get(..4)? != MAGIC && bytes.get(..4)? != MAGIC_V2 && bytes.get(..4)? != MAGIC_V3) {
                 return None;
             }
             let project = bytes.get(4..36)?.try_into().ok()?;
             let profile =
                 LanguageProfile::try_from(<[u8; 2]>::try_from(bytes.get(36..38)?).ok()?).ok()?;
             let len = u16::from_be_bytes(bytes.get(38..40)?.try_into().ok()?) as usize;
+            if len == 0 || len > MAX_NATIVE_EVIDENCE_PATH { return None; }
             let end = 40usize.checked_add(len)?;
             let path = std::str::from_utf8(bytes.get(40..end)?).ok()?.to_owned();
             let rest = bytes.get(end..)?;
             if rest.len() < 69 || rest[68] != 0 { return None; }
-            let (kind, line_starts) = if bytes.get(..4)? == MAGIC {
+            let (kind, line_starts, headers) = if bytes.get(..4)? == MAGIC {
                 if rest.len() != 69 { return None; }
-                (NativeSourceEvidenceKind::Image, None)
+                (NativeSourceEvidenceKind::Image, None, None)
             } else {
                 let kind = match *rest.get(69)? { 0 => NativeSourceEvidenceKind::ProgramMember, 1 => NativeSourceEvidenceKind::Image, _ => return None };
                 let count = u32::from_be_bytes(rest.get(70..74)?.try_into().ok()?) as usize;
-                if count > MAX_NATIVE_EVIDENCE_LINES || rest.len() != 74usize.checked_add(count.checked_mul(4)?)? { return None; }
+                let line_end = 74usize.checked_add(count.checked_mul(4)?)?;
+                if count > MAX_NATIVE_EVIDENCE_LINES || line_end > rest.len() { return None; }
+                if bytes.get(..4)? == MAGIC_V2 && line_end != rest.len() { return None; }
+                if bytes.get(..4)? == MAGIC_V2 && kind == NativeSourceEvidenceKind::Image && count == 0 { return None; }
+                let headers = if bytes.get(..4)? == MAGIC_V3 {
+                    let tail = rest.get(line_end..)?;
+                    if tail.len() != 104 { return None; }
+                    Some(NativeHeaderEvidence { image_identity: tail.get(..32)?.try_into().ok()?, image_byte_len: u64::from_be_bytes(tail.get(32..40)?.try_into().ok()?), producer_recipe: tail.get(40..72)?.try_into().ok()?, aggregate_digest: tail.get(72..104)?.try_into().ok()? })
+                } else { None };
                 let mut lines = Vec::with_capacity(count);
-                for chunk in rest.get(74..)?.chunks_exact(4) { lines.push(u32::from_be_bytes(chunk.try_into().ok()?)); }
-                if kind == NativeSourceEvidenceKind::Image && count == 0 { return None; }
-                (kind, if count == 0 { None } else { Some(lines) })
+                for chunk in rest.get(74..line_end)?.chunks_exact(4) { lines.push(u32::from_be_bytes(chunk.try_into().ok()?)); }
+                (kind, if count == 0 { None } else { Some(lines) }, headers)
             };
             let record = NativeSourceEvidence {
                 project,
@@ -226,6 +292,7 @@ impl CanonicalRelation for NativeSourceEvidenceRelation {
                 byte_length: u32::from_be_bytes(rest.get(64..68)?.try_into().ok()?),
                 kind,
                 line_starts,
+                headers,
             };
             record.validate().ok()?;
             Some(record)
@@ -248,6 +315,9 @@ pub fn validate_native_source_evidence_rows(
             return Err("noncanonical native source evidence key");
         }
         previous = Some(*key);
+        if row.checked_encoded_len().is_none_or(|len| len > MAX_NATIVE_EVIDENCE_STORED_VALUE) {
+            return Err("native source evidence row exceeds canonical node capacity");
+        }
         let count = projects.entry(row.project).or_default();
         *count = count
             .checked_add(1)
@@ -255,12 +325,10 @@ pub fn validate_native_source_evidence_rows(
         if *count > MAX_NATIVE_EVIDENCE_PROJECT_ROWS {
             return Err("native source evidence project limit");
         }
-        let mut encoded = Vec::new();
-        NativeSourceEvidenceRelation::encode_value(row, &mut encoded);
         // One 32-byte key plus two u32 lengths frames each exact record.
         bytes = bytes
             .checked_add(32 + 8)
-            .and_then(|n| n.checked_add(encoded.len()))
+            .and_then(|n| n.checked_add(row.checked_encoded_len()?))
             .ok_or("native source evidence byte overflow")?;
         if bytes > MAX_NATIVE_EVIDENCE_BYTES {
             return Err("native source evidence byte limit");
@@ -294,6 +362,78 @@ pub fn native_source_evidence_relation(
     )
 }
 
+/// Scratch reserved before native relation admission and every bounded read.
+/// Canonical nodes have a 64 KiB wire ceiling and 1024 entries. This covers
+/// 32 simultaneously retained traversal levels, their node copies and branch
+/// vectors, a whole decoded leaf (including allocator overhead), and a cloned
+/// result. Bounded reads reject deeper paths; the store enforces the node limit
+/// before allocating its envelope.
+pub const NATIVE_EVIDENCE_READ_SCRATCH: usize = 32 * 1024 * 1024;
+const NATIVE_EVIDENCE_READ_DEPTH: usize = 32;
+const NATIVE_EVIDENCE_ROOT_RESIDENT: usize = 2 * 64 * 1024 + 1024;
+
+fn native_read_reserve(budget: &mut usize) -> Result<(), WorkspaceRelationError> {
+    *budget = budget.checked_sub(NATIVE_EVIDENCE_READ_SCRATCH)
+        .ok_or(WorkspaceRelationError::Store(backend_store::StoreError::Bounds))?;
+    Ok(())
+}
+fn native_read_refund(budget: &mut usize, retained: usize) -> Result<(), WorkspaceRelationError> {
+    let refund = NATIVE_EVIDENCE_READ_SCRATCH.checked_sub(retained)
+        .ok_or(WorkspaceRelationError::Store(backend_store::StoreError::Bounds))?;
+    *budget = budget.checked_add(refund).ok_or(WorkspaceRelationError::Store(backend_store::StoreError::Bounds))?;
+    Ok(())
+}
+fn native_row_resident(row: &NativeSourceEvidence) -> Result<usize, WorkspaceRelationError> {
+    row.checked_heap_bytes().and_then(|n| n.checked_add(std::mem::size_of::<NativeSourceEvidence>() + 128))
+        .ok_or(WorkspaceRelationError::Store(backend_store::StoreError::Bounds))
+}
+
+/// Opens a selected relation only after reserving node-admission scratch.
+pub fn native_source_evidence_relation_budgeted(
+    snapshot: &WorkspaceSnapshot, budget: &mut usize,
+) -> Result<Option<WorkspaceRelationHandle<NativeSourceEvidenceRelation>>, WorkspaceRelationError> {
+    native_read_reserve(budget)?;
+    let result = native_source_evidence_relation(snapshot)?;
+    native_read_refund(budget, if result.is_some() { NATIVE_EVIDENCE_ROOT_RESIDENT } else { 0 })?;
+    Ok(result)
+}
+
+/// Reads the selected root object under the same node scratch reservation.
+pub fn native_source_evidence_root_object_budgeted(
+    relation: &WorkspaceRelationHandle<NativeSourceEvidenceRelation>, budget: &mut usize,
+) -> Result<TypedObject, WorkspaceRelationError> {
+    native_read_reserve(budget)?;
+    let object = relation.root_object()?;
+    native_read_refund(budget, NATIVE_EVIDENCE_ROOT_RESIDENT)?;
+    Ok(object)
+}
+
+/// Looks up a row after reserving scratch for every sibling in its node.
+/// The retained row remains charged to the same budget on return.
+pub fn native_source_evidence_lookup_budgeted(
+    relation: &WorkspaceRelationHandle<NativeSourceEvidenceRelation>, key: &[u8; 32], budget: &mut usize,
+) -> Result<Option<NativeSourceEvidence>, WorkspaceRelationError> {
+    native_read_reserve(budget)?;
+    let row = relation.lookup_with_depth_limit(key, NATIVE_EVIDENCE_READ_DEPTH)?;
+    let retained = row.as_ref().map(native_row_resident).transpose()?.unwrap_or(0);
+    native_read_refund(budget, retained)?;
+    Ok(row)
+}
+
+/// Reads at most one row with a depth limit and charges its retained allocation.
+pub fn native_source_evidence_page_budgeted(
+    relation: &WorkspaceRelationHandle<NativeSourceEvidenceRelation>, after: Option<&[u8; 32]>, budget: &mut usize,
+) -> Result<backend_version::LazyTreePage<NativeSourceEvidenceRelation>, WorkspaceRelationError> {
+    native_read_reserve(budget)?;
+    let page = relation.page_one_with_depth_limit(after, NATIVE_EVIDENCE_READ_DEPTH)?;
+    let retained = match page.entries().first() {
+        Some((_, row)) => native_row_resident(row)?.checked_add(128).ok_or(WorkspaceRelationError::Store(backend_store::StoreError::Bounds))?,
+        None => 0,
+    };
+    native_read_refund(budget, retained)?;
+    Ok(page)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,7 +449,242 @@ mod tests {
             byte_length: 42,
             kind: NativeSourceEvidenceKind::Image,
             line_starts: None,
+            headers: None,
         }
+    }
+
+    #[test]
+    fn budgeted_typed_relation_reads_charge_before_decoding_siblings() {
+        use backend_store::{FileStore, RelationAdmissionRegistry};
+        use backend_version::{CoverageWitness, RelationState, ScopeRoot, UntrustedCoverageScope};
+        use std::sync::Arc;
+        let directory = tempfile::tempdir().unwrap();
+        let registry = RelationAdmissionRegistry::new().with_relation::<NativeSourceEvidenceRelation>().unwrap();
+        let store = FileStore::open_with_registry(directory.path(), 1024 * 1024, registry).unwrap();
+        let mut rows = Vec::new();
+        for i in 0..200 {
+            let mut item = row();
+            item.path = format!("pkg/{i:03}.go");
+            item.byte_length = 2048;
+            item.line_starts = Some((0..1024).map(|n| n * 2).collect());
+            rows.push((item.key().unwrap(), item));
+        }
+        rows.sort_unstable_by_key(|(key, _)| *key);
+        let state = RelationState::<NativeSourceEvidenceRelation>::from_entries(rows.clone(),
+            CoverageWitness::Partial(UntrustedCoverageScope::from_scope_root(ScopeRoot::from_u64(1)))).unwrap();
+        store.write_relation_state(&state).unwrap();
+        let relation = WorkspaceRelationHandle::<NativeSourceEvidenceRelation>::open(Arc::new(store), *state.root().as_bytes()).unwrap();
+        let mut short = NATIVE_EVIDENCE_READ_SCRATCH - 1;
+        assert!(native_source_evidence_lookup_budgeted(&relation, &rows[100].0, &mut short).is_err());
+        assert_eq!(short, NATIVE_EVIDENCE_READ_SCRATCH - 1);
+        let mut budget = 64 * 1024 * 1024;
+        let found = native_source_evidence_lookup_budgeted(&relation, &rows[100].0, &mut budget).unwrap().unwrap();
+        assert_eq!(found, rows[100].1);
+        assert!(budget < 64 * 1024 * 1024);
+        let mut cursor = None;
+        let mut visited = 0;
+        loop {
+            let page = native_source_evidence_page_budgeted(&relation, cursor.as_ref(), &mut budget).unwrap();
+            if page.entries().is_empty() { break; }
+            assert_eq!(page.entries()[0], rows[visited]);
+            visited += 1;
+            cursor = page.next().copied();
+            if cursor.is_none() { break; }
+        }
+        assert_eq!(visited, rows.len());
+        // Corrupt the selected child after root admission. Insufficient credit
+        // must fail before touching that child; sufficient credit reaches it.
+        let root = relation.root_node().unwrap();
+        let page = relation.node_page(root, 0, 1).unwrap();
+        let child = match page {
+            crate::workspace::WorkspaceRelationNodePage::Branch { children, .. } => children[0].handle(),
+            _ => panic!("fixture must span multiple leaves"),
+        };
+        let name: String = child.object().as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+        let path = directory.path().join("objects").join(format!("{name}.object"));
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(path, b"corrupt").unwrap();
+        let mut short = NATIVE_EVIDENCE_READ_SCRATCH - 1;
+        assert!(matches!(native_source_evidence_lookup_budgeted(&relation, &rows[0].0, &mut short), Err(WorkspaceRelationError::Store(backend_store::StoreError::Bounds))));
+        assert_eq!(short, NATIVE_EVIDENCE_READ_SCRATCH - 1);
+        let mut enough = 64 * 1024 * 1024;
+        assert!(native_source_evidence_lookup_budgeted(&relation, &rows[0].0, &mut enough).is_err());
+    }
+
+    #[test]
+    fn selected_pointer_preflight_charges_before_root_and_child_decode() {
+        use backend_store::{FileStore, RelationAdmissionRegistry, StoreError};
+        use backend_version::{CoverageWitness, RelationState, ScopeRoot, UntrustedCoverageScope};
+        use std::sync::Arc;
+        let directory=tempfile::tempdir().unwrap();
+        let registry=RelationAdmissionRegistry::new().with_relation::<NativeSourceEvidenceRelation>().unwrap();
+        let store=FileStore::open_with_registry(directory.path(),1024*1024,registry).unwrap();
+        let mut rows=(0..200).map(|i| {
+            let mut r=row();r.path=format!("pkg/{i:03}.go");r.byte_length=2048;
+            r.line_starts=Some((0..1024).map(|n|n*2).collect());
+            (r.key().unwrap(),r)
+        }).collect::<Vec<_>>();
+        rows.sort_unstable_by_key(|r|r.0);
+        let coverage=CoverageWitness::Partial(UntrustedCoverageScope::from_scope_root(ScopeRoot::from_u64(1)));
+        let state=RelationState::<NativeSourceEvidenceRelation>::from_entries(rows.clone(),coverage).unwrap();
+        store.write_relation_state(&state).unwrap();
+        let handle=crate::workspace::WorkspacePreflightRelationHandle::<NativeSourceEvidenceRelation>::new(Arc::new(store),*state.root().as_bytes()).unwrap();
+        let calls=std::cell::Cell::new(0usize);
+        let mut gate=|node: &backend_version::CanonicalNodeView<'_>, budget: &mut usize| {
+            calls.set(calls.get()+1);
+            if node.is_leaf() { for field in node.leaf_field_iter().map_err(|_|StoreError::Corrupt)? { field.map_err(|_|StoreError::Corrupt)?; } }
+            *budget=budget.checked_sub(128*1024).ok_or(StoreError::Bounds)?;
+            Ok(())
+        };
+        let mut short=0;
+        assert!(handle.lookup(&rows[0].0,32,&mut short,&mut gate).is_err());
+        assert_eq!(calls.get(),0);
+        let mut budget=16*1024*1024;
+        let got=handle.lookup(&rows[0].0,32,&mut budget,&mut gate).unwrap().unwrap();
+        assert_eq!(got,rows[0].1);
+        assert!(calls.get()>=2, "root and child must each be preflighted");
+        assert!(budget<16*1024*1024);
+        let mut visited = Vec::new();
+        let mut cursor = None;
+        let mut visitor = |key: &[u8; 32], row: NativeSourceEvidence, budget: &mut usize| {
+            let retained = row.checked_heap_bytes().and_then(|n| n.checked_add(std::mem::size_of::<NativeSourceEvidence>() + 128)).ok_or(StoreError::Bounds)?;
+            *budget = budget.checked_sub(retained).ok_or(StoreError::Bounds)?;
+            visited.push((*key, row));
+            Ok(())
+        };
+        loop {
+            cursor = handle.visit(cursor.as_ref(), 64, 32, &mut budget, &mut gate, &mut visitor).unwrap();
+            if cursor.is_none() { break; }
+        }
+        drop(visitor);
+        assert_eq!(visited, rows);
+    }
+
+    #[test]
+    fn typed_relation_persists_maximum_row_and_rejects_one_byte_more() {
+        use backend_store::{FileStore, RelationAdmissionRegistry};
+        use backend_version::{CoverageWitness, RelationState, ScopeRoot, UntrustedCoverageScope};
+        use std::sync::Arc;
+        let directory = tempfile::tempdir().unwrap();
+        let registry = RelationAdmissionRegistry::new().with_relation::<NativeSourceEvidenceRelation>().unwrap();
+        let store = FileStore::open_with_registry(directory.path(), 1024 * 1024, registry).unwrap();
+        let mut claim = row();
+        claim.path = "xx".into();
+        claim.byte_length = 16_336;
+        claim.line_starts = Some((0..=16_336).collect());
+        assert_eq!(claim.checked_encoded_len(), Some(MAX_NATIVE_EVIDENCE_STORED_VALUE));
+        let key = claim.key().unwrap();
+        let coverage = CoverageWitness::Partial(UntrustedCoverageScope::from_scope_root(ScopeRoot::from_u64(1)));
+        let state = RelationState::<NativeSourceEvidenceRelation>::from_entries([(key, claim.clone())], coverage).unwrap();
+        store.write_relation_state(&state).unwrap();
+        let relation = WorkspaceRelationHandle::<NativeSourceEvidenceRelation>::open(Arc::new(store), *state.root().as_bytes()).unwrap();
+        let mut budget = 64 * 1024 * 1024;
+        assert_eq!(native_source_evidence_lookup_budgeted(&relation, &key, &mut budget).unwrap(), Some(claim.clone()));
+        assert_eq!(native_source_evidence_page_budgeted(&relation, None, &mut budget).unwrap().entries()[0].1, claim);
+        claim.path.push('x');
+        assert_eq!(claim.checked_encoded_len(), Some(MAX_NATIVE_EVIDENCE_STORED_VALUE + 1));
+        let key = claim.key().unwrap();
+        assert!(validate_native_source_evidence_rows(&[(key, claim.clone())]).is_err());
+        assert!(RelationState::<NativeSourceEvidenceRelation>::from_entries([(key, claim)], coverage).is_err());
+    }
+
+    #[test]
+    fn bounded_update_accepts_two_near_capacity_rows_and_exact_credit() {
+        use backend_store::{FileStore, RelationAdmissionRegistry};
+        use backend_version::{CoverageWitness, RelationState, ScopeRoot, UntrustedCoverageScope, LazyTreeMetadataShape, LazyTreeUpdateBudget, TreeChange};
+        use std::sync::Arc;
+        let directory = tempfile::tempdir().unwrap();
+        let registry = RelationAdmissionRegistry::new().with_relation::<NativeSourceEvidenceRelation>().unwrap();
+        let store = FileStore::open_with_registry(directory.path(), 1024 * 1024, registry).unwrap();
+        let mut a = row(); a.path="aa".into(); a.byte_length=16_336; a.line_starts=Some((0..=16_336).collect());
+        let mut b=a.clone(); b.path="bb".into();
+        let mut rows=vec![(a.key().unwrap(),a),(b.key().unwrap(),b)]; rows.sort_unstable_by_key(|r|r.0);
+        let coverage=CoverageWitness::Partial(UntrustedCoverageScope::from_scope_root(ScopeRoot::from_u64(1)));
+        let state=RelationState::<NativeSourceEvidenceRelation>::from_entries(rows.clone(),coverage).unwrap();
+        store.write_relation_state(&state).unwrap();
+        let relation=WorkspaceRelationHandle::<NativeSourceEvidenceRelation>::open(Arc::new(store),*state.root().as_bytes()).unwrap();
+        let key=rows[0].0; rows[0].1.input_digest[0]^=1;
+        let changes=[TreeChange::<NativeSourceEvidenceRelation>{key,after:Some(rows[0].1.clone())}];
+        let shape=LazyTreeMetadataShape::new(32,MAX_NATIVE_EVIDENCE_STORED_VALUE,3,3,5,4);
+        let baseline=relation.prepare_update_bounded(&changes,LazyTreeUpdateBudget::new(1,usize::MAX,shape)).unwrap();
+        let charge=baseline.work().peak_metadata_bytes;
+        assert!(charge > 0);
+        assert!(relation.prepare_update_bounded(&changes,LazyTreeUpdateBudget::new(1,charge-1,shape)).is_err());
+        let update=relation.prepare_update_bounded(&changes,LazyTreeUpdateBudget::new(1,charge,shape)).unwrap();
+        let rebuilt=RelationState::<NativeSourceEvidenceRelation>::from_entries(rows,coverage).unwrap();
+        assert_eq!(update.target().root(),rebuilt.root());
+    }
+
+    #[test]
+    fn bounded_update_accepts_small_existing_row() {
+        use backend_store::{FileStore, RelationAdmissionRegistry};
+        use backend_version::{CoverageWitness, RelationState, ScopeRoot, UntrustedCoverageScope, LazyTreeMetadataShape, LazyTreeUpdateBudget, TreeChange};
+        use std::sync::Arc;
+        let directory = tempfile::tempdir().unwrap();
+        let registry = RelationAdmissionRegistry::new().with_relation::<NativeSourceEvidenceRelation>().unwrap();
+        let store = FileStore::open_with_registry(directory.path(), 1024 * 1024, registry).unwrap();
+        let mut value=row(); let key=value.key().unwrap();
+        let coverage=CoverageWitness::Partial(UntrustedCoverageScope::from_scope_root(ScopeRoot::from_u64(1)));
+        let state=RelationState::<NativeSourceEvidenceRelation>::from_entries([(key,value.clone())],coverage).unwrap();
+        store.write_relation_state(&state).unwrap();
+        let relation=WorkspaceRelationHandle::<NativeSourceEvidenceRelation>::open(Arc::new(store),*state.root().as_bytes()).unwrap();
+        value.input_digest[0]^=1;
+        let width=value.checked_encoded_len().unwrap();
+        let changes=[TreeChange::<NativeSourceEvidenceRelation>{key,after:Some(value.clone())}];
+        let shape=LazyTreeMetadataShape::new(32,width,2,2,3,3);
+        let measured=allocation_counter::measure(|| {
+            assert!(relation.prepare_update_bounded(&changes,LazyTreeUpdateBudget::new(1,0,shape)).is_err());
+        });
+        assert_eq!(measured.count_total,0, "zero credit must fail before node cloning or decoding");
+        let baseline=relation.prepare_update_bounded(&changes,LazyTreeUpdateBudget::new(1,usize::MAX,shape)).unwrap();
+        let charge=baseline.work().peak_metadata_bytes;
+        assert!(charge > 0);
+        assert!(relation.prepare_update_bounded(&changes,LazyTreeUpdateBudget::new(1,charge-1,shape)).is_err());
+        let update=relation.prepare_update_bounded(&changes,LazyTreeUpdateBudget::new(1,charge,shape)).unwrap();
+        let expected=RelationState::<NativeSourceEvidenceRelation>::from_entries([(key,value)],coverage).unwrap();
+        assert_eq!(update.target().root(),expected.root());
+    }
+
+    #[test]
+    fn malformed_line_count_is_rejected_before_vector_allocation() {
+        let mut claim = row(); claim.line_starts = Some(vec![0]);
+        let mut bytes = Vec::new(); NativeSourceEvidenceRelation::encode_value(&claim, &mut bytes);
+        let offset = bytes.len() - 8;
+        bytes[offset..offset + 4].copy_from_slice(&u32::MAX.to_be_bytes());
+        let measured = allocation_counter::measure(|| {
+            assert!(NativeSourceEvidenceRelation::decode_value(&bytes).is_err());
+        });
+        // The bounded path may be copied; the forged count must never allocate a line vector.
+        assert!(measured.bytes_total < 8192);
+    }
+
+    #[test]
+    fn bounded_update_accepts_one_of_1024_small_rows_under_shared_budget() {
+        use backend_store::{FileStore, RelationAdmissionRegistry};
+        use backend_version::{CoverageWitness, RelationState, ScopeRoot, UntrustedCoverageScope, LazyTreeMetadataShape, LazyTreeUpdateBudget, TreeChange};
+        use std::sync::Arc;
+        let directory=tempfile::tempdir().unwrap();
+        let registry=RelationAdmissionRegistry::new().with_relation::<NativeSourceEvidenceRelation>().unwrap();
+        let store=FileStore::open_with_registry(directory.path(),1024*1024,registry).unwrap();
+        let mut rows=(0..1024).map(|i| {
+            let mut r=row(); r.path=format!("p/{i:04}.ts"); r.line_starts=Some(vec![0,10,20]);
+            r.headers=Some(NativeHeaderEvidence { image_identity:[3;32], image_byte_len:123, producer_recipe:[4;32], aggregate_digest:[5;32] });
+            (r.key().unwrap(),r)
+        }).collect::<Vec<_>>();
+        rows.sort_unstable_by_key(|r|r.0);
+        let coverage=CoverageWitness::Partial(UntrustedCoverageScope::from_scope_root(ScopeRoot::from_u64(1)));
+        let state=RelationState::<NativeSourceEvidenceRelation>::from_entries(rows.clone(),coverage).unwrap();
+        store.write_relation_state(&state).unwrap();
+        let relation=WorkspaceRelationHandle::<NativeSourceEvidenceRelation>::open(Arc::new(store),*state.root().as_bytes()).unwrap();
+        let width=rows.iter().map(|(_,r)|r.checked_encoded_len().unwrap()).max().unwrap();
+        let key=rows[0].0;rows[0].1.input_digest[0]^=1;
+        let changes=[TreeChange::<NativeSourceEvidenceRelation>{key,after:Some(rows[0].1.clone())}];
+        let leaf_min=64usize.min((16_384usize-32)/(width+48)).max(1);
+        let spill=1024/leaf_min+2;
+        let shape=LazyTreeMetadataShape::new(32,width,64,1024,spill,2);
+        let update=relation.prepare_update_bounded(&changes,LazyTreeUpdateBudget::new(1,62*1024*1024,shape)).unwrap();
+        let expected=RelationState::<NativeSourceEvidenceRelation>::from_entries(rows,coverage).unwrap();
+        assert_eq!(update.target().root(),expected.root());
     }
 
     #[test]
@@ -317,6 +692,7 @@ mod tests {
         let row = row();
         let mut bytes = Vec::new();
         NativeSourceEvidenceRelation::encode_value(&row, &mut bytes);
+        assert_eq!(row.checked_encoded_len(), Some(bytes.len()));
         assert_eq!(
             NativeSourceEvidenceRelation::decode_value(&bytes).unwrap(),
             row
@@ -352,6 +728,7 @@ mod tests {
         let mut encoded = Vec::new();
         NativeSourceEvidenceRelation::encode_value(&claim, &mut encoded);
         assert_eq!(&encoded[..4], MAGIC_V2);
+        assert_eq!(claim.checked_encoded_len(), Some(encoded.len()));
         assert_eq!(NativeSourceEvidenceRelation::decode_value(&encoded).unwrap(), claim);
         assert!(claim.verify_host(bytes, image).is_ok());
         claim.line_starts.as_mut().unwrap()[1] += 1;
@@ -371,6 +748,20 @@ mod tests {
         claim.kind = NativeSourceEvidenceKind::ProgramMember;
         assert!(!claim.admits_image());
         assert!(claim.verify_host(bytes, image).is_err());
+    }
+
+    #[test]
+    fn nse3_reference_is_bounded_and_untrusted() {
+        let mut claim = row();
+        claim.headers = Some(NativeHeaderEvidence { image_identity: [3; 32], image_byte_len: 100, producer_recipe: [4; 32], aggregate_digest: [5; 32] });
+        let mut bytes = Vec::new();
+        NativeSourceEvidenceRelation::encode_value(&claim, &mut bytes);
+        assert_eq!(&bytes[..4], MAGIC_V3);
+        assert_eq!(claim.checked_encoded_len(), Some(bytes.len()));
+        assert_eq!(NativeSourceEvidenceRelation::decode_value(&bytes).unwrap(), claim);
+        for end in 0..bytes.len() { assert!(NativeSourceEvidenceRelation::decode_value(&bytes[..end]).is_err()); }
+        claim.kind = NativeSourceEvidenceKind::ProgramMember;
+        assert!(claim.validate().is_err());
     }
 
     #[test]

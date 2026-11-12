@@ -6458,13 +6458,14 @@ fn staged_output_reservation(
     embedding_payload_max: usize,
     embedding_scratch_max: usize,
 ) -> Option<usize> {
-    staged_output_reservation_with_fragment_limit(
+    let base = staged_output_reservation_with_fragment_limit(
         package_fragment_limit(profile),
         source_count,
         image_cap,
         embedding_payload_max,
         embedding_scratch_max,
-    )
+    )?;
+    base.checked_add(if matches!(profile, LanguageProfile::TypeScript(_)) { 32 * 1024 * 1024 } else { 0 })
 }
 
 fn staged_output_reservation_with_fragment_limit(
@@ -6542,6 +6543,8 @@ mod fragment_budget_tests {
                 bytes,
                 if matches!(profile, LanguageProfile::Go(_)) {
                     go_bytes
+                } else if matches!(profile, LanguageProfile::TypeScript(_)) {
+                    python_bytes + 32 * 1024 * 1024
                 } else {
                     python_bytes
                 }

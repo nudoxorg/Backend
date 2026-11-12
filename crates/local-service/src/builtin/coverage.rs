@@ -684,10 +684,11 @@ pub(super) fn view_coverage(
     let source = snapshot
         .relation::<super::BuiltinWorkspaceRelation>()
         .map_err(|error| BuiltinModelError(error.to_string()))?;
-    let observed_owners = backend_engine::builtin::native_source_evidence_relation(snapshot)
+    let mut evidence_budget = super::MAX_REBUILD_BYTES;
+    let observed_owners = backend_engine::builtin::native_source_evidence_relation_budgeted(snapshot, &mut evidence_budget)
         .map_err(|error| BuiltinModelError(error.to_string()))?
         .as_ref()
-        .map(super::view_build::selected_nse_typescript_owners)
+        .map(|relation| super::view_build::selected_nse_typescript_owners(relation, &mut evidence_budget))
         .transpose()?
         .unwrap_or_default();
     let mut tally = SemanticTally::default();

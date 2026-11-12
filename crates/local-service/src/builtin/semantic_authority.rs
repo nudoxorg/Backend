@@ -60,6 +60,21 @@ const MAX_OBJECTS: usize = 100_002;
 const MAX_PAYLOAD_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_OBJECT_BYTES: usize = 512 * 1024 * 1024;
 const MAX_METADATA_BYTES: u64 = 64 * 1024 * 1024;
+
+fn native_header_reader_admissible(bytes: &[u8], reader_budget: usize, writer_budget: usize) -> bool {
+    let Some(mut credit) = bytes.len().checked_mul(2)
+        .and_then(|wire| reader_budget.checked_sub(wire)) else { return false };
+    credit = credit.min(writer_budget);
+    let before = credit;
+    if backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical_budgeted(bytes, &mut credit).is_err() { return false; }
+    let decoded = before - credit;
+    if !bytes.len().checked_add(2 * std::mem::size_of::<usize>())
+        .and_then(|wire| wire.checked_add(decoded)).is_some_and(|cost| cost <= reader_budget) { return false; }
+    // Object construction reserves three wire copies and an Arc header;
+    // construction and member verification each decode independently.
+    bytes.len().checked_mul(3).and_then(|wire| wire.checked_add(2 * std::mem::size_of::<usize>())).and_then(|wire| decoded.checked_mul(2).and_then(|heap| wire.checked_add(heap)))
+        .is_some_and(|cost| cost <= writer_budget)
+}
 const MAX_CHUNK_BYTES: usize = 16 * 1024;
 const MAX_PUT_CALLS: usize = 1_000_000;
 const AUTHORITY_PAGE: usize = 512;
@@ -1063,6 +1078,7 @@ pub(super) fn admit_replayed_native_evidence(
         .map_err(|error| BuiltinModelError(format!("open bounded native replay metadata CAS: {error:?}")))?;
     let store = FileStore::open(cas_path, 128 * 1024 * 1024)
         .map_err(|error| BuiltinModelError(format!("open native replay compiler CAS: {error:?}")))?;
+    let mut header_budget = super::MAX_REBUILD_BYTES;
     for capture in captures {
         let matching = rows.iter().copied().filter(|row| {
             row.project == capture.key.package_key().to_bytes() && row.profile == capture.key.profile()
@@ -1093,7 +1109,7 @@ pub(super) fn admit_replayed_native_evidence(
         if actual_claim != claim || record != expected || selected.input_digest() != capture.capture.input_digest() {
             return Err(BuiltinModelError("native replay compiler history differs from capture".into()));
         }
-        let loaded = load_selected_images(&store, generation_residence::SelectedSemanticImageSelection::Admitted(selected), 128 * 1024 * 1024, 4096)?;
+        let loaded = load_selected_images(&store, generation_residence::SelectedSemanticImageSelection::Admitted(selected.clone()), 128 * 1024 * 1024, 4096)?;
         let program = loaded.native_program_sources.as_ref().ok_or_else(|| BuiltinModelError("native replay Program is unavailable".into()))?;
         let mut remaining = std::collections::BTreeMap::new();
         for row in matching {
@@ -1120,6 +1136,16 @@ pub(super) fn admit_replayed_native_evidence(
                 return Err(BuiltinModelError("native replay Program source differs from evidence".into()));
             }
         }
+        let witness = backend_extension_turso::reopen_selected_native_headers(&store, &selected, header_budget)
+            .map_err(|error| BuiltinModelError(format!("open replay native headers: {error}")))?;
+        let header_aggregate = if let Some(witness) = witness {
+            header_budget = header_budget.checked_sub(witness.as_bytes().len().saturating_add(2 * std::mem::size_of::<usize>()))
+                .ok_or_else(|| BuiltinModelError("replay native header budget exceeded".into()))?;
+            let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical_budgeted(witness.as_bytes(), &mut header_budget)
+                .map_err(|error| BuiltinModelError(format!("decode replay native headers: {error}")))?;
+            Some((aggregate, *witness.object_id()))
+        } else { None };
+        let mut header_paths = std::collections::BTreeSet::new();
         let mut witnessed = std::collections::BTreeSet::new();
         for image in &loaded.images {
             let view = image.reopen().map_err(|error| BuiltinModelError(format!("open native replay image: {error}")))?;
@@ -1140,6 +1166,19 @@ pub(super) fn admit_replayed_native_evidence(
                 || !program.image_matches(path, backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(image.as_ref()).as_ref()) {
                 return Err(BuiltinModelError("native replay image differs from Program or evidence".into()));
             }
+            if let Some(headers) = &row.headers {
+                let (aggregate, digest) = header_aggregate.as_ref().ok_or_else(|| BuiltinModelError("native replay header witness absent".into()))?;
+                let file = super::native_ts_headers::witnessed_file(row, aggregate, *digest)
+                    .map_err(|error| BuiltinModelError(format!("native replay header: {error}")))?;
+                super::native_ts_headers::admit_image(row, headers, file, &view, image.as_ref())
+                    .map_err(|error| BuiltinModelError(format!("native replay header: {error}")))?;
+                header_paths.insert(path.to_owned());
+            } else if header_aggregate.as_ref().is_some_and(|(aggregate, _)| aggregate.file(path).is_some()) {
+                return Err(BuiltinModelError("native replay lost compiler header reference".into()));
+            }
+        }
+        if header_aggregate.as_ref().is_some_and(|(aggregate, _)| aggregate.files.iter().any(|file| !header_paths.contains(&file.path))) {
+            return Err(BuiltinModelError("native replay did not consume compiler header files".into()));
         }
         for (path, row) in remaining {
             // Non-emitted inputs still bind the exact Program, but cannot
@@ -2029,6 +2068,39 @@ impl SemanticAuthority {
         }
         backend_extension_turso::reopen_selected_typescript_snapshot_witness(&self.store, &selected)
             .ok()?
+    }
+
+    /// Reopens the exact selected compiler's bounded native header aggregate.
+    /// The returned claims still require source/image/entity admission.
+    pub(super) fn selected_native_header_aggregate(
+        &self,
+        key: &ProductSemanticPublicationKey,
+        claim: SemanticPublicationClaim,
+        budget: &mut usize,
+    ) -> Result<Option<(backend_semantic::native_ts_headers::NativeTsHeaderAggregate, [u8; 32])>, BuiltinModelError> {
+        if !key.is_selected() || !matches!(key.profile(), LanguageProfile::TypeScript(_)) {
+            return Err(BuiltinModelError("native header publication is not selected TypeScript".into()));
+        }
+        let (actual, selected) = self.read_selected_pair(key)?;
+        if actual != claim { return Err(BuiltinModelError("native header selected claim differs".into())); }
+        self.native_header_aggregate_for_admitted(&selected, budget)
+    }
+
+    /// Caller must have admitted this exact generation against the pending
+    /// capture, publication claim and compiler input before invoking this.
+    pub(super) fn native_header_aggregate_for_admitted(
+        &self,
+        selected: &backend_extension_turso::SelectedGeneration,
+        budget: &mut usize,
+    ) -> Result<Option<(backend_semantic::native_ts_headers::NativeTsHeaderAggregate, [u8; 32])>, BuiltinModelError> {
+        let witness = backend_extension_turso::reopen_selected_native_headers(&self.store, selected, *budget)
+            .map_err(|error| BuiltinModelError(format!("reopen selected native headers: {error}")))?;
+        let Some(witness) = witness else { return Ok(None) };
+        *budget = budget.checked_sub(witness.as_bytes().len().saturating_add(2 * std::mem::size_of::<usize>()))
+            .ok_or_else(|| BuiltinModelError("native header witness budget exceeded".into()))?;
+        let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical_budgeted(witness.as_bytes(), budget)
+            .map_err(|error| BuiltinModelError(format!("decode selected native headers: {error}")))?;
+        Ok(Some((aggregate, *witness.object_id())))
     }
 
     /// Reopens only a structurally correlated C# evidence claim from the exact
@@ -3582,6 +3654,48 @@ impl SemanticAuthority {
                 None
             };
 
+        // Persist the same-attempt native TSZ claims in the selected compiler
+        // closure. The envelope binds this member to the exact attempt/input.
+        let native_header_member = if !staged.native_typescript_headers().is_empty() {
+            if staged.profile().language() != backend_semantic::vocabulary::Language::TypeScript
+                || program_member.is_none() {
+                return Err(BuiltinModelError("native headers require the selected TypeScript program".into()));
+            }
+            let rows = staged.native_typescript_headers();
+            let retained = rows.iter().try_fold(2 * std::mem::size_of::<usize>(), |total, row| {
+                total.checked_add(row.checked_retained_bytes()?)?
+                    .checked_add(4 * std::mem::size_of::<usize>())
+            }).ok_or_else(|| BuiltinModelError("native header staging size overflow".into()))?;
+            let mut budget = (128usize * 1024 * 1024).checked_sub(retained)
+                .ok_or_else(|| BuiltinModelError("native header staging budget exceeded".into()))?;
+            let mut files = rows.to_vec();
+            files.sort_unstable_by(|a, b| a.path.cmp(&b.path));
+            let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate { files };
+            let bytes = aggregate.encode_checked_budgeted(&mut budget)
+                .map_err(|error| BuiltinModelError(format!("encode native headers: {error}")))?;
+            // Do not attach optional metadata that the selected-owner reader
+            // cannot reopen under its fixed 64 MiB witness budget. Reopen
+            // reserves two wire copies before materializing the aggregate.
+            let reader_admissible = native_header_reader_admissible(&bytes, 64 * 1024 * 1024, budget);
+            if !reader_admissible {
+                None
+            } else {
+            if !payload_ids.len().checked_add(2).is_some_and(|count| count <= backend_extension_turso::MAX_COMPILER_PUBLICATION_MEMBER_IDS)
+                || !u64::try_from(bytes.len()).is_ok_and(|len| streamed_payload_bytes.checked_add(len).is_some_and(|total| total <= MAX_PAYLOAD_BYTES)) {
+                return Err(BuiltinModelError("native headers exceed compiler closure budget".into()));
+            }
+            let object = backend_extension_turso::compiler_native_headers_object(&bytes, &mut budget)
+                .map_err(|error| BuiltinModelError(format!("construct native header object: {error}")))?;
+            let object_id = stream_typed_object(&mut builder, &object)?;
+            account_streamed_payload(&mut streamed_payload_bytes, &bytes);
+            payload_ids.insert(object_id);
+            let verified = self.store.verify_object_claim(UntrustedObjectId::from_bytes(*object_id.as_bytes()))
+                .map_err(|error| BuiltinModelError(format!("verify native header object: {error:?}")))?;
+            Some(backend_extension_turso::CompilerNativeHeadersMember::from_verified_object(verified, &bytes, &mut budget)
+                .map_err(|error| BuiltinModelError(format!("admit native header member: {error}")))?)
+            }
+        } else { None };
+
         // A C# captured-input attempt must retain its complete checked
         // invocation aggregate in the same compiler closure. Missing or
         // over-budget evidence is a refusal, never a silent completeness claim.
@@ -3660,6 +3774,10 @@ impl SemanticAuthority {
                 .map_err(|error| {
                     BuiltinModelError(format!("bind TypeScript snapshot witness: {error}"))
                 })?;
+        }
+        if let Some(member) = native_header_member {
+            metadata = metadata.with_native_headers(member)
+                .map_err(|error| BuiltinModelError(format!("bind native header metadata: {error}")))?;
         }
         if let Some(member) = csharp_evidence_member {
             metadata = metadata.with_csharp_evidence(member)
@@ -5171,6 +5289,27 @@ mod tests {
 
     static NEXT_WORKSPACE: AtomicU64 = AtomicU64::new(0);
 
+    #[test]
+    fn native_header_admission_reserves_reader_and_writer_costs() {
+        use backend_semantic::native_ts_headers::{NativeTsHeaderAggregate, NativeTsHeaderEntry, NativeTsHeaderFile};
+        use backend_semantic::ir::{DeclarationFamilyId, DeclarationIdentity, SourceIdentity, VariantFingerprint};
+        let bytes = NativeTsHeaderAggregate { files: vec![NativeTsHeaderFile {
+            path: "src/main.ts".into(), source: SourceIdentity::from_bytes(b"function f() {}\n").unwrap(),
+            image_identity: [7; 32], image_byte_len: 123, producer_recipe: [8; 32],
+            entries: vec![NativeTsHeaderEntry { entity_id: 7,
+                identity: DeclarationIdentity { family: DeclarationFamilyId::from_raw([1; 16]), variant: VariantFingerprint::from_raw([2; 16]) },
+                compiler_extent: (0, 15), header_extent: (0, 12) }],
+        }] }.encode_checked().expect("canonical aggregate");
+        let mut credit = usize::MAX;
+        backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical_budgeted(&bytes, &mut credit).expect("decode aggregate");
+        let decoded = usize::MAX - credit;
+        let reader = (bytes.len() * 2 + decoded).max(bytes.len() + 2 * std::mem::size_of::<usize>() + decoded);
+        let writer = bytes.len() * 3 + 2 * std::mem::size_of::<usize>() + decoded * 2;
+        assert!(native_header_reader_admissible(&bytes, reader, writer));
+        assert!(!native_header_reader_admissible(&bytes, reader - 1, writer));
+        assert!(!native_header_reader_admissible(&bytes, reader, writer - 1));
+    }
+
     fn worker_test_key() -> ProductSemanticPublicationKey {
         let coordinate = PackageUrl::parse("pkg:cargo/worker-return@1.0.0".to_owned())
             .expect("real admitted coordinate");
@@ -5331,7 +5470,7 @@ mod tests {
             }
         }
 
-        const SOURCE: &str = "export const answer: number = 42;";
+        const SOURCE: &str = "export const answer: number = 42; export async function run(): Promise<number> { return answer; }";
         const SPARE: &str = "export const spare: number = 7;";
         let workspace = ScratchWorkspace::new();
         let package_root = workspace.0.join("package");
@@ -5410,6 +5549,15 @@ mod tests {
             .expect("exact selected closure admits its typed member")
             .expect("selected optional member is present");
         assert_eq!(selected_certificate.as_bytes(), certificate.as_slice());
+        let native_headers = backend_extension_turso::reopen_selected_native_headers(&authority.store, &selected, 64 * 1024 * 1024)
+            .expect("open exact compiler header member").expect("header member present");
+        let native_aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical(native_headers.as_bytes())
+            .expect("valid native header aggregate");
+        let native_file = native_aggregate.file("src/main.ts").expect("function header file");
+        let native_reference = backend_engine::builtin::NativeHeaderEvidence {
+            image_identity: native_file.image_identity, image_byte_len: native_file.image_byte_len,
+            producer_recipe: native_file.producer_recipe, aggregate_digest: *native_headers.object_id(),
+        };
         let cancelled = std::sync::atomic::AtomicBool::new(false);
         std::fs::write(package_root.join("src/unrelated.txt"), "")
             .expect("add unrelated unsupported text under the selected source root");
@@ -5555,10 +5703,12 @@ mod tests {
             byte_length: source.byte_len,
             kind: backend_engine::builtin::NativeSourceEvidenceKind::Image,
             line_starts: None,
+            headers: Some(native_reference.clone()),
         };
         let spare_source = backend_semantic::ir::SourceIdentity::from_bytes(SPARE.as_bytes())
             .expect("spare source identity");
         let mut spare = current.clone();
+        spare.headers = None;
         spare.path = "src/spare.ts".into();
         spare.source_digest = *spare_source.identity.as_ref();
         spare.input_digest = backend_compile::VerifiedSourceText::capture(SPARE.as_bytes())
@@ -5586,6 +5736,34 @@ mod tests {
         assert!(admit_replayed_native_evidence(
             &workspace_store, std::slice::from_ref(&capture), &[&current], &[&removed, &removed],
         ).is_err(), "duplicate retirements must refuse");
+        let mut missing_header = current.clone();
+        missing_header.headers = None;
+        assert!(admit_replayed_native_evidence(
+            &workspace_store, std::slice::from_ref(&capture), &[&missing_header], &[],
+        ).is_err(), "selected compiler header cannot be removed from evidence");
+        for mutate_start in [false, true] {
+            let mut altered = native_aggregate.clone();
+            let file = altered.files.iter_mut().find(|file| file.path == "src/main.ts").expect("header file");
+            let entry = file.entries.first_mut().expect("header entry");
+            if mutate_start { entry.header_extent.0 += 1; } else { entry.header_extent.1 = entry.compiler_extent.1; }
+            let bytes = altered.encode_checked().expect("valid but forged header geometry");
+            let mut budget = 1024 * 1024;
+            let forged = backend_extension_turso::compiler_native_headers_object(&bytes, &mut budget).expect("forged object");
+            let mut row = current.clone();
+            row.headers.as_mut().unwrap().aggregate_digest = *forged.id().as_bytes();
+            assert!(admit_replayed_native_evidence(
+                &workspace_store, std::slice::from_ref(&capture), &[&row], &[],
+            ).is_err(), "mutated header extent must not match the selected compiler closure");
+        }
+        let mut foreign_input = input;
+        foreign_input[0] ^= 1;
+        let mut foreign_capture = capture.clone();
+        foreign_capture.capture = backend_engine::builtin::SemanticSourceCapture::new(
+            None, [21; 32], foreign_input, 1, 2,
+        ).expect("foreign input capture");
+        assert!(admit_replayed_native_evidence(
+            &workspace_store, std::slice::from_ref(&foreign_capture), &[&current], &[],
+        ).is_err(), "a different compiler input cannot reuse the same image/header receipt");
         let mut wrong_source = current.clone();
         wrong_source.source_digest[0] ^= 1;
         assert!(admit_replayed_native_evidence(

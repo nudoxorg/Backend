@@ -1280,6 +1280,7 @@ dependencies = [
 name = "backend-extension-turso"
 version = "0.2.0"
 dependencies = [
+ "allocation-counter",
  "backend-engine",
  "backend-library",
  "backend-platform",
@@ -1815,6 +1816,7 @@ dependencies = [
  "backend-version",
  "blake3",
  "bolero",
+ "bytemuck",
  "derive_more",
  "fearless_simd",
  "loom",

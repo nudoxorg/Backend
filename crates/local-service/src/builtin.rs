@@ -64,6 +64,7 @@ mod index_work_observation;
 #[path = "builtin/ingest.rs"]
 mod ingest;
 mod native_ts_admission;
+mod native_ts_headers;
 mod owner_receipt_context;
 mod sql_capture;
 mod sql_admission;

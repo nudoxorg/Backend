@@ -3911,3 +3911,6 @@ pub fn decoy_mention() { let _ = "parse_config("; }
         ));
     }
 }
+
+#[cfg(test)]
+pub(in crate::builtin) use semantic::native_evidence_lookup_budget_control;

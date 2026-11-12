@@ -147,7 +147,8 @@ fn append_compiler_query_facts(
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic query relation: {error}")))?;
     let available = super::SourceAvailability::of_controlled(sources, cancelled)?;
-    let nse = backend_engine::builtin::native_source_evidence_relation(snapshot)
+    let mut image_budget = MAX_REBUILD_BYTES;
+    let nse = backend_engine::builtin::native_source_evidence_relation_budgeted(snapshot, &mut image_budget)
         .map_err(|error| BuiltinModelError(format!("open query native evidence: {error}")))?;
     let frontiers = if nse.is_some() {
         super::super::profile::native_evidence_basis_for_snapshot(snapshot)?;
@@ -157,7 +158,6 @@ fn append_compiler_query_facts(
     let mut structural_cache = BTreeMap::new();
     let mut structural_work = 0usize;
     let mut program_work = 0usize;
-    let mut image_budget = MAX_REBUILD_BYTES;
     let mut complete = BTreeSet::new();
     let mut pending = Vec::new();
     let mut package_profile_scopes = BTreeMap::<_, BTreeMap<_, _>>::new();

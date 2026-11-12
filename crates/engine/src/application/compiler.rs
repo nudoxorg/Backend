@@ -1858,6 +1858,11 @@ impl StagedSemanticPackage {
         self.staged.source_coverage.as_ref()
     }
 
+    /// Same-attempt parser claims; consumers must independently admit source and image.
+    pub fn native_typescript_headers(&self) -> &[StagedNativeTypeScriptHeaders] {
+        &self.staged.native_typescript_headers
+    }
+
     /// Exact full native program membership, including libraries and dependencies.
     /// This is not a complete-fact or complete-read certificate.
     #[must_use]
@@ -3543,11 +3548,15 @@ pub(crate) struct StagedPackageCompilation {
         std::sync::Arc<crate::application::typescript_program::TypeScriptForestClosureWitness>,
     >,
     native_program_sources: Option<backend_semantic::ir::NativeProgramSources>,
+    native_typescript_headers: Vec<StagedNativeTypeScriptHeaders>,
     source_coverage: Option<backend_semantic::ir::SourceCoverageObservation>,
     python_witness: Option<StagedPythonProjectWitness>,
     embeddings: Option<StagedEmbeddingOutput>,
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
 }
+
+/// Untrusted header claims captured from the admitted compiler arena and image.
+pub type StagedNativeTypeScriptHeaders = backend_semantic::native_ts_headers::NativeTsHeaderFile;
 
 /// One same-attempt captured C# configuration presence or absence probe.
 pub struct StagedCSharpConfigProbe {
@@ -5000,6 +5009,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             .try_reserve_exact(source_count)
             .map_err(PackageSemanticError::Allocation)?;
         let mut semantic_images = Vec::new();
+        let mut native_typescript_headers = Vec::new();
+        let mut native_header_budget = 32 * 1024 * 1024usize;
         let mut csharp_evidence = Vec::new();
         let csharp_config = package.csharp_config.map_or_else(Vec::new, |probes| {
             probes.iter().map(|probe| StagedCSharpConfigProbe {
@@ -5916,6 +5927,49 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     evidence: copy.into_boxed_slice(),
                 });
             }
+            if let (Some(budget), Some(crate::application::typescript_program::TypeScriptForestSourceMembership::Selected { program, program_path })) =
+                (tsz_budget.as_ref(), tsz_package_membership.get(source.relative_path()))
+            {
+                if let Some(project) = tsz_projects.get(*program).copied().flatten() {
+                    // Recovered parse trees cannot attest authored header boundaries.
+                    let clean_parse = project.bind_result(program_path)
+                        .is_some_and(|bind| bind.parse_diagnostics.is_empty());
+                    let captured = clean_parse.then(|| project.with_source_nodes(program_path, |arena, text| {
+                        if text != source.source { return Ok(None); }
+                        super::typescript_program_lane::capture_headers(
+                            arena, text, source.relative_path(), compiled.source,
+                            &compiled.semantic_image, budget, &mut native_header_budget,
+                        )
+                    })).flatten();
+                    if let Some(result) = captured {
+                        let result = result.map_err(|_| {
+                            if let Some(cause) = budget.stop_reason() {
+                                PackageSemanticError::Compile {
+                                    path: source.relative_path.into(),
+                                    terminal: Box::new(package_authority_terminal(
+                                        package.package_target.target(), application_request, source_authority,
+                                        self.toolchain_for_package(application_request, typescript_toolchain)
+                                            .unwrap_or(ToolchainSelection::ExplicitlyUnavailable { tool: NativeTool::TypeScriptCompiler }),
+                                        PackageAuthorityError::TypeScriptTsz(backend_frontend_typescript::TszAuthorityError::ExecutionStopped(cause)),
+                                    )),
+                                }
+                            } else {
+                                PackageSemanticError::Capacity { lane: "TypeScript header capture" }
+                            }
+                        })?;
+                        if let Some(headers) = result {
+                            let previous_capacity = native_typescript_headers.capacity();
+                            native_typescript_headers.try_reserve_exact(1).map_err(PackageSemanticError::Allocation)?;
+                            let new_slots = native_typescript_headers.capacity().saturating_sub(previous_capacity);
+                            let slack = new_slots.saturating_sub(1).checked_mul(std::mem::size_of::<StagedNativeTypeScriptHeaders>()).ok_or(PackageSemanticError::Capacity { lane: "TypeScript header capture budget" })?;
+                            if let Some(after) = native_header_budget.checked_sub(slack) {
+                                native_header_budget = after;
+                                native_typescript_headers.push(headers);
+                            }
+                        }
+                    }
+                }
+            }
             let fragment_length = compiled.fragment.len();
             fragment_bytes =
                 checked_package_fragment_bytes(fragment_bytes, fragment_length, target.profile)?;
@@ -6403,6 +6457,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 .map(|project| std::sync::Arc::clone(project.witness())),
             typescript_closure_witness: typescript_closure_witness.map(std::sync::Arc::new),
             native_program_sources,
+            native_typescript_headers,
             source_coverage,
             python_witness: python_project
                 .as_ref()

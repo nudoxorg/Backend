@@ -5708,14 +5708,14 @@ impl CommandAdapter {
                 .map_err(|error| backend_library::CommandFailure::InvalidQuery(error.to_owned()))?;
             document = selected;
             let mut source_budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
-            if let Some((qualification, page, excerpt, location)) = self.selected_native_document_source(
+            if let Some((qualification, page, excerpt, location, signature)) = self.selected_native_document_source(
                 daemon, row, &selection, query.source_range(), recover_excerpt, &mut source_budget,
             )? {
                 document.source_policy = qualification;
                 document.source_range = page;
                 if let Some(excerpt) = excerpt { document.excerpt = excerpt; }
                 if let Some(location) = location { document.location = backend_library::SourceAvailability::Captured(location); }
-                document.signature.clone_from(&row.signature);
+                document.signature = signature.or_else(|| row.signature.clone());
                 return Ok(Some(document));
             }
         }
@@ -5791,7 +5791,7 @@ impl CommandAdapter {
         request: Option<backend_library::SourceRangeRequest>,
         recover_excerpt: bool,
         source_budget: &mut usize,
-    ) -> Result<Option<(backend_library::SourcePolicyQualification, Option<backend_library::SourceRangePage>, Option<backend_library::SourceExcerpt>, Option<backend_library::SourceLocation>)>, backend_library::CommandFailure> {
+    ) -> Result<Option<(backend_library::SourcePolicyQualification, Option<backend_library::SourceRangePage>, Option<backend_library::SourceExcerpt>, Option<backend_library::SourceLocation>, Option<String>)>, backend_library::CommandFailure> {
         use backend_library::CommandFailure;
         let unavailable = || CommandFailure::InvalidQuery(
             "native source evidence is unavailable; reindex and retry".to_owned(),
@@ -5823,6 +5823,25 @@ impl CommandAdapter {
         let qualification = issue_observed_native_source_policy(
             &snapshot, selection, &evidence, &root, authority, source_budget,
         )?;
+        let signature = if evidence.claim().headers.is_some() {
+            let (aggregate, digest) = self.semantic_authority.selected_native_header_aggregate(
+                evidence.publication_key(), evidence.publication_claim(), source_budget,
+            ).map_err(|_| unavailable())?.ok_or_else(unavailable)?;
+            let file = super::super::native_ts_headers::witnessed_file(evidence.claim(), &aggregate, digest)
+                .map_err(|_| unavailable())?;
+            if file.producer_recipe != super::super::native_ts_headers::producer_recipe() {
+                None
+            } else if let Some(entry) = file.entry(evidence.entity_id().raw) {
+                if entry.identity != evidence.declaration_identity() || Some(entry.compiler_extent) != evidence.primary_extent() {
+                    return Err(unavailable());
+                }
+                *source_budget = source_budget.checked_sub((evidence.claim().byte_length as usize).saturating_add(1))
+                    .ok_or_else(unavailable)?;
+                Some(super::super::ingest::read_indexed_native_evidence_header(
+                    &root, evidence.claim(), evidence.image_source(), entry.header_extent,
+                ).map_err(|_| unavailable())?)
+            } else { None }
+        } else { None };
         let explicit_range = request.is_some();
         let implicit_range = recover_excerpt && !explicit_range && evidence.primary_extent().is_some();
         let mut head = String::new();
@@ -5883,7 +5902,7 @@ impl CommandAdapter {
             };
             Some(backend_library::SourceExcerpt::captured(&text, extent).map_err(|_| unavailable())?)
         } else { None };
-        Ok(Some((qualification, if explicit_range { page } else { None }, excerpt, location)))
+        Ok(Some((qualification, if explicit_range { page } else { None }, excerpt, location, signature)))
     }
 
     /// Checks disk freshness for a source-bearing row in the selected workspace.
@@ -7028,7 +7047,7 @@ impl CommandAdapter {
                         match self.selected_native_document_source(
                             daemon, row, &selection, None, true, &mut source_budget,
                         ) {
-                            Ok(Some((qualification, _, excerpt, _))) => {
+                            Ok(Some((qualification, _, excerpt, _, _))) => {
                                 record.source_policy = qualification;
                                 if let Some(excerpt) = excerpt
                                     && let Some(text) = excerpt.text()
@@ -8361,7 +8380,7 @@ fn issue_observed_native_source_policy(
     let claim = evidence.claim();
     let identity = evidence.declaration_identity();
     let image = evidence.image_authority();
-    let evidence_root = backend_engine::builtin::native_source_evidence_relation(snapshot)
+    let evidence_root = backend_engine::builtin::native_source_evidence_relation_budgeted(snapshot, source_budget)
         .map_err(|_| unavailable())?
         .ok_or_else(unavailable)?;
     let observation = backend_library::SourcePolicyObservation {

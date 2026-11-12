@@ -40,6 +40,80 @@ fn native_incoming_graph_edge_uses_producing_publication() -> Result<(), Box<dyn
     project_fixture(false, true)
 }
 
+#[test]
+fn compiler_worker_captures_five_thousand_function_headers() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestRoot(std::env::temp_dir().join(format!(
+        "nudox-native-header-many-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+    )));
+    let package = root.0.join("package");
+    fs::create_dir_all(&package)?;
+    let source = (0..5000).map(|i| format!("export function f{i}() {{ return {i}; }}\n")).collect::<String>();
+    fs::write(package.join("many.ts"), &source)?;
+    fs::write(package.join("tsconfig.json"), r#"{"compilerOptions":{"noLib":true,"types":[]},"files":["many.ts"]}"#)?;
+    let client = LocalCompilerHost::new(Environment(root.0.join("data")), LocalHostDiscovery::ExplicitOnly).open()?;
+    let request = PackageCompileRequest::new(GenerateTarget {
+        correlation: CorrelationId(415), profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript), stage: Stage::LowerIr,
+    }, PackageUrl::parse("pkg:npm/header-many@1.0.0".to_owned()).map_err(|e| format!("package: {e:?}"))?)
+        .map_err(|e| format!("request: {e:?}"))?;
+    let staged = client.compile_package_sources_staged(OwnedPackageSourceSet::new(request.clone(), package.clone(),
+        vec![OwnedPackageSource::new("many.ts", &source)?].into_boxed_slice())?)?;
+    let file = staged.native_typescript_headers().iter().find(|file| file.path == "many.ts").ok_or("headers absent")?;
+    assert_eq!(file.entries.len(), 5000);
+    assert!(file.entries.iter().any(|entry| source.get(entry.header_extent.0 as usize..entry.header_extent.1 as usize) == Some("export function f4999()")));
+    drop(staged);
+    let malformed = "export function broken() { return 1;\n";
+    fs::write(package.join("many.ts"), malformed)?;
+    let malformed_result = client.compile_package_sources_staged(OwnedPackageSourceSet::new(request, package,
+        vec![OwnedPackageSource::new("many.ts", malformed)?].into_boxed_slice())?);
+    if let Ok(staged) = malformed_result {
+        assert!(staged.native_typescript_headers().iter().all(|file| file.path != "many.ts"));
+    }
+    Ok(())
+}
+
+#[test]
+fn large_valid_typescript_keeps_compiler_publication_without_optional_headers() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestRoot(std::env::temp_dir().join(format!("nudox-native-header-large-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos())));
+    let package = root.0.join("package");
+    fs::create_dir_all(&package)?;
+    let source = format!("/* {} */\nexport function available() {{ return 1; }}\n", "x".repeat(1024 * 1024));
+    fs::write(package.join("large.ts"), &source)?;
+    fs::write(package.join("tsconfig.json"), r#"{"compilerOptions":{"noLib":true,"types":[]},"files":["large.ts"]}"#)?;
+    let client = LocalCompilerHost::new(Environment(root.0.join("data")), LocalHostDiscovery::ExplicitOnly).open()?;
+    let request = PackageCompileRequest::new(GenerateTarget { correlation: CorrelationId(416), profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript), stage: Stage::LowerIr },
+        PackageUrl::parse("pkg:npm/header-large@1.0.0".to_owned()).map_err(|e| format!("package: {e:?}"))?).map_err(|e| format!("request: {e:?}"))?;
+    let staged = client.compile_package_sources_staged(OwnedPackageSourceSet::new(request, package,
+        vec![OwnedPackageSource::new("large.ts", &source)?].into_boxed_slice())?)?;
+    assert!(staged.semantic_output_object(0).is_some());
+    assert!(staged.native_typescript_headers().iter().all(|file| file.path != "large.ts"));
+    Ok(())
+}
+
+#[test]
+fn compiler_worker_retains_headers_after_seventeen_small_files() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TestRoot(std::env::temp_dir().join(format!("nudox-native-header-files-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos())));
+    let package = root.0.join("package");
+    fs::create_dir_all(&package)?;
+    let mut paths = Vec::new();
+    let mut sources = Vec::new();
+    for i in 0..17 {
+        let path = format!("file{i:02}.ts");
+        let text = format!("export function f{i}() {{ return {i}; }}\n");
+        fs::write(package.join(&path), &text)?;
+        sources.push(OwnedPackageSource::new(&path, &text)?);
+        paths.push(format!("\"{path}\""));
+    }
+    fs::write(package.join("tsconfig.json"), format!("{{\"compilerOptions\":{{\"noLib\":true,\"types\":[]}},\"files\":[{}]}}", paths.join(",")))?;
+    let client = LocalCompilerHost::new(Environment(root.0.join("data")), LocalHostDiscovery::ExplicitOnly).open()?;
+    let request = PackageCompileRequest::new(GenerateTarget { correlation: CorrelationId(417), profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript), stage: Stage::LowerIr },
+        PackageUrl::parse("pkg:npm/header-files@1.0.0".to_owned()).map_err(|e| format!("package: {e:?}"))?).map_err(|e| format!("request: {e:?}"))?;
+    let staged = client.compile_package_sources_staged(OwnedPackageSourceSet::new(request, package, sources.into_boxed_slice())?)?;
+    assert_eq!(staged.native_typescript_headers().len(), 17);
+    let last = staged.native_typescript_headers().iter().find(|file| file.path == "file16.ts").ok_or("last header missing")?;
+    assert_eq!(last.entries.len(), 1);
+    Ok(())
+}
+
 fn project_fixture(private: bool, graph_origin: bool) -> Result<(), Box<dyn std::error::Error>> {
     let root = TestRoot(std::env::temp_dir().join(format!(
         "nudox-native-reference-projection-{}-{}",
@@ -55,7 +129,7 @@ fn project_fixture(private: bool, graph_origin: bool) -> Result<(), Box<dyn std:
     } else {
         "export function Button() { return 1; }\n"
     };
-    let unused = "export function Unused() { return 0; }\n";
+    let unused = "export async function Unused() { return 0; }\n";
     let barrel = "export { Button as Action } from './button';\n";
     let page = "// λ\nimport { Action as Confirm } from './ui';\nexport function Page() { return <><Confirm /><Confirm /></>; }\n";
     fs::write(package.join("ui/button.ts"), button)?;
@@ -103,6 +177,34 @@ fn project_fixture(private: bool, graph_origin: bool) -> Result<(), Box<dyn std:
         staged.input_witness().coverage().state(),
         backend_version::Coverage::Partial
     );
+    let staged_ts = client.compile_package_sources_staged(OwnedPackageSourceSet::new(
+        ts_request.clone(), package.clone(), ts_sources.clone(),
+    )?)?;
+    let headers = staged_ts.native_typescript_headers().iter()
+        .find(|file| file.path == "ui/unused.ts").ok_or("async source header absent")?;
+    assert_eq!(headers.source, backend_semantic::ir::SourceIdentity::from_bytes(unused.as_bytes()).ok_or("source identity")?);
+    let header = headers.entries.first().ok_or("async function header absent")?;
+    assert_eq!(&unused[header.header_extent.0 as usize..header.header_extent.1 as usize], "export async function Unused()");
+    assert!(header.header_extent.1 < header.compiler_extent.1);
+    let original_source = headers.source;
+    let original_image = headers.image_identity;
+    drop(staged_ts);
+    let changed = "export async function Unused() { return 2; }\n";
+    fs::write(package.join("ui/unused.ts"), changed)?;
+    let changed_sources = vec![
+        OwnedPackageSource::new("ui/button.ts", button)?,
+        OwnedPackageSource::new("ui/index.ts", barrel)?,
+        OwnedPackageSource::new("ui/unused.ts", changed)?,
+    ].into_boxed_slice();
+    let changed_staged = client.compile_package_sources_staged(OwnedPackageSourceSet::new(
+        ts_request.clone(), package.clone(), changed_sources,
+    )?)?;
+    let changed_headers = changed_staged.native_typescript_headers().iter()
+        .find(|file| file.path == "ui/unused.ts").ok_or("changed source header absent")?;
+    assert_ne!(changed_headers.source, original_source);
+    assert_ne!(changed_headers.image_identity, original_image);
+    drop(changed_staged);
+    fs::write(package.join("ui/unused.ts"), unused)?;
     let first = client.compile_package_sources(OwnedPackageSourceSet::new(
         ts_request,
         package.clone(),
