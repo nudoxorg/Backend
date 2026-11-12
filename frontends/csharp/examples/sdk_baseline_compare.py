@@ -137,10 +137,10 @@ with tempfile.TemporaryDirectory(prefix='csharp-baseline-') as scratch:
         refs.append(f'<Reference Include="{esc(name)}"><HintPath>{esc(path)}</HintPath><Private>false</Private></Reference>')
     frameworks = ''.join(f'<FrameworkReference Include="{esc(name)}" />' for name in a.frameworks.split(',') if name)
     project = root / 'resolve.csproj'
-    project.write_text(f'''<Project Sdk="{sdk}"><PropertyGroup><TargetFramework>{esc(a.target)}</TargetFramework><Nullable>{esc(a.nullable)}</Nullable><LangVersion>{esc(a.language)}</LangVersion><OutputType>{esc(a.output)}</OutputType><ImportDirectoryBuildProps>false</ImportDirectoryBuildProps><ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets></PropertyGroup><ItemGroup>{''.join(refs)}{frameworks}</ItemGroup></Project>''')
+    project.write_text(f'''<Project Sdk="{sdk}"><PropertyGroup><TargetFramework>{esc(a.target)}</TargetFramework><Nullable>{esc(a.nullable)}</Nullable><LangVersion>{esc(a.language)}</LangVersion><OutputType>{esc(a.output)}</OutputType><ImportDirectoryBuildProps>false</ImportDirectoryBuildProps><ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets></PropertyGroup><ItemGroup>{''.join(refs)}{frameworks}</ItemGroup><Target Name="NudoxReferenceProjection" DependsOnTargets="ResolveReferences"><ItemGroup><NudoxReference Include="@(ReferencePath)" KeepMetadata="FusionName" /></ItemGroup></Target></Project>''')
     env = {k: v for k, v in os.environ.items() if k in ('PATH', 'LD_LIBRARY_PATH', 'DYLD_LIBRARY_PATH', 'DOTNET_SYSTEM_GLOBALIZATION_INVARIANT')}
     env.update(DOTNET_CLI_HOME=scratch, NUGET_PACKAGES=scratch, DOTNET_CLI_TELEMETRY_OPTOUT='1', DOTNET_SKIP_FIRST_TIME_EXPERIENCE='1', DOTNET_NOLOGO='1')
-    args = [a.dotnet, 'msbuild', str(project), '-nologo', '-noAutoResponse', '-nodeReuse:false', '-target:ResolveReferences', '-getItem:ReferencePath', '-getProperty:MSBuildSDKsPath', '-p:RestoreSources=', '-p:MSBuildEnableWorkloadResolver=false']
+    args = [a.dotnet, 'msbuild', str(project), '-nologo', '-noAutoResponse', '-nodeReuse:false', '-target:NudoxReferenceProjection', '-getItem:NudoxReference', '-getProperty:MSBuildSDKsPath', '-p:RestoreSources=', '-p:MSBuildEnableWorkloadResolver=false']
     for stem in ('MicrosoftCommonProps', 'MicrosoftCommonTargets', 'MicrosoftCSharpTargets', 'MicrosoftCommonCrossTargetingTargets', 'MicrosoftNetFrameworkProps', 'MicrosoftNetFrameworkTargets', 'MicrosoftVisualBasicTargets'):
         for when in ('Before', 'After'):
             for prefix in ('ImportByWildcard', 'ImportUserLocationsByWildcard'):
@@ -151,7 +151,7 @@ with tempfile.TemporaryDirectory(prefix='csharp-baseline-') as scratch:
         raise SystemExit('baseline invoked a different SDK')
     baseline = []
     excluded_seen = False
-    for item in observed['Items']['ReferencePath']:
+    for item in observed['Items']['NudoxReference']:
         path = Path(item.get('FullPath') or item['Identity']).resolve()
         if excluded and path == excluded:
             excluded_seen = True

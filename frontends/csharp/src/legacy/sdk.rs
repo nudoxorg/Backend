@@ -752,7 +752,9 @@ pub fn resolve_references_with_sdk_diagnostics(
         }
         xml.push_str(&format!("<FrameworkReference Include=\"{reference}\" />"));
     }
-    xml.push_str("</ItemGroup></Project>");
+    // Keep the official SDK selection and emit only its FusionName metadata;
+    // MSBuild supplies intrinsic Identity and FullPath for the projected item.
+    xml.push_str("</ItemGroup><Target Name=\"NudoxReferenceProjection\" DependsOnTargets=\"ResolveReferences\"><ItemGroup><NudoxReference Include=\"@(ReferencePath)\" KeepMetadata=\"FusionName\" /></ItemGroup></Target></Project>");
     fs::write(&project, xml).map_err(|_| "SDK scratch unavailable")?;
     let args = vec![
         OsString::from("msbuild"),
@@ -760,8 +762,8 @@ pub fn resolve_references_with_sdk_diagnostics(
         OsString::from("-nologo"),
         OsString::from("-noAutoResponse"),
         OsString::from("-nodeReuse:false"),
-        OsString::from("-target:ResolveReferences"),
-        OsString::from("-getItem:ReferencePath"),
+        OsString::from("-target:NudoxReferenceProjection"),
+        OsString::from("-getItem:NudoxReference"),
         OsString::from("-getProperty:MSBuildSDKsPath"),
         OsString::from("-p:RestoreSources="),
         OsString::from("-p:MSBuildEnableWorkloadResolver=false"),
@@ -852,7 +854,7 @@ pub fn resolve_references_with_sdk_diagnostics(
     let items = value
         .get("Items")
         .and_then(Value::as_object)
-        .and_then(|o| o.get("ReferencePath"))
+        .and_then(|o| o.get("NudoxReference"))
         .and_then(Value::as_array)
         .ok_or("SDK resolution missing ReferencePath")?;
     if items.is_empty() || items.len() > snapshots.len() {
@@ -993,9 +995,9 @@ fn write_resolver_global_json(root: &Path, captured: Option<&str>) -> Result<(),
         .map_err(|_| "SDK global.json unavailable")
 }
 
-// MSBuild's -getItem emits all standard metadata, not only FullPath and
-// FusionName. Bound its JSON based on the admitted input cardinality, with a
-// fixed envelope and absolute ceiling; returned fields are bounded separately.
+// MSBuild's -getItem emits built-in item metadata even after projection.
+// Bound JSON by admitted input cardinality and an absolute ceiling; selected
+// identity fields are bounded separately.
 fn resolver_stdout_limit(candidate_count: usize) -> usize {
     const ENVELOPE: usize = 512 * 1024;
     const PER_CANDIDATE: usize = 8 * 1024;
