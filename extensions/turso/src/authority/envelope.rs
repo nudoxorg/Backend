@@ -3892,7 +3892,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "large synthetic metadata allocation fixture; not a selected-owner proof"]
     fn near_limit_synthetic_metadata_allocation_bound() {
         let (image, _) = compiler_image();
         let images = (0..MAX_MEMBER_IDS - 10).map(|i| {
