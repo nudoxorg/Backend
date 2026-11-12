@@ -218,6 +218,45 @@ fn account_pack_bytes(total: &mut usize, length: usize) -> Result<(), &'static s
     Ok(())
 }
 
+// The SDK can consult pack metadata as well as reference DLLs. Bind the
+// complete private pack layout, with stable reads and deterministic ordering.
+fn pack_layout_digest(root: &Path, deadline: Instant, cancelled: &AtomicBool) -> Result<[u8; 32], &'static str> {
+    fn visit(root: &Path, dir: &Path, hash: &mut sha2::Sha256, count: &mut usize,
+        total: &mut usize, depth: usize, deadline: Instant, cancelled: &AtomicBool) -> Result<(), &'static str> {
+        if depth > 32 { return Err("SDK pack snapshot depth"); }
+        let mut entries = fs::read_dir(dir).map_err(|_| "SDK pack snapshot unavailable")?
+            .collect::<Result<Vec<_>, _>>().map_err(|_| "SDK pack snapshot unavailable")?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline { return Err("SDK pack snapshot cancelled"); }
+            *count = count.checked_add(1).ok_or("SDK pack snapshot limit")?;
+            if *count > 32768 { return Err("SDK pack snapshot limit"); }
+            let path = entry.path();
+            let kind = entry.file_type().map_err(|_| "SDK pack snapshot unavailable")?;
+            if kind.is_symlink() { return Err("SDK pack snapshot symlink"); }
+            if kind.is_dir() {
+                visit(root, &path, hash, count, total, depth + 1, deadline, cancelled)?;
+            } else if kind.is_file() {
+                let relative = path.strip_prefix(root).map_err(|_| "SDK pack snapshot unavailable")?;
+                let name = relative.as_os_str().as_encoded_bytes();
+                let bytes = backend_platform::durable::read_regular_bounded_stable(&path, 32 * 1024 * 1024)
+                    .map_err(|_| "SDK pack snapshot unavailable")?;
+                account_pack_bytes(total, bytes.len())?;
+                hash.update((name.len() as u64).to_le_bytes());
+                hash.update(name);
+                hash.update((bytes.len() as u64).to_le_bytes());
+                hash.update(sha2::Sha256::digest(&bytes));
+            } else { return Err("SDK pack snapshot unavailable"); }
+        }
+        Ok(())
+    }
+    let mut hash = sha2::Sha256::new();
+    hash.update(b"csharp.sdk-private-pack-layout.v1\0");
+    let (mut count, mut total) = (0, 0);
+    visit(root, root, &mut hash, &mut count, &mut total, 0, deadline, cancelled)?;
+    Ok(hash.finalize().into())
+}
+
 fn validate_candidate_sources(
     snapshots: &[CandidateSnapshot], deadline: Instant, cancelled: &AtomicBool,
 ) -> Result<(), &'static str> {
@@ -646,6 +685,12 @@ pub fn resolve_references_with_sdk_diagnostics(
             return Err("SDK pack candidate changed during capture");
         }
     }
+    let pack_digest = pack_layout_digest(&private_pack_root, deadline, cancelled)?;
+    let mut candidate_hash = sha2::Sha256::new();
+    candidate_hash.update(b"csharp.sdk-candidates-and-pack.v1\0");
+    candidate_hash.update(candidate_digest(&snapshots));
+    candidate_hash.update(pack_digest);
+    let captured_candidate_digest: [u8; 32] = candidate_hash.finalize().into();
     if let Some(bytes) = assets_bytes {
         if bytes.is_empty() || bytes.len() > 64 * 1024 * 1024 {
             return Err("SDK assets unavailable");
@@ -781,6 +826,9 @@ pub fn resolve_references_with_sdk_diagnostics(
     // unselected conflict changing during the observation could change the
     // winner on a retry while leaving this receipt apparently valid.
     validate_candidate_sources(&snapshots, deadline, cancelled)?;
+    if pack_layout_digest(&private_pack_root, deadline, cancelled)? != pack_digest {
+        return Err("SDK pack changed during resolution");
+    }
     let value: Value =
         serde_json::from_slice(&output.stdout).map_err(|_| "SDK resolution malformed")?;
     let invoked_sdk_directory = value
@@ -917,7 +965,7 @@ pub fn resolve_references_with_sdk_diagnostics(
                 .collect(),
             target_framework: target_framework.to_owned(),
             global_json_digest,
-            candidate_digest: candidate_digest(&snapshots),
+            candidate_digest: captured_candidate_digest,
             selected_digest,
             selected_names,
             selected_fusion_names: selected_fusion_names.into_boxed_slice(),
@@ -1599,6 +1647,20 @@ pub fn observe_csharp_sdk_with(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pack_metadata_changes_its_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("Example.Ref/1/data");
+        fs::create_dir_all(&data).unwrap();
+        let metadata = data.join("FrameworkList.xml");
+        fs::write(&metadata, b"first").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let cancelled = AtomicBool::new(false);
+        let first = pack_layout_digest(root.path(), deadline, &cancelled).unwrap();
+        fs::write(&metadata, b"other").unwrap();
+        assert_ne!(first, pack_layout_digest(root.path(), deadline, &cancelled).unwrap());
+    }
+
     #[test]
     fn resolver_writes_global_json_absence_sentinel_or_exact_pin() {
         let scratch = tempfile::tempdir().unwrap();
