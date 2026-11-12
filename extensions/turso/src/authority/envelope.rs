@@ -1807,6 +1807,48 @@ impl SelectedNativeHeaderBudget {
     pub const fn remaining_memory(&self) -> usize { self.memory }
     pub fn remaining_work(&self) -> u64 { self.work.get() }
 }
+fn verify_metadata_member_bitmap(
+    envelope: &BorrowedSelectedEnvelope<'_>, metadata: &CompilerPublicationMetadata,
+    metadata_id: AuthorityHash, budget: &mut SelectedNativeHeaderBudget, cancelled: &dyn Fn() -> bool,
+) -> Result<(), String> {
+    let count = envelope.member_wire.len() / 32;
+    let bytes = count.checked_add(7).ok_or("member bitmap overflow")? / 8;
+    let before = budget.memory;
+    let result = (|| {
+        let mut seen = backend_store::try_allocate_exact_zeroed_bytes_budgeted(bytes, &mut budget.memory)
+            .map_err(|e| format!("member bitmap: {e:?}"))?;
+        let ids = std::iter::once(metadata_id)
+            .chain(metadata.native_program_sources.iter().map(|x| *x.object_id()))
+            .chain(metadata.source_coverage.iter().map(|x| *x.object_id()))
+            .chain(metadata.typescript_snapshot.iter().map(|x| *x.object_id()))
+            .chain(metadata.csharp_evidence.iter().map(|x| *x.object_id()))
+            .chain(metadata.native_headers.iter().map(|x| *x.object_id()))
+            .chain(metadata.images.iter().map(|x| *x.object_id()))
+            .chain(metadata.versioned_planes.iter().flat_map(|p| p.artifacts().iter().map(|a| *a.manifest_object_id())))
+            .chain(metadata.versioned_planes.iter().flat_map(|p| p.members().map(|m| *m.object_id())));
+        for id in ids {
+            let mut low = 0usize; let mut high = count;
+            while low < high {
+                header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected inventory stopped: {e:?}"))?;
+                let mid = low + (high - low) / 2;
+                let cell = &envelope.member_wire[mid * 32..mid * 32 + 32];
+                if cell < id.as_slice() { low = mid + 1; } else { high = mid; }
+            }
+            if low == count || envelope.member_wire[low * 32..low * 32 + 32] != id {
+                return Err("selected compiler metadata names a foreign member".into());
+            }
+            seen[low / 8] |= 1 << (low % 8);
+        }
+        for index in 0..count {
+            header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected inventory stopped: {e:?}"))?;
+            if seen[index / 8] & (1 << (index % 8)) == 0 { return Err("selected compiler envelope has an unconsumed member".into()); }
+        }
+        Ok(())
+    })();
+    budget.memory = before;
+    result
+}
+
 fn header_checkpoint(work: &std::cell::Cell<u64>, cancelled: &dyn Fn() -> bool) -> Result<(), backend_store::StoreError> {
     if cancelled() { return Err(backend_store::StoreError::Bounds); }
     work.set(work.get().checked_sub(1).ok_or(backend_store::StoreError::Bounds)?);
@@ -1882,17 +1924,10 @@ pub fn reopen_selected_native_headers_budgeted(
     let metadata = CompilerPublicationMetadata::decode(&wire).map_err(|e| e.to_string())?;
     if metadata.schema() != schema { return Err("compiler metadata schema differs".into()); }
     drop(wire);
-    let plane_slots = metadata.versioned_planes.as_ref().map_or(0, |p| p.segment_count() + p.artifacts().len());
-    let inventory = metadata.images.len().checked_add(plane_slots).and_then(|n| n.checked_add(6)).and_then(|n| n.checked_mul(32)).ok_or("compiler inventory budget overflow")?;
-    header_reserve(&mut budget.memory, inventory)?;
-    let inventory = metadata_member_ids_with_id(&metadata, metadata_id);
-    if envelope.logical_generation != metadata.binding_identity || envelope.semantic_root != metadata.semantic_manifest_root().copied()
-        || envelope.member_wire.len() / 32 != inventory.len() { return Err("selected compiler metadata differs from envelope".into()); }
-    for (actual, expected) in envelope.members().zip(inventory.iter().copied()) {
-        header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected inventory stopped: {e:?}"))?;
-        if actual != expected { return Err("selected compiler metadata differs from envelope".into()); }
+    if envelope.logical_generation != metadata.binding_identity || envelope.semantic_root != metadata.semantic_manifest_root().copied() {
+        return Err("selected compiler metadata differs from envelope".into());
     }
-    drop(inventory);
+    verify_metadata_member_bitmap(&envelope, &metadata, metadata_id, budget, cancelled)?;
     for id in envelope.members() {
         if header_member_bounded(store, &pin, closure, id, budget, cancelled)? != count { return Err("selected closure count changed".into()); }
     }
@@ -1971,17 +2006,10 @@ pub fn reopen_selected_native_headers_in_scratch<'a>(
     header_reserve(&mut budget.memory, charge)?;
     let metadata = CompilerPublicationMetadata::decode(&wire).map_err(|e| e.to_string())?;
     if metadata.schema() != schema { return Err("compiler metadata schema differs".into()); }
-    let plane_slots = metadata.versioned_planes.as_ref().map_or(0, |p| p.segment_count() + p.artifacts().len());
-    let inventory = metadata.images.len().checked_add(plane_slots).and_then(|n| n.checked_add(6)).and_then(|n| n.checked_mul(32)).ok_or("compiler inventory budget overflow")?;
-    header_reserve(&mut budget.memory, inventory)?;
-    let inventory = metadata_member_ids_with_id(&metadata, metadata_id);
-    if envelope.logical_generation != metadata.binding_identity || envelope.semantic_root != metadata.semantic_manifest_root().copied()
-        || envelope.member_wire.len() / 32 != inventory.len() { return Err("selected compiler metadata differs from envelope".into()); }
-    for (actual, expected) in envelope.members().zip(inventory.iter().copied()) {
-        header_checkpoint(&budget.work, cancelled).map_err(|e| format!("selected inventory stopped: {e:?}"))?;
-        if actual != expected { return Err("selected compiler metadata differs from envelope".into()); }
+    if envelope.logical_generation != metadata.binding_identity || envelope.semantic_root != metadata.semantic_manifest_root().copied() {
+        return Err("selected compiler metadata differs from envelope".into());
     }
-    drop(inventory);
+    verify_metadata_member_bitmap(&envelope, &metadata, metadata_id, budget, cancelled)?;
     for id in envelope.members() {
         if header_member_bounded(store, &pin, closure, id, budget, cancelled)? != count { return Err("selected closure count changed".into()); }
     }
