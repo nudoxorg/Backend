@@ -9,7 +9,7 @@ use super::super::discovery_search::{
 };
 use backend_engine::{DependencyFacts, RegistryPackageRecord};
 use backend_library::{
-    AdvisoryCategory, AdvisoryCoverage, AdvisoryStatus, PackageReference,
+    AdvisoryCategory, AdvisoryCoverage, AdvisoryStatus, FreshnessState, PackageReference,
     RegistryNativeAvailability, RegistryNativeDetails, RegistryNativeMetadata,
     RegistryNativeObservation, RegistryReleaseMatchScope, RegistryReleaseStanding, SeverityLevel,
 };
@@ -78,8 +78,10 @@ impl CatalogSearchIndex {
                 builder.advisories.extend(advisory_terms.iter().cloned());
                 builder.native_metadata_known |= native_known;
                 builder.advisory_present |= !advisory_terms.is_empty();
-                builder.advisory_coverage_complete &=
-                    record.advisory.coverage == AdvisoryCoverage::Complete;
+                builder.advisory_coverage_complete &= advisory_negative_is_current(
+                    record.advisory.coverage,
+                    record.advisory.freshness,
+                );
                 lineage_names
                     .entry(key.clone())
                     .or_insert_with(|| record.name.as_str().to_owned());
@@ -94,11 +96,13 @@ impl CatalogSearchIndex {
                 },
                 descriptions: SearchTextFacet::Unknown,
                 advisories: if advisories.is_empty() {
-                    match record.advisory.coverage {
-                        AdvisoryCoverage::Complete => SearchTextFacet::Absent,
-                        AdvisoryCoverage::Partial
-                        | AdvisoryCoverage::Unknown
-                        | AdvisoryCoverage::Unavailable => SearchTextFacet::Unknown,
+                    if advisory_negative_is_current(
+                        record.advisory.coverage,
+                        record.advisory.freshness,
+                    ) {
+                        SearchTextFacet::Absent
+                    } else {
+                        SearchTextFacet::Unknown
                     }
                 } else {
                     SearchTextFacet::Known(advisories)
@@ -283,6 +287,42 @@ impl CatalogSearchIndex {
             hit.standing = standing_evidence(record, now);
         }
         Ok(page)
+    }
+}
+
+fn advisory_negative_is_current(coverage: AdvisoryCoverage, freshness: FreshnessState) -> bool {
+    coverage == AdvisoryCoverage::Complete
+        && matches!(
+            freshness,
+            FreshnessState::Fresh | FreshnessState::NotModified
+        )
+}
+
+#[cfg(test)]
+mod advisory_freshness_tests {
+    use super::*;
+
+    #[test]
+    fn only_complete_current_negative_evidence_is_absent() {
+        for (coverage, freshness, expected) in [
+            (AdvisoryCoverage::Unknown, FreshnessState::Unknown, false),
+            (
+                AdvisoryCoverage::Unavailable,
+                FreshnessState::Unknown,
+                false,
+            ),
+            (AdvisoryCoverage::Partial, FreshnessState::Fresh, false),
+            (AdvisoryCoverage::Complete, FreshnessState::Stale, false),
+            (AdvisoryCoverage::Complete, FreshnessState::Unknown, false),
+            (AdvisoryCoverage::Complete, FreshnessState::Fresh, true),
+            (
+                AdvisoryCoverage::Complete,
+                FreshnessState::NotModified,
+                true,
+            ),
+        ] {
+            assert_eq!(advisory_negative_is_current(coverage, freshness), expected);
+        }
     }
 }
 
