@@ -196,8 +196,24 @@ impl RouteDependencies {
                         });
                     }
                     // Find owns its editing surface even before its reply.
-                    let content = tree.as_ref().map(|_| vec![key.clone()]).unwrap_or_default();
-                    (vec![key], content)
+                    let mut content = tree.as_ref().map(|_| vec![key.clone()]).unwrap_or_default();
+                    // The SQL, CSS and Impact pages have no editing surface:
+                    // their one read is the page, and its failure is the page.
+                    if matches!(
+                        browse,
+                        crate::navigation::BrowseRoute::Sql(_)
+                            | crate::navigation::BrowseRoute::Css(_)
+                            | crate::navigation::BrowseRoute::Impact(_)
+                    ) {
+                        content = vec![key.clone()];
+                    }
+                    let mut keys = vec![key];
+                    // Find's SQL and CSS section is read apart from its
+                    // answers: a slow or failed project never holds them back.
+                    if let crate::navigation::BrowseRoute::Find(query) = browse {
+                        keys.push(PageKey::Browse(BrowseKey::FindNative(query.clone())));
+                    }
+                    (keys, content)
                 }
                 // The local shelf and setup belong to the desktop session.
                 // The owner's catalog is an independent section, not a
@@ -301,6 +317,11 @@ impl RouteDependencies {
                 Route::Symbol(_) => route_symbol(route).map(PageKey::Symbol).into_iter().collect(),
                 Route::Orbit(crate::navigation::OrbitRoute::Browse(crate::navigation::BrowseRoute::Tree(project))) =>
                     vec![PageKey::Browse(BrowseKey::Tree(project.clone()))],
+                Route::Orbit(crate::navigation::OrbitRoute::Browse(
+                    browse @ (crate::navigation::BrowseRoute::Sql(_)
+                    | crate::navigation::BrowseRoute::Css(_)
+                    | crate::navigation::BrowseRoute::Impact(_)),
+                )) => vec![PageKey::Browse(browse.into())],
                 Route::CargoSource(_) => content.clone(),
                 Route::Orbit(_) | Route::World => Vec::new(),
             },
