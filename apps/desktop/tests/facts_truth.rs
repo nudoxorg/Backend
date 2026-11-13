@@ -35,9 +35,29 @@ fn utf8(path: &Path) -> &str {
     path.to_str().expect("fixture paths are UTF-8")
 }
 
+/// Indexes one project, and checks the owner reported exactly what the test
+/// relies on. A `structural_only` project has no Cargo manifest, so no compiler
+/// authority can open it: the owner refuses its only compile profile (naming
+/// the Rust source it tried), records the project as failed, and still answers
+/// from the structural lane. That is the state this test means to read. Any
+/// other outcome, or a project that should have compiled being refused, is a
+/// failure.
+fn index(session: &mut Session, project: &Path, structural_only: bool) {
+    use backend_client::ClientError;
+    use backend_library::CommandFailure;
+    match session.index(utf8(project)) {
+        Ok(_) => assert!(!structural_only, "{} has no manifest, so its compile profile must be refused", project.display()),
+        Err(ClientError::CommandFailed(CommandFailure::CompilerRefused { failure, .. })) if structural_only => {
+            assert!(failure.relative_path().ends_with(".rs"), "{failure:?}");
+        }
+        Err(error) => panic!("index request for {}: {error:?}", project.display()),
+    }
+}
+
 /// Starts an embedded owner on a private workspace and indexes `projects`,
 /// returning once every project row is ready and the row count is stable.
-fn serve(projects: &[&Path]) -> (backend_desktop::DesktopHost, PathBuf, PathBuf) {
+/// The projects in `structural_only` are the ones without a manifest.
+fn serve(projects: &[&Path], structural_only: &[&Path]) -> (backend_desktop::DesktopHost, PathBuf, PathBuf) {
     let nonce = format!(
         "{}-{}",
         std::process::id(),
@@ -60,7 +80,7 @@ fn serve(projects: &[&Path]) -> (backend_desktop::DesktopHost, PathBuf, PathBuf)
     let host = backend_desktop::DesktopHost::start_with_paths(paths).expect("embedded owner");
     let mut session = Session::connect(&endpoint).expect("session");
     for project in projects {
-        session.index(utf8(project)).expect("index request");
+        index(&mut session, project, structural_only.contains(project));
     }
     let started = Instant::now();
     let mut last_rows = 0;
@@ -68,11 +88,12 @@ fn serve(projects: &[&Path]) -> (backend_desktop::DesktopHost, PathBuf, PathBuf)
     loop {
         let ready = match session.packages().map(|reply| reply.reply) {
             Ok(CommandReply::Packages(snapshot)) => projects.iter().all(|project| {
-                snapshot
-                    .root
-                    .rows()
-                    .iter()
-                    .any(|row| row.label == utf8(project) && row.state == RowState::Ready)
+                snapshot.root.rows().iter().any(|row| {
+                    // A project without a manifest settles as failed: the
+                    // compile refusal is recorded and the structural lane answers.
+                    let settled = if structural_only.contains(project) { RowState::Failed } else { RowState::Ready };
+                    row.label == utf8(project) && row.state == settled
+                })
             }),
             _ => false,
         };
@@ -153,7 +174,16 @@ impl Plane {
         self.until(cx, symbol.as_str(), |store| {
             let resource = store.symbol(symbol);
             fault(&resource, symbol.as_str());
-            resource.loaded_value().cloned()
+            // A symbol page is published in stages (the document first, then
+            // its neighbourhood, references and outline, each reading as a
+            // `Stale` gap until it lands); only the finished page is the one a
+            // reader is left with.
+            resource.loaded_value().filter(|page| {
+                [page.members.gap(), page.references.gap(), page.rose.up.gap()]
+                    .into_iter()
+                    .flatten()
+                    .all(|gap| gap.reason != backend_desktop::model::pages::GapReason::Stale)
+            }).cloned()
         })
     }
 }
@@ -168,7 +198,7 @@ fn fault<T>(resource: &backend_desktop::core::Resource<T>, what: &str) {
 fn member<'a>(page: &'a SymbolPage, name: &str) -> &'a Member {
     page.members
         .known()
-        .expect("members")
+        .unwrap_or_else(|| panic!("members of {} ({}): {:?}", page.identity.name, page.identity.coordinate.as_str(), page.members.gap()))
         .all()
         .find(|member| member.decl.name.as_ref() == name)
         .unwrap_or_else(|| panic!("{name} is not a member of {}", page.identity.name))
@@ -268,7 +298,7 @@ fn declaration_facts_reach_the_page_on_both_lanes(cx: &mut TestAppContext) {
         .expect("fixtures");
     let standalone = fixtures.join("facts_standalone");
     let structural = fixtures.join("facts_unmanifested");
-    let (host, endpoint, state) = serve(&[&standalone, &structural]);
+    let (host, endpoint, state) = serve(&[&standalone, &structural], &[&structural]);
 
     let mut subscription = LocalSubscriptionTransport::connect(&endpoint).expect("subscription");
     let (_, revision) = subscription.bootstrap_root().expect("root");
