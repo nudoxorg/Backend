@@ -1283,9 +1283,11 @@ def run_resumable_index(owner: Owner, project: Path, profile_count: int, timeout
     return completed, times
 
 
-def require_live_health(summary: dict, full: dict, witness: dict, published_root: str | None = None) -> None:
+def require_live_health(summary: dict, full: dict, witness: dict, published_root: str | None = None,
+                        gap_lanes: tuple[str, ...] = ()) -> None:
     """Whole-owner CLI and MCP status must agree on public identity and coverage."""
-    if published_root is not None and (summary.get("readiness") != "ready" or summary.get("revision") != published_root):
+    if published_root is not None and (not steady_readiness(summary, gap_lanes)
+                                       or summary.get("revision") != published_root):
         raise RuntimeError("completed index: health must certify the published receipt as ready")
     for name, detail, value in (("summary", "summary", summary), ("full", "full", full), ("MCP", "full", witness)):
         if value.get("answer") != "status" or value.get("detail") != detail:
@@ -1388,7 +1390,8 @@ def require_malformed_cursor_refusal(cli: dict, mcp: dict) -> None:
         raise RuntimeError(f"malformed MCP cursor: expected a structured usage refusal, got {mcp}")
 
 
-def run_live_contracts(owner: Owner, project: Path, config: dict, published_root: str) -> dict:
+def run_live_contracts(owner: Owner, project: Path, config: dict, published_root: str,
+                       gap_lanes: tuple[str, ...] = ()) -> dict:
     times = {}
 
     def query(name: str, arguments: list[str]) -> dict:
@@ -1406,7 +1409,7 @@ def run_live_contracts(owner: Owner, project: Path, config: dict, published_root
     reply = mcp["calls"][0]["reply"]
     if not isinstance(reply, dict) or reply.get("isError", False) or "structuredContent" not in reply:
         raise RuntimeError(f"MCP live status failed: {reply}")
-    require_live_health(summary, full, reply["structuredContent"], published_root)
+    require_live_health(summary, full, reply["structuredContent"], published_root, gap_lanes)
     print("surface-contract: live health summary/full agree with MCP status identity and coverage", flush=True)
     text = config["bounded_search_query"]
     reference = query("bounded search reference", ["search", text, "--limit", "200"])
@@ -1456,7 +1459,8 @@ def run_live_contracts(owner: Owner, project: Path, config: dict, published_root
     if refused_mcp["exit"] != 0 or len(refused_mcp["calls"]) != 1:
         raise RuntimeError("malformed MCP cursor: session failed instead of refusing invalid parameters")
     require_malformed_cursor_refusal(refused_cli, refused_mcp["calls"][0]["reply"])
-    require_live_health(query("health after cursor refusals", ["--passive", "health"]), full, full, published_root)
+    require_live_health(query("health after cursor refusals", ["--passive", "health"]), full, full, published_root,
+                        gap_lanes)
     print("surface-contract: malformed CLI/MCP cursors refused; owner remains ready at published revision", flush=True)
     return times
 
@@ -2008,6 +2012,7 @@ def _replay_cli_cursor(owner: Owner, project: Path, args: list[str], key: str,
             expected={args[-1]: case["authored_symbols"][args[-1]]},
             language=case["languages"][0],
             request=args,
+            gap_lanes=settled_gap_lanes(case),
         )
         current = current["json"]
     _assert_published_root(current, published_root, key)
@@ -2081,6 +2086,7 @@ def _replay_mcp_calls(owner: Owner, project: Path, calls: list[dict], measured: 
                 expected={query: case["authored_symbols"][query]},
                 language=case["languages"][0],
                 request=call,
+                gap_lanes=settled_gap_lanes(case),
             )
         else:
             replay_reply = reply
@@ -2195,9 +2201,47 @@ def _emit_search_readiness_frame(transport: str, query: str, attempt: int,
         }, sort_keys=True, separators=(",", ":"), ensure_ascii=False), flush=True)
 
 
+def settled_gap_lanes(case: dict) -> tuple[str, ...]:
+    """Lanes a reviewed case declares may settle at an explicit gap, never at a fraction."""
+    lanes = case.get("settled_gap_lanes", [])
+    if (not isinstance(lanes, list) or not all(isinstance(lane, str) for lane in lanes)
+            or len(set(lanes)) != len(lanes)
+            or not set(lanes) <= {"exact", "names", "graph", "semantic"}):
+        raise RuntimeError(f"case {case.get('name')}: settled_gap_lanes must name distinct coverage lanes")
+    return tuple(lanes)
+
+
+def steady_readiness(content: dict, gap_lanes: tuple[str, ...] = ()) -> bool:
+    """Whether a full answer is steady: ready, or settled at a declared lane gap.
+
+    The public vocabulary separates the two partial kinds: a lane still moving
+    reports `indexing` with `completed`/`total`, while a finished lane that left
+    explicit gaps reports a bare `partial`. Only the bare form of a lane the case
+    declares is steady; any other non-complete lane, or a fraction, is not.
+    """
+    if content.get("readiness") == "ready":
+        return True
+    coverage = content.get("coverage")
+    if content.get("readiness") != "partial" or not gap_lanes or not isinstance(coverage, list):
+        return False
+    gapped = False
+    for lane in coverage:
+        if not isinstance(lane, dict):
+            return False
+        if lane.get("state") == "complete":
+            continue
+        if (lane.get("state") == "partial" and lane.get("lane") in gap_lanes
+                and "completed" not in lane and "total" not in lane and "reason" not in lane):
+            gapped = True
+            continue
+        return False
+    return gapped
+
+
 def resolve_partial_authored_search(first: dict, retry, deadline: float, *,
                                     transport: str, query: str, expected: dict,
                                     language: str, request: dict | list[str],
+                                    gap_lanes: tuple[str, ...] = (),
                                     now=time.monotonic, sleep=time.sleep) -> tuple[dict, list[dict]]:
     """Keep the useful name-stage observation, then require full readiness.
 
@@ -2211,7 +2255,8 @@ def resolve_partial_authored_search(first: dict, retry, deadline: float, *,
     readiness = first_content.get("readiness")
     scope = first_content.get("search_scope")
     full_search = first_content.get("full_search")
-    if readiness == "ready" and scope != "published_names_only" and full_search in (None, "ready"):
+    if (steady_readiness(first_content, gap_lanes) and scope != "published_names_only"
+            and full_search in (None, "ready")):
         require_authored_symbols(first_content, expected, language)
         return first, frames
     if (readiness != "partial" or scope != "published_names_only"
@@ -2243,7 +2288,8 @@ def resolve_partial_authored_search(first: dict, retry, deadline: float, *,
         readiness = content.get("readiness")
         scope = content.get("search_scope")
         full_search = content.get("full_search")
-        if readiness == "ready" and scope != "published_names_only" and full_search in (None, "ready"):
+        if (steady_readiness(content, gap_lanes) and scope != "published_names_only"
+                and full_search in (None, "ready")):
             require_authored_symbols(content, expected, language)
             return current, frames
         if (readiness != "partial" or scope != "published_names_only"
@@ -2271,10 +2317,86 @@ def make_case_directories_writable(root: Path) -> None:
         path.chmod(stat.S_IMODE(metadata.st_mode) | stat.S_IWUSR | stat.S_IXUSR)
 
 
+FAILURE_LOG_TAIL_LINES = 120
+FAILURE_LOG_TAIL_BYTES = 4096
+FAILURE_LOG_MAX_FILES = 6
+
+
+def _bounded_tail(path: Path, lines: int = FAILURE_LOG_TAIL_LINES,
+                  limit: int = FAILURE_LOG_TAIL_BYTES) -> str | None:
+    """Last `lines` lines of a regular file, read from at most its last `limit` bytes."""
+    try:
+        metadata = path.lstat()
+        if not stat.S_ISREG(metadata.st_mode):
+            return None
+        with open(path, "rb") as handle:
+            handle.seek(max(0, metadata.st_size - limit))
+            data = handle.read(limit)
+    except OSError:
+        return None
+    text = data.decode("utf-8", errors="replace").replace("\0", "")
+    kept = text.splitlines()[-lines:]
+    return "\n".join(kept)
+
+
+def case_failure_logs(case_root: Path) -> list[tuple[str, str]]:
+    """Owner and helper log tails under one case scratch directory.
+
+    The owner log comes first, then top-level and one-level-deep `*.stderr` and
+    `*.log` files. The copied project is never searched, because a corpus may
+    carry unrelated logs, and links are not followed.
+    """
+    candidates = [case_root / "locald.log"]
+    try:
+        entries = sorted(case_root.iterdir())
+    except OSError:
+        entries = []
+    for entry in entries:
+        if entry.name == "locald.log":
+            continue
+        if entry.suffix in (".stderr", ".log"):
+            candidates.append(entry)
+        elif entry.name != "project" and not entry.is_symlink() and entry.is_dir():
+            try:
+                candidates.extend(child for child in sorted(entry.iterdir())
+                                  if child.suffix in (".stderr", ".log"))
+            except OSError:
+                continue
+    found = []
+    for path in candidates[:FAILURE_LOG_MAX_FILES * 4]:
+        tail = _bounded_tail(path)
+        if tail:
+            found.append((str(path.relative_to(case_root)), tail))
+        if len(found) == FAILURE_LOG_MAX_FILES:
+            break
+    return found
+
+
+def log_case_failure_logs(case_name: str) -> None:
+    """Print the scratch log tails for a failed case; never changes the verdict."""
+    try:
+        logs = case_failure_logs(SCRATCH / case_name)
+        if not logs:
+            log(f"case {case_name}: no owner or helper log output under its scratch directory")
+        for name, tail in logs:
+            body = "\n".join("    | " + line for line in tail.splitlines())
+            log(f"case {case_name}: tail of {name} (last {FAILURE_LOG_TAIL_LINES} lines, "
+                f"at most {FAILURE_LOG_TAIL_BYTES} bytes)\n{body}")
+    except Exception as error:
+        log(f"case {case_name}: failure logs unavailable: {error}")
+
+
 def emit_index_failure_diagnostic(owner: Owner, project: Path) -> None:
     """Retain discovery and copied exact reads without replacing the setup failure."""
     try:
         deadline = time.monotonic() + 10
+        owner_log = owner.tail()[-FAILURE_LOG_TAIL_BYTES:] if isinstance(owner, Owner) else ""
+        if owner_log:
+            # The public reads below carry only facts about a refused compiler
+            # diagnostic; the owner's own local log is what names the cause.
+            print("SURFACE-INDEX-DIAGNOSTIC " + json.dumps({
+                "project": str(project), "owner_log_tail": owner_log,
+            }, sort_keys=True), flush=True)
         reply, _ = run_cli(owner, project, [
             "package-profile", str(project),
             "--compiler-outcome", '{"kind":"current"}',
@@ -2421,6 +2543,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                     expected={args[-1]: case["authored_symbols"][args[-1]]},
                     language=case["languages"][0],
                     request=args,
+                    gap_lanes=settled_gap_lanes(case),
                 )
                 seconds = time.monotonic() - query_started
                 capture_first_full_search_diagnostic(answer["json"])
@@ -2449,6 +2572,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                         expected={query: case["authored_symbols"][query]},
                         language=case["languages"][0],
                         request=call,
+                        gap_lanes=settled_gap_lanes(case),
                     )
                     replacement = ready
                 else:
@@ -2576,7 +2700,8 @@ def run_case(case: dict, bin_dir: Path) -> dict:
         })
         if case.get("live_contracts"):
             record["performance"]["seconds"].update(
-                run_live_contracts(owner, project, case["live_contracts"], published_root)
+                run_live_contracts(owner, project, case["live_contracts"], published_root,
+                                   settled_gap_lanes(case))
             )
         gui_owner = None
         if case.get("gui"):
@@ -2861,6 +2986,8 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
                 else:
                     entry["detail"] = bounded_text(error, 4096)
                 log(f"case {case['name']} could not run: {error}")
+                if case_started:
+                    log_case_failure_logs(case["name"])
                 failed.append(case["name"])
                 return
             with start_lock:
@@ -2945,6 +3072,7 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
         failed.append(case["name"])
         for problem in problems:
             log(f"case {case['name']}: {problem}")
+        log_case_failure_logs(case["name"])
 
     def confirm(case: dict, entry: dict, reviewed: dict) -> None:
         """Re-measure a case that regressed once; it fails only if it regresses again."""
