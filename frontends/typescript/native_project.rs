@@ -574,6 +574,183 @@ pub fn build_with_root_selection_observer(
     })
 }
 
+/// A TSZ-parsed function declaration and the authored header before its body.
+/// Offsets address the exact UTF-8 source supplied to the parser.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeFunctionHeader {
+    /// Complete declaration extent used to join an emitted compiler entity.
+    pub declaration: (u32, u32),
+    /// Exact TSZ-owned name extent in these source bytes.
+    pub name: (u32, u32),
+    /// Start of a singular parser-owned export wrapper, when present.
+    pub export_start: Option<u32>,
+    /// Start of the TSZ-owned function body.
+    pub body_start: u32,
+    /// Whether TSZ observed an async function.
+    pub is_async: bool,
+}
+
+/// Extracts bounded function-header spans from TSZ syntax without inferring
+/// declarations from their names. A stopped parse contributes no partial spans.
+pub fn function_headers(
+    path: &Path,
+    text: &str,
+    checkpoint: &dyn ExecutionCheckpoint,
+) -> Result<Vec<NativeFunctionHeader>, String> {
+    const MAX_SOURCE: usize = 256 * 1024;
+    poll(checkpoint, 0)?;
+    if text.len() > MAX_SOURCE { return Ok(Vec::new()); }
+    let mut parser = MeteredParserState::new(path.to_string_lossy().into_owned(), text.to_owned());
+    parser.parse_source_file_with_execution_checkpoint(checkpoint)
+        .map_err(|error| format!("native TSZ header parse stopped: {error:?}"))?;
+    if !parser.get_diagnostics().is_empty() { return Ok(Vec::new()); }
+    function_headers_from_arena(&parser.arena, text, checkpoint)
+}
+
+/// Extracts compact header claims from the native compiler's already-admitted
+/// TSZ arena. The caller owns and budgets the arena and exact source bytes.
+pub fn function_headers_from_arena(
+    arena: &crate::TszNodeArena,
+    text: &str,
+    checkpoint: &dyn ExecutionCheckpoint,
+) -> Result<Vec<NativeFunctionHeader>, String> {
+    const MAX_SOURCE: usize = 1024 * 1024;
+    const MAX_HEADERS: usize = 16384;
+    poll(checkpoint, 0)?;
+    if text.len() > MAX_SOURCE { return Err("native TSZ header source limit exceeded".into()); }
+    let mut export_starts = BTreeMap::<u32, Option<u32>>::new();
+    for (index, node) in arena.nodes.iter().enumerate() {
+        poll(checkpoint, 1)?;
+        let Some(export) = arena.get_export_decl(node) else { continue };
+        let Some(index) = u32::try_from(index).ok().map(NodeIndex) else { return Err("native TSZ node index overflow".into()) };
+        let Some((start, _)) = arena.pos_end_at(index) else { continue };
+        // A default wrapper is admissible only for its named function declaration;
+        // expressions and anonymous defaults have no matching function identity.
+        let valid_default = !export.is_default_export || (|| {
+            let default = export.default_keyword_pos?;
+            let declaration = arena.get(export.export_clause)?;
+            if declaration.kind != syntax_kind_ext::FUNCTION_DECLARATION { return None; }
+            let function = arena.get_function(declaration)?;
+            let (declaration_start, _) = arena.pos_end_at(export.export_clause)?;
+            arena.pos_end_at(function.name)?;
+            let default_end = (default as usize).checked_add(7)?;
+            (start < default && default < declaration_start
+                && text.get(default as usize..default_end) == Some("default"))
+                .then_some(())
+        })().is_some();
+        let value = valid_default.then_some(start);
+        if !export_starts.contains_key(&export.export_clause.0) && export_starts.len() == MAX_HEADERS {
+            poll(checkpoint, 0)?;
+            return Err("native TSZ export limit exceeded".into());
+        }
+        export_starts.entry(export.export_clause.0)
+            .and_modify(|value| *value = None).or_insert(value);
+    }
+    let mut headers = Vec::new();
+    for (index, node) in arena.nodes.iter().enumerate() {
+        poll(checkpoint, 1)?;
+        if node.kind != syntax_kind_ext::FUNCTION_DECLARATION { continue; }
+        let Some(function) = arena.get_function(node) else { continue };
+        let Some(index) = u32::try_from(index).ok().map(NodeIndex) else { return Err("native TSZ node index overflow".into()) };
+        let Some((start, end)) = arena.pos_end_at(index) else { continue };
+        let Some((body_start, _)) = arena.pos_end_at(function.body) else { continue };
+        let Some((name_start, name_end)) = arena.pos_end_at(function.name) else { continue };
+        if !(start <= name_start && name_start < name_end && name_end <= body_start && body_start < end) { continue; }
+        let export_start = match export_starts.get(&index.0) {
+            Some(Some(start)) => Some(*start),
+            Some(None) => continue,
+            None => None,
+        };
+        if export_start.is_some_and(|offset| offset > start)
+            || text.get(start as usize..end as usize).is_none()
+            || text.get(name_start as usize..name_end as usize).is_none() { continue; }
+        if headers.len() == MAX_HEADERS {
+            poll(checkpoint, 0)?;
+            return Err("native TSZ header limit exceeded".into());
+        }
+        headers.push(NativeFunctionHeader {
+            declaration: (start, end), name: (name_start, name_end), export_start,
+            body_start, is_async: function.is_async,
+        });
+    }
+    headers.sort_unstable_by_key(|header| header.declaration);
+    if headers.windows(2).any(|pair| pair[0].declaration == pair[1].declaration) {
+        poll(checkpoint, 0)?;
+        return Ok(Vec::new());
+    }
+    poll(checkpoint, 0)?;
+    Ok(headers)
+}
+
+/// Index admitted captures in place by end offset. The caller budgets the
+/// existing rows; this index has no second row allocation.
+pub fn index_function_headers_by_end(rows: &mut [NativeFunctionHeader], checkpoint: &dyn ExecutionCheckpoint) -> Result<(), String> {
+    let work = u64::try_from(rows.len()).ok().and_then(|n| n.checked_mul(64)).ok_or("native header index work overflow")?;
+    poll(checkpoint, work)?;
+    rows.sort_unstable_by_key(|row| (row.declaration.1, row.declaration.0));
+    poll(checkpoint, 0)
+}
+
+/// Return every same-end candidate, retaining ambiguity for the exact join.
+pub fn function_headers_with_end<'a>(rows: &'a [NativeFunctionHeader], end: u32, checkpoint: &dyn ExecutionCheckpoint) -> Result<&'a [NativeFunctionHeader], String> {
+    let steps = u64::from(usize::BITS - rows.len().leading_zeros()).saturating_mul(2).saturating_add(2);
+    poll(checkpoint, steps)?;
+    let first = rows.partition_point(|row| row.declaration.1 < end);
+    let last = rows.partition_point(|row| row.declaration.1 <= end);
+    poll(checkpoint, 0)?;
+    Ok(&rows[first..last])
+}
+
+/// Joins parser captures to an independently selected compiler-owned function.
+/// A same-name collision or an ambiguous extent yields no header. The caller
+/// must first authenticate the source bytes, image, entity and source policy.
+pub fn selected_function_header<'a>(
+    rows: &[NativeFunctionHeader], text: &'a str, compiler_extent: (u32, u32), name: &str,
+    checkpoint: &dyn ExecutionCheckpoint,
+) -> Result<Option<&'a str>, String> {
+    poll(checkpoint, 0)?;
+    let mut selected = None;
+    for row in rows {
+        poll(checkpoint, 1)?;
+        let (start, end) = row.declaration;
+        let (compiler_start, compiler_end) = compiler_extent;
+        let header_start = row.export_start.unwrap_or(compiler_start);
+        if compiler_end == end && header_start <= compiler_start && compiler_start <= start
+            && (if row.is_async { compiler_start < start } else { compiler_start == start })
+            && row.name.0 >= start && row.name.1 <= row.body_start
+            && text.get(row.name.0 as usize..row.name.1 as usize) == Some(name)
+        {
+            if selected.replace(row).is_some() { return Ok(None); }
+        }
+    }
+    let Some(row) = selected else { return Ok(None) };
+    let start = row.export_start.unwrap_or(compiler_extent.0);
+    let Some(header) = text.get(start as usize..row.body_start as usize) else { return Ok(None) };
+    let header = header.trim();
+    poll(checkpoint, 0)?;
+    Ok((!header.is_empty()).then_some(header))
+}
+
+/// Returns the byte range of a selected authored header in the same verified
+/// source buffer. The returned range is still a claim until image admission.
+pub fn selected_function_header_range(
+    rows: &[NativeFunctionHeader], text: &str, compiler_extent: (u32, u32), name: &str,
+    checkpoint: &dyn ExecutionCheckpoint,
+) -> Result<Option<(u32, u32)>, String> {
+    let Some(header) = selected_function_header(rows, text, compiler_extent, name, checkpoint)? else {
+        return Ok(None);
+    };
+    if header.len() > backend_compile::SourceDeclaration::MAX_TEXT_BYTES { return Ok(None); }
+    let start = (header.as_ptr() as usize).checked_sub(text.as_ptr() as usize)
+        .and_then(|offset| u32::try_from(offset).ok())
+        .ok_or("native header source offset overflow")?;
+    let end = start.checked_add(u32::try_from(header.len()).map_err(|_| "native header length overflow")?)
+        .ok_or("native header source extent overflow")?;
+    if text.get(start as usize..end as usize) != Some(header) { return Err("native header source range differs".into()); }
+    poll(checkpoint, 0)?;
+    Ok(Some((start, end)))
+}
+
 trait NativeCheckpoint {
     fn poll(&self, work: u64) -> Result<(), String>;
 }
@@ -1097,6 +1274,149 @@ mod tests {
             Ok(())
         }
     }
+    #[test]
+    fn five_thousand_arena_headers_join_with_bounded_index_and_ambiguity() -> Result<(), Box<dyn Error>> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        struct Budget(AtomicU64);
+        impl ExecutionCheckpoint for Budget {
+            fn checkpoint(&self, work: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
+                let used = self.0.fetch_add(work, Ordering::Relaxed).saturating_add(work);
+                if used > 2_000_000 { Err(tsz_common::ProjectExecutionStop::WorkBudgetExhausted) } else { Ok(()) }
+            }
+        }
+        struct Stopped;
+        impl ExecutionCheckpoint for Stopped {
+            fn checkpoint(&self, _: u64) -> Result<(), tsz_common::ProjectExecutionStop> { Err(tsz_common::ProjectExecutionStop::WorkBudgetExhausted) }
+        }
+        let source = (0..5000).map(|i| format!("function f{i}() {{ return {i}; }}\n")).collect::<String>();
+        let mut parser = MeteredParserState::new("src/many.ts".to_owned(), source.clone());
+        parser.parse_source_file_with_execution_checkpoint(&Unlimited).map_err(|e| format!("parse: {e:?}"))?;
+        assert!(parser.get_diagnostics().is_empty());
+        let budget = Budget(AtomicU64::new(0));
+        let mut rows = function_headers_from_arena(&parser.arena, &source, &budget)?;
+        assert_eq!(rows.len(), 5000);
+        index_function_headers_by_end(&mut rows, &budget)?;
+        for row in &rows {
+            let name = &source[row.name.0 as usize..row.name.1 as usize];
+            let candidates = function_headers_with_end(&rows, row.declaration.1, &budget)?;
+            assert!(selected_function_header_range(candidates, &source, row.declaration, name, &budget)?.is_some());
+        }
+        let last = rows.last().ok_or("last function")?;
+        let name = &source[last.name.0 as usize..last.name.1 as usize];
+        assert_eq!(name, "f4999");
+        let duplicate = [*last, *last];
+        assert_eq!(selected_function_header_range(&duplicate, &source, last.declaration, name, &budget)?, None);
+        assert!(function_headers_with_end(&rows, last.declaration.1, &Stopped).is_err());
+        assert!(index_function_headers_by_end(&mut rows, &Stopped).is_err());
+        assert!(budget.0.load(Ordering::Relaxed) < 2_000_000);
+        Ok(())
+    }
+
+    #[test]
+    fn header_capture_count_boundary_is_explicit() -> Result<(), Box<dyn Error>> {
+        fn capture(count: usize) -> Result<Vec<NativeFunctionHeader>, String> {
+            let text = (0..count).map(|i| format!("function f{i}() {{}}\n")).collect::<String>();
+            let mut parser = MeteredParserState::new("src/boundary.ts".to_owned(), text.clone());
+            parser.parse_source_file_with_execution_checkpoint(&Unlimited).map_err(|e| format!("parse: {e:?}"))?;
+            assert!(parser.get_diagnostics().is_empty());
+            function_headers_from_arena(&parser.arena, &text, &Unlimited)
+        }
+        assert_eq!(capture(16_384)?.len(), 16_384);
+        assert_eq!(capture(16_385).unwrap_err(), "native TSZ header limit exceeded");
+        Ok(())
+    }
+
+    #[test]
+    fn native_function_keeps_parser_owned_async_start() -> Result<(), Box<dyn Error>> {
+        for (source, expected_async) in [
+            ("export async function run() {}", true),
+            ("export async /* comment */ function run() {}", true),
+            ("export default async function run() {}", true),
+            ("// λ\nexport async function* run() {}", true),
+            ("async\nfunction run() {}", false),
+            ("async\r\nfunction run() {}", false),
+            ("async /*\n*/ function run() {}", false),
+            ("async\u{2028}function run() {}", false),
+            ("async\u{2029}function run() {}", false),
+            ("function run() {}", false),
+        ] {
+            let mut parser = MeteredParserState::new("src/modifiers.ts".to_owned(), source.to_owned());
+            parser.parse_source_file_with_execution_checkpoint(&Unlimited).map_err(|e| format!("parse: {e:?}"))?;
+            assert!(parser.get_diagnostics().is_empty(), "{source}");
+            let functions = parser.arena.nodes.iter().filter_map(|node| {
+                let function = parser.arena.get_function(node)?;
+                let name = parser.arena.get_identifier_at(function.name)?;
+                (name.escaped_text == "run").then_some(function)
+            }).collect::<Vec<_>>();
+            let [function] = functions.as_slice() else { panic!("one declaration for {source}") };
+            assert_eq!(function.is_async, expected_async, "{source}");
+            assert_eq!(function.async_start, expected_async.then(|| source.find("async").unwrap() as u32), "{source}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn function_headers_use_native_body_and_modifier_spans() -> Result<(), Box<dyn Error>> {
+        let source = "// λ\nexport async function run(x: { a: number }): Promise<string> { return ''; }\nfunction other() {}\n";
+        let headers = function_headers(Path::new("src/main.ts"), source, &Unlimited)?;
+        assert_eq!(headers.len(), 2);
+        let compiler_extent = crate::legacy::with_analysis(
+            backend_semantic::vocabulary::TypeScriptSource::TypeScript, source, |module| {
+                module.semantic.nodes().iter_enumerated().find_map(|(_, node)| {
+                    let function = node.kind().as_function()?;
+                    (function.id.as_ref()?.name.as_str() == "run").then_some((function.span.start, function.span.end))
+                })
+            },
+        )?.ok_or("compiler function missing")?;
+        assert_eq!(selected_function_header(&headers, source, compiler_extent, "run", &Unlimited)?,
+            Some("export async function run(x: { a: number }): Promise<string>"));
+        assert_eq!(selected_function_header(&headers, source, (compiler_extent.0, compiler_extent.1 - 1), "run", &Unlimited)?, None);
+        assert_eq!(selected_function_header(&headers, source, compiler_extent, "other", &Unlimited)?, None);
+        let duplicate = [headers[0], headers[0]];
+        assert_eq!(selected_function_header(&duplicate, source, compiler_extent, "run", &Unlimited)?, None);
+        struct Stopped;
+        impl ExecutionCheckpoint for Stopped {
+            fn checkpoint(&self, _: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
+                Err(tsz_common::ProjectExecutionStop::WorkBudgetExhausted)
+            }
+        }
+        assert!(selected_function_header(&headers, source, compiler_extent, "run", &Stopped).is_err());
+        struct StopAfterOne(std::sync::atomic::AtomicUsize);
+        impl ExecutionCheckpoint for StopAfterOne {
+            fn checkpoint(&self, work: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
+                if work != 0 && self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 1 {
+                    Err(tsz_common::ProjectExecutionStop::WorkBudgetExhausted)
+                } else { Ok(()) }
+            }
+        }
+        assert!(selected_function_header(&duplicate, source, compiler_extent, "run", &StopAfterOne(std::sync::atomic::AtomicUsize::new(0))).is_err());
+        assert!(selected_function_header(&[], source, compiler_extent, "run", &Stopped).is_err());
+        for (path, source, expected) in [
+            ("src/main.ts", "const async = 1; async\nfunction plain() {}", Some("function plain()")),
+            ("src/main.ts", "const async = 1; async; function plain() {}", Some("function plain()")),
+            ("src/main.ts", "export default function plain() {}", Some("export default function plain()")),
+            ("src/main.ts", "export default async function* plain(): Promise<number> { yield 1; }", Some("export default async function* plain(): Promise<number>")),
+            ("src/main.tsx", "export default function plain() { return <div />; }", Some("export default function plain()")),
+            ("src/main.ts", "export async /* comment */ function plain(): Promise<number> { return 1; }", Some("export async /* comment */ function plain(): Promise<number>")),
+            ("src/main.ts", "const pattern = /`/; export async function plain() {}", Some("export async function plain()")),
+            ("src/main.ts", "const text = `before ${1}`; export async function plain() {}", Some("export async function plain()")),
+            ("src/main.tsx", "const view = <div>{1}</div>; export async function plain() {}", Some("export async function plain()")),
+        ] {
+            let rows = function_headers(Path::new(path), source, &Unlimited)?;
+            let compiler_extent = crate::legacy::with_analysis(
+                if path.ends_with(".tsx") { backend_semantic::vocabulary::TypeScriptSource::Tsx } else { backend_semantic::vocabulary::TypeScriptSource::TypeScript }, source, |module| {
+                    module.semantic.nodes().iter_enumerated().find_map(|(_, node)| {
+                        let function = node.kind().as_function()?;
+                        (function.id.as_ref()?.name.as_str() == "plain").then_some((function.span.start, function.span.end))
+                    })
+                },
+            )?.ok_or("compiler function missing")?;
+            assert_eq!(selected_function_header(&rows, source, compiler_extent, "plain", &Unlimited)?, expected, "{source}");
+        }
+        assert!(function_headers(Path::new("src/main.ts"), "export default function () {}", &Unlimited)?.is_empty());
+        Ok(())
+    }
+
     #[test]
     fn include_selectors_follow_last_component_implicit_glob_contract() -> Result<(), Box<dyn Error>>
     {
