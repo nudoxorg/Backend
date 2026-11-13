@@ -24,6 +24,7 @@ RUNTIME_OVERLAY_SOURCE_INPUTS = frozenset(
         ".config/scripts/nix_runtime_overlay_guard.py",
         "crates/engine/src/application/host.rs",
         "frontends/csharp/src/legacy/helper/AuthorityImage.cs",
+        "frontends/csharp/src/legacy/helper/CapturedProjectGraph.cs",
         "frontends/csharp/src/legacy/helper/DocComments.cs",
         "frontends/csharp/src/legacy/helper/Extractor.cs",
         "frontends/csharp/src/legacy/helper/Program.cs",
