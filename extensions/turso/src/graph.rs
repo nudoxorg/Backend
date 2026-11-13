@@ -924,6 +924,11 @@ async fn package_state_from(
 
 const EDGE_WRITE_BATCH: usize = 64;
 const SOURCE_KEY_BATCH: usize = 128;
+/// Source keys per OR-chained predicate. Turso parses a chain of `n` OR terms as an
+/// expression tree about `n` deep and refuses trees deeper than 100, so the chained
+/// forms stay well under that bound. The flat multi-row `VALUES` forms keep the larger
+/// `SOURCE_KEY_BATCH`.
+const SOURCE_KEY_PREDICATE_BATCH: usize = 48;
 
 fn compare_source_keys(left: &PackageGraphSourceKey, right: &PackageGraphSourceKey) -> Ordering {
     left.canonical_cmp(right)
@@ -993,7 +998,7 @@ async fn stored_edge_ids_for_sources(
     sources: &[PackageGraphSourceKey],
 ) -> Result<BTreeSet<[u8; 32]>, ProjectionError> {
     let mut ids = BTreeSet::new();
-    for batch in sources.chunks(SOURCE_KEY_BATCH) {
+    for batch in sources.chunks(SOURCE_KEY_PREDICATE_BATCH) {
         if batch.is_empty() {
             continue;
         }
@@ -1110,7 +1115,7 @@ async fn delete_package_source_rows(
     table: &str,
     sources: &[PackageGraphSourceKey],
 ) -> Result<(), ProjectionError> {
-    for batch in sources.chunks(SOURCE_KEY_BATCH) {
+    for batch in sources.chunks(SOURCE_KEY_PREDICATE_BATCH) {
         if batch.is_empty() {
             continue;
         }
