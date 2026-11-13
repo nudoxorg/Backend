@@ -17,7 +17,7 @@ fn compact_discovery_has_one_closed_registry_derived_target_set() {
     let listed = request(&mut server, "tools/list", &json!({}));
     assert_context_bounded(&listed);
     let tools = listed["result"]["tools"].as_array().expect("tools");
-    assert_eq!(tools.len(), 18);
+    assert_eq!(tools.len(), 19);
     assert_eq!(tools.last().expect("compact tool")["name"], CALL_TOOL);
     let tool = tool_named(&listed["result"]["tools"], CALL_TOOL);
     let schema = &tool["inputSchema"];

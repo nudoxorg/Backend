@@ -4,6 +4,35 @@ use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+#[test]
+fn discovery_describes_search_capability_limits() {
+    let mut server = ready(Fake::default());
+    let listed = request(&mut server, "tools/list", &json!({}));
+    let description = tool_named(&listed["result"]["tools"], "backend.search")["description"]
+        .as_str().expect("search description");
+    assert!(description.contains("distinctive name"), "{description}");
+    assert!(description.contains("semantic_search status"), "{description}");
+    assert!(description.contains("published_names_only"), "{description}");
+}
+
+#[test]
+fn resolve_route_preserves_exact_case_order_for_fixture_rows() {
+    let exact = format!("{MODULE}:9::FieldErrors");
+    let folded = format!("{MODULE}:8::fieldErrors");
+    let rows = [folded.as_str(), exact.as_str()].into_iter().map(|coordinate| {
+        Row::in_package(RowId::Symbol(symbol_key(coordinate)), basis(), package_key(PROJECT), coordinate)
+    });
+    let view = root(std::iter::once(package_row()).chain(rows).collect());
+    let cursor = backend_library::Cursor::for_view_root(&view);
+    let catalog = backend_library::Library::from_view(view, cursor).expect("fixture catalog");
+    let mut server = ready(Fake { page_catalog: Some(catalog), ..Fake::default() });
+    let result = call(&mut server, "backend.resolve", &json!({"query":"FieldErrors", "limit":2}));
+    let records = result["structuredContent"]["records"].as_array().expect("resolve records");
+    assert_eq!(records.len(), 2, "{result}");
+    assert_eq!(records[0]["identity"]["coordinate"], exact);
+    assert_eq!(records[1]["identity"]["coordinate"], folded);
+}
+
 struct SearchAdmissionEndpoint {
     connects: Arc<AtomicUsize>,
     health: Arc<AtomicUsize>,
