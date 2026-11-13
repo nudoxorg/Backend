@@ -171,6 +171,7 @@ fn surface_graph_result(
         SurfaceBody {
             continuation_call: continuation.as_ref(),
             fault: None,
+            partial_publication_warning: None,
             index_poll: None,
             surface: SurfaceProjection {
                 reply,

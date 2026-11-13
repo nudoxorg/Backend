@@ -132,6 +132,7 @@ const SESSION_TOOLS: &[&str] = &[
     "backend.status",
     "backend.outline",
     "backend.search",
+    "backend.sql_query",
     "backend.resolve",
     "backend.document",
     "backend.source",
@@ -534,7 +535,7 @@ fn index_start_tool() -> Value {
                 },
                 "operation_key": {
                     "type": "string", "pattern": "^[0-9a-f]{64}$",
-                    "description": "Optional caller-persisted durable key for exact replay and status reconciliation across owner restarts."
+                    "description": "Optional caller-persisted durable key: exactly 64 lowercase hexadecimal characters (for example, a random 32-byte value encoded as hex). The all-zero key is reserved. Omit it to let Nudox save a key automatically."
                 },
                 "detail": detail_property(INDEX_START_TOOL)
             },
@@ -850,6 +851,15 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
     // of the command grammar avoids making a presentation preference look
     // like a daemon operand while still making the accepted JSON explicit.
     properties.insert("detail".to_owned(), detail_property(grammar.tool()));
+    if grammar.name() == "source" {
+        properties.insert("byte_range".to_owned(), json!({
+            "type": "boolean", "const": true,
+            "description": "Opt into revision-pinned source byte pages. The owner-provided scope identifies the returned extent; finishing it does not establish a complete declaration or file."
+        }));
+        properties.insert("cursor".to_owned(), json!({
+            "type": "string", "description": "Copy the exact source continuation returned by the preceding page."
+        }));
+    }
     if let Some(cursor_domain) = grammar.continuation_domain() {
         properties.entry("cursor".to_owned()).or_insert_with(|| json!({
             "type": if cursor_domain == backend_present::ContinuationDomain::NativeOwnerJson {"object"} else {"string"},
@@ -877,6 +887,9 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
         .map_or_else(|| grammar.name(), |spec| spec.title);
     let write = grammar.is_write();
     let mut output_schema = answer_schema();
+    if grammar.tool() == "backend.source" {
+        output_schema["properties"]["answer"]["enum"] = json!(["page", "source_range", "fault"]);
+    }
     if grammar.tool() == "backend.index" {
         output_schema["properties"]["index_poll"] = index_poll_schema();
     }
@@ -948,6 +961,17 @@ fn property(spec: ArgumentSpec) -> Value {
     }
     if spec.kind() == ArgumentKind::SemanticSourceRequest {
         let mut schema = backend_library::SemanticSourceRequest::json_schema();
+        schema["description"] = json!(spec.help());
+        return schema;
+    }
+    let impact_schema = match spec.kind() {
+        ArgumentKind::ImpactCaptureRequest => Some(backend_library::impact_comparison::ImpactCaptureRequest::json_schema()),
+        ArgumentKind::ImpactCompareRequest => Some(backend_library::impact_comparison::ImpactCompareRequest::json_schema()),
+        ArgumentKind::ImpactSourceRequest => Some(backend_library::impact_comparison::ImpactReadSourceRequest::json_schema()),
+        ArgumentKind::ImpactDiffRequest => Some(backend_library::impact_comparison::ImpactDiffRequest::json_schema()),
+        _ => None,
+    };
+    if let Some(mut schema) = impact_schema {
         schema["description"] = json!(spec.help());
         return schema;
     }
