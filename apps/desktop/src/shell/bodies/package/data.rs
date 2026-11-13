@@ -570,6 +570,47 @@ mod licence_tests {
         assert_ne!(verdict(&file).word, "No licence");
         assert_eq!(verdict(&licence(None, None, "reader", Subject::Dependency)).word, "Licence unknown");
     }
+
+    /// GUI-12: the card says "yours" only for a project of yours.
+    #[test]
+    fn a_publication_without_feed_answers_is_unknown_not_yours() {
+        let mut dossier = crate::shell::tests::dossier();
+        let record = match &mut dossier.record { Known::Known(record) => record, Known::Unknown(_) => panic!("fixture record") };
+        record.advisory = Known::unknown(GapReason::LocalProject, "advisory coverage is a registry fact");
+        assert!(matches!(advisories(Some(record)), Advisories::Unknown { why: Silence::Yours, .. }));
+        record.advisory = Known::unknown(GapReason::Unconfigured, "advisory feeds were not read for itoa 1.0.18");
+        assert!(matches!(advisories(Some(record)), Advisories::Unknown { why: Silence::NoFeed, .. }),
+            "a publication's unread feeds are unknown, never clear and never yours");
+    }
+
+    #[test]
+    fn only_current_complete_zero_advisories_can_be_clear() {
+        use backend_library::{AdvisoryCoverage, FreshnessState, SeverityLevel};
+        for coverage in [AdvisoryCoverage::Complete, AdvisoryCoverage::Partial, AdvisoryCoverage::Unknown, AdvisoryCoverage::Unavailable] {
+            for freshness in [FreshnessState::Fresh, FreshnessState::NotModified, FreshnessState::Stale, FreshnessState::Unknown] {
+                let mut dossier = crate::shell::tests::dossier();
+                let Known::Known(record) = &mut dossier.record else { panic!("fixture record") };
+                record.advisory = Known::Known(crate::model::pages::AdvisorySummary {
+                    advisories: 0, worst: None, decision: Arc::from("allow"), coverage, freshness,
+                });
+                let expected_clear = coverage == AdvisoryCoverage::Complete
+                    && matches!(freshness, FreshnessState::Fresh | FreshnessState::NotModified);
+                assert_eq!(matches!(advisories(Some(record)), Advisories::Clear { .. }), expected_clear,
+                    "zero findings with {coverage:?}/{freshness:?} must keep its scope");
+                let Known::Known(summary) = &mut record.advisory else { panic!("fixture advisory") };
+                summary.advisories = 2;
+                summary.worst = Some(SeverityLevel::High);
+                summary.decision = Arc::from("deny");
+                let Advisories::Found { count, decision, note, .. } = advisories(Some(record)) else {
+                    panic!("partial or stale evidence must retain known positive advisories");
+                };
+                assert_eq!(count, 2);
+                assert_eq!(decision.as_ref(), "deny");
+                if freshness == FreshnessState::Stale { assert!(note.contains("stale")); }
+                if coverage == AdvisoryCoverage::Partial { assert!(note.contains("some configured feeds")); }
+            }
+        }
+    }
 }
 
 /// What the advisory feeds say, in the crest's three states.
@@ -587,6 +628,16 @@ pub(super) fn advisories(record: Option<&PackageRecord>) -> Advisories {
     };
     match &record.advisory {
         Known::Known(summary) => {
+            let fresh = match summary.freshness {
+                FreshnessState::Fresh | FreshnessState::NotModified => "up to date",
+                FreshnessState::Stale => "the feeds are stale",
+                FreshnessState::Unknown => "feed age unknown",
+            };
+            let scope = match summary.coverage {
+                AdvisoryCoverage::Complete => "Every configured feed was read",
+                AdvisoryCoverage::Partial => "Only some configured feeds were read",
+                AdvisoryCoverage::Unknown | AdvisoryCoverage::Unavailable => "Feed coverage is not established",
+            };
             if summary.advisories > 0 {
                 let worst = summary.worst.map(|level| match level {
                     SeverityLevel::Unknown => "unrated",
@@ -599,23 +650,21 @@ pub(super) fn advisories(record: Option<&PackageRecord>) -> Advisories {
                     count: summary.advisories,
                     worst: worst.map(|w| w.to_owned().into()),
                     decision: summary.decision.to_string().into(),
+                    note: format!("{scope}; {fresh}.").into(),
                 };
             }
-            let fresh = match summary.freshness {
-                FreshnessState::Fresh | FreshnessState::NotModified => "up to date",
-                FreshnessState::Stale => "the feeds are stale",
-                FreshnessState::Unknown => "feed age unknown",
-            };
             match summary.coverage {
-                AdvisoryCoverage::Complete => Advisories::Clear {
+                AdvisoryCoverage::Complete
+                    if matches!(summary.freshness, FreshnessState::Fresh | FreshnessState::NotModified) => Advisories::Clear {
                     note: format!(
                         "Every configured feed was read, {fresh}. None names this release."
                     )
                     .into(),
                 },
-                AdvisoryCoverage::Partial => Advisories::Clear {
-                    note: format!("Some feeds were read, {fresh}. None named this release.").into(),
-                },
+                AdvisoryCoverage::Complete | AdvisoryCoverage::Partial => unknown(
+                    Silence::Unknown,
+                    &format!("{scope}; {fresh}. No matches were recorded, but a current complete check is not established."),
+                ),
                 AdvisoryCoverage::Unknown | AdvisoryCoverage::Unavailable => unknown(
                     Silence::NoFeed,
                     "No advisory feed coverage is established for this release.",

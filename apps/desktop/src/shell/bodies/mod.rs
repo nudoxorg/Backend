@@ -11,6 +11,7 @@
 mod browse;
 pub(crate) mod graph;
 mod inbox;
+mod native;
 mod orbit;
 mod package;
 pub(crate) use package::cargo_readme::{
