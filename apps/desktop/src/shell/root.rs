@@ -476,6 +476,11 @@ impl Shell {
     }
 
     #[cfg(test)]
+    pub(crate) fn shelf_targets(&self, cx: &App) -> super::focus::Targets {
+        self.shelf.read(cx).targets.clone()
+    }
+
+    #[cfg(test)]
     pub(crate) fn titlebar_target_action(&self, id: &str, cx: &App) -> Option<super::focus::Act> {
         self.titlebar.read(cx).targets.placed().into_iter().find(|(target, _)| target.id == id).map(|(target, _)| target.action.callback())
     }
@@ -1354,6 +1359,7 @@ impl Shell {
     /// re-renders; the glow springs to the next target).
     pub fn walk(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
         self.reader.update(cx, |reader, _| reader.cancel_native_return());
+        self.adopt_native_focus_zone(window, cx);
         self.adopt_reader_native_zone(window, cx);
         if let Some(key) = self.peeking.take() {
             // The keyboard's peek belongs to where the keyboard stood.
@@ -1475,6 +1481,7 @@ impl Shell {
             return;
         }
         self.reader.update(cx, |reader, _| reader.cancel_native_return());
+        self.adopt_native_focus_zone(window, cx);
         self.adopt_reader_native_zone(window, cx);
         // A pointer/AX client can focus a current view switch without changing
         // the Shell's last zone. Its mounted native owner defines Tab origin.
@@ -1530,6 +1537,30 @@ impl Shell {
         }
     }
 
+    /// Native focus can arrive on a Shell target through ordinary Tab or
+    /// accessibility focus without passing through the custom zone walker.
+    /// Adopt that exact mounted target before Shell shortcuts read `zone`.
+    fn adopt_native_focus_zone(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
+        if !window.is_window_active() || !self.background_input_allowed() || self.ask_open
+            || matches!(self.links.snapshot(cx).overlay(), Some(Overlay::CommandPalette | Overlay::AddProject)) {
+            return false;
+        }
+        if let Some(id) = self.titlebar.read(cx).targets.native_focused(window) {
+            self.titlebar.read(cx).targets.focus(id);
+            self.set_zone(Zone::Titlebar, cx);
+            self.notify_zone(Zone::Titlebar, cx);
+            return true;
+        }
+        let shelf = if self.shelf_over_open { &self.shelf_over } else { &self.shelf };
+        if let Some(id) = shelf.read(cx).targets.native_focused(window) {
+            shelf.read(cx).targets.focus(id);
+            self.set_zone(Zone::Shelf, cx);
+            self.notify_zone(Zone::Shelf, cx);
+            return true;
+        }
+        false
+    }
+
     /// A custom navigation zone shares the shell's persistent native focus
     /// owner. A clicked row can disappear as it changes the list; that must
     /// not leave keyboard dispatch attached to the retired row.
@@ -1560,6 +1591,7 @@ impl Shell {
     }
 
     fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.adopt_native_focus_zone(window, cx);
         // ↵ in the open hand goes to the card it stands on.
         if self.hand_open && self.page_keyboard_session_owns(window, cx) && self.hand_key("enter", cx) {
             return;
@@ -2123,6 +2155,7 @@ impl Shell {
                 // The custom shell hand still uses Tab to reach its zones.
                 self.cycle_zone(!backwards, window, cx);
             } else if backwards { window.focus_prev(cx); } else { window.focus_next(cx); }
+            self.adopt_native_focus_zone(window, cx);
         } else {
             cx.propagate();
         }
@@ -2259,6 +2292,26 @@ impl Shell {
             Route::CargoSource(_) | Route::Symbol(_) | Route::Orbit(_) | Route::World => return,
         };
         self.links.dispatch(Intent::Tour(package), cx);
+    }
+
+    /// I: ask what changes if you change what you are reading: a SQL table or
+    /// CSS class's page, or a declaration of one of your projects. Where there
+    /// is nothing to ask about it says so instead of doing nothing.
+    pub(crate) fn impact(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let route = self.links.snapshot(cx).route().clone();
+        match crate::navigation::NativeSubject::for_route(&route) {
+            Some(subject) => {
+                let route = Route::Orbit(crate::navigation::OrbitRoute::Browse(crate::navigation::BrowseRoute::Impact(crate::navigation::ImpactRoute::new(subject))));
+                self.links.dispatch(Intent::Navigate(route), cx);
+            }
+            None => {
+                facet::overlay::toast::show(
+                    facet::overlay::toast::Toast::new("There is no SQL table, CSS class or component here to ask about. Find one and press I on its page."),
+                    window,
+                    cx,
+                );
+            }
+        }
     }
 
     /// H: open or close the hand (the keyboard starts on its first card).
@@ -2526,7 +2579,7 @@ impl Shell {
     }
 }
 
-fn is_dark(appearance: WindowAppearance) -> bool {
+pub(super) fn is_dark(appearance: WindowAppearance) -> bool {
     matches!(appearance, WindowAppearance::Dark | WindowAppearance::VibrantDark)
 }
 
@@ -2794,6 +2847,7 @@ impl Render for Shell {
             .on_action(cx.listener(|shell, _: &keys::HandCard5, _, cx| { if shell.page_input_allowed(cx) { shell.hand_card(4, cx); } }))
             .on_action(cx.listener(|shell, _: &keys::CopyAddress, _, cx| shell.with_background_input(|shell| shell.copy_address(cx))))
             .on_action(cx.listener(|shell, _: &keys::Tour, _, cx| { if shell.page_input_allowed(cx) { shell.tour(cx); } }))
+            .on_action(cx.listener(|shell, _: &keys::Impact, window, cx| { if shell.page_input_allowed(cx) { shell.impact(window, cx); } }))
             .on_action(cx.listener(|shell, _: &keys::OpenSettings, _, cx| shell.with_background_input(|shell| {
                 shell.links.dispatch(Intent::OpenSettings(SettingsPage::Appearance), cx);
             })))

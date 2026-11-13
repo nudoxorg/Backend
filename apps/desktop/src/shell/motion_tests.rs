@@ -265,7 +265,7 @@ fn pending_destination_paints_its_own_visit_and_back_recovers_the_prior_reading(
     rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(b.clone()), cx));
     rig.frame(0);
     assert_eq!(rig.route(), b);
-    assert!(rig.said().iter().any(|line| line.contains("KindGlyph") && line.contains("on its way")));
+    assert!(rig.said().iter().any(|line| line.contains("KindGlyph") && line.contains("on its way")), "{:#?}", rig.said());
     assert!(!rig.said().iter().any(|line| line.contains("RelationLabel")), "the old declaration cannot impersonate the destination");
     assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx).placed()).is_empty(), "pending destination has no stale keyboard targets");
     assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).1), None);
@@ -312,7 +312,7 @@ fn superseded_pending_page_releases_on_failure_and_late_reads_cannot_replace_des
         rig.frame(0);
     }
     assert_eq!(rig.route(), c);
-    assert!(rig.said().iter().any(|line| line.contains("RelationDirection") && line.contains("on its way")));
+    assert!(rig.said().iter().any(|line| line.contains("RelationDirection") && line.contains("on its way")), "{:#?}", rig.said());
     assert!(!rig.said().iter().any(|line| line.contains("RelationLabel")), "C must never borrow A's body");
     rig.graph.store.update(rig.cx, |store, cx| store.owner_failed(&crate::runtime::owner::OwnerFault::Lost("retention fixture failure".into()), cx));
     rig.frame(0);
@@ -338,7 +338,7 @@ fn pending_destination_stays_exact_on_root_wake_before_reads_start(cx: &mut Test
     rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
     rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(page_route("KindGlyph")), cx));
     rig.frame(0);
-    assert!(rig.said().iter().any(|line| line.contains("KindGlyph") && line.contains("on its way")));
+    assert!(rig.said().iter().any(|line| line.contains("KindGlyph") && line.contains("on its way")), "{:#?}", rig.said());
     rig.graph.store.update(rig.cx, |store, cx| {
         let root = crate::core::VersionedRoot::synthetic(
             backend_library::view_state_root(&[("retention".to_owned(), "new owner root".to_owned())]), 5,
