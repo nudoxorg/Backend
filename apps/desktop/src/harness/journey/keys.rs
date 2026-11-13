@@ -74,6 +74,9 @@ fn case(command: KeyCommand) -> Case {
         C::DepthPackage => (Value, NONE, &["route like \"package *toml*\""], NONE, &["key cmd-["]),
         C::PeelSource => (Value, NONE, &["route like \"symbol *Value*view=code*\""], NONE, &["key cmd-."]),
         C::Graph => (Value, NONE, &["route like \"symbol *Value*view=graph*\""], &["route like \"symbol *Value*view=page*\""], NONE),
+        // On a registry crate's declaration there is no SQL, CSS or component
+        // of yours to ask about: the key says so and nothing moves.
+        C::Impact => (Value, NONE, &["route like \"symbol *toml*Value*view=page*\""], NONE, NONE),
         C::Tour => (Value, NONE, &["route like \"world*\""], NONE, &["key escape", "key cmd-["]),
         C::Peek => (Value, &["key j"], &["state peek \"open\""], NONE, &["key escape", "key escape"]),
         C::CopyAddress => (Value, NONE, &["state clipboard \"nudox://*Value*\""], NONE, NONE),

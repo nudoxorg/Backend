@@ -44,6 +44,7 @@ backend-platform = { path = "../../crates/platform" }
 backend-present = { path = "../../crates/present" }
 backend-replication = { path = "../../crates/replication" }
 backend-runtime = { path = "../../crates/runtime" }
+backend-semantic = { path = "../../crates/semantic" }
 gpui.workspace = true
 gpui_component.workspace = true
 image = { version = "0.25.10", default-features = false, features = ["png"], optional = true }
@@ -91,7 +92,6 @@ gpui_platform = { workspace = true, features = ["wgpu"] }
 windows = { version = "=0.61.3", features = ["Foundation", "UI_ViewManagement"] }
 
 [dev-dependencies]
-backend-semantic = { path = "../../crates/semantic" }
 backend-version = { path = "../../crates/version" }
 backend-advisory = { path = "../../crates/advisory" }
 backend-gui-harness = { path = "../../tools/gui-harness" }
