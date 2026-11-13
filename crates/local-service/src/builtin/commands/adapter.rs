@@ -23,9 +23,7 @@ use super::index_operation::{
     JournalError as IndexOperationJournalError, StoredOperation, StoredOperationState,
 };
 use super::search_lane::SearchLane;
-use super::semantic_query::{
-    execute_references, execute_semantic_graph, execute_structural_call_graph,
-};
+use super::semantic_query::{execute_qualified_observed_graph, execute_qualified_observed_references, execute_references, execute_semantic_graph, propagate_qualified_graph_page};
 use super::semantic_shapes::execute_semantic_shapes;
 use backend_engine::application::LocalCompilerClient;
 use backend_engine::builtin::{
@@ -42,12 +40,66 @@ use std::sync::{Arc, Mutex};
 #[path = "capture_recovery.rs"]
 mod capture_recovery;
 #[path = "index_profile_worker.rs"]
-mod index_profile_worker;
+pub(in crate::builtin) mod index_profile_worker;
 #[path = "index_publication_worker.rs"]
 mod index_publication_worker;
 use index_profile_worker::{ProfileCompletion, ProfileOutcome, ProfileWork, ProfileWorker};
 
 const MAX_RETAINED_INDEX_TERMINALS: usize = 64;
+
+/// Private receipt for an exact C# source commit installed by this adapter.
+/// Fields are populated only at the selected-owner handoff; values do not by
+/// themselves admit a unit, compiler input, or publication.
+pub(in crate::builtin) struct SelectedCSharpSourceCommit {
+    root: [u8; 32],
+    sequence: u64,
+    closure: [u8; 32],
+    owner_epoch: u64,
+    request_identity: [u8; 32],
+    operation_key: Option<backend_library::IndexOperationKey>,
+}
+
+impl SelectedCSharpSourceCommit {
+    pub(super) fn from_selected_candidate(
+        selected: &backend_engine::WorkspaceSnapshot,
+        candidate: &backend_engine::WorkspaceSnapshot,
+        operation_key: Option<backend_library::IndexOperationKey>,
+    ) -> Result<Self, BuiltinModelError> {
+        let selected_request = selected.with_persisted_transition(|transition, _| transition.request())
+            .map_err(|error| BuiltinModelError(error.to_string()))?;
+        let candidate_request = candidate.with_persisted_transition(|transition, _| transition.request())
+            .map_err(|error| BuiltinModelError(error.to_string()))?;
+        if operation_key.is_none() || selected.root() != candidate.root()
+            || selected.sequence() != candidate.sequence() || selected.owner_epoch() != candidate.owner_epoch()
+            || selected.closure().binding().closure() != candidate.closure().binding().closure()
+            || selected_request != candidate_request {
+            return Err(BuiltinModelError("C# source candidate was not selected exactly".to_owned()));
+        }
+        Ok(Self { root: *selected.root().as_bytes(), sequence: selected.sequence(),
+            closure: *selected.closure().binding().closure().as_bytes(), owner_epoch: selected.owner_epoch(),
+            request_identity: selected_request, operation_key })
+    }
+    /// Synthetic fixture only; production receipts are minted by the actual
+    /// adapter settlement path, which also binds the operation identity.
+    #[cfg(test)]
+    pub(in crate::builtin) fn from_selected_test(
+        snapshot: &backend_engine::WorkspaceSnapshot,
+        operation_key: Option<backend_library::IndexOperationKey>,
+    ) -> Result<Self, BuiltinModelError> {
+        let request_identity = snapshot.with_persisted_transition(|transition, _| transition.request())
+            .map_err(|error| BuiltinModelError(error.to_string()))?;
+        Ok(Self { root: *snapshot.root().as_bytes(), sequence: snapshot.sequence(),
+            closure: *snapshot.closure().binding().closure().as_bytes(), owner_epoch: snapshot.owner_epoch(),
+            request_identity, operation_key })
+    }
+    pub(in crate::builtin) fn root(&self) -> [u8; 32] { self.root }
+    pub(in crate::builtin) fn sequence(&self) -> u64 { self.sequence }
+    pub(in crate::builtin) fn closure(&self) -> [u8; 32] { self.closure }
+    pub(in crate::builtin) fn owner_epoch(&self) -> u64 { self.owner_epoch }
+    pub(in crate::builtin) fn request_identity(&self) -> [u8; 32] { self.request_identity }
+    pub(in crate::builtin) fn operation_key(&self) -> Option<backend_library::IndexOperationKey> { self.operation_key }
+}
+
 const MAX_RETAINED_INDEX_PROGRESS_EVENTS: usize = 256;
 const MAX_RETAINED_INDEX_PROGRESS_TICKETS: usize = MAX_RETAINED_INDEX_TERMINALS + 1;
 pub(super) const MAX_WAITING_COMMANDS: usize = 64;
@@ -74,6 +126,7 @@ enum CatalogReplyRequest {
     Names(backend_library::ViewRevision),
     Search(backend_library::ViewRevision),
     Graph(backend_library::ViewRevision),
+    RelatedEdge(backend_library::ViewRevision),
 }
 impl CatalogReplyRequest {
     fn from_command(command: &Command) -> Option<Self> {
@@ -87,7 +140,7 @@ impl CatalogReplyRequest {
     }
     const fn basis(self) -> backend_library::ViewRevision {
         match self {
-            Self::Names(basis) | Self::Search(basis) | Self::Graph(basis) => basis,
+            Self::Names(basis) | Self::Search(basis) | Self::Graph(basis) | Self::RelatedEdge(basis) => basis,
         }
     }
     fn successful_at_basis(
@@ -98,6 +151,7 @@ impl CatalogReplyRequest {
             (Self::Names(_), CommandReply::Names(snapshot))
             | (Self::Search(_), CommandReply::Search(snapshot)) => snapshot,
             (Self::Search(_), CommandReply::PublishedNameSearch(page)) => &page.snapshot,
+            (Self::RelatedEdge(_), CommandReply::RelatedEdgePage(page)) => &page.snapshot,
             (Self::Graph(_), CommandReply::ProjectionPage(page)) => {
                 if page.terminal == backend_library::PageTerminal::Cancelled {
                     return Ok(false);
@@ -219,6 +273,19 @@ fn legacy_add_compiler_failure(
         detail: detail.as_str().to_owned(),
         failure: failure.clone(),
     })
+}
+
+fn legacy_add_outcome_detail(outcome: &backend_library::IndexJobOutcome) -> String {
+    use backend_library::IndexJobOutcome;
+    match outcome {
+        IndexJobOutcome::Published => "index publication completed, but its response is unavailable".to_owned(),
+        IndexJobOutcome::PartiallyPublished(_) => "available profiles were partially published; inspect the terminal receipt for refused profiles".to_owned(),
+        IndexJobOutcome::Refused(detail) | IndexJobOutcome::RefusedWithCompilerFailure { detail, .. } => {
+            format!("index job was refused: {}; any previous publication was retained", detail.as_str())
+        }
+        IndexJobOutcome::Cancelled => "index job was cancelled before publication completed".to_owned(),
+        IndexJobOutcome::Failed(detail) => format!("index job failed: {}; publication outcome could not be established", detail.as_str()),
+    }
 }
 
 fn index_operation_failure(
@@ -363,6 +430,7 @@ fn classify_add_target(label: &str) -> Result<AddTarget, BuiltinModelError> {
 }
 
 pub(in crate::builtin) struct CommandAdapter {
+    receipt_context: Option<Arc<super::super::owner_receipt_context::OwnerReceiptContext>>,
     sql_projection: super::super::sql_projection::ProjectionOwner,
     registry: Option<RegistryGateway>,
     registry_configured: bool,
@@ -393,6 +461,7 @@ pub(in crate::builtin) struct CommandAdapter {
     generations: super::super::generation_residence::SemanticGenerationResidence,
     semantic_authority: super::super::semantic_authority::SemanticAuthority,
     semantic_source_plan: Option<super::semantic_source::SourceReadPlan>,
+    impact_retention: Option<super::impact_retention::LeaseStore>,
     owner_cluster: Option<Arc<super::super::cluster_dispatch::OwnerCompilerClusterRuntime>>,
     pending_stored_acks: Option<Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
     dependencies: Option<ResidentDependencies>,
@@ -422,6 +491,12 @@ pub(in crate::builtin) struct CommandAdapter {
     source_test_hook: Option<index_publication_worker::TestHook>,
     #[cfg(test)]
     source_worker_start_refusal: bool,
+    #[cfg(test)]
+    stylo_test_worker: Option<Arc<crate::builtin::stylo_worker::StyloWorkerPermit>>,
+    #[cfg(test)]
+    sql_test_workers: Option<crate::builtin::sql_index::SqlWorkers>,
+    #[cfg(test)]
+    stylo_test_observer: Option<Box<dyn Fn(&ProductDaemon) + Send>>,
     #[cfg(test)]
     cleanup_worker_start_refusal: bool,
     /// Commands that change state, waiting for that job: one writer at a
@@ -524,6 +599,7 @@ enum OwnedIndexPhase {
         route: Option<SourceRoute>,
     },
     Cluster(SourceCompilePlan),
+    CSharpResume(SourceCompilePlan, backend_engine::WorkspaceSnapshot),
     Finalize(DeferredIndex),
     Cleanup {
         plan: CaptureFailurePlan,
@@ -608,6 +684,7 @@ fn answers_while_indexing(command: &Command) -> bool {
         | Command::Graph(_)
         | Command::Related(_)
         | Command::GraphPage { .. }
+        | Command::RelatedEdgePage { .. }
         | Command::GraphQuery(_)
         | Command::SemanticShapes(_)
         | Command::Health
@@ -629,6 +706,16 @@ fn answers_while_indexing(command: &Command) -> bool {
                 | S::PackageVersions { .. }
                 | S::SemanticVersions { .. }
                 | S::SemanticSource { .. }
+                | S::StyloQuery { .. }
+                | S::StyloReadSite { .. }
+                | S::SqlQuery { .. }
+                | S::SqlReadSource { .. }
+                | S::ImpactCapture { .. }
+                | S::ImpactCompare { .. }
+                | S::ImpactReadSource { .. }
+                | S::ImpactDiff { .. }
+                | S::StyloImpact { .. }
+                | S::Impact { .. }
                 | S::SemanticShapes { .. }
                 | S::PackageSourceMembership { .. }
                 | S::PackageProfile { .. }
@@ -791,6 +878,26 @@ impl ResidentCatalog {
 }
 
 impl CommandAdapter {
+    /// Retain comparison material from the currently selected owner snapshot.
+    /// This internal hook is deliberately not a public historical read route.
+    fn capture_css_impact<F: FnMut() -> bool>(
+        &mut self,
+        daemon: &ProductDaemon,
+        project: [u8; 32],
+        limits: super::stylo_impact_capture::CaptureLimits,
+        now: std::time::Instant,
+        mut cancelled: F,
+    ) -> Result<super::impact_retention::LeaseId, BuiltinModelError> {
+        let store = self.impact_retention.as_mut().ok_or_else(|| BuiltinModelError("CSS impact retention unavailable".into()))?;
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        let material = super::stylo_impact_capture::capture(&snapshot, project, limits, &mut cancelled)?;
+        store.insert(material, now, cancelled)
+            .map_err(|error| BuiltinModelError(format!("CSS impact retention: {error:?}")))
+    }
+
+    pub(in crate::builtin) fn set_receipt_context(&mut self, context: Option<Arc<super::super::owner_receipt_context::OwnerReceiptContext>>) {
+        self.receipt_context = context;
+    }
     fn can_answer_short_control(&self, command: &Command, origin: &DeferredCommandOrigin) -> bool {
         if !answers_while_indexing(command) {
             return false;
@@ -868,6 +975,7 @@ impl CommandAdapter {
                 .map_err(BuiltinModelError)?;
         index_operations.observe_changes(journal_readiness.changed());
         Ok(Self {
+            receipt_context: None,
             sql_projection: super::super::sql_projection::ProjectionOwner::new(sql_projection),
             registry_configured: registry.is_some(),
             registry,
@@ -893,6 +1001,7 @@ impl CommandAdapter {
             structural_calls: super::super::view_build::StructuralCallResidence::default(),
             generations,
             semantic_authority,
+            impact_retention: super::impact_retention::LeaseStore::new_random(),
             semantic_source_plan: None,
             owner_cluster,
             pending_stored_acks,
@@ -916,6 +1025,12 @@ impl CommandAdapter {
             #[cfg(test)]
             source_worker_start_refusal: false,
             #[cfg(test)]
+            stylo_test_worker: None,
+            #[cfg(test)]
+            sql_test_workers: None,
+            #[cfg(test)]
+            stylo_test_observer: None,
+            #[cfg(test)]
             cleanup_worker_start_refusal: false,
             waiting: std::collections::VecDeque::new(),
             queued_writer_blocked: None,
@@ -933,12 +1048,17 @@ impl CommandAdapter {
         body: &[u8],
         transport_ticket: u64,
     ) -> Result<Executed, BuiltinModelError> {
-        self.execute_or_defer_from(
+        let result = self.execute_or_defer_from(
             daemon,
             body,
             transport_ticket,
             DeferredCommandOrigin::Incoming,
-        )
+        );
+        #[cfg(test)]
+        if let Some(observe) = &self.stylo_test_observer {
+            observe(daemon);
+        }
+        result
     }
 
     fn execute_or_defer_from(
@@ -1228,8 +1348,13 @@ impl CommandAdapter {
                     BuiltinModelError(format!("select forge metadata authority: {error:?}"))
                 })?
                 .is_empty();
+            let installed = !acquired && !forged && !super::super::installed_packages::find(
+                daemon.engine().daemon().library().view(),
+                &backend_library::PackageReference::Purl(package.clone()), false,
+            ).map_err(BuiltinModelError)?.is_empty();
             if !acquired
                 && !forged
+                && !installed
                 && let Some(discovery) = self.discovery.as_ref()
                 && let crate::discovery::package_metadata::PackageMetadataPreparation::Fetch(
                     metadata,
@@ -2658,10 +2783,7 @@ impl CommandAdapter {
                 )
             } else {
                 legacy_reply.unwrap_or_else(|| {
-                    Err(BuiltinModelError(format!(
-                        "index job did not publish: {:?}",
-                        terminal.outcome
-                    )))
+                    Err(BuiltinModelError(legacy_add_outcome_detail(&terminal.outcome)))
                 })
             };
             ready.push((transport_ticket, reply));
@@ -2865,10 +2987,13 @@ impl CommandAdapter {
             &phase,
             OwnedIndexPhase::Source { .. }
                 | OwnedIndexPhase::Cluster(_)
+                | OwnedIndexPhase::CSharpResume(..)
                 | OwnedIndexPhase::Finalize(_)
         );
         let cleanup_phase = matches!(&phase, OwnedIndexPhase::Cleanup { .. });
         let empty = || PreparedProductSelection {
+            native_noop_expectation: None,
+            native_noop_proof: None,
             intent: None,
             selected: Vec::new(),
             revision_fence: None,
@@ -2886,6 +3011,7 @@ impl CommandAdapter {
                 (empty(), Preparation::Source { scan, route })
             }
             OwnedIndexPhase::Cluster(plan) => (empty(), Preparation::Cluster(plan)),
+            OwnedIndexPhase::CSharpResume(plan, receipt) => (empty(), Preparation::CSharpResume(plan, receipt)),
             OwnedIndexPhase::Finalize(job) => (empty(), Preparation::Finalize(job)),
             OwnedIndexPhase::Cleanup { plan, outcome } => {
                 (empty(), Preparation::Cleanup { plan, outcome })
@@ -2922,6 +3048,7 @@ impl CommandAdapter {
             },
             finalization_observation,
         ));
+        work.receipt_context = self.receipt_context.clone();
         let reserved = self.reserve_index_phase_writers(daemon, &mut work);
         #[cfg(test)]
         {
@@ -3943,6 +4070,13 @@ impl CommandAdapter {
                                     ));
                                 }
                             }
+                            PreparedIndex::CSharpParked(plan, candidate) => {
+                                if let Err(error) = self.start_owned_index_phase(
+                                    daemon, &mut indexing, OwnedIndexPhase::CSharpResume(plan, candidate),
+                                ) {
+                                    terminal = Some(backend_library::IndexJobOutcome::Failed(bounded_index_detail(error)));
+                                }
+                            }
                             PreparedIndex::Cluster(plan) => {
                                 self.set_index_progress_stage(
                                     &mut indexing,
@@ -4268,7 +4402,12 @@ impl CommandAdapter {
                         request_id,
                     )
                     .map(|(reply, _)| reply);
-                let reply = package_metadata_completion_reply(package, reply, observation);
+                let mut reply = package_metadata_completion_reply(package, reply, observation);
+                if let CommandReply::Surface(backend_library::SurfaceReply::PackageDiscovery {
+                    package, advisory, ..
+                }) = &mut reply {
+                    *advisory = self.registry.as_ref().and_then(|gateway| gateway.advisory_for_unacquired(package));
+                }
                 ready.push((
                     ticket,
                     Self::encode(daemon, request_id, (reply, None), None),
@@ -4450,6 +4589,14 @@ impl CommandAdapter {
         mut work: IndexScanWork,
     ) -> Result<(), BuiltinModelError> {
         work.cargo_target = indexing.cargo_target.clone();
+        #[cfg(test)]
+        if let Some(permit) = &self.stylo_test_worker {
+            work.stylo_worker = Some(Arc::clone(permit));
+        }
+        #[cfg(test)]
+        if let Some(workers) = &self.sql_test_workers {
+            work.sql_workers = workers.clone();
+        }
         work.observation = work.observation.or_else(|| {
             self.product_state.workspace_path().ok().and_then(|path| {
                 crate::builtin::index_work_observation::IndexWorkObservation::enabled(
@@ -4572,12 +4719,32 @@ impl CommandAdapter {
         FinishAddError,
     > {
         let PreparedProductSelection {
+            native_noop_expectation,
+            native_noop_proof,
             intent: prepared_intent,
             selected,
             revision_fence,
             profile_refusals,
             partial_plan,
         } = prepared;
+        if let Some(expected) = native_noop_expectation {
+            let snapshot = daemon.engine().daemon().owner().snapshot();
+            let actual = crate::builtin::stylo_admission::stylo_basis_for_snapshot(&snapshot)
+                .map_err(BuiltinModelError)?
+                .analysis_root;
+            if actual != *expected {
+                return Err(BuiltinModelError(
+                    "native Stylo selection changed before no-op acknowledgement; retry indexing"
+                        .into(),
+                )
+                .into());
+            }
+        }
+        if let Some(proof) = native_noop_proof {
+            let snapshot = daemon.engine().daemon().owner().snapshot();
+            crate::builtin::stylo_admission::validate_stylo_noop(&snapshot, proof)
+                .map_err(|error| BuiltinModelError(format!("native Stylo no-op proof: {error}")))?;
+        }
         let partial_basis = if !profile_refusals.is_empty() && !selected.is_empty() {
             let producer = selected
                 .first()
@@ -4606,6 +4773,12 @@ impl CommandAdapter {
         } else {
             None
         };
+        if prepared_intent.as_ref().is_some_and(BuiltinIntent::has_native_ts_evidence) {
+            return Err(BuiltinModelError("native TypeScript evidence requires the publication worker".into()).into());
+        }
+        if prepared_intent.as_ref().is_some_and(BuiltinIntent::requires_v14_worker) {
+            return Err(BuiltinModelError("v14 native sections require the publication worker".into()).into());
+        }
         let intent = match (prepared_intent.clone(), operation_key) {
             (Some(intent), Some(operation_key)) => Some(intent.with_operation_key(operation_key)?),
             (intent, _) => intent,
@@ -4656,6 +4829,11 @@ impl CommandAdapter {
                                     .to_owned(),
                             ));
                     }
+                    if let Some(proof) = native_noop_proof {
+                        let snapshot = daemon.engine().daemon().owner().snapshot();
+                        crate::builtin::stylo_admission::validate_stylo_noop(&snapshot, proof)
+                            .map_err(|error| BuiltinModelError(format!("native Stylo no-op proof: {error}")))?;
+                    }
                     prepare_publication_barrier(
                         index_operations,
                         operation_key,
@@ -4670,6 +4848,16 @@ impl CommandAdapter {
                         }
                         FinishAddError::Failed(error) => error,
                     })?;
+                    let snapshot = daemon.engine().daemon().owner().snapshot();
+                    if let Some(proof) = native_noop_proof {
+                        crate::builtin::stylo_admission::validate_stylo_noop(&snapshot, proof)
+                            .map_err(|error| BuiltinModelError(format!("native Stylo no-op proof: {error}")))?;
+                    }
+                    if let Some(prepared) = prepared_intent.as_ref() {
+                        crate::builtin::profile::revalidate_stylo_intent(&snapshot, &prepared.intent)?;
+                        crate::builtin::profile::revalidate_native_ts_intent(&snapshot, &prepared.intent)?;
+                        crate::builtin::profile::revalidate_sql_intent(&snapshot, &prepared.intent)?;
+                    }
                     prepared_intent
                         .map(|prepared| {
                             let intent = prepared.intent.clone();
@@ -4810,7 +4998,14 @@ impl CommandAdapter {
             &request.command,
             Command::Search(_) | Command::SearchPublishedNames(_)
         );
-        let catalog = CatalogReplyRequest::from_command(&request.command);
+        let catalog = match &request.command {
+            Command::RelatedEdgePage { request, .. }
+                if request.scope.root == daemon.engine().daemon().library().revision_root().to_bytes() =>
+            {
+                Some(CatalogReplyRequest::RelatedEdge(daemon.engine().daemon().library().revision_root().into()))
+            }
+            _ => CatalogReplyRequest::from_command(&request.command),
+        };
         self.pending_semantic_search = None;
         let admitted = self.dispatch(daemon, request.command, certificate, request_id)?;
         let status = if is_search {
@@ -5226,6 +5421,9 @@ impl CommandAdapter {
             Command::GraphPage { symbol, page } => {
                 self.graph_page(daemon, symbol, page, certificate)
             }
+            Command::RelatedEdgePage { symbol, request } => {
+                self.related_edge_page(daemon, symbol, request, certificate)
+            }
             Command::Related(query) => self.graph(daemon, query, certificate, true),
             Command::GraphQuery(request) => {
                 if request.control() != backend_engine::GraphQueryControl::Cancel {
@@ -5303,6 +5501,8 @@ impl CommandAdapter {
                 self.pending_stored_acks.as_ref(),
             ) {
                 Ok(prepared) => prepared.unwrap_or(PreparedProductSelection {
+                    native_noop_expectation: None,
+                    native_noop_proof: None,
                     intent: None,
                     selected: Vec::new(),
                     revision_fence: None,
@@ -5314,6 +5514,8 @@ impl CommandAdapter {
             AddTarget::PackageUrl => self
                 .registry_intent(daemon, package, &label, request_id)?
                 .unwrap_or(PreparedProductSelection {
+                    native_noop_expectation: None,
+                    native_noop_proof: None,
                     intent: None,
                     selected: Vec::new(),
                     revision_fence: None,
@@ -5384,6 +5586,8 @@ impl CommandAdapter {
             // acquisition and compiler-authority path below.
             return BuiltinIntent::add(package, label.to_owned()).map(|intent| {
                 Some(PreparedProductSelection {
+                    native_noop_expectation: None,
+                    native_noop_proof: None,
                     intent: Some(intent),
                     selected: Vec::new(),
                     revision_fence: None,
@@ -5418,12 +5622,13 @@ impl CommandAdapter {
     /// exact label after checking the request root instead of returning a
     /// false not-found for a published semantic declaration.
     fn canonical_claim_document(
-        &self,
+        &mut self,
         daemon: &ProductDaemon,
         query: &backend_library::DocumentQuery,
         certificate: Option<&WireCertificate>,
         recover_excerpt: bool,
     ) -> Result<Option<backend_library::Document>, backend_library::CommandFailure> {
+        let header_deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
         let library = daemon.engine().daemon().library();
         let root = library.revision_root();
         let source_basis = backend_library::Basis {
@@ -5481,17 +5686,10 @@ impl CommandAdapter {
                 "coordinate does not name a declaration".to_owned(),
             ));
         };
-        let excerpt =
-            if recover_excerpt && row.excerpt == backend_library::SourceExcerpt::NotHydrated {
-                self.recover_indexed_excerpt(daemon, row, label)
-                    .unwrap_or_else(|| row.excerpt.clone())
-            } else {
-                row.excerpt.clone()
-            };
         let mut document = backend_library::Document::new(symbol, root, row.document.clone())
             .with_source_basis(source_basis)
             .with_location(row.source.clone())
-            .with_excerpt(excerpt)
+            .with_excerpt(backend_library::SourceExcerpt::NotCaptured)
             .with_facts(row.facts.clone());
         {
             let selection = if query.symbol().is_selected() {
@@ -5507,52 +5705,440 @@ impl CommandAdapter {
                 return Ok(None);
             };
             let selected = document
-                .with_selection(selection)
+                .with_selection(selection.clone())
                 .map_err(|error| backend_library::CommandFailure::InvalidQuery(error.to_owned()))?;
             document = selected;
+            let mut source_budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
+            let mut header_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(source_budget, super::super::semantic_authority::NATIVE_HEADER_WORK_UNITS);
+            if let Some((qualification, page, excerpt, location, signature)) = self.selected_native_document_source(
+                daemon, row, &selection, query.source_range(), recover_excerpt, &mut source_budget, &mut header_budget, header_deadline,
+            )? {
+                document.source_policy = qualification;
+                document.source_range = page;
+                if let Some(excerpt) = excerpt { document.excerpt = excerpt; }
+                if let Some(location) = location { document.location = backend_library::SourceAvailability::Captured(location); }
+                document.signature = signature.or_else(|| row.signature.clone());
+                return Ok(Some(document));
+            }
+        }
+        if let Some(request) = query.source_range() {
+            let (range, _, _) = self.read_exact_source_range(daemon, row, label, request, false)?;
+            // The admitted range is the only source body on this reply. A
+            // separately retained excerpt may be truncated and is redundant.
+            document.excerpt = backend_library::SourceExcerpt::NotCaptured;
+            document.source_range = Some(range);
+        } else {
+            match self.indexed_source_matches(daemon, row) {
+                Some(true) => {}
+                Some(false) => {
+                    return Err(backend_library::CommandFailure::InvalidQuery(
+                        "indexed source changed on disk; reindex and retry".to_owned(),
+                    ));
+                }
+                None => {
+                    return Err(backend_library::CommandFailure::InvalidQuery(
+                        if row.label.contains("::external::") {
+                            "external library source is not indexed; use package <version-pinned PURL> for installed metadata and API excerpts, or index the installed package directory".to_owned()
+                        } else {
+                            "indexed source freshness could not be verified; reindex and retry".to_owned()
+                        },
+                    ));
+                }
+            }
+        }
+        if recover_excerpt && query.source_range().is_none() {
+            // The read revalidates indexed host bytes. Native and structural
+            // captures retain their distinct source scopes.
+            if let Ok((page, Some(location), head)) = self.read_exact_source_range(
+                daemon,
+                row,
+                label,
+                backend_library::SourceRangeRequest {
+                    start: 0,
+                    limit: 4096,
+                    source_identity: None,
+                },
+                true,
+            ) {
+                // A compiler primary extent can omit modifiers or merged
+                // declarations. EOF only completes that extent, not the
+                // declaration as a whole; the scope field is coordinated by
+                // the wire owner.
+                let extent = if page.end >= page.total {
+                    backend_library::SourceExcerptExtent::Complete
+                } else {
+                    backend_library::SourceExcerptExtent::Truncated
+                };
+                document.excerpt = backend_library::SourceExcerpt::captured(&format!("{head}{}", page.text), extent)
+                    .unwrap_or(backend_library::SourceExcerpt::NotCaptured);
+                document.location = backend_library::SourceAvailability::Captured(location);
+                if page.scope == backend_library::SourceRangeScope::StructuralDeclaration {
+                    let mut fragments = document.fragments.into_vec();
+                    fragments.push(backend_library::Fragment::Text(page.scope.description().to_owned()));
+                    document.fragments = fragments.into_boxed_slice();
+                }
+            }
         }
         document.signature.clone_from(&row.signature);
         Ok(Some(document))
     }
 
-    /// Rehydrates a shed declaration excerpt from the exact package source
-    /// file admitted by the current source relation. The indexed source
-    /// identity must still match before the baseline parser can produce text.
-    fn recover_indexed_excerpt(
-        &self,
+    /// Admit the native-only source result under the exact selected view. A
+    /// missing structural file cannot be promoted to an empty inventory.
+    fn selected_native_document_source(
+        &mut self,
         daemon: &ProductDaemon,
         row: &backend_library::Row,
-        label: &str,
-    ) -> Option<backend_compile::SourceExcerpt> {
-        let location = row.source.captured()?;
-        let package = row.package?;
-        let workspace = self.product_state.workspace_path().ok()?;
+        selection: &backend_library::DocumentSelection,
+        request: Option<backend_library::SourceRangeRequest>,
+        recover_excerpt: bool,
+        source_budget: &mut usize,
+        header_budget: &mut backend_extension_turso::SelectedNativeHeaderBudget,
+        header_deadline: std::time::Instant,
+    ) -> Result<Option<(backend_library::SourcePolicyQualification, Option<backend_library::SourceRangePage>, Option<backend_library::SourceExcerpt>, Option<backend_library::SourceLocation>, Option<String>)>, backend_library::CommandFailure> {
+        use backend_library::CommandFailure;
+        let unavailable = || CommandFailure::InvalidQuery(
+            "native source evidence is unavailable; reindex and retry".to_owned(),
+        );
+        let Some(package) = row.package else { return Ok(None) };
         let snapshot = daemon.engine().daemon().owner().snapshot();
+        let view = daemon.engine().daemon().library().view();
+        let binding = super::super::BuiltinViewAdmission {
+            workspace_root: snapshot.root(),
+            source_root: view.basis().root,
+        };
+        backend_engine::ViewBindingAdmission::admit(&binding, &snapshot, view)
+            .map_err(|_| CommandFailure::CursorMismatch)?;
+        let sources = super::super::read_package_sources(&snapshot, package).map_err(|_| unavailable())?;
+        if !sources.files.is_empty() { return Ok(None); }
+        let Some(project) = sources.projects.get(&package.to_bytes()) else { return Ok(None) };
+        if project.package != package || project.label.starts_with("pkg:")
+            || backend_engine::PackageKey::from_value(&project.label) != package
+        { return Ok(None); }
+        if !view_build::has_selected_typescript_publication(&snapshot, &project.label)
+            .map_err(|_| unavailable())?
+        { return Ok(None); }
+        let workspace = self.product_state.workspace_path().map_err(|_| unavailable())?;
+        let root = admitted_project_source_root(package, &project.label, workspace).ok_or_else(unavailable)?;
+        let Some(evidence) = view_build::admitted_native_evidence(
+            &sources, &snapshot, &self.compiler, package, row.id, &mut self.generations,
+        ).map_err(|_| unavailable())? else { return Err(unavailable()) };
+        let authority = self.semantic_authority.product_statement_authority().map_err(|_| unavailable())?;
+        let qualification = issue_observed_native_source_policy(
+            &snapshot, selection, &evidence, &root, authority, source_budget,
+        )?;
+        let signature = if evidence.claim().headers.is_some() {
+            // Synchronous Source/Read currently has no transport cancellation
+            // capability. Bound this handler by its own deadline and a finite
+            // shared traversal ledger; this is not a client-arrival deadline.
+            let stopped = || std::time::Instant::now() >= header_deadline;
+            header_budget.restrict_memory(*source_budget);
+            let witness = self.semantic_authority.selected_native_header_aggregate(
+                evidence.publication_key(), evidence.publication_claim(), header_budget, &stopped,
+            ).map_err(|_| unavailable())?.ok_or_else(unavailable)?;
+            *source_budget = header_budget.remaining_memory();
+            let mut checkpoint = |bytes| super::super::semantic_authority::charge_native_header_work(header_budget, &stopped, bytes);
+            let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregateView::parse_canonical_checkpointed(witness.as_bytes(), &mut checkpoint)
+                .map_err(|_| unavailable())?;
+            let file = super::super::native_ts_headers::witnessed_file_borrowed(evidence.claim(), &aggregate, *witness.object_id(), &mut checkpoint)
+                .map_err(|_| unavailable())?;
+            checkpoint(52 * 15).map_err(|_| unavailable())?;
+            if file.producer_recipe != super::super::native_ts_headers::producer_recipe() {
+                None
+            } else if let Some(entry) = file.entry(evidence.entity_id().raw) {
+                if entry.identity != evidence.declaration_identity() || Some(entry.compiler_extent) != evidence.primary_extent() {
+                    return Err(unavailable());
+                }
+                *source_budget = source_budget.checked_sub((evidence.claim().byte_length as usize).saturating_add(1))
+                    .ok_or_else(unavailable)?;
+                Some(super::super::ingest::read_indexed_native_evidence_header(
+                    &root, evidence.claim(), evidence.image_source(), entry.header_extent,
+                ).map_err(|_| unavailable())?)
+            } else { None }
+        } else { None };
+        let explicit_range = request.is_some();
+        let implicit_range = recover_excerpt && !explicit_range && evidence.primary_extent().is_some();
+        let mut head = String::new();
+        let mut head_lines = 0_u32;
+        let page_request = request.or_else(|| implicit_range.then_some(backend_library::SourceRangeRequest {
+            start: 0, limit: 4096, source_identity: None,
+        }));
+        let mut location = None;
+        let page = if let Some(request) = page_request {
+            if !request.valid() { return Err(unavailable()); }
+            let source = evidence.image_source();
+            if request.source_identity.is_some_and(|expected| expected != *source.identity.as_ref()) {
+                return Err(CommandFailure::CursorMismatch);
+            }
+            let extent = evidence.primary_extent().ok_or_else(unavailable)?;
+            *source_budget = source_budget.checked_sub((evidence.claim().byte_length as usize).saturating_add(1))
+                .ok_or_else(unavailable)?;
+            let page = if implicit_range {
+                // The default excerpt also carries the modifiers and leading comment
+                // that the compiler keeps outside its extent; they count against the bound.
+                let (context, page, lines) = super::super::ingest::read_indexed_native_evidence_excerpt(
+                    &root, evidence.claim(), source, extent, u32::from(request.limit),
+                ).map_err(|_| unavailable())?;
+                head = context;
+                head_lines = lines;
+                page
+            } else {
+                super::super::ingest::read_indexed_native_evidence_range(
+                    &root, evidence.claim(), source, extent, request.start, u32::from(request.limit),
+                ).map_err(|error| match error {
+                    super::super::source_range::SourceRangeError::Stale if request.start > 0 => CommandFailure::CursorMismatch,
+                    _ => unavailable(),
+                })?
+            };
+            if implicit_range {
+                location = page.owner_start_line.and_then(|line|
+                    backend_library::SourceLocation::new(evidence.claim().path.clone(), line.saturating_sub(head_lines).max(1)).ok());
+            }
+            let mut result = backend_library::SourceRangePage {
+                source_policy: backend_library::SourcePolicyQualification::Unknown, text: page.text, start: page.start,
+                end: page.end, total: page.total,
+                scope: backend_library::SourceRangeScope::NativePrimaryDeclaration,
+                source_identity: page.source_identity, owner_start: extent.0, owner_end: extent.1,
+            };
+            if !result.admits(request) { return Err(unavailable()); }
+            result.source_policy = qualification.clone();
+            Some(result)
+        } else { None };
+        let excerpt = if implicit_range && location.is_some() {
+            let page = page.as_ref().ok_or_else(unavailable)?;
+            let text = format!("{head}{}", page.text);
+            // Complete only when the page reached the end of the compiler's extent.
+            // Anything else was cut by the byte bound and can be continued by byte range.
+            let extent = if page.end >= page.total {
+                backend_library::SourceExcerptExtent::Complete
+            } else {
+                backend_library::SourceExcerptExtent::Truncated
+            };
+            Some(backend_library::SourceExcerpt::captured(&text, extent).map_err(|_| unavailable())?)
+        } else { None };
+        Ok(Some((qualification, if explicit_range { page } else { None }, excerpt, location, signature)))
+    }
+
+    /// Checks disk freshness for a source-bearing row in the selected workspace.
+    /// `None` is unknown, never a claim that indexed bytes are current.
+    fn indexed_source_matches(
+        &mut self,
+        daemon: &ProductDaemon,
+        row: &backend_library::Row,
+    ) -> Option<bool> {
+        let package = row.package?;
+        let workspace = self.product_state.workspace_path().ok()?.to_path_buf();
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        let view = daemon.engine().daemon().library().view();
+        let binding = super::super::BuiltinViewAdmission {
+            workspace_root: snapshot.root(),
+            source_root: view.basis().root,
+        };
+        backend_engine::ViewBindingAdmission::admit(&binding, &snapshot, view).ok()?;
         let sources = super::super::read_package_sources(&snapshot, package).ok()?;
         let project = sources.projects.get(&package.to_bytes())?;
-        let (claimed_project, _) = label.split_once("::")?;
         if project.package != package
-            || claimed_project != project.label
             || backend_engine::PackageKey::from_value(&project.label) != package
         {
             return None;
         }
-        let source_root = admitted_project_source_root(package, &project.label, workspace)?;
+        let root = admitted_project_source_root(package, &project.label, &workspace)?;
+        // A row the selected compiler publication owns is checked at the
+        // compiler identity's own path; native rows need no syntax-derived
+        // location. A row with no compiler identity (a declaration of a
+        // project whose compile profile was refused, so only the structural
+        // lane answers) is checked at the file its own captured location
+        // names, against that file's indexed identity. Both compare the live
+        // bytes with what was indexed; neither presents unverified bytes.
+        let native = view_build::admitted_native_source_file(
+            &sources,
+            &snapshot,
+            &self.compiler,
+            package,
+            row.id,
+            &mut self.generations,
+        )
+        .ok()?;
+        let (path, native_identity) = match native {
+            Some((path, identity)) => (path, Some(identity)),
+            None => match row.source.captured() {
+                Some(location) => (location.path().to_owned(), None),
+                // A SQL declaration carries no syntax-derived location. It is
+                // as fresh as the `.sql` file it is written in, checked
+                // against that file's indexed identity.
+                None => {
+                    let host = view_build::sql_row_host(&snapshot, &project.label, package, row.id).ok()??;
+                    let input = host.input?;
+                    let source = backend_version::ContentId::<backend_version::SourceFactDomain>::try_from(host.source?).ok()?;
+                    return super::super::ingest::indexed_source_matches(&root, &host.path, source, input).ok();
+                }
+            },
+        };
         let fields = sources.files.iter().find_map(|(_, record)| {
             let fields = record.file_fields()?;
-            (fields.project == package.to_bytes() && fields.path == location.path())
-                .then_some(fields)
+            (fields.project == package.to_bytes() && fields.path == path).then_some(fields)
         })?;
         let source_identity = fields.source_identity?;
-        super::super::ingest::recover_indexed_excerpt(
-            &source_root,
+        if native_identity.is_some_and(|native| native != source_identity) {
+            return None;
+        }
+        super::super::ingest::indexed_source_matches(
+            &root,
             fields.path,
             source_identity,
-            fields.language,
-            label,
-            location.start_line(),
-            row.kind,
+            fields.content_version,
         )
+        .ok()
+    }
+
+    /// Reads a source range only from complete facts selected by the same owner.
+    fn read_exact_source_range(
+        &mut self,
+        daemon: &ProductDaemon,
+        row: &backend_library::Row,
+        label: &str,
+        request: backend_library::SourceRangeRequest,
+        with_context: bool,
+    ) -> Result<(backend_library::SourceRangePage, Option<backend_library::SourceLocation>, String), backend_library::CommandFailure> {
+        use backend_library::CommandFailure;
+        let unavailable = || {
+            CommandFailure::InvalidQuery(
+                "exact source range is unavailable; reindex and restart the source read".to_owned(),
+            )
+        };
+        if !request.valid() {
+            return Err(unavailable());
+        }
+        let package = row.package.ok_or_else(unavailable)?;
+        let workspace = self
+            .product_state
+            .workspace_path()
+            .map_err(|_| unavailable())?
+            .to_path_buf();
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        let view = daemon.engine().daemon().library().view();
+        let binding = super::super::BuiltinViewAdmission {
+            workspace_root: snapshot.root(),
+            source_root: view.basis().root,
+        };
+        backend_engine::ViewBindingAdmission::admit(&binding, &snapshot, view)
+            .map_err(|_| CommandFailure::CursorMismatch)?;
+        let sources =
+            super::super::read_package_sources(&snapshot, package).map_err(|_| unavailable())?;
+        let project = sources
+            .projects
+            .get(&package.to_bytes())
+            .ok_or_else(unavailable)?;
+        let (claimed_project, _) = label.split_once("::").ok_or_else(unavailable)?;
+        if project.package != package
+            || claimed_project != project.label
+            || backend_engine::PackageKey::from_value(&project.label) != package
+        {
+            return Err(unavailable());
+        }
+        let source_root = admitted_project_source_root(package, &project.label, &workspace)
+            .ok_or_else(unavailable)?;
+        // The current publication and selected compiler identity supply the
+        // primary owner path and extent, independent of row.source projection.
+        let native = view_build::admitted_native_source_extent(
+            &sources,
+            &snapshot,
+            &self.compiler,
+            package,
+            row.id,
+            &mut self.generations,
+        )
+        .map_err(|_| unavailable())?;
+        let vue_host = if native.is_none() && row.kind == Some(backend_library::DeclarationKind::Module) {
+            super::vue_source::extent(&sources, row).map_err(|_| unavailable())?
+        } else { None };
+        let vue_host_scope = vue_host.is_some();
+        let native = native.or(vue_host);
+        let structural = if native.is_none() {
+            super::structural_source::admit(&sources, row).map_err(|_| unavailable())?
+        } else { None };
+        let (native_path, source_identity, extent, scope) = match (native, structural.as_ref()) {
+            (Some((path, identity, extent)), _) => (path, identity, extent,
+                if vue_host_scope { backend_library::SourceRangeScope::StructuralDeclaration }
+                else { backend_library::SourceRangeScope::NativePrimaryDeclaration }),
+            (None, Some(source)) => (source.path.clone(), source.identity, source.binding.owner(), backend_library::SourceRangeScope::StructuralDeclaration),
+            _ => return Err(unavailable()),
+        };
+        let record = sources
+            .files
+            .iter()
+            .find_map(|(_, record)| {
+                let fields = record.file_fields()?;
+                (fields.project == package.to_bytes() && fields.path == native_path)
+                    .then_some(record)
+            })
+            .ok_or_else(unavailable)?;
+        let fields = record.file_fields().ok_or_else(unavailable)?;
+        if request
+            .source_identity
+            .is_some_and(|expected| expected != *source_identity.as_ref())
+        {
+            return Err(CommandFailure::CursorMismatch);
+        }
+        let read_error = |error| match error {
+            super::super::source_range::SourceRangeError::Stale if request.start == 0 => {
+                CommandFailure::InvalidQuery(
+                    "indexed source changed on disk; reindex and retry the source read".to_owned(),
+                )
+            }
+            super::super::source_range::SourceRangeError::Stale => CommandFailure::CursorMismatch,
+            _ => unavailable(),
+        };
+        let (head, head_lines, page) = if let Some(source) = structural.as_ref() {
+            let page = super::super::ingest::read_indexed_source_range(
+                &source_root, fields.path, source_identity, fields.content_version,
+                source.binding, &source.name, request.start, u32::from(request.limit),
+            ).map_err(read_error)?;
+            (String::new(), 0, page)
+        } else if with_context && request.start == 0 {
+            // The default excerpt also carries the modifiers and leading comment that the
+            // compiler keeps outside its extent; they count against the byte bound.
+            let (head, page, lines) = super::super::ingest::read_indexed_native_excerpt(
+                &source_root,
+                fields.path,
+                source_identity,
+                fields.content_version,
+                extent,
+                u32::from(request.limit),
+            )
+            .map_err(read_error)?;
+            (head, lines, page)
+        } else {
+            let page = super::super::ingest::read_indexed_native_range(
+                &source_root,
+                fields.path,
+                source_identity,
+                fields.content_version,
+                extent,
+                request.start,
+                u32::from(request.limit),
+            )
+            .map_err(read_error)?;
+            (String::new(), 0, page)
+        };
+        let location = page.owner_start_line.and_then(|line|
+            backend_library::SourceLocation::new(native_path, line.saturating_sub(head_lines).max(1)).ok());
+        let (owner_start, owner_end) = extent;
+        let result = backend_library::SourceRangePage {
+            source_policy: backend_library::SourcePolicyQualification::Unknown,
+            text: page.text,
+            start: page.start,
+            end: page.end,
+            total: page.total,
+            scope,
+            source_identity: page.source_identity,
+            owner_start,
+            owner_end,
+        };
+        if !result.admits(request) {
+            return Err(unavailable());
+        }
+        Ok((result, location, head))
     }
 
     fn remove(
@@ -6061,7 +6647,15 @@ impl CommandAdapter {
         {
             return Ok(None);
         }
-        match execute_semantic_graph(
+        if let Ok(workspace) = self.product_state.workspace_path().map(Path::to_path_buf) {
+            if let Some(snapshot) = execute_qualified_observed_graph(
+                daemon, &self.compiler, &mut self.generations, &mut self.image_rows,
+                &workspace, &self.semantic_authority, query, include_incoming,
+            )? {
+                return Ok(Some(snapshot));
+            }
+        }
+        execute_semantic_graph(
             &mut self.structural_calls,
             daemon,
             &self.compiler,
@@ -6069,15 +6663,7 @@ impl CommandAdapter {
             &mut self.image_rows,
             query,
             include_incoming,
-        )? {
-            Some(snapshot) => Ok(Some(snapshot)),
-            None => execute_structural_call_graph(
-                &mut self.structural_calls,
-                daemon,
-                query,
-                include_incoming,
-            ),
-        }
+        )
     }
 
     fn graph_page(
@@ -6110,20 +6696,23 @@ impl CommandAdapter {
                 .row_ref(backend_engine::RowId::Symbol(*symbol))
                 .is_some()
         });
-        let reply = if let Some(resolved) = resolved {
+        let mut reply = if let Some(resolved) = resolved {
             let query =
                 backend_engine::GraphNeighborhoodQuery::new(resolved, library.revision_root());
             // A stale page must be refused before executing against a newer graph.
             if !page.basis().matches(library.revision_root()) {
                 library.graph_page_for_address(resolved, symbol, page)
-            } else if let Some(snapshot) = self.graph_snapshot(daemon, query, false)? {
+            } else if let Some(snapshot) = self.graph_snapshot(daemon, query, page.include_incoming())? {
                 let ids = snapshot
                     .root
                     .rows()
                     .iter()
                     .map(|row| row.id)
                     .collect::<Vec<_>>();
-                library.graph_page_from_ids(resolved, symbol, page, &ids)
+                library.graph_page_from_ids(resolved, symbol, page, &ids).and_then(|mut page| {
+                    propagate_qualified_graph_page(&mut page, &snapshot)?;
+                    Ok(page)
+                })
             } else {
                 library.graph_page_for_address(resolved, symbol, page)
             }
@@ -6134,7 +6723,104 @@ impl CommandAdapter {
                 .execute(command.clone())
                 .unwrap_or_else(|error| CommandReply::Failed(error.into()))
         };
+        if let (Some(resolved), CommandReply::ProjectionPage(graph_page)) = (resolved, &mut reply) {
+            let captured = graph_page.snapshot.rich_graph.as_ref().is_some_and(|graph|
+                graph.nodes.iter().any(|node| !node.source_policy.is_unknown()));
+            if captured && !symbol.is_selected() && symbol.claimed_bytes() != resolved.to_bytes() {
+                let alias = certificate.as_ref().and_then(|proof| proof.claims.iter().find_map(|claim| match claim {
+                    WireClaim::Key { schema: backend_engine::WireSchema::Symbol, id, value }
+                        if *id == backend_engine::encode_id(&symbol.claimed_bytes())
+                            && backend_engine::symbol_key(value).to_bytes() == symbol.claimed_bytes() => Some(value.clone()),
+                    _ => None,
+                }));
+                let Some(alias) = alias else {
+                    return Self::certify(daemon, &command, CommandReply::Failed(backend_library::CommandFailure::CursorMismatch), certificate);
+                };
+                let view = daemon.engine().daemon().library().view();
+                let basis = backend_library::Basis { root: view.root(), ..view.basis() };
+                let Some(selection) = backend_library::DocumentSelection::from_selected_view(view, basis, &alias)
+                    .filter(|selection| selection.symbol() == resolved) else {
+                    return Self::certify(daemon, &command, CommandReply::Failed(backend_library::CommandFailure::CursorMismatch), certificate);
+                };
+                let Some(row) = view.row_ref(backend_engine::RowId::Symbol(resolved)) else {
+                    return Self::certify(daemon, &command, CommandReply::Failed(backend_library::CommandFailure::CursorMismatch), certificate);
+                };
+                let mut source_budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
+                let mut header_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(source_budget, super::super::semantic_authority::NATIVE_HEADER_WORK_UNITS);
+                let header_deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
+                let qualified = self.selected_native_document_source(daemon, row, &selection, None, false, &mut source_budget, &mut header_budget, header_deadline);
+                let qualification = match qualified {
+                    Ok(Some((qualification, _, _, _, _))) if !qualification.is_unknown() => qualification,
+                    Ok(_) => return Self::certify(daemon, &command, CommandReply::Failed(backend_library::CommandFailure::CursorMismatch), certificate),
+                    Err(failure) => return Self::certify(daemon, &command, CommandReply::Failed(failure), certificate),
+                };
+                let mut document = backend_library::Document::new(resolved, basis.root, Vec::new());
+                document.source = Some(basis);
+                document = document.with_selection(selection).map_err(|error| BuiltinModelError(error.to_owned()))?;
+                document.source_policy = qualification;
+                graph_page.graph_alias_witness = Some(document);
+            }
+        }
         Self::certify(daemon, &command, reply, certificate)
+    }
+
+    fn related_edge_page(
+        &mut self,
+        daemon: &ProductDaemon,
+        symbol: backend_engine::SymbolAddress,
+        request: backend_library::RelatedPageRequest,
+        certificate: Option<WireCertificate>,
+    ) -> Result<AdmittedReply, BuiltinModelError> {
+        let command = Command::RelatedEdgePage { symbol, request: request.clone() };
+        let library = daemon.engine().daemon().library();
+        let root = library.revision_root();
+        if request.scope.root != root.to_bytes()
+            || request.scope.source != symbol.claimed_bytes()
+            || request.scope.source_selected != symbol.is_selected()
+        {
+            return Self::certify(daemon, &command, CommandReply::Failed(
+                backend_library::CommandFailure::InvalidQuery("related page source or view differs from its request".to_owned())
+            ), certificate);
+        }
+        let selected = match Self::claimed_graph_symbol(daemon, symbol, root.into(), certificate.as_ref()) {
+            Ok(selected) => selected,
+            Err(failure) => return Self::certify(daemon, &command, CommandReply::Failed(failure), certificate),
+        };
+        let Some(center) = selected.resolve(library.view()).filter(|center| library.view().row_ref(backend_engine::RowId::Symbol(*center)).is_some()) else {
+            return Self::certify(daemon, &command, CommandReply::Failed(backend_library::CommandFailure::NotFound), certificate);
+        };
+        let query = backend_engine::GraphNeighborhoodQuery::addressed(symbol, root);
+        let workspace_snapshot = daemon.engine().daemon().owner().snapshot();
+        let secret = self.semantic_authority.product_statement_authority()?;
+        let observed = if let Ok(workspace) = self.product_state.workspace_path().map(Path::to_path_buf) {
+            super::semantic_query::execute_observed_related_page(
+                daemon, &workspace_snapshot, &self.compiler, &mut self.generations,
+                &mut self.image_rows, &workspace, &self.semantic_authority, query,
+                center, &request, secret,
+            )?
+        } else { None };
+        let semantic = if observed.is_none() {
+            super::semantic_query::execute_semantic_related_page(
+                daemon, &workspace_snapshot, &self.compiler, &mut self.generations,
+                &mut self.image_rows, query, center, &request, secret,
+            )?
+        } else { None };
+        let (snapshot, keys, semantic_revision, continuation, withheld) = if let Some(page) = observed.or(semantic) {
+            page
+        } else {
+            let (edges, revision, continuation, _withheld) = super::semantic_query::execute_structural_graph_edge_page(
+                &mut self.structural_calls, daemon, &workspace_snapshot, query, center, &request, secret,
+            )?;
+            let keys = edges.iter().map(|edge| backend_library::RelatedEdgeKey::new(*edge)).collect();
+            let snapshot = library.graph_from_semantic_relations(query.with_resolved_symbol(center), &edges)
+                .map_err(|error| BuiltinModelError(format!("project structural related page: {error}")))?;
+            // Structural calls are syntactic and do not certify semantic coverage.
+            (snapshot, keys, revision, continuation, true)
+        };
+        let terminal = continuation.map_or(backend_library::RelatedEdgeTerminal::Complete, backend_library::RelatedEdgeTerminal::More);
+        Self::certify(daemon, &command, CommandReply::RelatedEdgePage(backend_library::RelatedEdgePage {
+            snapshot, keys: keys.into_boxed_slice(), semantic_revision, terminal, withheld,
+        }), certificate)
     }
 
     /// Resolves a graph source named by the canonical coordinate a caller
@@ -6263,6 +6949,7 @@ impl CommandAdapter {
         surface: backend_engine::SurfaceCommand,
         request_id: u64,
     ) -> Result<AdmittedReply, BuiltinModelError> {
+        let header_deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
         if matches!(&surface, backend_engine::SurfaceCommand::IndexSearch { .. }) {
             let view = daemon.engine().daemon().library().view();
             if let Some(failure) = self
@@ -6328,18 +7015,25 @@ impl CommandAdapter {
                 // cold state. Its checked Arc is immutable for this read; no
                 // local manifest walk or package graph writer is required.
                 let selected = match self.registry.as_mut() {
-                    Some(registry) => registry.catalog_projection().map(Some),
+                    Some(registry) => registry.catalog_projection().map(|snapshot| {
+                        let unacquired = match &package {
+                            backend_engine::PackageReference::Purl(coordinate) => registry.advisory_for_unacquired(coordinate),
+                            backend_engine::PackageReference::Local(_) => None,
+                        };
+                        Some((snapshot, unacquired))
+                    }),
                     None if self.registry_configured => Err(
                         "configured registry authority is reserved or unavailable; retry advisory when the authority returns".to_owned(),
                     ),
                     None => Ok(None),
                 };
                 let result = selected.and_then(|snapshot| match snapshot {
-                    Some(snapshot) => super::super::product_state::read_advisory(
+                    Some((snapshot, unacquired)) => super::super::product_state::read_advisory_with_unacquired(
                         &package,
                         override_evidence,
                         &snapshot.records,
                         &snapshot.index,
+                        unacquired,
                     ),
                     None => super::super::product_state::read_advisory(
                         &package,
@@ -6392,19 +7086,59 @@ impl CommandAdapter {
                 self.owner_local_read(daemon, OwnerLocalRead::Tree)
             }
             backend_engine::SurfaceCommand::Read { locators } => {
-                // Input has passed the same strict owner-aware command codec
-                // as every surface command. The selected view is the complete
-                // capability needed for this local declaration read.
-                super::super::product_state::read_from_selected_view(
-                    daemon.engine().daemon().library().view(),
-                    &locators,
-                )
-                .map_or_else(
-                    |error| {
-                        CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error))
-                    },
-                    CommandReply::Surface,
-                )
+                let view = daemon.engine().daemon().library().view();
+                let mut reply = match super::super::product_state::read_from_selected_view(view, &locators) {
+                    Ok(reply) => reply,
+                    Err(error) => return Ok((CommandReply::Failed(
+                        backend_engine::CommandFailure::InvalidQuery(error),
+                    ), None)),
+                };
+                let backend_engine::SurfaceReply::Read(records) = &mut reply else {
+                    return Err(BuiltinModelError("selected read returned wrong reply".into()));
+                };
+                let source_basis = backend_library::Basis { root: view.root(), ..view.basis() };
+                let mut source_budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
+                let mut header_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(source_budget, super::super::semantic_authority::NATIVE_HEADER_WORK_UNITS);
+                for (locator, record) in locators.iter().zip(records.iter_mut()) {
+                    let row = match super::super::product_state::resolve_read_row(view, locator.as_str()) {
+                        Ok(Some(row)) => row,
+                        Ok(None) => continue,
+                        Err(error) => return Ok((CommandReply::Failed(error), None)),
+                    };
+                    let selection = backend_library::DocumentSelection::from_selected_view(
+                        view, source_basis, locator.as_str(),
+                    );
+                    if let Some(selection) = selection {
+                        match self.selected_native_document_source(
+                            daemon, row, &selection, None, true, &mut source_budget, &mut header_budget, header_deadline,
+                        ) {
+                            Ok(Some((qualification, _, excerpt, _, _))) => {
+                                record.source_policy = qualification;
+                                if let Some(excerpt) = excerpt
+                                    && let Some(text) = excerpt.text()
+                                {
+                                    record.signature = Some(backend_library::ProductText::new(text.to_owned())
+                                        .map_err(|error| BuiltinModelError(error.to_string()))?);
+                                    record.extent = Some(backend_library::DeclarationReadExtent::Truncated);
+                                }
+                                continue;
+                            }
+                            Ok(None) => {}
+                            Err(error) => return Ok((CommandReply::Failed(error), None)),
+                        }
+                    }
+                    if row.source.captured().is_none()
+                        && !matches!(row.excerpt, backend_library::SourceExcerpt::Captured { .. })
+                        && row.signature.is_none()
+                    { continue; }
+                    let reason = match self.indexed_source_matches(daemon, row) {
+                        Some(true) => continue,
+                        Some(false) => "indexed source changed on disk; reindex and retry the read",
+                        None => "indexed source freshness could not be verified; reindex and retry the read",
+                    };
+                    return Ok((CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(reason.to_owned())), None));
+                }
+                CommandReply::Surface(reply)
             }
             backend_engine::SurfaceCommand::ForgeAdd { coordinate } => {
                 self.forge.acquire(coordinate.as_str()).map_or_else(
@@ -6497,14 +7231,22 @@ impl CommandAdapter {
                     "no advisory authority is open in this owner".to_owned(),
                 )),
             },
-            backend_engine::SurfaceCommand::References { target } => execute_references(
-                &mut self.structural_calls,
-                daemon,
-                &self.compiler,
-                &mut self.generations,
-                &mut self.image_rows,
-                &target,
-            )
+            backend_engine::SurfaceCommand::References { target } => {
+                let workspace = self.product_state.workspace_path().ok().map(Path::to_path_buf);
+                let observed = match workspace.as_deref() {
+                    Some(workspace) => execute_qualified_observed_references(
+                        daemon, &self.compiler, &mut self.generations, &mut self.image_rows,
+                        workspace, &self.semantic_authority, &target,
+                    ),
+                    None => Ok(None),
+                };
+                observed.and_then(|result| match result {
+                    Some(reply) => Ok(reply),
+                    None => execute_references(
+                        &mut self.structural_calls, daemon, &self.compiler,
+                        &mut self.generations, &mut self.image_rows, &target,
+                    ),
+                })
             .map_or_else(
                 |error| {
                     CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(
@@ -6512,7 +7254,8 @@ impl CommandAdapter {
                     ))
                 },
                 CommandReply::Surface,
-            ),
+            )
+            },
             backend_engine::SurfaceCommand::Diff { from, to } => execute_semantic_diff(
                 daemon,
                 &self.compiler,
@@ -6537,6 +7280,90 @@ impl CommandAdapter {
                             super::semantic_source::SourceReadError::Admission(error) => backend_engine::CommandFailure::InvalidQuery(error.to_string()),
                         }),
                         |chunk| CommandReply::Surface(backend_engine::SurfaceReply::SemanticSource(chunk)),
+                    )
+            }
+            backend_engine::SurfaceCommand::StyloQuery { request } => {
+                let snapshot = daemon.engine().daemon().owner().snapshot();
+                self.semantic_authority.product_statement_authority()
+                    .and_then(|secret| super::stylo_query::query(&snapshot, secret, &request))
+                    .map_or_else(
+                        |error| CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error.to_string())),
+                        |page| CommandReply::Surface(backend_engine::SurfaceReply::StyloQuery(page)),
+                    )
+            }
+            backend_engine::SurfaceCommand::ImpactCapture { request } => {
+                let snapshot = daemon.engine().daemon().owner().snapshot();
+                let result = self.semantic_authority.product_statement_authority().map_err(|e| e.to_string()).and_then(|secret| {
+                    let store = self.impact_retention.as_mut().ok_or_else(|| "impact retention unavailable".to_owned())?;
+                    super::impact_comparison_owner::capture(store, &snapshot, secret, &request, std::time::Instant::now(), || false).map_err(|e| format!("{e:?}"))
+                });
+                result.map_or_else(|error| CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error)), |page| CommandReply::Surface(backend_engine::SurfaceReply::ImpactCapture(page)))
+            }
+            backend_engine::SurfaceCommand::ImpactCompare { request } => {
+                let result = self.semantic_authority.product_statement_authority().map_err(|e| e.to_string()).and_then(|secret| {
+                    let store = self.impact_retention.as_mut().ok_or_else(|| "impact retention unavailable".to_owned())?;
+                    super::impact_comparison_owner::compare(store, secret, &request, std::time::Instant::now(), || false).map_err(|e| format!("{e:?}"))
+                });
+                result.map_or_else(|error| CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error)), |page| CommandReply::Surface(backend_engine::SurfaceReply::ImpactCompare(page)))
+            }
+            backend_engine::SurfaceCommand::ImpactDiff { request } => {
+                let result = self.semantic_authority.product_statement_authority().map_err(|e| e.to_string()).and_then(|secret| {
+                    let store = self.impact_retention.as_mut().ok_or_else(|| "impact retention unavailable".to_owned())?;
+                    super::impact_comparison_owner::diff(store, secret, &request, std::time::Instant::now(), || false).map_err(|e| format!("{e:?}"))
+                });
+                result.map_or_else(|error| CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error)), |page| CommandReply::Surface(backend_engine::SurfaceReply::ImpactDiff(page)))
+            }
+            backend_engine::SurfaceCommand::ImpactReadSource { request } => {
+                let result = self.semantic_authority.product_statement_authority().map_err(|e| e.to_string()).and_then(|secret| {
+                    let store = self.impact_retention.as_mut().ok_or_else(|| "impact retention unavailable".to_owned())?;
+                    super::impact_comparison_owner::read_source(store, secret, &request, std::time::Instant::now()).map_err(|e| format!("{e:?}"))
+                });
+                result.map_or_else(|error| CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error)), |page| CommandReply::Surface(backend_engine::SurfaceReply::ImpactReadSource(page)))
+            }
+            backend_engine::SurfaceCommand::StyloImpact { request } => {
+                let snapshot = daemon.engine().daemon().owner().snapshot();
+                self.semantic_authority.product_statement_authority()
+                    .and_then(|secret| super::stylo_query::impact(&snapshot, secret, &request))
+                    .map_or_else(
+                        |error| CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error.to_string())),
+                        |page| CommandReply::Surface(backend_engine::SurfaceReply::StyloImpact(page)),
+                    )
+            }
+            backend_engine::SurfaceCommand::Impact { request } => {
+                let snapshot = daemon.engine().daemon().owner().snapshot();
+                self.semantic_authority.product_statement_authority()
+                    .map_err(|error| error.to_string())
+                    .and_then(|secret| super::impact_framework::execute(&snapshot, secret, &request, &|| false))
+                    .map_or_else(
+                        |error| CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error)),
+                        |report| CommandReply::Surface(backend_engine::SurfaceReply::Impact(report)),
+                    )
+            }
+            backend_engine::SurfaceCommand::StyloReadSite { reference } => {
+                let snapshot = daemon.engine().daemon().owner().snapshot();
+                self.semantic_authority.product_statement_authority()
+                    .and_then(|secret| super::stylo_query::read_site(&snapshot, secret, &reference))
+                    .map_or_else(
+                        |error| CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error.to_string())),
+                        |site| CommandReply::Surface(backend_engine::SurfaceReply::StyloReadSite(site)),
+                    )
+            }
+            backend_engine::SurfaceCommand::SqlQuery { request } => {
+                let snapshot = daemon.engine().daemon().owner().snapshot();
+                self.semantic_authority.product_statement_authority()
+                    .and_then(|secret| super::sql_query::query(&snapshot, secret, &request))
+                    .map_or_else(
+                        |error| CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error.to_string())),
+                        |page| CommandReply::Surface(backend_engine::SurfaceReply::SqlQuery(page)),
+                    )
+            }
+            backend_engine::SurfaceCommand::SqlReadSource { reference } => {
+                let snapshot = daemon.engine().daemon().owner().snapshot();
+                self.semantic_authority.product_statement_authority()
+                    .and_then(|secret| super::sql_query::read_source(&snapshot, secret, &reference))
+                    .map_or_else(
+                        |error| CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error.to_string())),
+                        |source| CommandReply::Surface(backend_engine::SurfaceReply::SqlReadSource(source)),
                     )
             }
             backend_engine::SurfaceCommand::SemanticVersions { package, limit, cursor } => {
@@ -6741,11 +7568,14 @@ impl CommandAdapter {
                     (backend_engine::SurfaceCommand::Package {
                         package: backend_engine::PackageReference::Purl(package),
                     }, Some(observation)) => Ok(backend_engine::SurfaceReply::PackageDiscovery {
-                        package: package.clone(), observation,
+                        package: package.clone(), observation, advisory: None,
                     }),
                     _ => Err(error),
                 });
                 let reply = reply.and_then(|mut reply| {
+                    if let backend_engine::SurfaceReply::PackageDiscovery { package, advisory, .. } = &mut reply {
+                        *advisory = self.registry.as_ref().and_then(|gateway| gateway.advisory_for_unacquired(package));
+                    }
                     if let (
                         backend_engine::SurfaceCommand::PackageProfile {
                             package,
@@ -6989,26 +7819,43 @@ impl CommandAdapter {
     }
 
     fn standard(
-        &self,
+        &mut self,
         daemon: &ProductDaemon,
         command: &Command,
         certificate: Option<WireCertificate>,
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let reply = match command {
-            Command::Document(query) | Command::Source(query) => match self
+            Command::Document(_) | Command::Source(_) | Command::Show { .. } => match self
                 .canonical_claim_document(
                     daemon,
-                    query,
+                    &command.as_document_query(daemon.engine().daemon().library().revision_root())
+                        .expect("document command"),
                     certificate.as_ref(),
-                    matches!(command, Command::Source(_)),
+                    matches!(command, Command::Document(_) | Command::Source(_)),
                 ) {
                 Ok(Some(document)) => CommandReply::Document(document),
-                Ok(None) => daemon
+                Ok(None) if command.as_document_query(daemon.engine().daemon().library().revision_root())
+                    .is_some_and(|query| query.source_range().is_some()) => {
+                    CommandReply::Failed(backend_library::CommandFailure::CursorMismatch)
+                }
+                Ok(None) => match daemon
                     .engine()
                     .daemon()
                     .library()
                     .execute(command.clone())
-                    .unwrap_or_else(|error| CommandReply::Failed(error.into())),
+                    .unwrap_or_else(|error| CommandReply::Failed(error.into()))
+                {
+                    // A fallback document has not passed the selected-source
+                    // freshness check above. Do not present its captured body
+                    // as current simply because a library lookup succeeded.
+                    CommandReply::Document(_) | CommandReply::Page(_) => {
+                        CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
+                            "selected source freshness could not be verified; reindex and retry"
+                                .to_owned(),
+                        ))
+                    }
+                    other => other,
+                },
                 Err(failure) => CommandReply::Failed(failure),
             },
             _ => daemon
@@ -7039,6 +7886,168 @@ impl CommandAdapter {
     }
 }
 
+#[cfg(test)]
+pub(in crate::builtin) fn test_native_document_freshness(
+    daemon: &mut ProductDaemon,
+    workspace: &Path,
+    package: backend_engine::PackageKey,
+    label: &str,
+    symbol: backend_engine::SymbolKey,
+    source_path: &Path,
+    compiler: LocalCompilerClient,
+    mut authority: super::super::semantic_authority::SemanticAuthority,
+) {
+    use crate::process::{ForgeAuthentication, ForgeConfig};
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let capability = super::super::builtin_view_capability_for_workspace(&snapshot)
+        .expect("selected capability");
+    let (base, _) = super::super::initial_view_for_workspace(&snapshot).expect("source-bound view");
+    let old_root = base.root();
+    let mut row = backend_engine::Row::in_package(
+        backend_engine::RowId::Symbol(symbol),
+        base.basis(),
+        package,
+        format!("{label}::native"),
+    );
+    row.signature = Some("fn native()".to_owned());
+    assert!(
+        row.source.captured().is_none(),
+        "fixture has no syntax-derived location"
+    );
+    let (view, _) = base
+        .clone()
+        .commit(
+            base.prepare(
+                backend_engine::ViewDelta::Upsert { row },
+                capability.clone(),
+            )
+            .expect("native row delta"),
+        )
+        .expect("native row view");
+    let missing_symbol = backend_engine::symbol_key("unproven-native-row");
+    let mut unknown = backend_engine::Row::in_package(
+        backend_engine::RowId::Symbol(missing_symbol),
+        view.basis(),
+        package,
+        format!("{label}::unknown"),
+    );
+    unknown.signature = Some("fn unknown()".to_owned());
+    let (view, _) = view
+        .clone()
+        .commit(
+            view.prepare(
+                backend_engine::ViewDelta::Upsert { row: unknown },
+                capability,
+            )
+            .expect("unknown row delta"),
+        )
+        .expect("unknown row view");
+    let root = view.root();
+    let admission = super::super::BuiltinViewAdmission {
+        workspace_root: snapshot.root(),
+        source_root: view.basis().root,
+    };
+    let cursor = backend_engine::Cursor::for_view_root(&view);
+    daemon
+        .engine_mut()
+        .daemon_mut()
+        .publish_view(view, cursor, &admission, None)
+        .expect("publish selected fixture view");
+    let projection = super::super::sql_projection::open_current(
+        &workspace.join(backend_extension_turso::FILE_NAME),
+        daemon,
+    )
+    .expect("source projection");
+    let product_state = super::super::ProductState::open(workspace.join("product-state.json"))
+        .expect("product state");
+    let forge = ForgeGateway::open(
+        workspace.join("forge"),
+        ForgeConfig {
+            policy: backend_engine::ForgeAcquisitionPolicy::Offline,
+            limits: backend_engine::ForgeAcquisitionLimits::default(),
+            authentication: ForgeAuthentication::default(),
+        },
+    )
+    .expect("offline forge");
+    let mut generations = super::super::SemanticGenerationResidence::default();
+    authority.install_image_loader(&mut generations);
+    let mut adapter = CommandAdapter::new(
+        projection,
+        None,
+        forge,
+        None,
+        product_state,
+        crate::process::default_package_graph_limits(),
+        compiler,
+        super::super::query::SearchSnapshotOwner::default(),
+        super::super::query::RemoteSemantic::Unconfigured,
+        None,
+        Some(root),
+        super::super::view_build::ImageRowResidence::default(),
+        generations,
+        authority,
+        None,
+        None,
+    )
+    .expect("command adapter");
+    let query = backend_library::DocumentQuery::selected(symbol, root);
+    let document = adapter
+        .canonical_claim_document(daemon, &query, None, false)
+        .expect("current native document")
+        .expect("selected native row");
+    assert_eq!(document.signature.as_deref(), Some("fn native()"));
+    let (current_reply, _) = adapter
+        .standard(daemon, &Command::Document(query.clone()), None)
+        .expect("current document route");
+    assert!(
+        matches!(current_reply, CommandReply::Document(_)),
+        "current native signature must remain readable"
+    );
+    let unknown_query = backend_library::DocumentQuery::selected(missing_symbol, root);
+    assert!(
+        adapter
+            .canonical_claim_document(daemon, &unknown_query, None, false)
+            .is_err(),
+        "unknown source must refuse"
+    );
+    let (unknown_reply, _) = adapter
+        .standard(daemon, &Command::Document(unknown_query), None)
+        .expect("unknown document route");
+    assert!(
+        matches!(unknown_reply, CommandReply::Failed(_)),
+        "unknown source must be a failed command"
+    );
+    let old_query = backend_library::DocumentQuery::selected(symbol, old_root);
+    assert!(
+        adapter
+            .canonical_claim_document(daemon, &old_query, None, false)
+            .expect("old root response")
+            .is_none(),
+        "old root must not select current source"
+    );
+    let (old_reply, _) = adapter
+        .standard(daemon, &Command::Document(old_query), None)
+        .expect("old-root document route");
+    assert!(
+        matches!(old_reply, CommandReply::Failed(_)),
+        "old-root source must be a failed command"
+    );
+    let original = std::fs::read(source_path).expect("selected host bytes");
+    let mut changed = original.clone();
+    changed[0] = if changed[0] == b'X' { b'Y' } else { b'X' };
+    std::fs::write(source_path, &changed).expect("same-length edit");
+    let stale = adapter.canonical_claim_document(daemon, &query, None, false);
+    let stale_reply = adapter.standard(daemon, &Command::Document(query), None);
+    std::fs::write(source_path, &original).expect("restore source bytes");
+    assert!(stale.is_err(), "same-length stale host must refuse");
+    let (stale_reply, _) = stale_reply.expect("stale document route");
+    assert!(
+        matches!(stale_reply, CommandReply::Failed(_)),
+        "stale source must be a failed command"
+    );
+    adapter.close();
+}
+
 fn semantic_readiness(
     reply: CommandReply,
     daemon: &ProductDaemon,
@@ -7061,7 +8070,13 @@ fn semantic_readiness(
     // names. `readiness_certificate` compares revision, basis, coverage, and
     // row count; the counts are derived from the same owner snapshot, so they
     // cannot disagree with the root the certificate commits to.
-    let progress = super::super::ingest_progress(&daemon.engine().daemon().owner().snapshot())?;
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let mut progress = super::super::ingest_progress(&snapshot)?;
+    if let Some(summary) = super::super::sql_catalog::progress(&snapshot)
+        .map_err(BuiltinModelError)? {
+        progress = progress.with_sql_analysis(summary)
+            .map_err(|error| BuiltinModelError(format!("SQL status summary: {error}")))?;
+    }
     dump_view_rows(daemon.engine().daemon().library().view());
     Ok(CommandReply::Readiness(
         backend_engine::HealthReport::from_admitted_parts(
@@ -7224,6 +8239,12 @@ pub(in crate::builtin) fn commit_prepared_builtin_intent(
     request_id: u64,
     prepared: PreparedBuiltinIntent,
 ) -> Result<(), BuiltinModelError> {
+    if prepared.intent.has_native_ts_evidence() {
+        return Err(BuiltinModelError("native TypeScript evidence requires the publication worker".into()));
+    }
+    if prepared.intent.requires_v14_worker() {
+        return Err(BuiltinModelError("v14 native sections require the publication worker".into()));
+    }
     let owner = daemon.engine().daemon().owner();
     let snapshot = owner.snapshot();
     if *snapshot.root().as_bytes() != prepared.base_workspace_root
@@ -7301,12 +8322,19 @@ pub(in crate::builtin) fn prepare_owned_builtin_intent(
     daemon: &ProductDaemon,
     intent: BuiltinIntent,
 ) -> Result<PreparedBuiltinIntent, BuiltinModelError> {
+    if intent.has_native_ts_evidence() {
+        return Err(BuiltinModelError("native TypeScript evidence requires the publication worker".into()));
+    }
+    if intent.requires_v14_worker() {
+        return Err(BuiltinModelError("v14 native sections require the publication worker".into()));
+    }
     let snapshot = daemon.engine().daemon().owner().snapshot();
     prepare_owned_builtin_intent_at_snapshot(
         &snapshot,
         intent,
         None,
         Arc::new(AtomicBool::new(false)),
+        None,
     )
 }
 
@@ -7316,6 +8344,12 @@ fn prepare_builtin_intent_at(
     source_root: Option<&Path>,
     cancellation: Arc<AtomicBool>,
 ) -> Result<PreparedBuiltinIntent, BuiltinModelError> {
+    if intent.has_native_ts_evidence() {
+        return Err(BuiltinModelError("native TypeScript evidence requires the publication worker".into()));
+    }
+    if intent.requires_v14_worker() {
+        return Err(BuiltinModelError("v14 native sections require the publication worker".into()));
+    }
     let snapshot = daemon.engine().daemon().owner().snapshot();
     prepare_builtin_intent_at_snapshot(&snapshot, intent, source_root, cancellation)
 }
@@ -7328,7 +8362,17 @@ fn prepare_builtin_intent_at_snapshot(
     source_root: Option<&Path>,
     cancellation: Arc<AtomicBool>,
 ) -> Result<PreparedBuiltinIntent, BuiltinModelError> {
-    prepare_owned_builtin_intent_at_snapshot(snapshot, intent.clone(), source_root, cancellation)
+    prepare_owned_builtin_intent_at_snapshot(snapshot, intent.clone(), source_root, cancellation, None)
+}
+
+fn prepare_builtin_intent_with_owner_at_snapshot(
+    snapshot: &backend_engine::WorkspaceSnapshot,
+    intent: &BuiltinIntent,
+    source_root: Option<&Path>,
+    cancellation: Arc<AtomicBool>,
+    owner: Option<&super::super::owner_receipt_context::OwnerReceiptContext>,
+) -> Result<PreparedBuiltinIntent, BuiltinModelError> {
+    prepare_owned_builtin_intent_at_snapshot(snapshot, intent.clone(), source_root, cancellation, owner)
 }
 
 /// Consumes the private frontier; callers needing descriptors for later view
@@ -7338,6 +8382,7 @@ fn prepare_owned_builtin_intent_at_snapshot(
     intent: BuiltinIntent,
     source_root: Option<&Path>,
     cancellation: Arc<AtomicBool>,
+    owner: Option<&super::super::owner_receipt_context::OwnerReceiptContext>,
 ) -> Result<PreparedBuiltinIntent, BuiltinModelError> {
     let intent = if intent.has_capture_changes() && intent.capture_basis().is_none() {
         intent.with_capture_basis(capture_basis_for_snapshot(snapshot)?)?
@@ -7346,7 +8391,7 @@ fn prepare_owned_builtin_intent_at_snapshot(
     };
     let request_identity = BuiltinModel.request_id(&intent);
     let intent =
-        super::super::staged_transport::stage(intent, snapshot, source_root, cancellation)?;
+        super::super::staged_transport::stage_with_owner(intent, snapshot, source_root, cancellation, owner)?;
     Ok(PreparedBuiltinIntent {
         intent,
         request_identity,
@@ -7354,6 +8399,143 @@ fn prepare_owned_builtin_intent_at_snapshot(
         base_workspace_sequence: snapshot.sequence(),
         base_closure_id: *snapshot.closure().binding().closure().as_bytes(),
     })
+}
+
+/// Issues only after the caller has bound the selected view and canonical local
+/// project root to this exact snapshot. The evidence capability is minted by the
+/// selected Program/image/entity join; the raw row is not authority.
+fn issue_observed_native_source_policy(
+    snapshot: &backend_engine::WorkspaceSnapshot,
+    selection: &backend_library::DocumentSelection,
+    evidence: &view_build::AdmittedNativeEvidence<'_>,
+    source_root: &Path,
+    authority: &[u8; 32],
+    source_budget: &mut usize,
+) -> Result<backend_library::SourcePolicyQualification, backend_library::CommandFailure> {
+    use backend_library::CommandFailure;
+    let unavailable = || CommandFailure::InvalidQuery(
+        "native source evidence is unavailable; reindex and retry".to_owned(),
+    );
+    if evidence.snapshot() != snapshot
+        || evidence.selected_row() != backend_engine::RowId::Symbol(selection.symbol())
+    {
+        return Err(unavailable());
+    }
+    match evidence.source_basis() {
+        super::super::native_ts_admission::NativeTsSourceBasis::CapturedObserved {
+            policy_stability: super::super::native_ts_admission::NativePolicyStability::Unknown,
+        } => {}
+    }
+    if *source_budget > backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES {
+        return Err(unavailable());
+    }
+    *source_budget = source_budget.checked_sub((evidence.claim().byte_length as usize).saturating_add(1))
+        .ok_or_else(unavailable)?;
+    match super::super::ingest::indexed_native_evidence_matches(
+        source_root,
+        evidence.claim(),
+        evidence.image_source(),
+    ) {
+        Ok(true) => {}
+        Ok(false) => return Err(CommandFailure::InvalidQuery(
+            "indexed source changed on disk; reindex and retry".to_owned(),
+        )),
+        Err(()) => return Err(unavailable()),
+    }
+    let claim = evidence.claim();
+    let identity = evidence.declaration_identity();
+    let image = evidence.image_authority();
+    let evidence_root = backend_engine::builtin::native_source_evidence_relation_budgeted(snapshot, source_budget)
+        .map_err(|_| unavailable())?
+        .ok_or_else(unavailable)?;
+    let observation = backend_library::SourcePolicyObservation {
+        workspace_root: *snapshot.root().as_bytes(),
+        evidence_root: *evidence_root.root().as_bytes(),
+        project: claim.project,
+        profile: backend_library::SemanticLanguageProfile::new(claim.profile),
+        publication_profile: backend_library::SemanticLanguageProfile::new(evidence.publication_key().profile()),
+        publication_coordinate: evidence.publication_key().coordinate().as_str().to_owned(),
+        source_path: claim.path.clone(),
+        source_fact: claim.source_digest,
+        input_digest: claim.input_digest,
+        byte_len: u64::from(claim.byte_length),
+        publication_binding: *evidence.publication_claim().binding().identity.as_ref(),
+        image_identity: *image.identity.as_ref(),
+        image_byte_len: image.byte_len,
+        program_membership: evidence.program_identity(),
+        entity_index: evidence.entity_id().raw,
+        declaration_family: *identity.family.as_bytes(),
+        declaration_variant: *identity.variant.as_bytes(),
+    };
+    let qualification = backend_library::SourcePolicyQualification::issue_observed(
+        authority, selection, observation,
+    ).map_err(|_| unavailable())?;
+    qualification.verify_owner(authority, selection).map_err(|_| unavailable())?;
+    Ok(qualification)
+}
+
+/// Caller-provided origin to compare with the independently selected native
+/// entity. These fields are untrusted and cannot themselves issue a claim.
+pub(in crate::builtin) struct ExpectedNativeSourceOrigin<'a> {
+    pub(in crate::builtin) publication_key: &'a ProductSemanticPublicationKey,
+    pub(in crate::builtin) publication_claim: backend_engine::builtin::SemanticPublicationClaim,
+    pub(in crate::builtin) program_identity: [u8; 32],
+    pub(in crate::builtin) image_identity: [u8; 32],
+    pub(in crate::builtin) image_byte_len: u32,
+    pub(in crate::builtin) entity_index: u32,
+    pub(in crate::builtin) declaration_identity: backend_semantic::ir::DeclarationIdentity,
+}
+
+/// Issue per-result policy only from an exact selected view row and native
+/// compiler capability. The caller owns one shared per-query source-byte budget;
+/// a row or a digest alone cannot construct this result. `None` means unknown:
+/// callers must not fall back to a structural or unqualified native result.
+pub(in crate::builtin) fn selected_native_policy_for_row(
+    snapshot: &backend_engine::WorkspaceSnapshot,
+    view: &backend_engine::ViewRoot,
+    row_id: backend_engine::RowId,
+    expected: &ExpectedNativeSourceOrigin<'_>,
+    workspace: &Path,
+    compiler: &backend_engine::application::LocalCompilerClient,
+    generations: &mut super::super::generation_residence::SemanticGenerationResidence,
+    authority: &super::super::semantic_authority::SemanticAuthority,
+    source_budget: &mut usize,
+) -> Result<Option<(backend_library::DocumentSelection, backend_library::SourcePolicyQualification)>, backend_library::CommandFailure> {
+    use backend_library::CommandFailure;
+    let unavailable = || CommandFailure::InvalidQuery("native source evidence is unavailable; reindex and retry".into());
+    let binding = super::super::BuiltinViewAdmission { workspace_root: snapshot.root(), source_root: view.basis().root };
+    backend_engine::ViewBindingAdmission::admit(&binding, snapshot, view)
+        .map_err(|_| CommandFailure::CursorMismatch)?;
+    let Some(row) = view.row_ref(row_id) else { return Ok(None) };
+    let Some(package) = row.package else { return Ok(None) };
+    let sources = super::super::read_package_sources(snapshot, package).map_err(|_| unavailable())?;
+    if !sources.files.is_empty() { return Ok(None); }
+    let Some(project) = sources.projects.get(&package.to_bytes()) else { return Ok(None) };
+    if project.package != package || project.label.starts_with("pkg:")
+        || backend_engine::PackageKey::from_value(&project.label) != package
+    { return Ok(None); }
+    let root = admitted_project_source_root(package, &project.label, workspace).ok_or_else(unavailable)?;
+    let Some(evidence) = view_build::admitted_native_evidence(
+        &sources, snapshot, compiler, package, row_id, generations,
+    ).map_err(|_| unavailable())? else { return Ok(None) };
+    let image = evidence.image_authority();
+    if evidence.publication_key() != expected.publication_key
+        || evidence.publication_claim() != expected.publication_claim
+        || evidence.program_identity() != expected.program_identity
+        || image.identity.as_ref() != expected.image_identity.as_slice()
+        || image.byte_len != expected.image_byte_len
+        || evidence.entity_id().raw != expected.entity_index
+        || evidence.declaration_identity() != expected.declaration_identity
+    {
+        return Err(unavailable());
+    }
+    let basis = backend_library::Basis { root: view.root(), ..view.basis() };
+    let selection = backend_library::DocumentSelection::from_row(row, basis).ok_or_else(unavailable)?;
+    let secret = authority.product_statement_authority().map_err(|_| unavailable())?;
+    let qualification = issue_observed_native_source_policy(
+        snapshot, &selection, &evidence, &root, secret, source_budget,
+    )?;
+    Ok(Some((selection, qualification)))
 }
 
 /// Resolves the source root named by the package's admitted project record.
@@ -7414,11 +8596,13 @@ fn package_metadata_completion_reply(
         ) => CommandReply::Surface(backend_library::SurfaceReply::PackageDiscovery {
             package,
             observation,
+            advisory: None,
         }),
         (Ok(CommandReply::Failed(_)) | Err(_), Some(observation)) => {
             CommandReply::Surface(backend_library::SurfaceReply::PackageDiscovery {
                 package,
                 observation,
+                advisory: None,
             })
         }
         (Ok(reply), _) => reply,
@@ -7443,7 +8627,7 @@ mod tests {
         ResidentDependencies, StoredOperation, StoredOperationState, admitted_project_source_root,
         capture_terminalization_failed, classify_add_target, index_operation_failure,
         index_operation_published_observation, index_publication_worker,
-        legacy_add_compiler_failure, pending_capture_unresolved,
+        legacy_add_compiler_failure, legacy_add_outcome_detail, pending_capture_unresolved,
     };
     use crate::builtin::commands::package_profile;
     use crate::builtin::{
@@ -7508,13 +8692,29 @@ mod tests {
         let empty = Library::new();
         let basis = empty.view().basis();
         let symbol = symbol_key("Thing");
-        let row = Row::new(RowId::Symbol(symbol), basis, "Thing")
-            .with_document(vec![Fragment::Text(text.to_owned())]);
+        // Exercise the reply ceiling with individually admissible canonical
+        // rows. A single multi-megabyte document is rejected by the relation
+        // row capacity before the reply encoder can see it.
+        assert!(text.is_ascii(), "fixture chunks use ASCII byte boundaries");
+        let count = usize::from(QueryLimit::MAX);
+        let package = backend_library::package_key("bounded-encode-catalog");
+        let rows = (0..count).map(|index| {
+            let label = if index == 0 { "Thing".to_owned() }
+                else { format!("entry_{index:03}::Thing") };
+            let mut row = Row::in_package(
+                RowId::Symbol(symbol_key(&label)), basis, package, label,
+            ).with_document(vec![Fragment::Text(
+                text[index * text.len() / count..(index + 1) * text.len() / count].to_owned(),
+            )]);
+            if index != 0 { row.parent = Some(symbol); }
+            row
+        }).collect();
+        let limit = QueryLimit::new(QueryLimit::MAX).expect("bounded catalog page");
         let root = ViewRoot::new_incomplete(
             view_key(b"bounded-encode-catalog"),
             basis,
             Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
-            vec![row],
+            rows,
             empty.view().coverage().to_vec(),
         )
         .expect("incomplete source fixture");
@@ -7524,16 +8724,16 @@ mod tests {
             0 => backend_library::Command::Name(NameQuery::new(
                 "Thing",
                 library.revision_root(),
-                QueryLimit::default(),
+                limit,
             )),
             1 => backend_library::Command::Search(Query::new(
                 "Thing",
                 library.revision_root(),
-                QueryLimit::default(),
+                limit,
             )),
             _ => backend_library::Command::GraphPage {
                 symbol: SymbolAddress::canonical(symbol),
-                page: PageRequest::new(library.revision_root(), QueryLimit::default()),
+                page: PageRequest::new(library.revision_root(), limit),
             },
         };
         let reply = backend_library::ReplyDto::new(
@@ -7735,6 +8935,20 @@ mod tests {
             backend_library::IndexOperationUnresolvedReason::SemanticWorkInterruptedAfterCapture
         );
         assert!(restart_detail.as_str().contains("owner restarted"));
+    }
+
+    #[test]
+    fn legacy_add_explains_offline_refusal_and_unknown_failure() {
+        use backend_library::{IndexJobOutcome, ProductText};
+        let refused = IndexJobOutcome::Refused(ProductText::new("registry acquisition is offline").unwrap());
+        assert_eq!(legacy_add_outcome_detail(&refused),
+            "index job was refused: registry acquisition is offline; any previous publication was retained");
+        let failed = IndexJobOutcome::Failed(ProductText::new("terminal recording failed").unwrap());
+        let text = legacy_add_outcome_detail(&failed);
+        assert!(text.contains("terminal recording failed"));
+        assert!(text.contains("publication outcome could not be established"));
+        assert!(!text.contains("previous publication was retained"));
+        assert!(!text.contains("ProductText"));
     }
 
     #[test]
@@ -7944,6 +9158,8 @@ mod tests {
 
     #[path = "selected_read.rs"]
     mod selected_read_tests;
+    #[path = "structural_source.rs"]
+    mod structural_source_tests;
 
     #[path = "index_profile_worker.rs"]
     mod index_profile_worker_tests;
@@ -7960,6 +9176,11 @@ mod tests {
 
     #[path = "index_source_empty.rs"]
     mod index_source_empty_tests;
+    #[path = "stylo_query.rs"]
+    mod stylo_query_tests;
+    #[cfg(unix)]
+    #[path = "stylo_process.rs"]
+    mod stylo_process_tests;
 
     #[test]
     fn owned_intent_preparation_moves_facts_and_preserves_bound_canonical_identity() {
@@ -8164,9 +9385,17 @@ mod tests {
                     .expect("test dispatcher");
             let registry = super::super::super::product_relation_registry()
                 .expect("product relation registry");
+            // The product owner binds a receipt context to its leased store; the
+            // fixture does the same so SQL receipts can be issued and replayed.
+            let receipt_context = Arc::new(
+                crate::builtin::owner_receipt_context::OwnerReceiptContext::new(
+                    [0x67; 32],
+                    workspace.clone(),
+                ),
+            );
             let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
                 &workspace,
-                BuiltinModel,
+                BuiltinModel::with_receipt_context(Some(Arc::clone(&receipt_context))),
                 genesis().expect("product genesis"),
                 dispatcher,
                 backend_engine::DaemonConfig::default(),
@@ -8318,6 +9547,8 @@ mod tests {
                 None,
             )
             .expect("build command adapter");
+            let mut adapter = adapter;
+            adapter.set_receipt_context(Some(receipt_context));
 
             Self {
                 root,
@@ -10587,6 +11818,8 @@ mod tests {
         let mut indexing = adapter.indexing.take().expect("job");
         indexing.operation_key = Some(own_key);
         let candidate = PreparedProductSelection {
+            native_noop_expectation: None,
+            native_noop_proof: None,
             intent: None,
             selected: Vec::new(),
             revision_fence: None,
@@ -10795,6 +12028,8 @@ mod tests {
             daemon,
             &mut indexing,
             PreparedProductSelection {
+                native_noop_expectation: None,
+                native_noop_proof: None,
                 intent: None,
                 selected: Vec::new(),
                 revision_fence: None,
@@ -11120,6 +12355,8 @@ mod tests {
                     daemon,
                     &mut indexing,
                     PreparedProductSelection {
+                        native_noop_expectation: None,
+                        native_noop_proof: None,
                         intent: None,
                         selected: Vec::new(),
                         revision_fence: None,
