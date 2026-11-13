@@ -114,8 +114,8 @@ fn native_react_children_index_names_references_and_source() -> Result<(), Box<d
             .map_err(|error| io::Error::other(error.to_string()))?;
         let key = IndexOperationKey::from_bytes([0x49; 32])
             .map_err(|e| io::Error::other(e.to_string()))?;
-        let mut status =
-            session.start_index_operation(key, package, CompileExecutionIntent::Interactive)?;
+        let mut status = session.start_index_operation(key, package, CompileExecutionIntent::Interactive)
+            .map_err(|error| io::Error::other(format!("start index: {error:?}")))?;
         let deadline = Instant::now() + Duration::from_secs(600);
         loop {
             let IndexOperationObservation::Known(known) = status else {
@@ -130,14 +130,19 @@ fn native_react_children_index_names_references_and_source() -> Result<(), Box<d
                 return Err("index deadline".into());
             }
             thread::sleep(Duration::from_millis(30));
-            status = session.index_operation_status(key)?;
+            if session.connection_frames_remaining() == Some(0) {
+                session.reconnect().map_err(|error| io::Error::other(format!("poll reconnect: {error:?}")))?;
+            }
+            status = session.index_operation_status(key)
+                .map_err(|error| io::Error::other(format!("index status: {error:?}")))?;
         }
-        session.reconnect()?;
+        session.reconnect().map_err(|error| io::Error::other(format!("published reconnect: {error:?}")))?;
         for (name, expected_source) in [
             ("AuthCard", "children: ReactNode"),
             ("AppShell", "children: (user: User) => ReactNode"),
         ] {
-            let CommandReply::Names(names) = session.names(name, 100)?.reply else {
+            let CommandReply::Names(names) = session.names(name, 100)
+                .map_err(|error| io::Error::other(format!("names {name}: {error:?}")))?.reply else {
                 return Err("names reply".into());
             };
             let suffix = format!("::{name}");
@@ -152,7 +157,8 @@ fn native_react_children_index_names_references_and_source() -> Result<(), Box<d
             let [coordinate] = labels.as_slice() else {
                 return Err(io::Error::other(format!("{name} labels: {labels:?}")).into());
             };
-            let CommandReply::Document(document) = session.source(coordinate)?.reply else {
+            let CommandReply::Document(document) = session.source(coordinate)
+                .map_err(|error| io::Error::other(format!("source {name}: {error:?}")))?.reply else {
                 return Err("source reply".into());
             };
             assert!(
@@ -164,7 +170,8 @@ fn native_react_children_index_names_references_and_source() -> Result<(), Box<d
             );
             let target = ProductText::new(coordinate.clone())
                 .map_err(|e| io::Error::other(e.to_string()))?;
-            let reply = session.surface(SurfaceCommand::References { target })?;
+            let reply = session.surface(SurfaceCommand::References { target })
+                .map_err(|error| io::Error::other(format!("references {name}: {error:?}")))?;
             let SurfaceReply::References { references, .. } = reply else {
                 return Err("references reply".into());
             };
