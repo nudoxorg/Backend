@@ -26,6 +26,137 @@ use std::sync::Arc;
 
 const SOURCE: &[u8] = b"fn caller() { callee(); } fn callee() {}";
 
+#[test]
+fn unavailable_source_cannot_fabricate_current_image_proof() -> Result<(), String> {
+    let key = publication_key(
+        LanguageProfile::Rust(RustEdition::Rust2024),
+        "pkg:cargo/fixture@1.0.0",
+    )?;
+    let path = "src/call.rs";
+    let unavailable = || {
+        ProductSourceRecord::file_unavailable(
+            key.package_key().to_bytes(),
+            path,
+            backend_engine::SourceLanguage::Rust,
+            [2; 32],
+            backend_library::SourceUnavailableReason::Unparsed,
+        )
+    };
+    let package = key.package_key();
+    let file_key = backend_engine::product_source_file_key(package.to_bytes(), path);
+    let mut current = IndexedSources {
+        projects: BTreeMap::from([(
+            package.to_bytes(),
+            IndexedProject {
+                package,
+                label: "fixture".to_owned(),
+                files: Arc::from(vec![file_key]),
+            },
+        )]),
+        files: vec![(file_key, unavailable()?)],
+        cargo_aliases: BTreeMap::new(),
+        source_snapshot: None,
+    };
+    let frontier =
+        view_build::SourceAvailability::of(&current).map_err(|error| error.to_string())?;
+    assert!(
+        frontier
+            .required_profiles(key.package_key())
+            .any(|profile| profile == key.profile())
+    );
+    let bytes = local_call_image(&key, path, NativeTool::Rustc)?;
+    let strict = frontier
+        .select_current(
+            &key,
+            SemanticPublicationCoverage::Complete,
+            activated(&[&bytes])?,
+            &mut view_build::ImageRowResidence::default(),
+        )
+        .map_err(|error| error.to_string())?;
+    assert_eq!(
+        strict.images().len(),
+        0,
+        "an unavailable source is unknown, not current"
+    );
+    let retained = frontier
+        .select(
+            &key,
+            SemanticPublicationCoverage::Complete,
+            activated(&[&bytes])?,
+            &mut view_build::ImageRowResidence::default(),
+        )
+        .map_err(|error| error.to_string())?;
+    assert_eq!(
+        retained.images().len(),
+        1,
+        "the stale view may retain its complete image"
+    );
+
+    let identity = ContentId::<SourceFactDomain>::from_canonical_bytes(SOURCE);
+    let identity_conflict = unavailable()?.with_source_identity(identity)?;
+    let digest_conflict = ProductSourceRecord::file_with_retention(
+        key.package_key().to_bytes(),
+        path,
+        backend_engine::SourceLanguage::Rust,
+        [1; 32],
+        [2; 32],
+        Vec::<backend_compile::SourceDeclaration>::new(),
+        backend_engine::DeclarationRetention::Unavailable(
+            backend_library::SourceUnavailableReason::Unparsed,
+        ),
+    )?;
+    let declaration = backend_compile::SourceDeclaration::at_path(
+        path,
+        "caller",
+        backend_compile::DeclarationKind::Function,
+        1,
+        "fn caller()",
+        "",
+    )?;
+    let declaration_conflict = ProductSourceRecord::file_with_retention(
+        key.package_key().to_bytes(),
+        path,
+        backend_engine::SourceLanguage::Rust,
+        [0; 32],
+        [2; 32],
+        vec![declaration],
+        backend_engine::DeclarationRetention::Unavailable(
+            backend_library::SourceUnavailableReason::Unparsed,
+        ),
+    )?;
+    for record in [identity_conflict, digest_conflict, declaration_conflict] {
+        current.files[0].1 = record;
+        let error = view_build::SourceAvailability::of(&current)
+            .err()
+            .ok_or("contradictory unavailable source was admitted")?;
+        assert!(
+            error
+                .to_string()
+                .contains("unavailable source row contradicts")
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn reference_coverage_keeps_partial_rows_and_unknown_empty_separate() {
+    let gaps = BTreeSet::from([
+        "TSX profile unavailable (toolchain); inspect package_profile".to_owned(),
+        "TypeScript cross-file joins are not exhaustive".to_owned(),
+    ]);
+    let nonempty = super::reference_coverage(&gaps, true).expect("partial coverage");
+    let empty = super::reference_coverage(&gaps, false).expect("unknown coverage");
+    assert!(matches!(nonempty, backend_engine::ReferenceCoverage::Partial { ref reason } if reason.as_str().contains("TSX") && reason.as_str().contains("cross-file")));
+    assert!(matches!(empty, backend_engine::ReferenceCoverage::Unknown { .. }));
+}
+
+#[test]
+fn reference_coverage_bounds_long_unicode_reasons_without_losing_rows() {
+    let gaps = BTreeSet::from(["a concrete reason".to_owned(), "長".repeat(3000)]);
+    let coverage = super::reference_coverage(&gaps, true).expect("bounded partial coverage");
+    assert!(matches!(coverage, backend_engine::ReferenceCoverage::Partial { reason } if reason.as_str().contains("a concrete reason") && reason.as_str().contains("additional coverage gaps omitted") && reason.as_str().len() <= backend_library::MAX_PRODUCT_TEXT_BYTES));
+}
+
 fn version(id: u8) -> EntityVersion {
     EntityVersion {
         family: DeclarationFamilyId::from_raw([id; 16]),
@@ -401,6 +532,7 @@ fn partial_selected_artifacts_answer_local_references_in_four_languages() -> Res
             &frontier.retargeting_scopes(package, &BTreeMap::new()),
             &[],
             true,
+            false,
         )
         .map_err(|error| error.to_string())?;
         let expected = backend_engine::GraphRelation::new(
@@ -440,16 +572,29 @@ fn partial_artifacts_refuse_changed_missing_unidentified_and_foreign_sources() -
         let current = sources(&key, backend_engine::SourceLanguage::Rust, &files)?;
         let frontier =
             view_build::SourceAvailability::of(&current).map_err(|error| error.to_string())?;
-        let selected = frontier
+        for coverage in [partial(1, 2)?, SemanticPublicationCoverage::Complete] {
+            let selected = frontier
+                .select_current(
+                    &key,
+                    coverage,
+                    activated(&[&bytes])?,
+                    &mut view_build::ImageRowResidence::default(),
+                )
+                .map_err(|error| error.to_string())?;
+            if selected.images().len() != 0 {
+                return Err("unproved current source admitted an artifact".to_owned());
+            }
+        }
+        let retained = frontier
             .select(
                 &key,
-                partial(1, 2)?,
+                SemanticPublicationCoverage::Complete,
                 activated(&[&bytes])?,
                 &mut view_build::ImageRowResidence::default(),
             )
             .map_err(|error| error.to_string())?;
-        if selected.images().len() != 0 {
-            return Err("unproved current source admitted an artifact".to_owned());
+        if retained.images().len() != 1 {
+            return Err("complete image was not retained for stale view projection".to_owned());
         }
     }
     let current = sources(
@@ -943,6 +1088,7 @@ fn partial_full_program_witness_survives_unrelated_image_omission_but_not_source
             &frontier.retargeting_scopes(package, &BTreeMap::new()),
             &programs,
             !selected.has_program_manifest(),
+            false,
         )
         .map_err(|e| e.to_string())?;
         let relation = backend_engine::GraphRelation::new(
@@ -1105,6 +1251,7 @@ fn partial_program_cannot_borrow_another_programs_same_source_target_image() -> 
             &paths,
             &scopes,
             &programs,
+            false,
             false,
         )
         .map_err(|e| e.to_string())?;
@@ -1296,3 +1443,9 @@ fn forest_selected_images_join_only_the_exact_owning_leaf() -> Result<(), String
     }
     Ok(())
 }
+
+#[path = "native_reference_projection_tests.rs"]
+mod native_reference_projection_tests;
+
+#[path = "native_selected_reference_tests.rs"]
+mod native_selected_reference_tests;
