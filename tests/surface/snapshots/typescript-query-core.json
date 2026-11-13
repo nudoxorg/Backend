@@ -8,9 +8,9 @@
       "json": {
         "answer": "outline",
         "budget": {
-          "bytesExcludingCursor": 9369,
+          "bytesExcludingCursor": 10518,
           "bytesPerToken": 4,
-          "estimatedTokensExcludingCursor": 2343
+          "estimatedTokensExcludingCursor": 2630
         },
         "declarations": 25,
         "detail": "summary",
@@ -42,7 +42,7 @@
             },
             {
               "lane": "semantic",
-              "state": "complete"
+              "state": "partial"
             }
           ],
           "limit": 200,
@@ -51,7 +51,7 @@
           "schema": 3,
           "sequence": 2,
           "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-          "source_root": "747082aaaf86eda9a479e8c6dcb6f4a20b9cd735e04683969a8154d52b84a8c9"
+          "source_root": "182a160ca842d10e69c0a9d4159f4b192793cd23e5ba400929adfd5913206d9c"
         },
         "roots": [
           {
@@ -104,7 +104,7 @@
                         }
                       }
                     ],
-                    "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:22::listener",
+                    "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::a25528ce2c4ee3addd3cd969a535509f70de3047964486f1dfd0c6a0550f1ac2::listener",
                     "key": "1aafe6a3",
                     "kind": "constant",
                     "name": "listener",
@@ -147,7 +147,7 @@
                     }
                   }
                 ],
-                "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:16::constructor",
+                "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::af3b02d8ddb63ab85e083d065ba0be0d63c497df61139a9471b6b45bfb50eca0::constructor",
                 "key": "05945282",
                 "kind": "method",
                 "name": "constructor",
@@ -190,7 +190,7 @@
                 }
               },
               {
-                "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:35::onSubscribe",
+                "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::5013688151a3b4e779232081d4dd745635cd493d611a53db9f80d1499fecba78::onSubscribe",
                 "key": "1c8671ec",
                 "kind": "method",
                 "name": "onSubscribe",
@@ -235,7 +235,7 @@
               {
                 "children": [
                   {
-                    "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:61::changed",
+                    "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::2c833eda804babdbb59cbb971e35391be82664ab5563312c250e5c4184a8cee9::changed",
                     "key": "171d1620",
                     "kind": "constant",
                     "name": "changed",
@@ -278,7 +278,7 @@
                     }
                   },
                   {
-                    "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:60::focused",
+                    "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::145df4430e0a794e864dfccb790eb48a785896da550504e2fc525a1ca886454e::focused",
                     "key": "9f7b3697",
                     "kind": "variable",
                     "name": "focused",
@@ -321,7 +321,7 @@
                     }
                   }
                 ],
-                "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:60::setFocused",
+                "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::d21c95831a2d0d82dbf698e6c671a87cd02634f25758df4ca6fcf3e9dd694cad::setFocused",
                 "key": "41b550a1",
                 "kind": "method",
                 "name": "setFocused",
@@ -409,7 +409,7 @@
                     }
                   },
                   {
-                    "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:48::setup",
+                    "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::cbf89ebacf8b9f472ed21f9a3d4a38888f1f02b66f2eefb8f253366a29e46f65::setup",
                     "key": "4e9d2b0e",
                     "kind": "variable",
                     "name": "setup",
@@ -452,7 +452,7 @@
                     }
                   }
                 ],
-                "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:48::setEventListener",
+                "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::c147e1747b59239ddf12e2e52336fd40fec6dab74bca1519e03e3c3aa02e9134::setEventListener",
                 "key": "493107e0",
                 "kind": "method",
                 "name": "setEventListener",
@@ -497,7 +497,7 @@
               {
                 "children": [
                   {
-                    "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:69::isFocused",
+                    "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::1fd470d8aa9d5b0bf00028201454cd0a1968be84964a5a9727e48e012a0c74a1::isFocused",
                     "key": "09562d35",
                     "kind": "constant",
                     "name": "isFocused",
@@ -583,7 +583,7 @@
                     }
                   }
                 ],
-                "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:68::onFocus",
+                "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::b38704becc6cc48555c391daa907c9d522657ce0815d042314c18bd76a34e456::onFocus",
                 "key": "59a7e473",
                 "kind": "method",
                 "name": "onFocus",
@@ -626,7 +626,7 @@
                 }
               },
               {
-                "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:75::isFocused",
+                "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::98819ec01713cc09918d77bf5ef75cbb2e57c54d80be8756476e45d0615c931a::isFocused",
                 "key": "be14b582",
                 "kind": "method",
                 "name": "isFocused",
@@ -669,7 +669,7 @@
                 }
               },
               {
-                "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:41::onUnsubscribe",
+                "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::1e31548e9d02702a0d2e696225ed8fcc07cdf3f45189c516cc84678eaba41bd3::onUnsubscribe",
                 "key": "d7bd9008",
                 "kind": "method",
                 "name": "onUnsubscribe",
@@ -712,7 +712,7 @@
                 }
               },
               {
-                "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:11::#focused",
+                "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::325295e488b8f943c755bacfcd53d4dbf50363e373687c83d764343d0a537dcc::#focused",
                 "key": "5fc76fd2",
                 "kind": "field",
                 "name": "#focused",
@@ -757,7 +757,7 @@
               {
                 "children": [
                   {
-                    "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:12::() => void",
+                    "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::c834b0ea78a8fa2caafc179cc10a0efea9195a2513e888291d98bd83acfa6d98::() => void",
                     "key": "c103e551",
                     "kind": "function",
                     "name": "() => void",
@@ -800,7 +800,7 @@
                     }
                   }
                 ],
-                "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:12::#cleanup",
+                "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::17bf6a07ba6e0299c428bddbf96060bdfe0e5b8ae2d357ff9f2bb101ee5cc9f3::#cleanup",
                 "key": "dbe8295c",
                 "kind": "field",
                 "name": "#cleanup",
@@ -843,7 +843,7 @@
                 }
               },
               {
-                "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:14::#setup",
+                "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::15aad0ed80895d7b20d40f00c6b8958f166a32190afec8aed66a07fe8a1167e0::#setup",
                 "key": "f77376a6",
                 "kind": "field",
                 "name": "#setup",
@@ -886,7 +886,7 @@
                 }
               }
             ],
-            "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:10::FocusManager",
+            "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::fd509e7a98d8cc36a8a09371c80fd138a6b1c8639b65fa38f37982e7a302acbe::FocusManager",
             "key": "89898a0f",
             "kind": "class",
             "name": "FocusManager",
@@ -931,9 +931,9 @@
           {
             "children": [
               {
-                "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:52::queries",
+                "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::823cc55f50794ed788032eedba3c031e8cdb6843747a803479a32ad260bfda1b::queries",
                 "key": "c6393e71",
-                "kind": "property",
+                "kind": "field",
                 "name": "queries",
                 "semantic_data": {
                   "kind": "selected-symbol-id",
@@ -974,9 +974,9 @@
                 }
               },
               {
-                "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:51::mutations",
+                "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::f6beee8afd1cbd3e3b915f343de738affda3535592d4ecd18956ad9537717158::mutations",
                 "key": "fa6290cb",
-                "kind": "property",
+                "kind": "field",
                 "name": "mutations",
                 "semantic_data": {
                   "kind": "selected-symbol-id",
@@ -1017,7 +1017,7 @@
                 }
               }
             ],
-            "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:50::DehydratedState",
+            "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::c790cc1b3f2c4cd9d0ab29a1d3b6dbe245ab14c8cad9076790f078611b35638c::DehydratedState",
             "key": "06c03d52",
             "kind": "interface",
             "name": "DehydratedState",
@@ -1062,9 +1062,9 @@
           {
             "children": [
               {
-                "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:45::state",
+                "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::03217338153df2741d142cd4c8c019f9f8d0c6316346d81e0359f8c9c63bcb9e::state",
                 "key": "22532fd1",
-                "kind": "property",
+                "kind": "field",
                 "name": "state",
                 "semantic_data": {
                   "kind": "selected-symbol-id",
@@ -1105,7 +1105,7 @@
                 }
               }
             ],
-            "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:42::DehydratedQuery",
+            "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::5afb902d4b5fb97a48a40553efcd675d494b225ccb8e37602a057f34d1b34eac::DehydratedQuery",
             "key": "7f9fbce2",
             "kind": "interface",
             "name": "DehydratedQuery",
@@ -1156,9 +1156,9 @@
       "json": {
         "answer": "shelf",
         "budget": {
-          "bytes": 444,
+          "bytes": 475,
           "bytesPerToken": 4,
-          "estimatedTokens": 111
+          "estimatedTokens": 119
         },
         "detail": "summary",
         "projects": [
@@ -1173,12 +1173,15 @@
               "shape": "package",
               "trail": "project"
             },
+            "partial_lanes": [
+              "semantic"
+            ],
             "readiness": "ready"
           }
         ],
-        "readiness": "ready",
-        "revision": "747082aa",
-        "rows": 3175
+        "readiness": "partial",
+        "revision": "182a160c",
+        "rows": 3382
       }
     },
     "cli search CancelledError": {
@@ -1186,9 +1189,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 1472,
+          "bytes": 1747,
           "bytesPerToken": 4,
-          "estimatedTokens": 368
+          "estimatedTokens": 437
         },
         "coverage": [
           {
@@ -1205,17 +1208,17 @@
           },
           {
             "lane": "semantic",
-            "state": "complete"
+            "state": "partial"
           }
         ],
         "detail": "summary",
         "more": false,
         "query": "CancelledError",
-        "readiness": "ready",
+        "readiness": "partial",
         "records": [
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/retryer.ts:58::CancelledError",
+              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::d7c7890fb79aa8974c04597c8b80d9a39a0c71794d62087c5aaa57ab67ee6929::CancelledError",
               "line": 58,
               "name": "CancelledError",
               "path": "src/retryer.ts",
@@ -1259,17 +1262,18 @@
                   233
                 ]
               },
-              "shape": "declaration",
+              "shape": "semantic",
               "trail": "project › src/retryer.ts:58 › CancelledError"
             },
             "kind": "class",
             "language": "typescript",
             "score": 4294967295,
-            "state": "ready"
+            "state": "ready",
+            "summary": "Source was observed at capture; discovery policy stability is unknown."
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/retryer.ts:68::isCancelledError",
+              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::92202a63dcc4c18c8e0bc422c70b0cc7e659105fc84b3e6815d8c7dbb5a681bc::isCancelledError",
               "line": 68,
               "name": "isCancelledError",
               "path": "src/retryer.ts",
@@ -1313,13 +1317,14 @@
                   17
                 ]
               },
-              "shape": "declaration",
+              "shape": "semantic",
               "trail": "project › src/retryer.ts:68 › isCancelledError"
             },
             "kind": "function",
             "language": "typescript",
             "score": 4294967294,
-            "state": "ready"
+            "state": "ready",
+            "summary": "Source was observed at capture; discovery policy stability is unknown."
           }
         ],
         "semantic_search": {
@@ -1333,9 +1338,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytesExcludingCursor": 13499,
+          "bytesExcludingCursor": 16888,
           "bytesPerToken": 4,
-          "estimatedTokensExcludingCursor": 3375
+          "estimatedTokensExcludingCursor": 4222
         },
         "coverage": [
           {
@@ -1352,18 +1357,18 @@
           },
           {
             "lane": "semantic",
-            "state": "complete"
+            "state": "partial"
           }
         ],
         "detail": "summary",
         "more": true,
         "nextCursor": "pc4-<live-validated>",
         "query": "QueryClient",
-        "readiness": "ready",
+        "readiness": "partial",
         "records": [
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/queryClient.ts:61::QueryClient",
+              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::91a1843919f8778ddac42d452f557d70d5faa893e4a0f71a28966358d2cc7403::QueryClient",
               "line": 61,
               "name": "QueryClient",
               "path": "src/queryClient.ts",
@@ -1407,18 +1412,21 @@
                   90
                 ]
               },
-              "shape": "declaration",
+              "shape": "semantic",
               "trail": "project › src/queryClient.ts:61 › QueryClient"
             },
             "kind": "class",
             "language": "typescript",
             "score": 4294967295,
-            "state": "ready"
+            "state": "ready",
+            "summary": "Source was observed at capture; discovery policy stability is unknown."
           },
           {
             "identity": {
               "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::e6cc664b5757cf1cfcd3716601d6d726248ad7f3e0c1980c437cd4a3fed89834::QueryClient",
+              "line": 17,
               "name": "QueryClient",
+              "path": "src/queryObserver.ts",
               "segments": [
                 "QueryClient"
               ],
@@ -1460,17 +1468,20 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › QueryClient"
+              "trail": "project › src/queryObserver.ts:17 › QueryClient"
             },
             "kind": "import",
-            "language": "unknown",
+            "language": "typescript",
             "score": 4294967294,
-            "state": "ready"
+            "state": "ready",
+            "summary": "Source was observed at capture; discovery policy stability is unknown."
           },
           {
             "identity": {
               "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::6196c7731804307eddc8a7ba77b0cf0f248ad7f3e0c1980c437cd4a3fed89834::QueryClient",
+              "line": 7,
               "name": "QueryClient",
+              "path": "src/mutationCache.ts",
               "segments": [
                 "QueryClient"
               ],
@@ -1512,17 +1523,20 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › QueryClient"
+              "trail": "project › src/mutationCache.ts:7 › QueryClient"
             },
             "kind": "import",
-            "language": "unknown",
+            "language": "typescript",
             "score": 4294967293,
-            "state": "ready"
+            "state": "ready",
+            "summary": "Source was observed at capture; discovery policy stability is unknown."
           },
           {
             "identity": {
               "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::4ec39e4b6e34bd2aac4d4177bf90e898248ad7f3e0c1980c437cd4a3fed89834::QueryClient",
+              "line": 5,
               "name": "QueryClient",
+              "path": "src/mutationObserver.ts",
               "segments": [
                 "QueryClient"
               ],
@@ -1564,17 +1578,20 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › QueryClient"
+              "trail": "project › src/mutationObserver.ts:5 › QueryClient"
             },
             "kind": "import",
-            "language": "unknown",
+            "language": "typescript",
             "score": 4294967292,
-            "state": "ready"
+            "state": "ready",
+            "summary": "Source was observed at capture; discovery policy stability is unknown."
           },
           {
             "identity": {
               "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::269fc5a81457e8a77cb0690d1a2e8c35248ad7f3e0c1980c437cd4a3fed89834::QueryClient",
+              "line": 14,
               "name": "QueryClient",
+              "path": "src/queryCache.ts",
               "segments": [
                 "QueryClient"
               ],
@@ -1616,17 +1633,20 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › QueryClient"
+              "trail": "project › src/queryCache.ts:14 › QueryClient"
             },
             "kind": "import",
-            "language": "unknown",
+            "language": "typescript",
             "score": 4294967291,
-            "state": "ready"
+            "state": "ready",
+            "summary": "Source was observed at capture; discovery policy stability is unknown."
           },
           {
             "identity": {
               "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::1c16ed82480a5ba36e615b62ed5f9392248ad7f3e0c1980c437cd4a3fed89834::QueryClient",
+              "line": 10,
               "name": "QueryClient",
+              "path": "src/queriesObserver.ts",
               "segments": [
                 "QueryClient"
               ],
@@ -1668,17 +1688,20 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › QueryClient"
+              "trail": "project › src/queriesObserver.ts:10 › QueryClient"
             },
             "kind": "import",
-            "language": "unknown",
+            "language": "typescript",
             "score": 4294967290,
-            "state": "ready"
+            "state": "ready",
+            "summary": "Source was observed at capture; discovery policy stability is unknown."
           },
           {
             "identity": {
               "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::04df67223d41646019454bcf9bd59b36248ad7f3e0c1980c437cd4a3fed89834::QueryClient",
+              "line": 11,
               "name": "QueryClient",
+              "path": "src/hydration.ts",
               "segments": [
                 "QueryClient"
               ],
@@ -1720,17 +1743,20 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › QueryClient"
+              "trail": "project › src/hydration.ts:11 › QueryClient"
             },
             "kind": "import",
-            "language": "unknown",
+            "language": "typescript",
             "score": 4294967289,
-            "state": "ready"
+            "state": "ready",
+            "summary": "Source was observed at capture; discovery policy stability is unknown."
           },
           {
             "identity": {
               "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::d5cefebdd7a8c308571d39c5ffa3778f248ad7f3e0c1980c437cd4a3fed89834::QueryClient",
+              "line": 19,
               "name": "QueryClient",
+              "path": "src/infiniteQueryObserver.ts",
               "segments": [
                 "QueryClient"
               ],
@@ -1772,16 +1798,17 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › QueryClient"
+              "trail": "project › src/infiniteQueryObserver.ts:19 › QueryClient"
             },
             "kind": "import",
-            "language": "unknown",
+            "language": "typescript",
             "score": 4294967288,
-            "state": "ready"
+            "state": "ready",
+            "summary": "Source was observed at capture; discovery policy stability is unknown."
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/types.ts:1232::QueryClientConfig",
+              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::3ada135762de3151de742d8a9f1e3ef4e3dc9ce47103f38194ac7af7d435fb8a::QueryClientConfig",
               "line": 1232,
               "name": "QueryClientConfig",
               "path": "src/types.ts",
@@ -1825,125 +1852,18 @@
                   231
                 ]
               },
-              "shape": "declaration",
+              "shape": "semantic",
               "trail": "project › src/types.ts:1232 › QueryClientConfig"
             },
             "kind": "interface",
             "language": "typescript",
             "score": 4294967287,
-            "state": "ready"
+            "state": "ready",
+            "summary": "Source was observed at capture; discovery policy stability is unknown."
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/queryClient.ts:49::QueryDefaults",
-              "line": 49,
-              "name": "QueryDefaults",
-              "path": "src/queryClient.ts",
-              "segments": [
-                "QueryDefaults"
-              ],
-              "semantic_data": {
-                "kind": "selected-symbol-id",
-                "value": [
-                  47,
-                  77,
-                  1,
-                  60,
-                  152,
-                  113,
-                  97,
-                  215,
-                  157,
-                  244,
-                  162,
-                  200,
-                  104,
-                  198,
-                  189,
-                  92,
-                  208,
-                  113,
-                  199,
-                  52,
-                  169,
-                  101,
-                  223,
-                  117,
-                  173,
-                  245,
-                  106,
-                  195,
-                  252,
-                  11,
-                  107,
-                  254
-                ]
-              },
-              "shape": "declaration",
-              "trail": "project › src/queryClient.ts:49 › QueryDefaults"
-            },
-            "kind": "interface",
-            "language": "typescript",
-            "score": 4294967286,
-            "state": "ready"
-          },
-          {
-            "identity": {
-              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/queryClient.ts:54::MutationDefaults",
-              "line": 54,
-              "name": "MutationDefaults",
-              "path": "src/queryClient.ts",
-              "segments": [
-                "MutationDefaults"
-              ],
-              "semantic_data": {
-                "kind": "selected-symbol-id",
-                "value": [
-                  172,
-                  192,
-                  27,
-                  132,
-                  54,
-                  132,
-                  244,
-                  198,
-                  179,
-                  164,
-                  163,
-                  201,
-                  13,
-                  54,
-                  50,
-                  235,
-                  216,
-                  254,
-                  247,
-                  139,
-                  46,
-                  202,
-                  91,
-                  107,
-                  34,
-                  169,
-                  49,
-                  4,
-                  199,
-                  230,
-                  200,
-                  15
-                ]
-              },
-              "shape": "declaration",
-              "trail": "project › src/queryClient.ts:54 › MutationDefaults"
-            },
-            "kind": "interface",
-            "language": "typescript",
-            "score": 4294967285,
-            "state": "ready"
-          },
-          {
-            "identity": {
-              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/mutationObserver.ts:38::constructor",
+              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::39ab642c1b7e6b7f27e3c4ea66a7813c3f69b340f6c13870cafd57fb36faac55::constructor",
               "line": 38,
               "name": "constructor",
               "path": "src/mutationObserver.ts",
@@ -1987,17 +1907,18 @@
                   229
                 ]
               },
-              "shape": "declaration",
+              "shape": "semantic",
               "trail": "project › src/mutationObserver.ts:38 › constructor"
             },
             "kind": "method",
             "language": "typescript",
-            "score": 4294967284,
-            "state": "ready"
+            "score": 4294967286,
+            "state": "ready",
+            "summary": "Source was observed at capture; discovery policy stability is unknown."
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:105::dehydrate",
+              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::64d4d90dc4b99a9c87907340b1e93ff104ed4e91cb3e09e7773d5148b19b4207::dehydrate",
               "line": 105,
               "name": "dehydrate",
               "path": "src/hydration.ts",
@@ -2041,17 +1962,18 @@
                   10
                 ]
               },
-              "shape": "declaration",
+              "shape": "semantic",
               "trail": "project › src/hydration.ts:105 › dehydrate"
             },
             "kind": "function",
             "language": "typescript",
-            "score": 4294967283,
-            "state": "ready"
+            "score": 4294967285,
+            "state": "ready",
+            "summary": "Source was observed at capture; discovery policy stability is unknown."
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/mutationCache.ts:94::build",
+              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::f5c8b24dc4ecfb5e4e45dcdbdedcc0ddeb316e7c200b7a06d42d59290e5cc772::build",
               "line": 94,
               "name": "build",
               "path": "src/mutationCache.ts",
@@ -2095,17 +2017,18 @@
                   1
                 ]
               },
-              "shape": "declaration",
+              "shape": "semantic",
               "trail": "project › src/mutationCache.ts:94 › build"
             },
             "kind": "method",
             "language": "typescript",
-            "score": 4294967282,
-            "state": "ready"
+            "score": 4294967284,
+            "state": "ready",
+            "summary": "Source was observed at capture; discovery policy stability is unknown."
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/infiniteQueryObserver.ts:70::constructor",
+              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::8e5b9aa8ad8a63a921f2cf8565d8f576ecc71b3bcba05c027617a923f961038b::constructor",
               "line": 70,
               "name": "constructor",
               "path": "src/infiniteQueryObserver.ts",
@@ -2149,17 +2072,18 @@
                   229
                 ]
               },
-              "shape": "declaration",
+              "shape": "semantic",
               "trail": "project › src/infiniteQueryObserver.ts:70 › constructor"
             },
             "kind": "method",
             "language": "typescript",
-            "score": 4294967281,
-            "state": "ready"
+            "score": 4294967283,
+            "state": "ready",
+            "summary": "Source was observed at capture; discovery policy stability is unknown."
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/queryObserver.ts:74::constructor",
+              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::9fb16cf3ffb7e27e59e4ee37de210fab44c5aacca8617803198e837fa4d20521::constructor",
               "line": 74,
               "name": "constructor",
               "path": "src/queryObserver.ts",
@@ -2203,17 +2127,18 @@
                   23
                 ]
               },
-              "shape": "declaration",
+              "shape": "semantic",
               "trail": "project › src/queryObserver.ts:74 › constructor"
             },
             "kind": "method",
             "language": "typescript",
-            "score": 4294967280,
-            "state": "ready"
+            "score": 4294967282,
+            "state": "ready",
+            "summary": "Source was observed at capture; discovery policy stability is unknown."
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/queriesObserver.ts:47::constructor",
+              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::573b767883057c4132e6b0ca796917da660e75da30b25585bab3796196c8cc14::constructor",
               "line": 47,
               "name": "constructor",
               "path": "src/queriesObserver.ts",
@@ -2257,17 +2182,18 @@
                   55
                 ]
               },
-              "shape": "declaration",
+              "shape": "semantic",
               "trail": "project › src/queriesObserver.ts:47 › constructor"
             },
             "kind": "method",
             "language": "typescript",
-            "score": 4294967279,
-            "state": "ready"
+            "score": 4294967281,
+            "state": "ready",
+            "summary": "Source was observed at capture; discovery policy stability is unknown."
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:141::hydrate",
+              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::38cb0b3e570bd29709b73976ef020371379c39a23d3d48d7d7320d2cb7a203db::hydrate",
               "line": 141,
               "name": "hydrate",
               "path": "src/hydration.ts",
@@ -2311,17 +2237,18 @@
                   61
                 ]
               },
-              "shape": "declaration",
+              "shape": "semantic",
               "trail": "project › src/hydration.ts:141 › hydrate"
             },
             "kind": "function",
             "language": "typescript",
-            "score": 4294967278,
-            "state": "ready"
+            "score": 4294967280,
+            "state": "ready",
+            "summary": "Source was observed at capture; discovery policy stability is unknown."
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/queryCache.ts:100::build",
+              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::e6de826152f6ce152a22b67b3033ec995b6cfef3699a753e28a21d937758661c::build",
               "line": 100,
               "name": "build",
               "path": "src/queryCache.ts",
@@ -2365,17 +2292,18 @@
                   126
                 ]
               },
-              "shape": "declaration",
+              "shape": "semantic",
               "trail": "project › src/queryCache.ts:100 › build"
             },
             "kind": "method",
             "language": "typescript",
-            "score": 4294967277,
-            "state": "ready"
+            "score": 4294967279,
+            "state": "ready",
+            "summary": "Source was observed at capture; discovery policy stability is unknown."
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/queryClient.ts:71::constructor",
+              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::250cb2b71ed75ffc0c18d406b9bcc67308a7c12833e87be3da42d7f9df4511ff::constructor",
               "line": 71,
               "name": "constructor",
               "path": "src/queryClient.ts",
@@ -2419,283 +2347,399 @@
                   32
                 ]
               },
-              "shape": "declaration",
+              "shape": "semantic",
               "trail": "project › src/queryClient.ts:71 › constructor"
             },
             "kind": "method",
             "language": "typescript",
-            "score": 4294967276,
-            "state": "ready"
+            "score": 4294967278,
+            "state": "ready",
+            "summary": "Source was observed at capture; discovery policy stability is unknown."
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/queryClient.ts:420::query",
-              "line": 420,
-              "name": "query",
-              "path": "src/queryClient.ts",
+              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::51a348fb50e3f0a6c0a5b10d7d12811957c07b4c08756c235ad3a1d0cc29f29e::promise",
+              "line": 767,
+              "name": "promise",
+              "path": "src/types.ts",
               "segments": [
-                "query"
+                "promise"
               ],
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  104,
-                  102,
-                  51,
-                  52,
-                  142,
-                  2,
-                  21,
-                  16,
-                  101,
-                  41,
-                  48,
-                  97,
-                  13,
-                  195,
-                  142,
+                  185,
+                  157,
+                  177,
                   138,
-                  56,
-                  155,
-                  146,
-                  158,
-                  8,
-                  52,
-                  249,
-                  32,
-                  169,
-                  41,
-                  202,
-                  199,
-                  158,
-                  89,
-                  110,
-                  106
-                ]
-              },
-              "shape": "declaration",
-              "trail": "project › src/queryClient.ts:420 › query"
-            },
-            "kind": "constant",
-            "language": "typescript",
-            "score": 4294967275,
-            "state": "ready"
-          },
-          {
-            "identity": {
-              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/queryClient.ts:149::query",
-              "line": 149,
-              "name": "query",
-              "path": "src/queryClient.ts",
-              "segments": [
-                "query"
-              ],
-              "semantic_data": {
-                "kind": "selected-symbol-id",
-                "value": [
-                  222,
-                  237,
-                  6,
+                  53,
+                  168,
+                  154,
+                  68,
                   99,
-                  24,
-                  103,
-                  144,
-                  241,
-                  252,
-                  189,
-                  2,
-                  131,
-                  229,
-                  46,
-                  21,
-                  235,
-                  183,
-                  44,
-                  212,
-                  136,
-                  213,
-                  245,
-                  82,
-                  67,
-                  15,
-                  51,
-                  51,
-                  69,
-                  188,
-                  171,
-                  118,
-                  132
+                  192,
+                  234,
+                  76,
+                  217,
+                  37,
+                  28,
+                  41,
+                  102,
+                  53,
+                  153,
+                  156,
+                  146,
+                  124,
+                  104,
+                  12,
+                  110,
+                  7,
+                  99,
+                  209,
+                  54,
+                  65,
+                  17,
+                  177
                 ]
               },
-              "shape": "declaration",
-              "trail": "project › src/queryClient.ts:149 › query"
+              "shape": "semantic",
+              "trail": "project › src/types.ts:767 › promise"
             },
-            "kind": "constant",
+            "kind": "field",
             "language": "typescript",
-            "score": 4294967274,
-            "state": "ready"
+            "score": 4294967277,
+            "state": "ready",
+            "summary": "A stable promise that will be resolved with the data of the query."
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/queryClient.ts:217::query",
-              "line": 217,
-              "name": "query",
-              "path": "src/queryClient.ts",
+              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::784c52d967e71a04312ee73f9411be10629000a2acb92270095607826dd4e949::client",
+              "line": 71,
+              "name": "client",
+              "path": "src/infiniteQueryObserver.ts",
               "segments": [
-                "query"
+                "client"
               ],
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  230,
-                  221,
-                  214,
-                  144,
-                  236,
-                  114,
-                  90,
-                  67,
-                  183,
-                  238,
-                  35,
+                  1,
+                  11,
+                  162,
+                  173,
                   88,
-                  202,
-                  182,
-                  30,
-                  94,
-                  138,
-                  19,
-                  57,
-                  204,
-                  145,
-                  200,
-                  87,
+                  96,
+                  203,
+                  143,
+                  219,
+                  140,
+                  72,
+                  55,
+                  2,
+                  71,
+                  215,
+                  136,
+                  197,
+                  246,
+                  112,
+                  67,
                   240,
-                  66,
-                  14,
-                  107,
-                  75,
-                  80,
+                  138,
+                  251,
+                  40,
+                  187,
+                  132,
+                  62,
+                  21,
+                  22,
+                  134,
                   59,
-                  175,
-                  98
+                  217
                 ]
               },
-              "shape": "declaration",
-              "trail": "project › src/queryClient.ts:217 › query"
+              "shape": "semantic",
+              "trail": "project › src/infiniteQueryObserver.ts:71 › client"
             },
-            "kind": "constant",
+            "kind": "variable",
             "language": "typescript",
-            "score": 4294967273,
-            "state": "ready"
+            "score": 4294967276,
+            "state": "ready",
+            "summary": "Source was observed at capture; discovery policy stability is unknown."
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/queryClient.ts:298::queryCache",
-              "line": 298,
-              "name": "queryCache",
-              "path": "src/queryClient.ts",
+              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::c4ff172325fb70f6ee74e93ee0fa71e7629000a2acb92270095607826dd4e949::client",
+              "line": 106,
+              "name": "client",
+              "path": "src/hydration.ts",
               "segments": [
-                "queryCache"
+                "client"
               ],
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  15,
+                  32,
+                  143,
+                  142,
+                  233,
+                  119,
+                  173,
+                  213,
+                  110,
+                  101,
+                  82,
+                  186,
+                  27,
+                  111,
+                  6,
+                  54,
+                  0,
+                  58,
+                  156,
+                  238,
+                  25,
+                  196,
                   188,
                   207,
-                  190,
-                  38,
-                  222,
-                  14,
-                  208,
-                  128,
-                  76,
-                  248,
-                  70,
-                  190,
-                  174,
-                  159,
-                  1,
-                  177,
+                  204,
+                  77,
+                  65,
+                  204,
+                  167,
+                  49,
+                  157,
+                  245,
+                  224
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › src/hydration.ts:106 › client"
+            },
+            "kind": "variable",
+            "language": "typescript",
+            "score": 4294967275,
+            "state": "ready",
+            "summary": "Source was observed at capture; discovery policy stability is unknown."
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::b5be483a7dd8cd2ca01c5cef51d3dea2629000a2acb92270095607826dd4e949::client",
+              "line": 39,
+              "name": "client",
+              "path": "src/mutationObserver.ts",
+              "segments": [
+                "client"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  44,
                   192,
-                  8,
-                  80,
-                  174,
-                  146,
-                  171,
-                  247,
-                  162,
-                  202,
+                  238,
+                  194,
+                  132,
+                  190,
+                  17,
+                  178,
+                  2,
+                  13,
+                  215,
+                  118,
                   88,
-                  246,
-                  106,
-                  92,
+                  237,
+                  167,
+                  156,
+                  39,
+                  247,
+                  75,
+                  108,
+                  51,
+                  68,
                   100,
+                  63,
+                  195,
+                  143,
+                  169,
+                  5,
+                  134,
+                  147,
+                  238,
+                  48
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › src/mutationObserver.ts:39 › client"
+            },
+            "kind": "variable",
+            "language": "typescript",
+            "score": 4294967274,
+            "state": "ready",
+            "summary": "Source was observed at capture; discovery policy stability is unknown."
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::f7dc00c711bf64d654ec3d33e1fedfe848b28267835d31347fbe2df744a9bec7::#client",
+              "line": 38,
+              "name": "#client",
+              "path": "src/queriesObserver.ts",
+              "segments": [
+                "#client"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  113,
+                  116,
+                  243,
+                  103,
+                  184,
+                  67,
+                  253,
+                  63,
+                  118,
+                  124,
+                  173,
+                  194,
+                  137,
+                  238,
+                  210,
+                  156,
+                  98,
+                  132,
+                  30,
+                  198,
+                  147,
+                  99,
+                  35,
+                  214,
+                  88,
+                  112,
+                  14,
+                  186,
+                  104,
+                  187,
+                  38,
+                  178
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › src/queriesObserver.ts:38 › #client"
+            },
+            "kind": "field",
+            "language": "typescript",
+            "score": 4294967273,
+            "state": "ready",
+            "summary": "Source was observed at capture; discovery policy stability is unknown."
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::2e4d6da37a67390d5f3ab3eb7e952bfd48b28267835d31347fbe2df744a9bec7::#client",
+              "line": 32,
+              "name": "#client",
+              "path": "src/mutationObserver.ts",
+              "segments": [
+                "#client"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  204,
+                  210,
+                  145,
+                  130,
+                  154,
+                  189,
+                  67,
+                  149,
+                  138,
+                  247,
+                  131,
+                  108,
+                  117,
+                  46,
+                  21,
+                  36,
+                  91,
+                  7,
+                  114,
+                  126,
+                  17,
+                  160,
+                  4,
+                  31,
+                  53,
+                  244,
+                  253,
+                  59,
+                  44,
+                  184,
+                  35,
+                  96
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › src/mutationObserver.ts:32 › #client"
+            },
+            "kind": "field",
+            "language": "typescript",
+            "score": 4294967272,
+            "state": "ready",
+            "summary": "Source was observed at capture; discovery policy stability is unknown."
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::385c0890617c6eb44ba9b8e1d712a3e848b28267835d31347fbe2df744a9bec7::#client",
+              "line": 50,
+              "name": "#client",
+              "path": "src/queryObserver.ts",
+              "segments": [
+                "#client"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  221,
+                  131,
+                  175,
+                  190,
+                  241,
+                  163,
+                  5,
+                  91,
+                  10,
+                  36,
+                  192,
+                  81,
+                  63,
+                  99,
+                  110,
+                  115,
+                  202,
+                  124,
+                  55,
+                  109,
+                  181,
+                  160,
+                  27,
+                  89,
+                  209,
+                  44,
+                  185,
+                  72,
+                  98,
+                  4,
+                  216,
                   209
                 ]
               },
-              "shape": "declaration",
-              "trail": "project › src/queryClient.ts:298 › queryCache"
+              "shape": "semantic",
+              "trail": "project › src/queryObserver.ts:50 › #client"
             },
-            "kind": "constant",
-            "language": "typescript",
-            "score": 4294967272,
-            "state": "ready"
-          },
-          {
-            "identity": {
-              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/queryClient.ts:309::queryCache",
-              "line": 309,
-              "name": "queryCache",
-              "path": "src/queryClient.ts",
-              "segments": [
-                "queryCache"
-              ],
-              "semantic_data": {
-                "kind": "selected-symbol-id",
-                "value": [
-                  124,
-                  125,
-                  54,
-                  45,
-                  210,
-                  125,
-                  164,
-                  155,
-                  5,
-                  189,
-                  156,
-                  54,
-                  146,
-                  173,
-                  225,
-                  145,
-                  206,
-                  242,
-                  229,
-                  164,
-                  210,
-                  97,
-                  79,
-                  111,
-                  20,
-                  13,
-                  198,
-                  174,
-                  249,
-                  180,
-                  156,
-                  117
-                ]
-              },
-              "shape": "declaration",
-              "trail": "project › src/queryClient.ts:309 › queryCache"
-            },
-            "kind": "constant",
+            "kind": "field",
             "language": "typescript",
             "score": 4294967271,
-            "state": "ready"
+            "state": "ready",
+            "summary": "Source was observed at capture; discovery policy stability is unknown."
           }
         ],
         "semantic_search": {
@@ -2720,8 +2764,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 845,
-                "normalizedFrameBytesExcludingCounters": 3378,
+                "normalizedEstimatedTokensExcludingCounters": 971,
+                "normalizedFrameBytesExcludingCounters": 3884,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -2730,7 +2774,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `QueryClient` · class · typescript\n  `/tmp/nudox-surface/typescript-query-core/project::src/queryClient.ts:61::QueryClient`\n• `QueryClient` · import · unknown\n  `/tmp/nudox-surface/typescript-query-core/project::semantic::e6cc664b5757cf1cfcd3716601d6d726248ad7f3e0c1980c437cd4a3fed89834::QueryClient`\n• `QueryClient` · import · unknown\n  `/tmp/nudox-surface/typescript-query-core/project::semantic::6196c7731804307eddc8a7ba77b0cf0f248ad7f3e0c1980c437cd4a3fed89834::QueryClient`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic◐ partial\n• `QueryClient` · class · typescript\n  `/tmp/nudox-surface/typescript-query-core/project::semantic::91a1843919f8778ddac42d452f557d70d5faa893e4a0f71a28966358d2cc7403::QueryClient`\n• `QueryClient` · import · typescript\n  `/tmp/nudox-surface/typescript-query-core/project::semantic::e6cc664b5757cf1cfcd3716601d6d726248ad7f3e0c1980c437cd4a3fed89834::QueryClient`\n• `QueryClient` · import · typescript\n  `/tmp/nudox-surface/typescript-query-core/project::semantic::6196c7731804307eddc8a7ba77b0cf0f248ad7f3e0c1980c437cd4a3fed89834::QueryClient`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
                 "type": "text"
               }
             ],
@@ -2738,9 +2782,9 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytesExcludingCursor": 2051,
+                "bytesExcludingCursor": 2491,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 513
+                "estimatedTokensExcludingCursor": 623
               },
               "continuation_call": {
                 "arguments": {
@@ -2765,17 +2809,17 @@
                 },
                 {
                   "lane": "semantic",
-                  "state": "complete"
+                  "state": "partial"
                 }
               ],
               "detail": "summary",
               "more": true,
               "query": "QueryClient",
-              "readiness": "ready",
+              "readiness": "partial",
               "records": [
                 {
                   "identity": {
-                    "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/queryClient.ts:61::QueryClient",
+                    "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::91a1843919f8778ddac42d452f557d70d5faa893e4a0f71a28966358d2cc7403::QueryClient",
                     "line": 61,
                     "name": "QueryClient",
                     "path": "src/queryClient.ts",
@@ -2819,18 +2863,21 @@
                         90
                       ]
                     },
-                    "shape": "declaration",
+                    "shape": "semantic",
                     "trail": "project › src/queryClient.ts:61 › QueryClient"
                   },
                   "kind": "class",
                   "language": "typescript",
                   "score": 4294967295,
-                  "state": "ready"
+                  "state": "ready",
+                  "summary": "Source was observed at capture; discovery policy stability is unknown."
                 },
                 {
                   "identity": {
                     "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::e6cc664b5757cf1cfcd3716601d6d726248ad7f3e0c1980c437cd4a3fed89834::QueryClient",
+                    "line": 17,
                     "name": "QueryClient",
+                    "path": "src/queryObserver.ts",
                     "segments": [
                       "QueryClient"
                     ],
@@ -2872,17 +2919,20 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project › QueryClient"
+                    "trail": "project › src/queryObserver.ts:17 › QueryClient"
                   },
                   "kind": "import",
-                  "language": "unknown",
+                  "language": "typescript",
                   "score": 4294967294,
-                  "state": "ready"
+                  "state": "ready",
+                  "summary": "Source was observed at capture; discovery policy stability is unknown."
                 },
                 {
                   "identity": {
                     "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::6196c7731804307eddc8a7ba77b0cf0f248ad7f3e0c1980c437cd4a3fed89834::QueryClient",
+                    "line": 7,
                     "name": "QueryClient",
+                    "path": "src/mutationCache.ts",
                     "segments": [
                       "QueryClient"
                     ],
@@ -2924,12 +2974,13 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project › QueryClient"
+                    "trail": "project › src/mutationCache.ts:7 › QueryClient"
                   },
                   "kind": "import",
-                  "language": "unknown",
+                  "language": "typescript",
                   "score": 4294967293,
-                  "state": "ready"
+                  "state": "ready",
+                  "summary": "Source was observed at capture; discovery policy stability is unknown."
                 }
               ],
               "semantic_search": {
@@ -2950,9 +3001,9 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 2381,
+                "bytes": 2777,
                 "bytesPerToken": 4,
-                "estimatedTokens": 596,
+                "estimatedTokens": 695,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
                 "scope": "complete_jsonrpc_line",
@@ -2963,7 +3014,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact✓2 names✓2 graph✓2 semantic✓2\n• `CancelledError` · class · typescript\n  `/tmp/nudox-surface/typescript-query-core/project::src/retryer.ts:58::CancelledError`\n• `isCancelledError` · function · typescript\n  `/tmp/nudox-surface/typescript-query-core/project::src/retryer.ts:68::isCancelledError`\n2 row(s) on this page; showing 2 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
+                "text": "~lanes exact✓2 names✓2 graph✓2 semantic◐ partial\n• `CancelledError` · class · typescript\n  `/tmp/nudox-surface/typescript-query-core/project::semantic::d7c7890fb79aa8974c04597c8b80d9a39a0c71794d62087c5aaa57ab67ee6929::CancelledError`\n• `isCancelledError` · function · typescript\n  `/tmp/nudox-surface/typescript-query-core/project::semantic::92202a63dcc4c18c8e0bc422c70b0cc7e659105fc84b3e6815d8c7dbb5a681bc::isCancelledError`\n2 row(s) on this page; showing 2 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
                 "type": "text"
               }
             ],
@@ -2971,9 +3022,9 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytes": 1472,
+                "bytes": 1747,
                 "bytesPerToken": 4,
-                "estimatedTokens": 368
+                "estimatedTokens": 437
               },
               "coverage": [
                 {
@@ -2990,17 +3041,17 @@
                 },
                 {
                   "lane": "semantic",
-                  "state": "complete"
+                  "state": "partial"
                 }
               ],
               "detail": "summary",
               "more": false,
               "query": "CancelledError",
-              "readiness": "ready",
+              "readiness": "partial",
               "records": [
                 {
                   "identity": {
-                    "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/retryer.ts:58::CancelledError",
+                    "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::d7c7890fb79aa8974c04597c8b80d9a39a0c71794d62087c5aaa57ab67ee6929::CancelledError",
                     "line": 58,
                     "name": "CancelledError",
                     "path": "src/retryer.ts",
@@ -3044,17 +3095,18 @@
                         233
                       ]
                     },
-                    "shape": "declaration",
+                    "shape": "semantic",
                     "trail": "project › src/retryer.ts:58 › CancelledError"
                   },
                   "kind": "class",
                   "language": "typescript",
                   "score": 4294967295,
-                  "state": "ready"
+                  "state": "ready",
+                  "summary": "Source was observed at capture; discovery policy stability is unknown."
                 },
                 {
                   "identity": {
-                    "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/retryer.ts:68::isCancelledError",
+                    "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::92202a63dcc4c18c8e0bc422c70b0cc7e659105fc84b3e6815d8c7dbb5a681bc::isCancelledError",
                     "line": 68,
                     "name": "isCancelledError",
                     "path": "src/retryer.ts",
@@ -3098,13 +3150,14 @@
                         17
                       ]
                     },
-                    "shape": "declaration",
+                    "shape": "semantic",
                     "trail": "project › src/retryer.ts:68 › isCancelledError"
                   },
                   "kind": "function",
                   "language": "typescript",
                   "score": 4294967294,
-                  "state": "ready"
+                  "state": "ready",
+                  "summary": "Source was observed at capture; discovery policy stability is unknown."
                 }
               ],
               "semantic_search": {
@@ -3125,8 +3178,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 5468,
-                "normalizedFrameBytesExcludingCounters": 21872,
+                "normalizedEstimatedTokensExcludingCounters": 6094,
+                "normalizedFrameBytesExcludingCounters": 24375,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -3135,7 +3188,7 @@
             },
             "content": [
               {
-                "text": "# project\n`/tmp/nudox-surface/typescript-query-core/project`\n\n◆ FocusManager  `src/focusManager.ts:10 › FocusManager`\n  ƒ constructor  `src/focusManager.ts:16 › constructor`\n    ▪ listener  `src/focusManager.ts:22 › listener`\n      ƒ <anonymous callable>  `src/focusManager.ts:22 › <anonymous callable>`\n  ƒ onSubscribe  `src/focusManager.ts:35 › onSubscribe`\n  ƒ setFocused  `src/focusManager.ts:60 › setFocused`\n    ▪ changed  `src/focusManager.ts:61 › changed`\n    ▫ focused  `src/focusManager.ts:60 › focused`\n  ƒ setEventListener  `src/focusManager.ts:48 › setEventListener`\n    ƒ <anonymous callable>  `src/focusManager.ts:51 › <anonymous callable>`\n    ▫ setup  `src/focusManager.ts:48 › setup`\n  ƒ onFocus  `src/focusManager.ts:68 › onFocus`\n    ▪ isFocused  `src/focusManager.ts:69 › isFocused`\n    ƒ <anonymous callable>  `src/focusManager.ts:70 › <anonymous callable>`\n  ƒ isFocused  `src/focusManager.ts:75 › isFocused`\n  ƒ onUnsubscribe  `src/focusManager.ts:41 › onUnsubscribe`\n  · #focused  `src/focusManager.ts:11 › #focused`\n  · #cleanup  `src/focusManager.ts:12 › #cleanup`\n    ƒ () => void  `src/focusManager.ts:12 › () => void`\n  · #setup  `src/focusManager.ts:14 › #setup`\n◇ DehydratedState  `src/hydration.ts:50 › DehydratedState`\n  · queries  `src/hydration.ts:52 › queries`\n  · mutations  `src/hydration.ts:51 › mutations`\n◇ DehydratedQuery  `src/hydration.ts:42 › DehydratedQuery`\n  · state  `src/hydration.ts:45 › state`\n  · queryHash  `src/hydration.ts:43 › queryHash`\n  · meta  `src/hydration.ts:47 › meta`\n  · promise  `src/hydration.ts:46 › promise`\n  · queryKey  `src/hydration.ts:44 › queryKey`\n◇ DehydratedMutation  `src/hydration.ts:35 › DehydratedMutation`\n  · state  `src/hydration.ts:37 › state`\n  · scope  `src/hydration.ts:39 › scope`\n  · meta  `src/hydration.ts:38 › meta`\n  · mutationKey  `src/hydration.ts:36 › mutationKey`\n◇ DehydrateOptions  `src/hydration.ts:21 › DehydrateOptions`\n  · shouldDehydrateMutation  `src/hydration.ts:23 › shouldDehydrateMutation`\n    ƒ (mutation: Mutation) => boolean  `src/hydration.ts:23 › (mutation: Mutation) => boolean`\n      ▫ mutation  `src/hydration.ts:23 › mutation`\n  · serializeData  `src/hydration.ts:22 › serializeData`\n  · shouldDehydrateQuery  `src/hydration.ts:24 › shouldDehydrateQuery`\n    ƒ (query: Query) => boolean  `src/hydration.ts:24 › (query: Query) => boolean`\n      ▫ query  `src/hydration.ts:24 › query`\n◇ HydrateOptions  `src/hydration.ts:27 › HydrateOptions`\n  · defaultOptions  `src/hydration.ts:28 › defaultOptions`\n    · queries  `src/hydration.ts:30 › queries`\n    · deserializeData  `src/hydration.ts:29 › deserializeData`\n    · mutations  `src/hydration.ts:31 › mutations`\n◆ InfiniteQueryObserver  `src/infiniteQueryObserver.ts:27 › InfiniteQueryObserver`\n  ƒ getOptimisticResult  `src/infiniteQueryObserver.ts:110 › getOptimisticResult`\n    ▫ options  `src/infiniteQueryObserver.ts:111 › options`\n50 declaration(s) · truncated\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 50 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/typescript-query-core/project\",\"limit\":50,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
+                "text": "# project\n`/tmp/nudox-surface/typescript-query-core/project`\n\n◆ FocusManager  `src/focusManager.ts:10 › FocusManager`\n  ƒ constructor  `src/focusManager.ts:16 › constructor`\n    ▪ listener  `src/focusManager.ts:22 › listener`\n      ƒ <anonymous callable>  `src/focusManager.ts:22 › <anonymous callable>`\n  ƒ onSubscribe  `src/focusManager.ts:35 › onSubscribe`\n  ƒ setFocused  `src/focusManager.ts:60 › setFocused`\n    ▪ changed  `src/focusManager.ts:61 › changed`\n    ▫ focused  `src/focusManager.ts:60 › focused`\n  ƒ setEventListener  `src/focusManager.ts:48 › setEventListener`\n    ƒ <anonymous callable>  `src/focusManager.ts:51 › <anonymous callable>`\n    ▫ setup  `src/focusManager.ts:48 › setup`\n  ƒ onFocus  `src/focusManager.ts:68 › onFocus`\n    ▪ isFocused  `src/focusManager.ts:69 › isFocused`\n    ƒ <anonymous callable>  `src/focusManager.ts:70 › <anonymous callable>`\n  ƒ isFocused  `src/focusManager.ts:75 › isFocused`\n  ƒ onUnsubscribe  `src/focusManager.ts:41 › onUnsubscribe`\n  · #focused  `src/focusManager.ts:11 › #focused`\n  · #cleanup  `src/focusManager.ts:12 › #cleanup`\n    ƒ () => void  `src/focusManager.ts:12 › () => void`\n  · #setup  `src/focusManager.ts:14 › #setup`\n◇ DehydratedState  `src/hydration.ts:50 › DehydratedState`\n  · queries  `src/hydration.ts:52 › queries`\n  · mutations  `src/hydration.ts:51 › mutations`\n◇ DehydratedQuery  `src/hydration.ts:42 › DehydratedQuery`\n  · state  `src/hydration.ts:45 › state`\n  · queryHash  `src/hydration.ts:43 › queryHash`\n  · meta  `src/hydration.ts:47 › meta`\n  · promise  `src/hydration.ts:46 › promise`\n  · queryKey  `src/hydration.ts:44 › queryKey`\n◇ DehydratedMutation  `src/hydration.ts:35 › DehydratedMutation`\n  · state  `src/hydration.ts:37 › state`\n  · scope  `src/hydration.ts:39 › scope`\n  · meta  `src/hydration.ts:38 › meta`\n  · mutationKey  `src/hydration.ts:36 › mutationKey`\n◇ DehydrateOptions  `src/hydration.ts:21 › DehydrateOptions`\n  · shouldDehydrateMutation  `src/hydration.ts:23 › shouldDehydrateMutation`\n    ƒ (mutation: Mutation) => boolean  `src/hydration.ts:23 › (mutation: Mutation) => boolean`\n      ▫ mutation  `src/hydration.ts:23 › mutation`\n  · serializeData  `src/hydration.ts:22 › serializeData`\n  · shouldDehydrateQuery  `src/hydration.ts:24 › shouldDehydrateQuery`\n    ƒ (query: Query) => boolean  `src/hydration.ts:24 › (query: Query) => boolean`\n      ▫ query  `src/hydration.ts:24 › query`\n◇ HydrateOptions  `src/hydration.ts:27 › HydrateOptions`\n  · defaultOptions  `src/hydration.ts:28 › defaultOptions`\n    · queries  `src/hydration.ts:30 › queries`\n    · deserializeData  `src/hydration.ts:29 › deserializeData`\n    · mutations  `src/hydration.ts:31 › mutations`\n◆ InfiniteQueryObserver  `src/infiniteQueryObserver.ts:27 › InfiniteQueryObserver`\n  ƒ getOptimisticResult  `src/infiniteQueryObserver.ts:110 › getOptimisticResult`\n    ▫ options  `src/infiniteQueryObserver.ts:111 › options`\n50 declaration(s) · truncated (outline pagination only; analysis coverage is not certified)\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 50 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/typescript-query-core/project\",\"limit\":50,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
                 "type": "text"
               }
             ],
@@ -3143,9 +3196,9 @@
             "structuredContent": {
               "answer": "outline",
               "budget": {
-                "bytesExcludingCursor": 17745,
+                "bytesExcludingCursor": 20186,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 4437
+                "estimatedTokensExcludingCursor": 5047
               },
               "declarations": 50,
               "detail": "summary",
@@ -3177,7 +3230,7 @@
                   },
                   {
                     "lane": "semantic",
-                    "state": "complete"
+                    "state": "partial"
                   }
                 ],
                 "limit": 50,
@@ -3186,7 +3239,7 @@
                 "schema": 3,
                 "sequence": 2,
                 "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-                "source_root": "747082aaaf86eda9a479e8c6dcb6f4a20b9cd735e04683969a8154d52b84a8c9"
+                "source_root": "182a160ca842d10e69c0a9d4159f4b192793cd23e5ba400929adfd5913206d9c"
               },
               "roots": [
                 {
@@ -3239,7 +3292,7 @@
                               }
                             }
                           ],
-                          "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:22::listener",
+                          "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::a25528ce2c4ee3addd3cd969a535509f70de3047964486f1dfd0c6a0550f1ac2::listener",
                           "key": "1aafe6a3",
                           "kind": "constant",
                           "name": "listener",
@@ -3282,7 +3335,7 @@
                           }
                         }
                       ],
-                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:16::constructor",
+                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::af3b02d8ddb63ab85e083d065ba0be0d63c497df61139a9471b6b45bfb50eca0::constructor",
                       "key": "05945282",
                       "kind": "method",
                       "name": "constructor",
@@ -3325,7 +3378,7 @@
                       }
                     },
                     {
-                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:35::onSubscribe",
+                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::5013688151a3b4e779232081d4dd745635cd493d611a53db9f80d1499fecba78::onSubscribe",
                       "key": "1c8671ec",
                       "kind": "method",
                       "name": "onSubscribe",
@@ -3370,7 +3423,7 @@
                     {
                       "children": [
                         {
-                          "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:61::changed",
+                          "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::2c833eda804babdbb59cbb971e35391be82664ab5563312c250e5c4184a8cee9::changed",
                           "key": "171d1620",
                           "kind": "constant",
                           "name": "changed",
@@ -3413,7 +3466,7 @@
                           }
                         },
                         {
-                          "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:60::focused",
+                          "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::145df4430e0a794e864dfccb790eb48a785896da550504e2fc525a1ca886454e::focused",
                           "key": "9f7b3697",
                           "kind": "variable",
                           "name": "focused",
@@ -3456,7 +3509,7 @@
                           }
                         }
                       ],
-                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:60::setFocused",
+                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::d21c95831a2d0d82dbf698e6c671a87cd02634f25758df4ca6fcf3e9dd694cad::setFocused",
                       "key": "41b550a1",
                       "kind": "method",
                       "name": "setFocused",
@@ -3544,7 +3597,7 @@
                           }
                         },
                         {
-                          "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:48::setup",
+                          "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::cbf89ebacf8b9f472ed21f9a3d4a38888f1f02b66f2eefb8f253366a29e46f65::setup",
                           "key": "4e9d2b0e",
                           "kind": "variable",
                           "name": "setup",
@@ -3587,7 +3640,7 @@
                           }
                         }
                       ],
-                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:48::setEventListener",
+                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::c147e1747b59239ddf12e2e52336fd40fec6dab74bca1519e03e3c3aa02e9134::setEventListener",
                       "key": "493107e0",
                       "kind": "method",
                       "name": "setEventListener",
@@ -3632,7 +3685,7 @@
                     {
                       "children": [
                         {
-                          "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:69::isFocused",
+                          "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::1fd470d8aa9d5b0bf00028201454cd0a1968be84964a5a9727e48e012a0c74a1::isFocused",
                           "key": "09562d35",
                           "kind": "constant",
                           "name": "isFocused",
@@ -3718,7 +3771,7 @@
                           }
                         }
                       ],
-                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:68::onFocus",
+                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::b38704becc6cc48555c391daa907c9d522657ce0815d042314c18bd76a34e456::onFocus",
                       "key": "59a7e473",
                       "kind": "method",
                       "name": "onFocus",
@@ -3761,7 +3814,7 @@
                       }
                     },
                     {
-                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:75::isFocused",
+                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::98819ec01713cc09918d77bf5ef75cbb2e57c54d80be8756476e45d0615c931a::isFocused",
                       "key": "be14b582",
                       "kind": "method",
                       "name": "isFocused",
@@ -3804,7 +3857,7 @@
                       }
                     },
                     {
-                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:41::onUnsubscribe",
+                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::1e31548e9d02702a0d2e696225ed8fcc07cdf3f45189c516cc84678eaba41bd3::onUnsubscribe",
                       "key": "d7bd9008",
                       "kind": "method",
                       "name": "onUnsubscribe",
@@ -3847,7 +3900,7 @@
                       }
                     },
                     {
-                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:11::#focused",
+                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::325295e488b8f943c755bacfcd53d4dbf50363e373687c83d764343d0a537dcc::#focused",
                       "key": "5fc76fd2",
                       "kind": "field",
                       "name": "#focused",
@@ -3892,7 +3945,7 @@
                     {
                       "children": [
                         {
-                          "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:12::() => void",
+                          "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::c834b0ea78a8fa2caafc179cc10a0efea9195a2513e888291d98bd83acfa6d98::() => void",
                           "key": "c103e551",
                           "kind": "function",
                           "name": "() => void",
@@ -3935,7 +3988,7 @@
                           }
                         }
                       ],
-                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:12::#cleanup",
+                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::17bf6a07ba6e0299c428bddbf96060bdfe0e5b8ae2d357ff9f2bb101ee5cc9f3::#cleanup",
                       "key": "dbe8295c",
                       "kind": "field",
                       "name": "#cleanup",
@@ -3978,7 +4031,7 @@
                       }
                     },
                     {
-                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:14::#setup",
+                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::15aad0ed80895d7b20d40f00c6b8958f166a32190afec8aed66a07fe8a1167e0::#setup",
                       "key": "f77376a6",
                       "kind": "field",
                       "name": "#setup",
@@ -4021,7 +4074,7 @@
                       }
                     }
                   ],
-                  "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/focusManager.ts:10::FocusManager",
+                  "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::fd509e7a98d8cc36a8a09371c80fd138a6b1c8639b65fa38f37982e7a302acbe::FocusManager",
                   "key": "89898a0f",
                   "kind": "class",
                   "name": "FocusManager",
@@ -4066,9 +4119,9 @@
                 {
                   "children": [
                     {
-                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:52::queries",
+                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::823cc55f50794ed788032eedba3c031e8cdb6843747a803479a32ad260bfda1b::queries",
                       "key": "c6393e71",
-                      "kind": "property",
+                      "kind": "field",
                       "name": "queries",
                       "semantic_data": {
                         "kind": "selected-symbol-id",
@@ -4109,9 +4162,9 @@
                       }
                     },
                     {
-                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:51::mutations",
+                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::f6beee8afd1cbd3e3b915f343de738affda3535592d4ecd18956ad9537717158::mutations",
                       "key": "fa6290cb",
-                      "kind": "property",
+                      "kind": "field",
                       "name": "mutations",
                       "semantic_data": {
                         "kind": "selected-symbol-id",
@@ -4152,7 +4205,7 @@
                       }
                     }
                   ],
-                  "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:50::DehydratedState",
+                  "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::c790cc1b3f2c4cd9d0ab29a1d3b6dbe245ab14c8cad9076790f078611b35638c::DehydratedState",
                   "key": "06c03d52",
                   "kind": "interface",
                   "name": "DehydratedState",
@@ -4197,9 +4250,9 @@
                 {
                   "children": [
                     {
-                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:45::state",
+                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::03217338153df2741d142cd4c8c019f9f8d0c6316346d81e0359f8c9c63bcb9e::state",
                       "key": "22532fd1",
-                      "kind": "property",
+                      "kind": "field",
                       "name": "state",
                       "semantic_data": {
                         "kind": "selected-symbol-id",
@@ -4240,9 +4293,9 @@
                       }
                     },
                     {
-                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:43::queryHash",
+                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::5cde5b691922dc457d3dfcbec56d43448bb76f0658f407391aa8ade213d9d4bd::queryHash",
                       "key": "316290d9",
-                      "kind": "property",
+                      "kind": "field",
                       "name": "queryHash",
                       "semantic_data": {
                         "kind": "selected-symbol-id",
@@ -4283,9 +4336,9 @@
                       }
                     },
                     {
-                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:47::meta",
+                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::89620c5f81b0f0a500be5596be47a5fd819b71dcbd6344f6a822d01d4a253fba::meta",
                       "key": "5692a550",
-                      "kind": "property",
+                      "kind": "field",
                       "name": "meta",
                       "semantic_data": {
                         "kind": "selected-symbol-id",
@@ -4326,9 +4379,9 @@
                       }
                     },
                     {
-                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:46::promise",
+                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::60e1aef807657a39bb9bc3156da6953a57c07b4c08756c235ad3a1d0cc29f29e::promise",
                       "key": "a70a28eb",
-                      "kind": "property",
+                      "kind": "field",
                       "name": "promise",
                       "semantic_data": {
                         "kind": "selected-symbol-id",
@@ -4369,9 +4422,9 @@
                       }
                     },
                     {
-                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:44::queryKey",
+                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::5a5a70a0ffddd4f9041779e616fd721b1d83d4e440fa3b135892ab728a5c5933::queryKey",
                       "key": "c7e9d78c",
-                      "kind": "property",
+                      "kind": "field",
                       "name": "queryKey",
                       "semantic_data": {
                         "kind": "selected-symbol-id",
@@ -4412,7 +4465,7 @@
                       }
                     }
                   ],
-                  "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:42::DehydratedQuery",
+                  "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::5afb902d4b5fb97a48a40553efcd675d494b225ccb8e37602a057f34d1b34eac::DehydratedQuery",
                   "key": "7f9fbce2",
                   "kind": "interface",
                   "name": "DehydratedQuery",
@@ -4457,9 +4510,9 @@
                 {
                   "children": [
                     {
-                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:37::state",
+                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::56cafbf23055f6ebcc2ff9ee65c5732c2967496b784bc1d42d6a5ba8da4ccd57::state",
                       "key": "3b11c8ed",
-                      "kind": "property",
+                      "kind": "field",
                       "name": "state",
                       "semantic_data": {
                         "kind": "selected-symbol-id",
@@ -4500,9 +4553,9 @@
                       }
                     },
                     {
-                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:39::scope",
+                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::8464c893635634d9c9f1080996f48b3dfd65ceca4c324fa80624ddfe2245c961::scope",
                       "key": "46965094",
-                      "kind": "property",
+                      "kind": "field",
                       "name": "scope",
                       "semantic_data": {
                         "kind": "selected-symbol-id",
@@ -4543,9 +4596,9 @@
                       }
                     },
                     {
-                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:38::meta",
+                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::51cf5f1ba438fccfb518a602e173710cd13cdf8f3b5fd5159c8f74a7e54eb48c::meta",
                       "key": "77b0e967",
-                      "kind": "property",
+                      "kind": "field",
                       "name": "meta",
                       "semantic_data": {
                         "kind": "selected-symbol-id",
@@ -4586,9 +4639,9 @@
                       }
                     },
                     {
-                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:36::mutationKey",
+                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::f18a145c19bdd820258a2c8cb135cb7725b5f092e412bf92b848ebd2c5135e21::mutationKey",
                       "key": "8b150c7d",
-                      "kind": "property",
+                      "kind": "field",
                       "name": "mutationKey",
                       "semantic_data": {
                         "kind": "selected-symbol-id",
@@ -4629,7 +4682,7 @@
                       }
                     }
                   ],
-                  "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:35::DehydratedMutation",
+                  "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::db0491d911fa6a66bd00a8c2b9ca28f0e52e275529c7a3ab5a8d7f664f30948f::DehydratedMutation",
                   "key": "962b1cbc",
                   "kind": "interface",
                   "name": "DehydratedMutation",
@@ -4678,7 +4731,7 @@
                         {
                           "children": [
                             {
-                              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:23::mutation",
+                              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::ab9fa82f7238d5bf230ec0bbb791eb6a5095b46cfb8998971b6bb0ca3d3ac4e1::mutation",
                               "key": "38c00047",
                               "kind": "variable",
                               "name": "mutation",
@@ -4721,7 +4774,7 @@
                               }
                             }
                           ],
-                          "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:23::(mutation: Mutation) => boolean",
+                          "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::c4978a2cf5c9f74b89ce8c387517f7992170739a256f4420378ce43fb9197e4c::(mutation: Mutation) => boolean",
                           "key": "85bed1da",
                           "kind": "function",
                           "name": "(mutation: Mutation) => boolean",
@@ -4764,9 +4817,9 @@
                           }
                         }
                       ],
-                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:23::shouldDehydrateMutation",
+                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::59c2c7132f4b426f3081c90d4fd61975d010302d2e13393a1e3e38b9d3e3d689::shouldDehydrateMutation",
                       "key": "8b8eb1db",
-                      "kind": "property",
+                      "kind": "field",
                       "name": "shouldDehydrateMutation",
                       "semantic_data": {
                         "kind": "selected-symbol-id",
@@ -4807,9 +4860,9 @@
                       }
                     },
                     {
-                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:22::serializeData",
+                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::69e510dc7df3424f636938de0c7acc6a847cc0ebca06e8153b85102a7fcf43d2::serializeData",
                       "key": "e136521a",
-                      "kind": "property",
+                      "kind": "field",
                       "name": "serializeData",
                       "semantic_data": {
                         "kind": "selected-symbol-id",
@@ -4854,7 +4907,7 @@
                         {
                           "children": [
                             {
-                              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:24::query",
+                              "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::6fd032647789bc50d7134ca8219d3ce57254ceecd25b76bce3a03ced27701103::query",
                               "key": "adf0bda6",
                               "kind": "variable",
                               "name": "query",
@@ -4897,7 +4950,7 @@
                               }
                             }
                           ],
-                          "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:24::(query: Query) => boolean",
+                          "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::e6642556440a8702bc43a4cca69bee1a7ab4461470407245ab9da9916044467e::(query: Query) => boolean",
                           "key": "5119ceea",
                           "kind": "function",
                           "name": "(query: Query) => boolean",
@@ -4940,9 +4993,9 @@
                           }
                         }
                       ],
-                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:24::shouldDehydrateQuery",
+                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::263cc35688ce37e7546680778633e11e1e618e4f60759eb33475eb2fb4372c31::shouldDehydrateQuery",
                       "key": "f2002637",
-                      "kind": "property",
+                      "kind": "field",
                       "name": "shouldDehydrateQuery",
                       "semantic_data": {
                         "kind": "selected-symbol-id",
@@ -4983,7 +5036,7 @@
                       }
                     }
                   ],
-                  "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:21::DehydrateOptions",
+                  "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::dceaadb30d35257a03b1912e270a572316b2be66f34b031d742ecfa5a1d9ba6d::DehydrateOptions",
                   "key": "b60f1bfd",
                   "kind": "interface",
                   "name": "DehydrateOptions",
@@ -5030,9 +5083,9 @@
                     {
                       "children": [
                         {
-                          "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:30::queries",
+                          "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::1fa3de8ad47b777c5ac1a89ad910de9691de9d2a212502666269337cf32c03b5::queries",
                           "key": "1a3b1f06",
-                          "kind": "property",
+                          "kind": "field",
                           "name": "queries",
                           "semantic_data": {
                             "kind": "selected-symbol-id",
@@ -5073,9 +5126,9 @@
                           }
                         },
                         {
-                          "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:29::deserializeData",
+                          "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::34c39eca1779e69f85ac177c4178e0b7b5f953c8e6d6f4cfabef26c64bf60c26::deserializeData",
                           "key": "c9385c85",
-                          "kind": "property",
+                          "kind": "field",
                           "name": "deserializeData",
                           "semantic_data": {
                             "kind": "selected-symbol-id",
@@ -5116,9 +5169,9 @@
                           }
                         },
                         {
-                          "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:31::mutations",
+                          "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::b0a58e4fc16a3edd335d0f5103d8dec71ff23c822c1100b6c58f345ebfd4eef8::mutations",
                           "key": "cd34cff0",
-                          "kind": "property",
+                          "kind": "field",
                           "name": "mutations",
                           "semantic_data": {
                             "kind": "selected-symbol-id",
@@ -5159,9 +5212,9 @@
                           }
                         }
                       ],
-                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:28::defaultOptions",
+                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::71c691bb54842826c53b6dce26d2e590d1f09bfaae31cdb60d9b71948fb7ef6d::defaultOptions",
                       "key": "7e53bb73",
-                      "kind": "property",
+                      "kind": "field",
                       "name": "defaultOptions",
                       "semantic_data": {
                         "kind": "selected-symbol-id",
@@ -5202,7 +5255,7 @@
                       }
                     }
                   ],
-                  "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/hydration.ts:27::HydrateOptions",
+                  "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::8d8a20db4fd8a5bf6f65663581a35c91d5acc392b4641a83148ae89fe63f0a6e::HydrateOptions",
                   "key": "eb4d17b8",
                   "kind": "interface",
                   "name": "HydrateOptions",
@@ -5249,7 +5302,7 @@
                     {
                       "children": [
                         {
-                          "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/infiniteQueryObserver.ts:111::options",
+                          "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::4ce43d4526c9a3b4fd855b6ad3d20933694ef35354cc2d7dc130d40cc30fecdb::options",
                           "key": "0500a221",
                           "kind": "variable",
                           "name": "options",
@@ -5292,7 +5345,7 @@
                           }
                         }
                       ],
-                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/infiniteQueryObserver.ts:110::getOptimisticResult",
+                      "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::32e254fc6335577c219120c9a120b03ab452fee109af97171a58953afab7d7ba::getOptimisticResult",
                       "key": "3df14999",
                       "kind": "method",
                       "name": "getOptimisticResult",
@@ -5335,7 +5388,7 @@
                       }
                     }
                   ],
-                  "coordinate": "/tmp/nudox-surface/typescript-query-core/project::src/infiniteQueryObserver.ts:27::InfiniteQueryObserver",
+                  "coordinate": "/tmp/nudox-surface/typescript-query-core/project::semantic::5c698d6f59c2ec4c3d44cd23fdf91aae193d17fb81a16c91ea736748d4f49c1f::InfiniteQueryObserver",
                   "key": "70be23da",
                   "kind": "class",
                   "name": "InfiniteQueryObserver",
@@ -5402,6 +5455,7 @@
         "backend.resolve",
         "backend.search",
         "backend.source",
+        "backend.sql_query",
         "backend.status"
       ]
     }
