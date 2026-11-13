@@ -247,6 +247,16 @@ pub enum Intent {
     /// owner indexes it (`runtime::acquire`, run by the window root; never
     /// reduced).
     AddRelease(crate::model::release::Release),
+    /// Remove a registry release from the library at the exact indexed root
+    /// its page reads: the owner's `remove` drops it and its derived indexes,
+    /// and its source stays on this machine (`runtime::acquire`, run by the
+    /// window root; never reduced).
+    RemoveRelease {
+        /// The release, as its registry names it.
+        release: crate::model::release::Release,
+        /// The indexed root its page reads.
+        page: crate::model::pages::PackageRef,
+    },
     /// Stop a positively identified local request before its first send.
     /// Owner-accepted jobs use the distinct ticket-bound cancellation path.
     CancelIndex(LocalProjectId),
