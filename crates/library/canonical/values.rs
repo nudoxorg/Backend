@@ -1,8 +1,8 @@
 //! Constructors for accepted logical product values.
 
 use super::schema::{
-    ActorKey, BranchKey, IntentId, LogKey, PackageKey, SemanticObject, SymbolKey, ViewRecipeId,
-    ViewVersion,
+    ActorKey, BranchKey, IntentId, LogKey, PackageKey, SemanticObject, SymbolKey, SymbolSchema,
+    ViewRecipeId, ViewVersion,
 };
 
 /// Constructs a package key from its canonical logical coordinate.
@@ -15,6 +15,52 @@ pub fn package_key(coordinate: &str) -> PackageKey {
 #[must_use]
 pub fn symbol_key(address: &str) -> SymbolKey {
     SymbolKey::from_value(address)
+}
+
+/// Streams the exact borrowed UTF-8 logical address through the symbol schema.
+///
+/// This derives the same key as [`symbol_key`] without allocating a canonical
+/// preimage copy. It is a logical identity constructor; it does not admit a
+/// source claim or confer declaration membership.
+///
+/// # Errors
+/// Returns a canonical framing error if the borrowed length cannot be encoded.
+pub fn symbol_key_borrowed(
+    address: &str,
+) -> Result<SymbolKey, backend_version::RuntimeIdentityError> {
+    use backend_version::{ObjectKeyHasher, Schema, SchemaIdentity};
+    let schema = SchemaIdentity::new(
+        SymbolSchema::DOMAIN,
+        SymbolSchema::TYPE,
+        SymbolSchema::VERSION,
+    );
+    let mut hasher = ObjectKeyHasher::new(schema, address.len())?;
+    hasher.update(address.as_bytes())?;
+    hasher.finish_key::<SymbolSchema>()
+}
+
+#[cfg(test)]
+mod borrowed_symbol_key_tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_symbol_keys_match_canonical_encoding_without_allocating() {
+        let long = "path/α.sql::column".repeat(512);
+        for address in [
+            "",
+            "symbol",
+            "pkg::α.sql::books\0sql:4294967295",
+            long.as_str(),
+        ] {
+            let expected = symbol_key(address);
+            let mut actual = None;
+            let measured = allocation_counter::measure(|| {
+                actual = Some(symbol_key_borrowed(address).expect("borrowed canonical key"));
+            });
+            assert_eq!(actual, Some(expected));
+            assert_eq!(measured.count_total, 0);
+        }
+    }
 }
 
 /// Constructs an actor key from its canonical logical name.

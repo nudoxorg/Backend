@@ -163,7 +163,7 @@ impl QueryPageRecipe {
             page.window(),
             page.continuation().map(crate::PageContinuation::cursor),
         )?;
-        Some(Self::graph_window(root, address, window))
+        Some(Self::graph_window_mode(root, address, window, page.include_incoming()))
     }
 
     fn predecessor_window(window: QueryWindow, cursor: Option<Cursor>) -> Option<QueryWindow> {
@@ -188,7 +188,13 @@ impl QueryPageRecipe {
         address: crate::SymbolAddress,
         window: QueryWindow,
     ) -> Self {
-        let recipe = graph_page_recipe(address, window);
+        Self::graph_window_mode(root, address, window, false)
+    }
+
+    /// Bind a graph page to its direction as well as its root and credit.
+    #[must_use]
+    pub fn graph_window_mode(root: ViewStateRoot, address: crate::SymbolAddress, window: QueryWindow, include_incoming: bool) -> Self {
+        let recipe = graph_page_recipe_mode(address, window, include_incoming);
         let preimage =
             crate::canonical::view_identity_preimage(&[b"query", &recipe, root.as_bytes(), &[0]])
                 .into_boxed_slice();
@@ -341,6 +347,16 @@ fn members_page_recipe(owner: crate::SymbolAddress, limit: QueryLimit) -> Vec<u8
     bytes.extend_from_slice(&owner.claimed_bytes());
     bytes.extend_from_slice(&limit.get().to_be_bytes());
     bytes
+}
+
+fn graph_page_recipe_mode(address: crate::SymbolAddress, window: QueryWindow, include_incoming: bool) -> Vec<u8> {
+    if include_incoming {
+        let mut bytes = b"related-page-v1\0".to_vec();
+        bytes.extend_from_slice(&window.issued().get().to_be_bytes());
+        bytes.extend_from_slice(&address.claimed_bytes());
+        return bytes;
+    }
+    graph_page_recipe(address, window)
 }
 
 fn graph_page_recipe(address: crate::SymbolAddress, window: QueryWindow) -> Vec<u8> {
@@ -582,7 +598,7 @@ impl Library {
         let terminal = snapshot.next.map_or(PageTerminal::Complete, |cursor| {
             PageTerminal::More(crate::PageContinuation::from_cursor(cursor))
         });
-        Ok(ProjectionPage { snapshot, terminal, outline_order: Some(order) })
+        Ok(ProjectionPage { graph_alias_witness: None, snapshot, terminal, outline_order: Some(order) })
     }
 
     /// Pages one retained owner and its immediate members from the existing
@@ -1374,6 +1390,8 @@ impl Library {
                     .row_label(RowId::Symbol(fact.site))
                     .ok_or(LibraryError::NotFound)?;
                 Ok(ReferenceRecord {
+                site_symbol: None,
+                source_policy: Default::default(),
                     site: crate::ProductText::new(label).map_err(|_| {
                         LibraryError::InvalidQuery(
                             "reference site coordinate violates the text bound".to_owned(),
@@ -1472,7 +1490,7 @@ impl Library {
             .row_ref(RowId::Symbol(symbol))
             .ok_or(LibraryError::NotFound)?;
         let window = page.window();
-        let recipe_bytes = graph_page_recipe(address, window);
+        let recipe_bytes = graph_page_recipe_mode(address, window, page.include_incoming());
         let previous_recipe =
             QueryPageRecipe::graph_predecessor(self.revision_root(), address, page)
                 .ok_or(LibraryError::CursorMismatch)?
@@ -1513,7 +1531,7 @@ impl Library {
             return Err(LibraryError::NotFound);
         }
         let window = page.window();
-        let recipe_bytes = graph_page_recipe(address, window);
+        let recipe_bytes = graph_page_recipe_mode(address, window, page.include_incoming());
         let previous_recipe =
             QueryPageRecipe::graph_predecessor(self.revision_root(), address, page)
                 .ok_or(LibraryError::CursorMismatch)?
@@ -1595,7 +1613,7 @@ impl Library {
         let terminal = snapshot.next.map_or(PageTerminal::Complete, |cursor| {
             PageTerminal::More(crate::PageContinuation::from_cursor(cursor))
         });
-        Ok(ProjectionPage { snapshot, terminal, outline_order: None })
+        Ok(ProjectionPage { graph_alias_witness: None, snapshot, terminal, outline_order: None })
     }
 
     fn projection_page(
@@ -1620,7 +1638,7 @@ impl Library {
         let terminal = snapshot.next.map_or(PageTerminal::Complete, |cursor| {
             PageTerminal::More(crate::PageContinuation::from_cursor(cursor))
         });
-        Ok(ProjectionPage { snapshot, terminal, outline_order: None })
+        Ok(ProjectionPage { graph_alias_witness: None, snapshot, terminal, outline_order: None })
     }
 }
 
