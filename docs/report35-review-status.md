@@ -39,8 +39,18 @@ per-file compiler-outcome lookup remains under repair. The navigation/document c
 three presentation controls on their recorded source revision; certified alias
 wire and combined public acceptance remain required.
 
-Cancellation transaction isolation and selected C# publication are unfinished.
-Their experimental source stays outside this combined candidate until coherent
+A scoped unchanged-input cancellation mitigation retains the proven prior
+selection while a refresh is pending or cancelled. Its isolated diagnostic kept
+4,503 rows, marker/query data and prior complete selections after cold reopen;
+that diagnostic lacks a complete source-bound artifact receipt. Changed-input
+transaction isolation remains unfinished, so this does not close cancellation.
+
+Transient TypeScript child-context allocation changes passed 23 standalone
+allocation and semantic controls. They do not establish the global work-budget
+or end-to-end performance fix.
+
+Full cancellation isolation and selected C# publication are unfinished. Their
+experimental source stays outside this combined candidate until coherent
 integration; the existing publication guards remain. Source-owned CI preflight
 still identifies 30 existing external-prerequisite tests without completed
 execution/ownership closure. Private remote CI status is unverified. This review
