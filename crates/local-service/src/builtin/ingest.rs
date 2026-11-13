@@ -6,6 +6,17 @@ use super::source_budget::{SourceAdmissionLedger, SourceAdmissionPolicy};
 use super::source_frontier;
 #[path = "ingest/go_project.rs"]
 mod go_project;
+#[path = "ingest/vue.rs"]
+mod vue;
+
+/// Native container/compiler sources plus this source-facts projection recipe.
+/// Changes to generic file facts must invalidate warm source selection too.
+pub(super) fn vue_analysis_version() -> [u8; 32] {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"nudox.vue-script-source-projection.v1\0");
+    hash.update(&backend_frontend_vue::support_fingerprint());
+    *hash.finalize().as_bytes()
+}
 use self::go_project::GoProjectCapture;
 use backend_compile::{
     DeclarationKind, InputContentSchema, SourceExcerpt, SourceLanguage, SyntaxError,
@@ -26,6 +37,7 @@ use backend_frontend_python::legacy::checker::{
 use backend_library::{
     DiscoveryPolicy, EntryKind, discover_source_entries, source_selection_policy,
 };
+use backend_semantic::ir::SemanticCoreReader;
 use backend_semantic::vocabulary::{
     CSharpVersion, CStandard, CxxStandard, GoVersion, JavaRelease, Language, LanguageProfile,
     PythonVersion, RustEdition, TypeScriptSource,
@@ -36,7 +48,7 @@ use std::io::Read as _;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{OnceLock, mpsc};
+use std::sync::{Arc, OnceLock, mpsc};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 use unicode_normalization::UnicodeNormalization;
@@ -81,17 +93,27 @@ fn absolute_path_spelling(path: &Path) -> Result<PathBuf, String> {
 /// One complete, deterministic project scan before comparison with the
 /// selected versioned relation.
 pub(super) struct IndexSnapshot {
+    vue_scan_identity: std::sync::Arc<()>,
     pub(super) python_environment:
         Option<backend_frontend_python::legacy::checker::PythonEnvironmentInput>,
     pub(super) source_version: [u8; 32],
     /// Separate discovery evidence, not a compiler or supported-source member.
     pub(super) source_selection: backend_library::SourceSelectionObservation,
+    /// Native CSS candidates witnessed by this same discovery walk.
+    pub(super) stylo_walk: StyloWalkEvidence,
+    /// SQL candidates witnessed by the same bounded, nonignored source walk.
+    pub(super) sql_walk: SqlWalkEvidence,
+    /// Vue candidates from the same confined discovery walk; not compiler members.
+    pub(super) vue_walk: VueWalkEvidence,
+    /// Exact source-ledger baseline before optional native Stylo work.
+    stylo_budget_baseline: StyloBudgetBaseline,
     pub(super) files: Vec<([u8; 32], ProductSourceRecord)>,
     /// Complete file-facts updates produced before compact source-row retention.
     pub(super) source_facts: Vec<ProductSourceFileFactsUpdate>,
     /// Full persisted fact-page charges, including unchanged frontier files.
     pub(super) encoded_fact_bytes: Vec<([u8; 32], usize)>,
     pub(super) compiler_sources: Vec<CompilerSourceHandle>,
+    pub(super) native_typescript_capture: Option<NativeTsCapture>,
     /// Exact per-path dispositions for complete Clang and C# profile frontiers.
     pub(super) native_frontier: Vec<ProductNativeFrontierRecord>,
     /// Parser-malformed, UTF-8 native sources eligible for the separate Clang route.
@@ -108,6 +130,121 @@ pub(super) struct IndexSnapshot {
     /// Limits pinned for source admission, compiler rereads, and warm-cache
     /// identity during this scan's downstream compilation.
     pub(super) source_admission_policy: SourceAdmissionPolicy,
+}
+
+#[derive(Clone, Copy)]
+struct StyloBudgetBaseline {
+    source_bytes: usize,
+    record_bytes: usize,
+    records: usize,
+}
+
+/// Private evidence produced by the same source discovery walk. A missing
+/// inventory witness cannot authorize native CSS publication or negatives.
+pub(super) struct StyloWalkEvidence {
+    project: [u8; 32],
+    root: PathBuf,
+    files: Vec<CompilerFileRevision>,
+    inventory: Option<(u64, [u8; 32])>,
+    inventory_complete: bool,
+    discovery_options: Vec<u8>,
+    source_policy: [u8; 32],
+    local_policy_paths: Vec<PathBuf>,
+}
+
+/// Raw same-walk SQL inventory claims; this is not selected source authority.
+#[derive(Clone)]
+pub(super) struct SqlWalkEvidence {
+    project: [u8; 32],
+    root: PathBuf,
+    files: Vec<CompilerFileRevision>,
+    inventory_complete: bool,
+}
+impl SqlWalkEvidence {
+    pub(super) fn root(&self) -> &Path { &self.root }
+    /// Number of candidate `.sql` files in the (possibly truncated) walk.
+    pub(super) fn file_count(&self) -> usize { self.files.len() }
+    /// Whether the bounded walk saw every candidate `.sql` file.
+    pub(super) fn inventory_complete(&self) -> bool { self.inventory_complete }
+    pub(super) fn checked_retained_bytes(&self) -> Option<usize> {
+        let mut total = std::mem::size_of::<Self>();
+        sql_charge_allocation(&mut total, self.root.capacity())?;
+        sql_charge_allocation(&mut total, self.files.capacity().checked_mul(std::mem::size_of::<CompilerFileRevision>())?)?;
+        for file in &self.files { sql_charge_allocation(&mut total, file.relative_path.capacity())?; }
+        Some(total)
+    }
+}
+impl StyloWalkEvidence {
+    pub(super) fn project(&self) -> [u8; 32] {
+        self.project
+    }
+    pub(super) fn root(&self) -> &Path {
+        &self.root
+    }
+    pub(super) fn files(&self) -> &[CompilerFileRevision] {
+        &self.files
+    }
+    pub(super) fn inventory(&self) -> Option<(u64, [u8; 32])> {
+        self.inventory
+    }
+    pub(super) fn inventory_complete(&self) -> bool {
+        self.inventory_complete
+    }
+    pub(super) fn discovery_options(&self) -> &[u8] {
+        &self.discovery_options
+    }
+    pub(super) fn source_policy(&self) -> [u8; 32] {
+        self.source_policy
+    }
+    pub(super) fn local_policy_paths(&self) -> &[PathBuf] {
+        &self.local_policy_paths
+    }
+    /// Extends the existing directory/root fence with the CSS paths observed
+    /// in the same walk. Callers must check this fence before and after reads.
+    pub(super) fn bind_fence(
+        &self,
+        fence: &CompilerRevisionFence,
+    ) -> Result<CompilerRevisionFence, String> {
+        if self.root != fence.root {
+            return Err("Stylo walk root differs from source fence".into());
+        }
+        let mut bound = fence.clone();
+        bound.files.extend(self.files.iter().cloned());
+        bound
+            .files
+            .sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        bound.files.dedup_by(|left, right| {
+            left.relative_path == right.relative_path && left.metadata == right.metadata
+        });
+        Ok(bound)
+    }
+}
+
+/// Vue candidates witnessed by the same source walk. This alone grants no
+/// declaration or workspace-publication authority.
+#[derive(Clone)]
+pub(super) struct VueWalkEvidence {
+    project: [u8; 32],
+    root: PathBuf,
+    files: Vec<CompilerFileRevision>,
+    complete: bool,
+    discovery_options: Vec<u8>,
+    source_policy: [u8; 32],
+    local_policy_paths: Vec<PathBuf>,
+}
+impl VueWalkEvidence {
+    pub(super) fn project(&self) -> [u8; 32] { self.project }
+    pub(super) fn root(&self) -> &Path { &self.root }
+    pub(super) fn files(&self) -> &[CompilerFileRevision] { &self.files }
+    pub(super) fn complete(&self) -> bool { self.complete }
+    fn bind_fence(&self, fence: &CompilerRevisionFence) -> Result<CompilerRevisionFence, String> {
+        if self.root != fence.root { return Err("Vue walk root differs from source fence".into()); }
+        let mut bound = fence.clone();
+        bound.files.extend(self.files.iter().cloned());
+        bound.files.sort_by(|a,b| a.relative_path.cmp(&b.relative_path));
+        bound.files.dedup_by(|a,b| a.relative_path == b.relative_path && a.metadata == b.metadata);
+        Ok(bound)
+    }
 }
 
 /// Captured tree and file metadata used to reject a compiler result if known
@@ -127,12 +264,61 @@ pub(super) struct CompilerRevisionFence {
 }
 
 impl CompilerRevisionFence {
+    /// Conservative heap charge for a retained native-only fence.
+    pub(super) fn checked_retained_bytes(&self) -> Option<usize> {
+        if !self.typescript_reuse.is_empty() { return None; }
+        fn add(total: &mut usize, capacity: usize) -> Option<()> {
+            if capacity != 0 { *total = total.checked_add(capacity)?.checked_add(2 * std::mem::size_of::<usize>())?; }
+            Some(())
+        }
+        let mut total = std::mem::size_of::<Self>();
+        add(&mut total, self.requested_root.capacity())?;
+        add(&mut total, self.root.capacity())?;
+        add(&mut total, self.directories.capacity().checked_mul(std::mem::size_of::<(PathBuf, Option<FileSystemRevision>)>())?)?;
+        for (path, _) in &self.directories { add(&mut total, path.capacity())?; }
+        add(&mut total, self.files.capacity().checked_mul(std::mem::size_of::<CompilerFileRevision>())?)?;
+        for file in &self.files { add(&mut total, file.relative_path.capacity())?; }
+        add(&mut total, self.typescript_reuse.capacity().checked_mul(std::mem::size_of::<backend_engine::application::TypeScriptSnapshotReuse>())?)?;
+        Some(total)
+    }
+    /// Conservative retained-byte charge for the finite C# custody profile.
+    /// Opaque TypeScript reuse proof allocation is not accounted here.
+    pub(super) fn csharp_retained_bytes(&self) -> Option<usize> {
+        if !self.typescript_reuse.is_empty() { return None; }
+        let mut total = std::mem::size_of::<Self>()
+            .checked_add(self.requested_root.capacity().checked_mul(4)?)?
+            .checked_add(self.root.capacity().checked_mul(4)?)?
+            .checked_add(self.directories.capacity().checked_mul(std::mem::size_of::<(PathBuf, Option<FileSystemRevision>)>())?)?
+            .checked_add(self.files.capacity().checked_mul(std::mem::size_of::<CompilerFileRevision>())?)?
+            .checked_add(self.typescript_reuse.capacity().checked_mul(std::mem::size_of::<backend_engine::application::TypeScriptSnapshotReuse>())?)?;
+        for (path, _) in &self.directories { total = total.checked_add(path.capacity().checked_mul(4)?)?.checked_add(64)?; }
+        for file in &self.files { total = total.checked_add(file.relative_path.capacity().checked_mul(4)?)?.checked_add(64)?; }
+        total.checked_add(256)
+    }
+
+    /// Exact capacity-based charge for SQL's retained scan fence. Reuse
+    /// witnesses are refused until their nested ownership is accounted for.
+    pub(super) fn checked_sql_retained_bytes(&self) -> Option<usize> {
+        if !self.typescript_reuse.is_empty() { return None; }
+        let mut total = std::mem::size_of::<Self>();
+        sql_charge_allocation(&mut total, self.requested_root.capacity())?;
+        sql_charge_allocation(&mut total, self.root.capacity())?;
+        sql_charge_allocation(&mut total, self.directories.capacity().checked_mul(std::mem::size_of::<(PathBuf, Option<FileSystemRevision>)>())?)?;
+        for (path, _) in &self.directories { sql_charge_allocation(&mut total, path.capacity())?; }
+        sql_charge_allocation(&mut total, self.files.capacity().checked_mul(std::mem::size_of::<CompilerFileRevision>())?)?;
+        for file in &self.files { sql_charge_allocation(&mut total, file.relative_path.capacity())?; }
+        sql_charge_allocation(&mut total, self.typescript_reuse.capacity().checked_mul(std::mem::size_of::<backend_engine::application::TypeScriptSnapshotReuse>())?)?;
+        Some(total)
+    }
     /// Canonical root pinned by this source scan. Filesystem reads that happen
     /// after admission must use this path rather than resolving the caller's
     /// original spelling again.
     pub(super) fn canonical_root(&self) -> &Path {
         &self.root
     }
+
+    /// Original absolute root spelling bound by this revision fence.
+    pub(super) fn requested_root(&self) -> &Path { &self.requested_root }
 
     /// Opens the exact root admitted by this scan after checking both the
     /// original path spelling and the root directory's captured identity.
@@ -236,6 +422,471 @@ pub(super) struct CompilerSourceHandle {
     pub(super) content: [u8; 32],
     /// Exact source-fact identity bound to the captured bytes, including unavailable rows.
     pub(super) source_fact_identity: SourceFactIdentity,
+    /// Exact byte count for native-only inputs; legacy handles predate it.
+    pub(super) expected_byte_length: Option<u32>,
+}
+
+/// Private same-walk native TS input. The compiler independently rereads the
+/// source under the revision fence and checks both identities and its length;
+/// the accompanying row is only a claim until owner admission.
+struct NativeTsCapturedSource {
+    evidence: backend_engine::builtin::NativeSourceEvidence,
+    source_fact_identity: SourceFactIdentity,
+}
+
+/// One bounded native source observation under the already-open project root.
+/// It deliberately makes no source-inventory completeness claim.
+pub(super) struct NativeTsCapture {
+    canonical_root: PathBuf,
+    project: [u8; 32],
+    sources: Vec<NativeTsCapturedSource>,
+    revision_fence: CompilerRevisionFence,
+    encoded_bytes: usize,
+    source_version: [u8; 32],
+    // Only a complete scan supplies this; helper-only observations cannot be
+    // promoted to a publication witness by reconstructing policy later.
+    fixed_discovery_policy: bool,
+    source_policy: SourceAdmissionPolicy,
+    project_source_version: Option<[u8; 32]>,
+    cancellation: Option<Arc<AtomicBool>>,
+}
+
+/// A fresh positive-source rewalk of the original private capture. It carries
+/// no workspace selection or inventory-completeness authority.
+pub(super) struct RevalidatedNativeTsCapture {
+    capture: NativeTsCapture,
+    bytes_read: usize,
+    cancellation: Arc<AtomicBool>,
+}
+
+impl RevalidatedNativeTsCapture {
+    pub(super) fn matches_cancellation(&self, cancellation: &Arc<AtomicBool>) -> bool {
+        Arc::ptr_eq(&self.cancellation, cancellation)
+    }
+    /// Conservative retained allocation charge; source rewalk I/O and the
+    /// enclosing Arc allocation header are charged by the owning plan.
+    pub(super) fn checked_retained_bytes(&self) -> Option<usize> {
+        let mut total = std::mem::size_of::<Self>();
+        fn allocation(total: &mut usize, capacity: usize) -> Option<()> {
+            if capacity != 0 {
+                *total = total.checked_add(capacity)?.checked_add(2 * std::mem::size_of::<usize>())?;
+            }
+            Some(())
+        }
+        let capture = &self.capture;
+        let fence = &capture.revision_fence;
+        // Native-only scans do not retain compiler-reuse witnesses. Their
+        // nested heap ownership requires a separate accounting contract.
+        if !fence.typescript_reuse.is_empty() { return None; }
+        allocation(&mut total, capture.canonical_root.capacity())?;
+        allocation(&mut total, fence.requested_root.capacity())?;
+        allocation(&mut total, fence.root.capacity())?;
+        allocation(&mut total, capture.sources.capacity().checked_mul(std::mem::size_of::<NativeTsCapturedSource>())?)?;
+        for source in &capture.sources {
+            allocation(&mut total, source.evidence.path.capacity())?;
+            if let Some(lines) = &source.evidence.line_starts {
+                allocation(&mut total, lines.capacity().checked_mul(std::mem::size_of::<u32>())?)?;
+            }
+        }
+        allocation(&mut total, fence.directories.capacity().checked_mul(std::mem::size_of::<(PathBuf, Option<FileSystemRevision>)>())?)?;
+        for (path, _) in &fence.directories { allocation(&mut total, path.capacity())?; }
+        allocation(&mut total, fence.files.capacity().checked_mul(std::mem::size_of::<CompilerFileRevision>())?)?;
+        for file in &fence.files { allocation(&mut total, file.relative_path.capacity())?; }
+        allocation(&mut total, fence.typescript_reuse.capacity().checked_mul(std::mem::size_of::<backend_engine::application::TypeScriptSnapshotReuse>())?)?;
+        // Conservatively charge both Arc owners and their shared allocation.
+        total.checked_add(3 * std::mem::size_of::<usize>())
+    }
+    pub(super) fn project(&self) -> [u8; 32] { self.capture.project }
+    pub(super) fn canonical_root(&self) -> &Path { &self.capture.canonical_root }
+    pub(super) fn project_source_version(&self) -> [u8; 32] {
+        self.capture.project_source_version.expect("validated project source basis")
+    }
+    pub(super) fn bytes_read(&self) -> usize { self.bytes_read }
+    /// Repeats the original bounded positive-source observation on a worker.
+    pub(super) fn revalidate_again(&self, bytes_read: &mut usize) -> Result<(), String> {
+        self.capture.revalidate(Some(self.cancellation.as_ref()), bytes_read)
+    }
+    pub(super) fn fence_is_current(&self) -> Result<bool, String> {
+        compiler_revision_is_current_with_cancellation(&self.capture.revision_fence, Some(self.cancellation.as_ref()))
+    }
+    pub(super) fn cancelled(&self) -> bool {
+        self.cancellation.load(Ordering::Acquire)
+    }
+    pub(super) fn program_image_evidence(
+        &self,
+        activated: &super::ActivatedProductSemantics,
+        headers: Option<(&backend_semantic::native_ts_headers::NativeTsHeaderAggregateView<'_>, [u8; 32])>,
+        checkpoint: &mut impl FnMut(usize) -> Result<(), String>,
+    ) -> Result<Vec<backend_engine::builtin::NativeSourceEvidence>, String> {
+        self.capture.program_image_evidence(activated, headers, checkpoint)
+    }
+}
+
+impl IndexSnapshot {
+    /// Native-only discovery has unwitnessed global/ancestor ignore inputs.
+    /// Its source digest cannot independently establish a current program.
+    pub(super) fn native_typescript_discovery_incomplete(&self) -> bool {
+        self.native_typescript_capture.is_some()
+    }
+}
+
+impl NativeTsCapture {
+    pub(super) fn into_revalidated(
+        self,
+        bytes_read: &mut usize,
+    ) -> Result<RevalidatedNativeTsCapture, String> {
+        let cancellation = self.cancellation.as_ref().ok_or("native TypeScript capture has no original cancellation")?.clone();
+        let before = *bytes_read;
+        self.revalidate(Some(cancellation.as_ref()), bytes_read)?;
+        let charged = bytes_read.checked_sub(before).ok_or("native rewalk accounting overflow")?;
+        if self.project_source_version.is_none() {
+            return Err("native TypeScript capture has no project source basis".into());
+        }
+        Ok(RevalidatedNativeTsCapture { capture: self, bytes_read: charged, cancellation })
+    }
+    /// Joins a compiler-admitted activation to the private scan witness. The
+    /// activation must already have been admitted under its exact product key
+    /// and claim; this method does not select a workspace or prove freshness.
+    /// Forest programs seal image digests; legacy Single programs instead rely
+    /// on the caller's exact admitted compiler closure for image membership.
+    pub(super) fn program_image_evidence(
+        &self,
+        activated: &super::ActivatedProductSemantics,
+        headers: Option<(&backend_semantic::native_ts_headers::NativeTsHeaderAggregateView<'_>, [u8; 32])>,
+        checkpoint: &mut impl FnMut(usize) -> Result<(), String>,
+    ) -> Result<Vec<backend_engine::builtin::NativeSourceEvidence>, String> {
+        let mut consumed_headers = 0usize;
+        let program = activated.native_program_sources.as_ref()
+            .ok_or("native TypeScript program is unavailable")?;
+        let captured: BTreeMap<_, _> = self.sources.iter()
+            .map(|source| (source.evidence.path.as_str(), source)).collect();
+        if captured.len() != self.sources.len() {
+            return Err("duplicate native TypeScript captured path".into());
+        }
+        let mut members = BTreeMap::new();
+        for row in program.sources() {
+            let Some(path) = row.package_path else { continue };
+            let source = captured.get(path).ok_or("native program package source was not captured")?;
+            if row.source.identity != source.source_fact_identity
+                || row.source.byte_len != source.evidence.byte_length
+                || members.insert(path, row.source).is_some()
+            {
+                return Err("native program source differs from the captured input".into());
+            }
+        }
+        let mut witnessed = BTreeSet::new();
+        let mut admitted_headers = BTreeMap::new();
+        for image in activated.images() {
+            let view = image.reopen().map_err(|error| format!("reopen native image: {error}"))?;
+            let backend_semantic::ir::ImageProvenance::Captured { source, recipe, scope, .. } =
+                view.image_facts().provenance else { return Err("native image provenance unavailable".into()) };
+            let path = view.atom(scope.path).and_then(|bytes| std::str::from_utf8(bytes).ok())
+                .ok_or("native image path unavailable")?;
+            let captured_source = captured.get(path).ok_or("native image source was not captured")?;
+            if recipe.tool != backend_semantic::vocabulary::NativeTool::TypeScriptCompiler
+                || recipe.toolchain != program.toolchain()
+                || recipe.profile != captured_source.evidence.profile
+                || members.get(path) != Some(&source)
+                || !program.image_matches(path, backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(image.as_ref()).as_ref())
+                || !witnessed.insert(path.to_owned())
+            {
+                return Err("native image is not an exact program member".into());
+            }
+            let header = match headers { Some((aggregate, _)) => aggregate.find_file_checkpointed(path, checkpoint)?, None => None };
+            if let Some(header) = header {
+                consumed_headers += 1;
+                if header.source != source || header.producer_recipe != super::native_ts_headers::producer_recipe() {
+                    return Err("native header producer or source differs".into());
+                }
+                let (_, aggregate_digest) = headers.ok_or("native header closure witness absent")?;
+                let reference = backend_engine::builtin::NativeHeaderEvidence {
+                    image_identity: header.image_identity, image_byte_len: header.image_byte_len,
+                    producer_recipe: header.producer_recipe, aggregate_digest,
+                };
+                super::native_ts_headers::admit_image_borrowed(&captured_source.evidence, &reference, header, &view, image.as_ref(), checkpoint)?;
+                admitted_headers.insert(path.to_owned(), reference);
+            }
+        }
+        if headers.is_some_and(|(aggregate, _)| consumed_headers != aggregate.len()) { return Err("native headers lack their selected image".into()); }
+        // A mapped program input is source evidence even when this profile
+        // did not emit an image for it. Keep that weaker fact distinct from
+        // an admitted image; consumers must not infer declarations from it.
+        let mut candidate_budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
+        let mut evidence = members.keys().map(|path| {
+            let source = captured.get(path).ok_or("native program member lost its captured source")?;
+            let mut charge = source.evidence.checked_heap_bytes().and_then(|n| n.checked_add(256))
+                .ok_or("native source evidence resident overflow")?;
+            if admitted_headers.contains_key(*path) {
+                charge = charge.checked_add(128).ok_or("native header resident overflow")?;
+            }
+            candidate_budget = candidate_budget.checked_sub(charge).ok_or("native evidence candidate budget exceeded")?;
+            let mut row = source.evidence.clone();
+            row.kind = if witnessed.contains(*path) {
+                backend_engine::builtin::NativeSourceEvidenceKind::Image
+            } else {
+                backend_engine::builtin::NativeSourceEvidenceKind::ProgramMember
+            };
+            row.headers = admitted_headers.remove(*path);
+            if row.checked_encoded_len().is_none_or(|len| len > backend_engine::builtin::MAX_NATIVE_EVIDENCE_STORED_VALUE) {
+                // The compiler aggregate retains all headers; avoid dropping
+                // them just because the optional inline line map is large.
+                row.line_starts = None;
+            }
+            if row.checked_encoded_len().is_none_or(|len| len > backend_engine::builtin::MAX_NATIVE_EVIDENCE_STORED_VALUE) {
+                return Err("native source evidence exceeds durable row capacity");
+            }
+            Ok(row)
+        }).collect::<Result<Vec<_>, &str>>()?;
+        evidence.sort_unstable_by(|left, right| left.path.cmp(&right.path));
+        Ok(evidence)
+    }
+
+    /// Rewalks the original discovery policy and rereads exact TS inputs under
+    /// the original root/configuration fence. This proves only the observed
+    /// positives at this check: ambient ignore inputs remain unwitnessed and
+    /// inventory completeness remains unknown. The caller must charge the
+    /// returned read work and recheck the fence before final publication.
+    pub(super) fn revalidate(
+        &self,
+        cancellation: Option<&AtomicBool>,
+        bytes_read: &mut usize,
+    ) -> Result<(), String> {
+        if !self.fixed_discovery_policy {
+            return Err("native TypeScript capture has no fixed scan policy".into());
+        }
+        if !compiler_revision_is_current_with_cancellation(&self.revision_fence, cancellation)? {
+            return Err("native TypeScript capture fence changed".into());
+        }
+        let root = self.revision_fence.open_bound_root(&self.revision_fence.requested_root)?;
+        let walk = project_paths_with_policy(
+            &self.canonical_root, &root, None, true, source_selection_policy(), cancellation,
+        )?;
+        if !walk.sources.is_empty() {
+            return Err("native TypeScript rewalk found mixed legacy source lanes".into());
+        }
+        let mut ledger = SourceAdmissionLedger::default();
+        let current = capture_native_typescript_sources(
+            &self.canonical_root, &walk.native_typescript_paths, self.project,
+            self.source_policy, &mut ledger, &self.revision_fence, bytes_read, cancellation,
+        )?;
+        if current.source_version != self.source_version
+            || current.sources.len() != self.sources.len()
+            || current.sources.iter().zip(&self.sources).any(|(left, right)| {
+                left.evidence != right.evidence || left.source_fact_identity != right.source_fact_identity
+            })
+        {
+            return Err("native TypeScript source observation changed during rewalk".into());
+        }
+        Ok(())
+    }
+}
+
+fn capture_native_typescript_sources(
+    root: &Path,
+    paths: &[PathBuf],
+    project: [u8; 32],
+    policy: SourceAdmissionPolicy,
+    ledger: &mut SourceAdmissionLedger,
+    revision_fence: &CompilerRevisionFence,
+    bytes_read: &mut usize,
+    cancellation: Option<&AtomicBool>,
+) -> Result<NativeTsCapture, String> {
+    use backend_engine::Relation as _;
+    if !root.is_absolute()
+        || root.canonicalize().map_err(|error| error.to_string())? != root
+        || revision_fence.canonical_root() != root
+        || !compiler_revision_is_current_with_cancellation(revision_fence, cancellation)?
+    {
+        return Err("native TypeScript project root or revision fence is not current".into());
+    }
+    let root_capability = revision_fence.open_bound_root(&revision_fence.requested_root)?;
+    let root_text = root
+        .to_str()
+        .ok_or("native TypeScript project root is not exact UTF-8")?;
+    if backend_engine::PackageKey::from_value(root_text).to_bytes() != project {
+        return Err("native TypeScript project key does not bind its canonical root".into());
+    }
+    if paths.len() > backend_engine::builtin::MAX_NATIVE_EVIDENCE_PROJECT_ROWS {
+        return Err("native TypeScript project source count exceeds bound".into());
+    }
+    let mut ordered = Vec::with_capacity(paths.len());
+    let mut path_work = 0usize;
+    for path in paths {
+        check_scan_cancellation(cancellation)?;
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| "native TypeScript path escaped project")?;
+        let normalized = normalized_workspace_path(relative)?;
+        path_work = path_work
+            .checked_add(normalized.len())
+            .and_then(|work| work.checked_add(64))
+            .ok_or("native TypeScript path work overflow")?;
+        if path_work > backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES {
+            return Err("native TypeScript path work exceeds bound".into());
+        }
+        ordered.push((normalized, relative));
+    }
+    ordered.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    if ordered.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        return Err("native TypeScript source paths are duplicate".into());
+    }
+    let mut captured = Vec::with_capacity(paths.len());
+    let mut encoded_total = 0usize;
+    let mut source_version = blake3::Hasher::new();
+    source_version.update(b"nudox.native-typescript-source-set.v1\0");
+    source_version.update(&(paths.len() as u64).to_be_bytes());
+    for (normalized, relative) in ordered {
+        check_scan_cancellation(cancellation)?;
+        let profile = admitted_file_profile(SourceLanguage::TypeScript, &normalized)
+            .ok_or("native TypeScript path has no supported profile")?;
+        let limit = ledger.native_retained_read_limit(policy);
+        let bytes = match root_capability.read(relative, limit) {
+            Ok(bytes) => bytes,
+            Err(fault) => {
+                let observed = match fault {
+                    SourceFault::UnavailableRead(_, count) => count,
+                    _ => 0,
+                };
+                *bytes_read = bytes_read
+                    .checked_add(observed)
+                    .ok_or("native TypeScript read count overflow")?;
+                return Err(format!(
+                    "native TypeScript source unavailable: {normalized}"
+                ));
+            }
+        };
+        *bytes_read = bytes_read
+            .checked_add(bytes.len())
+            .ok_or("native TypeScript read count overflow")?;
+        std::str::from_utf8(&bytes)
+            .map_err(|_| format!("native TypeScript source is not UTF-8: {normalized}"))?;
+        let byte_length =
+            u32::try_from(bytes.len()).map_err(|_| "native TypeScript file length overflow")?;
+        let content = typed_of::<InputContentSchema>(&bytes).to_bytes();
+        let source_fact_identity = SourceFactIdentity::from_canonical_bytes(&bytes);
+        let mut evidence = backend_engine::builtin::NativeSourceEvidence {
+            project,
+            profile,
+            path: normalized.clone(),
+            input_digest: content,
+            source_digest: *source_fact_identity.as_ref(),
+            byte_length,
+            kind: backend_engine::builtin::NativeSourceEvidenceKind::Image,
+            line_starts: backend_engine::builtin::NativeSourceEvidence::capture_line_starts(&bytes),
+            headers: None,
+        };
+        if evidence.checked_encoded_len().is_none_or(|len| len > backend_engine::builtin::MAX_NATIVE_EVIDENCE_STORED_VALUE) {
+            evidence.line_starts = None;
+        }
+        evidence.validate().map_err(str::to_owned)?;
+        let mut encoded = Vec::new();
+        backend_engine::builtin::NativeSourceEvidenceRelation::encode_value(
+            &evidence,
+            &mut encoded,
+        );
+        let row_charge = encoded
+            .len()
+            .checked_add(40)
+            .ok_or("native TypeScript row charge overflow")?;
+        encoded_total = encoded_total
+            .checked_add(row_charge)
+            .ok_or("native TypeScript aggregate overflow")?;
+        if encoded_total > backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES {
+            return Err("native TypeScript evidence byte budget exceeded".into());
+        }
+        // Reserve the eventual compiler materialization budget conservatively.
+        // The scan's Vec is dropped after its identities have been derived.
+        ledger
+            .admit_with_fact_pages(
+                policy,
+                policy
+                    .admit_actual_file(bytes.len())
+                    .map_err(|error| error.to_string())?,
+                row_charge,
+                0,
+                true,
+            )
+            .map_err(|error| error.to_string())?;
+        source_version.update(&<[u8; 2]>::from(profile));
+        source_version.update(&(normalized.len() as u32).to_be_bytes());
+        source_version.update(normalized.as_bytes());
+        source_version.update(&content);
+        source_version.update(source_fact_identity.as_ref());
+        source_version.update(&byte_length.to_be_bytes());
+        captured.push(NativeTsCapturedSource {
+            evidence,
+            source_fact_identity,
+        });
+    }
+    check_scan_cancellation(cancellation)?;
+    if !compiler_revision_is_current_with_cancellation(revision_fence, cancellation)? {
+        return Err("native TypeScript root or configuration changed during capture".into());
+    }
+    Ok(NativeTsCapture {
+        canonical_root: root.to_path_buf(),
+        project,
+        sources: captured,
+        revision_fence: revision_fence.clone(),
+        encoded_bytes: encoded_total,
+        source_version: *source_version.finalize().as_bytes(),
+        fixed_discovery_policy: false,
+        source_policy: policy,
+        project_source_version: None,
+        cancellation: None,
+    })
+}
+
+/// Locally observed discovery-policy inputs for native TS source-version
+/// composition. The discovery walker can also consult ancestor and global Git
+/// excludes, which this digest does not witness. It must not be used as proof
+/// of a complete inventory or as a substitute for a fresh publication walk.
+/// Missing or unreadable local policy files refuse the native scan.
+fn native_typescript_discovery_basis(
+    walk: &StyloWalkEvidence,
+    fence: &CompilerRevisionFence,
+    cancellation: Option<&AtomicBool>,
+    bytes_read: &mut usize,
+) -> Result<[u8; 32], String> {
+    if walk.root != fence.root || !compiler_revision_is_current_with_cancellation(fence, cancellation)? {
+        return Err("native TypeScript discovery fence is not current".into());
+    }
+    let root = fence.open_bound_root(&fence.requested_root)?;
+    let mut paths = Vec::with_capacity(walk.local_policy_paths.len());
+    for path in &walk.local_policy_paths {
+        let relative = path.strip_prefix(&walk.root).map_err(|_| "native discovery policy escaped project")?;
+        paths.push((normalized_workspace_path(relative)?, relative));
+    }
+    paths.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    if paths.windows(2).any(|pair| pair[0].0 == pair[1].0) { return Err("duplicate native discovery policy path".into()); }
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"nudox.native-typescript-fixed-source-selection-local-incomplete.v1\0");
+    hash.update(&(walk.discovery_options.len() as u64).to_be_bytes());
+    hash.update(&walk.discovery_options);
+    hash.update(&walk.source_policy);
+    hash.update(&(paths.len() as u64).to_be_bytes());
+    let mut remaining = 16usize * 1024 * 1024;
+    for (name, relative) in paths {
+        check_scan_cancellation(cancellation)?;
+        let bytes = match root.read(relative, remaining.min(1024 * 1024)) {
+            Ok(bytes) => bytes,
+            Err(fault) => {
+                if let SourceFault::UnavailableRead(_, count) = fault {
+                    *bytes_read = bytes_read.checked_add(count).ok_or("native policy read count overflow")?;
+                }
+                return Err(format!("native discovery policy unavailable: {name}"));
+            }
+        };
+        *bytes_read = bytes_read.checked_add(bytes.len()).ok_or("native policy read count overflow")?;
+        remaining = remaining.checked_sub(bytes.len()).ok_or("native policy byte budget exceeded")?;
+        hash.update(&(name.len() as u64).to_be_bytes());
+        hash.update(name.as_bytes());
+        hash.update(&(bytes.len() as u64).to_be_bytes());
+        hash.update(&bytes);
+    }
+    if !compiler_revision_is_current_with_cancellation(fence, cancellation)? {
+        return Err("native TypeScript discovery changed during capture".into());
+    }
+    Ok(*hash.finalize().as_bytes())
 }
 
 /// Exact parser-malformed source admitted only to the separate local native
@@ -329,6 +980,36 @@ struct ProjectRoot {
     directory: backend_platform::win32::project_fs::ProjectRoot,
     #[cfg(not(any(unix, windows)))]
     canonical: PathBuf,
+}
+
+/// Result of reopening a selected source through the same confined reader used
+/// by discovery. A successful read still requires the caller to verify the
+/// selected host's content identities before exposing any source extent.
+#[derive(Debug, Eq, PartialEq)]
+pub(super) enum SelectedSourceReadError {
+    Vanished,
+    TooLarge,
+    Unavailable,
+    Invalid,
+}
+
+pub(super) fn read_stylo_selected_source(
+    root: &Path,
+    relative: &str,
+    maximum_bytes: usize,
+) -> Result<Vec<u8>, SelectedSourceReadError> {
+    let root = ProjectRoot::open(root).map_err(|_| SelectedSourceReadError::Unavailable)?;
+    root.read(Path::new(relative), maximum_bytes).map_err(|fault| match fault {
+        SourceFault::Vanished => SelectedSourceReadError::Vanished,
+        SourceFault::Unavailable(SourceUnavailableReason::TooLarge)
+        | SourceFault::UnavailableRead(SourceUnavailableReason::TooLarge, _) => {
+            SelectedSourceReadError::TooLarge
+        }
+        SourceFault::Unavailable(_) | SourceFault::UnavailableRead(_, _) => {
+            SelectedSourceReadError::Unavailable
+        }
+        SourceFault::Fatal(_) => SelectedSourceReadError::Invalid,
+    })
 }
 
 impl ProjectRoot {
@@ -643,6 +1324,193 @@ fn open_canonical_project_root(root: &Path) -> Result<(PathBuf, ProjectRoot), St
     Ok((canonical, opened))
 }
 
+#[derive(Clone, Debug)]
+struct ConfinedRootIdentity {
+    requested_root: PathBuf,
+    root: PathBuf,
+    revision: FileSystemRevision,
+}
+
+impl ConfinedRootIdentity {
+    fn from_snapshot(snapshot: &CompilerWorkspaceSnapshot) -> Result<Self, String> {
+        let revision = snapshot
+            .entries
+            .first()
+            .filter(|entry| entry.path.is_empty())
+            .map(|entry| entry.revision)
+            .ok_or_else(|| "captured workspace root revision is missing".to_owned())?;
+        Ok(Self {
+            requested_root: snapshot.requested_root.clone(),
+            root: snapshot.root.clone(),
+            revision,
+        })
+    }
+    fn matches_snapshot(&self, snapshot: &CompilerWorkspaceSnapshot) -> bool {
+        snapshot.requested_root == self.requested_root
+            && snapshot.root == self.root
+            && snapshot
+                .entries
+                .first()
+                .filter(|entry| entry.path.is_empty())
+                .map(|entry| entry.revision)
+                == Some(self.revision)
+    }
+    fn matches_fence(&self, fence: &CompilerRevisionFence) -> bool {
+        self.requested_root == fence.requested_root
+            && self.root == fence.root
+            && fence
+                .directories
+                .iter()
+                .find(|(path, _)| path.as_os_str().is_empty())
+                .and_then(|(_, revision)| *revision)
+                == Some(self.revision)
+    }
+    fn retained_bytes(&self) -> Option<usize> {
+        self.requested_root
+            .capacity()
+            .checked_add(self.root.capacity())?
+            .checked_mul(4)
+    }
+}
+
+/// Confined configuration observations, including paths hidden by discovery policy.
+/// This is a capture primitive, not authority to compile or publish a unit.
+#[derive(Clone, Debug)]
+pub(super) struct ConfinedConfigurationCapture {
+    root: ConfinedRootIdentity,
+    probes: Vec<(String, Option<Vec<u8>>, Option<FileSystemRevision>)>,
+}
+
+impl ConfinedConfigurationCapture {
+    pub(super) fn probes(&self) -> impl Iterator<Item = (&str, Option<&[u8]>)> {
+        self.probes
+            .iter()
+            .map(|(path, bytes, _)| (path.as_str(), bytes.as_deref()))
+    }
+
+    /// Conservative retained heap charge for caller budget admission.
+    pub(super) fn retained_bytes(&self) -> Option<usize> {
+        let mut total = std::mem::size_of::<Self>()
+            .checked_add(self.probes.capacity().checked_mul(std::mem::size_of::<(
+                String,
+                Option<Vec<u8>>,
+                Option<FileSystemRevision>,
+            )>())?)?
+            .checked_add(self.root.retained_bytes()?)?;
+        for (path, bytes, _) in &self.probes {
+            total = total
+                .checked_add(path.capacity())?
+                .checked_add(64)?
+                .checked_add(bytes.as_ref().map_or(0, Vec::capacity))?
+                .checked_add(if bytes.is_some() { 64 } else { 0 })?;
+        }
+        total.checked_add(64)
+    }
+
+    fn revalidate_on_root(&self, root: &ProjectRoot) -> Result<bool, String> {
+        for (path, bytes, revision) in &self.probes {
+            let current = root.compiler_configuration_revision_or_absent(Path::new(path))?;
+            if &current != revision {
+                return Ok(false);
+            }
+            if let Some(expected) = bytes {
+                let actual = root
+                    .read_compiler_configuration(Path::new(path), expected.len())
+                    .map_err(|_| format!("configuration became unreadable: {path}"))?;
+                if &actual != expected
+                    || root.compiler_configuration_revision_or_absent(Path::new(path))? != current
+                {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    /// Re-probes positive and negative paths against the original root fence.
+    /// This remains an observation; it is not a unit permit or owner grant.
+    pub(super) fn revalidate_revision_fence(
+        &self,
+        fence: &CompilerRevisionFence,
+        cancellation: Option<&AtomicBool>,
+    ) -> Result<bool, String> {
+        if !self.root.matches_fence(fence)
+            || !compiler_revision_is_current_with_cancellation(fence, cancellation)?
+        {
+            return Ok(false);
+        }
+        let root = fence.open_bound_root(&fence.requested_root)?;
+        if !self.revalidate_on_root(&root)? {
+            return Ok(false);
+        }
+        compiler_revision_is_current_with_cancellation(fence, cancellation)
+    }
+
+    /// A negative observation is re-probed independently of the ignore-filtered
+    /// inventory; inaccessible paths are errors, never evidence of absence.
+    pub(super) fn revalidate(&self, snapshot: &CompilerWorkspaceSnapshot) -> Result<bool, String> {
+        if !self.root.matches_snapshot(snapshot)
+            || !snapshot.revalidate()?
+            || !self.revalidate_on_root(&snapshot.root_capability)?
+        {
+            return Ok(false);
+        }
+        snapshot.revalidate()
+    }
+}
+
+/// One exact file read from the original confined workspace inventory.
+/// This observation does not itself authorize unit selection.
+#[derive(Clone, Debug)]
+pub(super) struct ConfinedFileCapture {
+    root: ConfinedRootIdentity,
+    path: String,
+    bytes: Vec<u8>,
+    revision: FileSystemRevision,
+}
+
+impl ConfinedFileCapture {
+    pub(super) fn path(&self) -> &str {
+        &self.path
+    }
+    pub(super) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+    pub(super) fn retained_bytes(&self) -> Option<usize> {
+        std::mem::size_of::<Self>()
+            .checked_add(self.root.retained_bytes()?)?
+            .checked_add(self.path.capacity())?
+            .checked_add(self.bytes.capacity())?.checked_add(128)
+    }
+    pub(super) fn revalidate_revision_fence(
+        &self,
+        fence: &CompilerRevisionFence,
+        cancellation: Option<&AtomicBool>,
+    ) -> Result<bool, String> {
+        if !self.root.matches_fence(fence)
+            || !compiler_revision_is_current_with_cancellation(fence, cancellation)?
+        {
+            return Ok(false);
+        }
+        let root = fence.open_bound_root(&fence.requested_root)?;
+        if root.compiler_configuration_revision_or_absent(Path::new(&self.path))?
+            != Some(self.revision)
+        {
+            return Ok(false);
+        }
+        let bytes = root
+            .read_compiler_configuration(Path::new(&self.path), self.bytes.len())
+            .map_err(|_| format!("captured file became unreadable: {}", self.path))?;
+        if bytes != self.bytes
+            || root.compiler_configuration_revision_or_absent(Path::new(&self.path))?
+                != Some(self.revision)
+        {
+            return Ok(false);
+        }
+        compiler_revision_is_current_with_cancellation(fence, cancellation)
+    }
+}
+
 impl CompilerWorkspaceSnapshot {
     fn root_binding_is_current(&self) -> bool {
         let requested_resolves_to_root =
@@ -723,6 +1591,165 @@ impl CompilerWorkspaceSnapshot {
             entries,
             fence_digest,
         })
+    }
+
+    /// Capture explicit confined paths independently of ignore rules. The caller
+    /// supplies the canonical ordered path set and must bind it to a unit permit.
+    pub(super) fn capture_configuration_paths(
+        &self,
+        paths: &[String],
+        maximum_total: usize,
+    ) -> Result<ConfinedConfigurationCapture, String> {
+        if paths.is_empty() || paths.len() > 17 || maximum_total > 2 * 1024 * 1024 {
+            return Err("configuration capture exceeds its bound".to_owned());
+        }
+        // The ordered set is part of the selected project identity. Do not let
+        // a caller omit an ancestor or substitute another project’s probes.
+        let project = &paths[0];
+        if project.len() > 4096
+            || project.contains(['\\', ':'])
+            || project.bytes().any(|byte| byte.is_ascii_control())
+            || project.starts_with('/')
+            || !project.to_ascii_lowercase().ends_with(".csproj")
+            || project
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+        {
+            return Err("invalid C# project path".to_owned());
+        }
+        let mut expected = vec![project.clone()];
+        let mut directory = project.rsplit_once('/').map_or("", |(parent, _)| parent);
+        loop {
+            let prefix = if directory.is_empty() {
+                String::new()
+            } else {
+                format!("{directory}/")
+            };
+            expected.push(format!("{prefix}Directory.Build.props"));
+            expected.push(format!("{prefix}Directory.Build.targets"));
+            if directory.is_empty() {
+                break;
+            }
+            if expected.len() >= 17 {
+                return Err("C# project path is too deep".to_owned());
+            }
+            directory = directory.rsplit_once('/').map_or("", |(parent, _)| parent);
+        }
+        if paths != expected
+            || paths
+                .iter()
+                .try_fold(0usize, |sum, path| sum.checked_add(path.len()))
+                .is_none_or(|sum| sum > 17 * 4096)
+        {
+            return Err("configuration probes are not the ordered project set".to_owned());
+        }
+        self.capture_bounded_configuration_probes(paths, maximum_total, true)
+    }
+
+    /// Captures SDK global.json probes from the selected project directory to
+    /// the confined package root. Selection outside that root remains unknown.
+    pub(super) fn capture_csharp_global_json_paths(
+        &self, project_path: &str,
+    ) -> Result<ConfinedConfigurationCapture, String> {
+        if project_path.is_empty() || project_path.len() > 4096
+            || project_path.contains(['\\', ':']) || project_path.chars().any(char::is_control)
+            || project_path.nfc().collect::<String>() != project_path
+            || !project_path.to_ascii_lowercase().ends_with(".csproj")
+            || project_path.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+        { return Err("invalid C# project path".to_owned()); }
+        let mut directory = project_path.rsplit_once('/').map_or("", |(parent, _)| parent);
+        let mut paths = Vec::new();
+        loop {
+            paths.push(if directory.is_empty() { "global.json".to_owned() } else { format!("{directory}/global.json") });
+            if directory.is_empty() { break; }
+            if paths.len() >= 8 { return Err("C# project path is too deep".to_owned()); }
+            directory = directory.rsplit_once('/').map_or("", |(parent, _)| parent);
+        }
+        let path_bytes = paths.iter().try_fold(0usize, |total, path| total.checked_add(path.len())).ok_or("SDK probe bound exceeded")?;
+        let payload_limit = (1024usize * 1024).checked_sub(path_bytes).ok_or("SDK probe bound exceeded")?;
+        self.capture_bounded_configuration_probes(&paths, payload_limit, false)
+    }
+
+    fn capture_bounded_configuration_probes(
+        &self, paths: &[String], maximum_total: usize, first_required: bool,
+    ) -> Result<ConfinedConfigurationCapture, String> {
+        if !self.root_binding_is_current() {
+            return Err("workspace root changed before configuration capture".to_owned());
+        }
+        let mut seen = BTreeSet::new();
+        let mut total = 0usize;
+        let mut probes = Vec::with_capacity(paths.len());
+        for path in paths {
+            if !seen.insert(path) {
+                return Err("duplicate configuration probe".to_owned());
+            }
+            let relative = Path::new(path);
+            let revision = self
+                .root_capability
+                .compiler_configuration_revision_or_absent(relative)?;
+            let bytes = match revision {
+                Some(_) => {
+                    let remaining = maximum_total
+                        .checked_sub(total)
+                        .ok_or("configuration bound exceeded")?;
+                    let bytes = self
+                        .root_capability
+                        .read_compiler_configuration(relative, remaining)
+                        .map_err(|_| format!("configuration is not safely readable: {path}"))?;
+                    total = total
+                        .checked_add(bytes.len())
+                        .ok_or("configuration bound exceeded")?;
+                    if self
+                        .root_capability
+                        .compiler_configuration_revision_or_absent(relative)?
+                        != revision
+                    {
+                        return Err(format!("configuration changed during capture: {path}"));
+                    }
+                    Some(bytes)
+                }
+                None => None,
+            };
+            probes.push((path.clone(), bytes, revision));
+        }
+        if first_required && probes.first().is_none_or(|(_, bytes, _)| bytes.is_none()) {
+            return Err("selected C# project is absent".to_owned());
+        }
+        let capture = ConfinedConfigurationCapture {
+            root: ConfinedRootIdentity::from_snapshot(self)?,
+            probes,
+        };
+        if !capture.revalidate_on_root(&self.root_capability)? || !self.root_binding_is_current() {
+            return Err("configuration changed during capture".to_owned());
+        }
+        Ok(capture)
+    }
+
+    /// Capture one observed file and its same-inventory revision, bounded by caller policy.
+    pub(super) fn capture_confined_file(
+        &self,
+        path: &str,
+        maximum_bytes: usize,
+    ) -> Result<ConfinedFileCapture, String> {
+        let position = self
+            .entries
+            .binary_search_by(|entry| entry.path.as_str().cmp(path))
+            .map_err(|_| "file is not in the captured workspace".to_owned())?;
+        let entry = &self.entries[position];
+        if entry.kind != CompilerWorkspaceEntryKind::File {
+            return Err("captured path is not a file".to_owned());
+        }
+        let bytes = self.read_file(path, maximum_bytes)?;
+        let capture = ConfinedFileCapture {
+            root: ConfinedRootIdentity::from_snapshot(self)?,
+            path: path.to_owned(),
+            bytes,
+            revision: entry.revision,
+        };
+        if !self.root_binding_is_current() {
+            return Err("workspace root changed during file capture".to_owned());
+        }
+        Ok(capture)
     }
 
     /// Stable versioned identity for the exact ignore and generated-folder
@@ -1186,8 +2213,16 @@ struct FrontendSet {
     values: [ProductFrontend; 7],
 }
 
+// Readiness must never construct a syntax parser. Legacy indexing may fill
+// this registry; capability reporting only observes what was already admitted.
+static FRONTENDS: OnceLock<FrontendSet> = OnceLock::new();
+
 impl FrontendSet {
     fn build() -> Result<Self, String> {
+        #[cfg(test)]
+        if TEST_REJECT_STRUCTURAL_FRONTENDS.load(Ordering::Acquire) {
+            return Err("test refused structural frontend construction".to_owned());
+        }
         let baselines = [
             backend_frontend_rust::syntax_frontend(),
             backend_frontend_python::syntax_frontend(),
@@ -1242,7 +2277,7 @@ pub(super) fn semantic_capabilities(
     baseline: &backend_engine::CapabilityInventory,
     compiler: &backend_engine::application::LocalCompilerClient,
 ) -> Result<backend_engine::CapabilityInventory, String> {
-    let frontends = FrontendSet::build()?;
+    let frontends = FRONTENDS.get();
     let target = backend_engine::CapabilityTarget::Native {
         os: native_os(),
         architecture: native_architecture(),
@@ -1317,26 +2352,30 @@ pub(super) fn semantic_capabilities(
             }
             backend_engine::CapabilityFamily::StructuralFrontend { profile } => {
                 let manifest = frontends
-                    .for_language(profile.language())
+                    .and_then(|frontends| frontends.for_language(profile.language()))
                     .map(ProductFrontend::analysis_version);
-                let Some(manifest) = manifest else {
-                    return *status;
-                };
-                backend_engine::CapabilityStatus::observed(
-                    status.id(),
-                    status.family(),
-                    manifest,
-                    target,
-                    backend_compile::NATIVE_PAYLOAD_VERSION,
-                    backend_engine::CapabilityAuthority::Structural { producer: manifest },
-                    backend_engine::CapabilityLifecycle::Ready,
-                )
+                structural_capability_from_observation(*status, manifest, target)
             }
             backend_engine::CapabilityFamily::Embedding { .. } => *status,
         })
         .collect::<Vec<_>>();
     rows.sort_unstable_by_key(backend_engine::CapabilityStatus::id);
     backend_engine::CapabilityInventory::try_new(rows).map_err(|error| error.to_string())
+}
+
+/// Preserve the admitted baseline when no structural registry was observed.
+fn structural_capability_from_observation(
+    baseline: backend_engine::CapabilityStatus,
+    manifest: Option<[u8; 32]>,
+    target: backend_engine::CapabilityTarget,
+) -> backend_engine::CapabilityStatus {
+    let Some(manifest) = manifest else { return baseline };
+    backend_engine::CapabilityStatus::observed(
+        baseline.id(), baseline.family(), manifest, target,
+        backend_compile::NATIVE_PAYLOAD_VERSION,
+        backend_engine::CapabilityAuthority::Structural { producer: manifest },
+        backend_engine::CapabilityLifecycle::Ready,
+    )
 }
 
 const fn native_os() -> u8 {
@@ -1368,8 +2407,41 @@ fn producer_version(frontend: &SyntaxFrontend) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(super) struct TestNativeProgramObservation {
+    pub binding: [u8; 32],
+    pub membership: [u8; 32],
+    pub sources: Vec<(String, Option<String>, [u8; 32], u32)>,
+}
+#[cfg(test)]
+pub(super) static TEST_CAPTURE_NATIVE_PROGRAMS: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+pub(super) static TEST_NATIVE_PROGRAMS: std::sync::Mutex<Vec<TestNativeProgramObservation>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+pub(super) fn test_observe_native_program(binding: [u8; 32], program: &backend_semantic::ir::NativeProgramSources) -> Result<(), String> {
+    if TEST_CAPTURE_NATIVE_PROGRAMS.load(Ordering::Acquire) {
+        let observation = TestNativeProgramObservation {
+            binding,
+            membership: program.membership_identity(),
+            sources: program.sources().map(|row| (
+                row.program_path.to_owned(), row.package_path.map(str::to_owned), *row.source.identity.as_ref(), row.source.byte_len,
+            )).collect(),
+        };
+        TEST_NATIVE_PROGRAMS.lock().map_err(|_| "test native Program observation poisoned")?.push(observation);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(super) static TEST_REJECT_STRUCTURAL_FRONTENDS: AtomicBool = AtomicBool::new(false);
+
 fn frontends() -> Result<&'static FrontendSet, String> {
-    static FRONTENDS: OnceLock<FrontendSet> = OnceLock::new();
+    #[cfg(test)]
+    if TEST_REJECT_STRUCTURAL_FRONTENDS.load(Ordering::Acquire) {
+        return Err("test refused structural frontend construction".to_owned());
+    }
     if let Some(frontends) = FRONTENDS.get() {
         return Ok(frontends);
     }
@@ -1391,6 +2463,7 @@ fn scan_source_paths(
     go_capture: &GoProjectCapture,
     delta: Option<&source_frontier::SourceDelta>,
     source_policy: SourceAdmissionPolicy,
+    budget: &mut SourceAdmissionLedger,
     cancellation: Option<&AtomicBool>,
     observation: Option<&crate::builtin::index_work_observation::IndexWorkObservation>,
 ) -> Result<Vec<ScannedFile>, String> {
@@ -1473,7 +2546,6 @@ fn scan_source_paths(
         let mut failure = None;
         let mut pending = BTreeMap::<usize, (usize, Result<Option<ScannedFile>, String>)>::new();
         let mut next_path_index = 0_usize;
-        let mut budget = SourceAdmissionLedger::default();
         loop {
             let (path_index, worker_index, result) = match if observation.is_some() {
                 receiver.recv_timeout(std::time::Duration::from_millis(250))
@@ -1652,6 +2724,367 @@ fn scan_source_path(
     )
 }
 
+/// Compares a confined host file with its indexed source identity.
+/// `Err` means no comparison was possible; it never implies freshness.
+pub(super) fn indexed_source_matches(
+    root: &Path,
+    path: &str,
+    expected: backend_version::ContentId<backend_version::SourceFactDomain>,
+    expected_input: [u8; 32],
+) -> Result<bool, ()> {
+    if path.is_empty() || path.contains('\\') {
+        return Err(());
+    }
+    let relative = Path::new(path);
+    if relative
+        .components()
+        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(());
+    }
+    let policy = SourceAdmissionPolicy::from_environment().map_err(|_| ())?;
+    let bytes = ProjectRoot::open(root)
+        .map_err(|_| ())?
+        .read(relative, policy.limits().max_file_source_bytes)
+        .map_err(|_| ())?;
+    policy.admit_actual_file(bytes.len()).map_err(|_| ())?;
+    match backend_compile::VerifiedSourceText::admit_stored(&bytes, expected_input, expected) {
+        Ok(_) => Ok(true),
+        Err(
+            backend_compile::SourceVerificationError::InputRevisionMismatch
+            | backend_compile::SourceVerificationError::SourceIdentityMismatch
+            | backend_compile::SourceVerificationError::NonUtf8,
+        ) => Ok(false),
+        Err(_) => Err(()),
+    }
+}
+
+/// Compares one selected native-only evidence claim with the same confined host
+/// bytes used for length and both content-domain checks. The caller must first
+/// admit the selected local project/root, publication, program/image and entity.
+/// A claim is never a source extent or proof of a complete declaration inventory.
+/// `Err` means no trustworthy comparison; `Ok(false)` means the host is stale.
+pub(super) fn indexed_native_evidence_matches(
+    root: &Path,
+    evidence: &backend_engine::builtin::NativeSourceEvidence,
+    image_source: backend_semantic::ir::SourceIdentity,
+) -> Result<bool, ()> {
+    evidence.validate().map_err(|_| ())?;
+    if image_source.byte_len != evidence.byte_length
+        || image_source.identity.as_ref() != evidence.source_digest.as_slice()
+    {
+        return Err(());
+    }
+    let policy = SourceAdmissionPolicy::from_environment().map_err(|_| ())?;
+    let expected = evidence.byte_length as usize;
+    policy.admit_actual_file(expected).map_err(|_| ())?;
+    let bytes = match ProjectRoot::open(root).map_err(|_| ())?
+        .read(Path::new(&evidence.path), expected)
+    {
+        Ok(bytes) => bytes,
+        Err(SourceFault::Unavailable(SourceUnavailableReason::TooLarge)
+            | SourceFault::UnavailableRead(SourceUnavailableReason::TooLarge, _)) => return Ok(false),
+        Err(_) => return Err(()),
+    };
+    policy.admit_actual_file(bytes.len()).map_err(|_| ())?;
+    Ok(evidence.verify_host(&bytes, image_source.identity).is_ok())
+}
+
+/// Reads a caller-admitted native extent from one confined, reverified host
+/// buffer. The evidence row supplies no extent; the caller must independently
+/// admit the selected project, program/image, entity, and nonempty owner extent.
+pub(super) fn read_indexed_native_evidence_range(
+    root: &Path,
+    evidence: &backend_engine::builtin::NativeSourceEvidence,
+    image_source: backend_semantic::ir::SourceIdentity,
+    extent: (u32, u32),
+    offset: u32,
+    limit: u32,
+) -> Result<super::source_range::OwnedSourceRange, super::source_range::SourceRangeError> {
+    use super::source_range::{OwnedSourceRange, SourceRangeError};
+    if extent.0 >= extent.1 {
+        return Err(SourceRangeError::InvalidExtent);
+    }
+    let bytes = read_native_evidence_host(root, evidence, image_source)?;
+    let page = super::source_range::native_page(
+        &bytes,
+        image_source.identity,
+        evidence.input_digest,
+        extent,
+        offset,
+        limit,
+    )?;
+    Ok(OwnedSourceRange {
+        text: page.text.to_owned(),
+        start: page.start,
+        end: page.end,
+        total: page.total,
+        source_identity: *image_source.identity.as_ref(),
+        owner_start_line: page.owner_start_line,
+    })
+}
+
+/// The default declaration excerpt: the first `limit` bytes of the native extent,
+/// preceded by the modifiers and leading comment the compiler keeps outside it.
+/// The head counts against `limit`, so the excerpt never exceeds the product bound.
+pub(super) fn read_indexed_native_evidence_excerpt(
+    root: &Path,
+    evidence: &backend_engine::builtin::NativeSourceEvidence,
+    image_source: backend_semantic::ir::SourceIdentity,
+    extent: (u32, u32),
+    limit: u32,
+) -> Result<(String, super::source_range::OwnedSourceRange, u32), super::source_range::SourceRangeError> {
+    use super::source_range::{OwnedSourceRange, SourceRangeError};
+    if extent.0 >= extent.1 {
+        return Err(SourceRangeError::InvalidExtent);
+    }
+    let bytes = read_native_evidence_host(root, evidence, image_source)?;
+    let head = super::source_range::native_context_head(
+        &bytes,
+        image_source.identity,
+        evidence.input_digest,
+        extent,
+    )?;
+    let room = limit.saturating_sub(u32::try_from(head.text.len()).unwrap_or(limit)).max(4);
+    let (head_text, head_lines) = if head.text.len() + 4 > limit as usize {
+        (String::new(), 0)
+    } else {
+        (head.text.to_owned(), head.lines)
+    };
+    let page = super::source_range::native_page(
+        &bytes,
+        image_source.identity,
+        evidence.input_digest,
+        extent,
+        0,
+        if head_text.is_empty() { limit } else { room },
+    )?;
+    let page = OwnedSourceRange {
+        text: page.text.to_owned(),
+        start: page.start,
+        end: page.end,
+        total: page.total,
+        source_identity: *image_source.identity.as_ref(),
+        owner_start_line: page.owner_start_line,
+    };
+    Ok((head_text, page, head_lines))
+}
+
+fn read_native_evidence_host(
+    root: &Path,
+    evidence: &backend_engine::builtin::NativeSourceEvidence,
+    image_source: backend_semantic::ir::SourceIdentity,
+) -> Result<Vec<u8>, super::source_range::SourceRangeError> {
+    use super::source_range::SourceRangeError;
+    evidence
+        .validate()
+        .map_err(|_| SourceRangeError::Unavailable)?;
+    if !evidence.admits_image()
+        || image_source.byte_len != evidence.byte_length
+        || image_source.identity.as_ref() != evidence.source_digest.as_slice()
+    {
+        return Err(SourceRangeError::Unavailable);
+    }
+    let policy =
+        SourceAdmissionPolicy::from_environment().map_err(|_| SourceRangeError::Unavailable)?;
+    let expected = evidence.byte_length as usize;
+    policy.admit_actual_file(expected).map_err(|_| SourceRangeError::Unavailable)?;
+    let bytes = ProjectRoot::open(root)
+        .map_err(|_| SourceRangeError::Unavailable)?
+        .read(Path::new(&evidence.path), expected)
+        .map_err(|error| match error {
+            SourceFault::Unavailable(SourceUnavailableReason::TooLarge)
+            | SourceFault::UnavailableRead(SourceUnavailableReason::TooLarge, _) => SourceRangeError::Stale,
+            _ => SourceRangeError::Unavailable,
+        })?;
+    policy
+        .admit_actual_file(bytes.len())
+        .map_err(|_| SourceRangeError::Unavailable)?;
+    if bytes.len() != evidence.byte_length as usize {
+        return Err(SourceRangeError::Stale);
+    }
+    evidence.verify_host(&bytes, image_source.identity)
+        .map_err(|_| SourceRangeError::Stale)?;
+    Ok(bytes.to_vec())
+}
+
+/// Reads a header extent already joined to the selected compiler entity.
+/// The source is reopened under the same digest and policy as native ranges.
+pub(super) fn read_indexed_native_evidence_header(
+    root: &Path,
+    evidence: &backend_engine::builtin::NativeSourceEvidence,
+    image_source: backend_semantic::ir::SourceIdentity,
+    extent: (u32, u32),
+) -> Result<String, super::source_range::SourceRangeError> {
+    use super::source_range::SourceRangeError;
+    let length = extent.1.checked_sub(extent.0).ok_or(SourceRangeError::InvalidExtent)? as usize;
+    if length == 0 || length > backend_compile::SourceDeclaration::MAX_TEXT_BYTES {
+        return Err(SourceRangeError::InvalidExtent);
+    }
+    let bytes = read_native_evidence_host(root, evidence, image_source)?;
+    let text = std::str::from_utf8(bytes.get(extent.0 as usize..extent.1 as usize)
+        .ok_or(SourceRangeError::InvalidExtent)?)
+        .map_err(|_| SourceRangeError::InvalidExtent)?;
+    Ok(text.to_owned())
+}
+
+/// Reopens one confined indexed host and reads only a verified declaration range.
+/// The caller is responsible for selecting the exact revision, file fact, and
+/// declaration binding before invoking this helper.
+pub(super) fn read_indexed_source_range(
+    root: &Path,
+    path: &str,
+    expected_source: backend_version::ContentId<backend_version::SourceFactDomain>,
+    expected_input: [u8; 32],
+    binding: backend_compile::SourceBindingCapture,
+    name: &str,
+    offset: u32,
+    limit: u32,
+) -> Result<super::source_range::OwnedSourceRange, super::source_range::SourceRangeError> {
+    use super::source_range::{OwnedSourceRange, SourceRangeError};
+    if path.is_empty() || path.contains('\\') {
+        return Err(SourceRangeError::Unavailable);
+    }
+    let relative = Path::new(path);
+    if relative
+        .components()
+        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(SourceRangeError::Unavailable);
+    }
+    let policy =
+        SourceAdmissionPolicy::from_environment().map_err(|_| SourceRangeError::Unavailable)?;
+    let bytes = ProjectRoot::open(root)
+        .map_err(|_| SourceRangeError::Unavailable)?
+        .read(relative, policy.limits().max_file_source_bytes)
+        .map_err(|_| SourceRangeError::Unavailable)?;
+    policy
+        .admit_actual_file(bytes.len())
+        .map_err(|_| SourceRangeError::Unavailable)?;
+    let page = super::source_range::page(
+        &bytes,
+        expected_source,
+        expected_input,
+        binding,
+        name,
+        offset,
+        limit,
+    )?;
+    Ok(OwnedSourceRange {
+        text: page.text.to_owned(),
+        start: page.start,
+        end: page.end,
+        total: page.total,
+        source_identity: *expected_source.as_ref(),
+        owner_start_line: page.owner_start_line,
+    })
+}
+
+/// Reads a compiler-selected extent from the current confined host bytes.
+/// Publication identity and extent semantics must be admitted by the caller.
+/// The default excerpt of a native extent read by path: the first `limit` bytes of the extent,
+/// preceded by the modifiers and leading comment the compiler keeps outside it. The head counts
+/// against `limit`, so the excerpt never exceeds the product bound.
+pub(super) fn read_indexed_native_excerpt(
+    root: &Path,
+    path: &str,
+    expected_source: backend_version::ContentId<backend_version::SourceFactDomain>,
+    expected_input: [u8; 32],
+    extent: (u32, u32),
+    limit: u32,
+) -> Result<(String, super::source_range::OwnedSourceRange, u32), super::source_range::SourceRangeError> {
+    use super::source_range::{OwnedSourceRange, SourceRangeError};
+    if path.is_empty() || path.contains('\\') {
+        return Err(SourceRangeError::Unavailable);
+    }
+    let relative = Path::new(path);
+    if relative
+        .components()
+        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(SourceRangeError::Unavailable);
+    }
+    let policy =
+        SourceAdmissionPolicy::from_environment().map_err(|_| SourceRangeError::Unavailable)?;
+    let bytes = ProjectRoot::open(root)
+        .map_err(|_| SourceRangeError::Unavailable)?
+        .read(relative, policy.limits().max_file_source_bytes)
+        .map_err(|_| SourceRangeError::Unavailable)?;
+    policy
+        .admit_actual_file(bytes.len())
+        .map_err(|_| SourceRangeError::Unavailable)?;
+    let head = super::source_range::native_context_head(&bytes, expected_source, expected_input, extent)?;
+    let (head_text, head_lines, room) = if head.text.len() + 4 > limit as usize {
+        (String::new(), 0, limit)
+    } else {
+        (
+            head.text.to_owned(),
+            head.lines,
+            limit - u32::try_from(head.text.len()).unwrap_or(0),
+        )
+    };
+    let page = super::source_range::native_page(&bytes, expected_source, expected_input, extent, 0, room)?;
+    Ok((
+        head_text,
+        OwnedSourceRange {
+            text: page.text.to_owned(),
+            start: page.start,
+            end: page.end,
+            total: page.total,
+            source_identity: *expected_source.as_ref(),
+            owner_start_line: page.owner_start_line,
+        },
+        head_lines,
+    ))
+}
+
+pub(super) fn read_indexed_native_range(
+    root: &Path,
+    path: &str,
+    expected_source: backend_version::ContentId<backend_version::SourceFactDomain>,
+    expected_input: [u8; 32],
+    extent: (u32, u32),
+    offset: u32,
+    limit: u32,
+) -> Result<super::source_range::OwnedSourceRange, super::source_range::SourceRangeError> {
+    use super::source_range::{OwnedSourceRange, SourceRangeError};
+    if path.is_empty() || path.contains('\\') {
+        return Err(SourceRangeError::Unavailable);
+    }
+    let relative = Path::new(path);
+    if relative
+        .components()
+        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(SourceRangeError::Unavailable);
+    }
+    let policy =
+        SourceAdmissionPolicy::from_environment().map_err(|_| SourceRangeError::Unavailable)?;
+    let bytes = ProjectRoot::open(root)
+        .map_err(|_| SourceRangeError::Unavailable)?
+        .read(relative, policy.limits().max_file_source_bytes)
+        .map_err(|_| SourceRangeError::Unavailable)?;
+    policy
+        .admit_actual_file(bytes.len())
+        .map_err(|_| SourceRangeError::Unavailable)?;
+    let page = super::source_range::native_page(
+        &bytes,
+        expected_source,
+        expected_input,
+        extent,
+        offset,
+        limit,
+    )?;
+    Ok(OwnedSourceRange {
+        text: page.text.to_owned(),
+        start: page.start,
+        end: page.end,
+        total: page.total,
+        source_identity: *expected_source.as_ref(),
+        owner_start_line: page.owner_start_line,
+    })
+}
+
 /// Recovers one declaration excerpt from its already indexed source file.
 ///
 /// This only serves bytes that still match the indexed source identity. It
@@ -1661,6 +3094,7 @@ pub(super) fn recover_indexed_excerpt(
     root: &Path,
     path: &str,
     expected_source: backend_version::ContentId<backend_version::SourceFactDomain>,
+    expected_input: [u8; 32],
     language: SourceLanguage,
     label: &str,
     line: u32,
@@ -1682,11 +3116,8 @@ pub(super) fn recover_indexed_excerpt(
         .read(relative, source_policy.limits().max_file_source_bytes)
         .ok()?;
     source_policy.admit_actual_file(bytes.len()).ok()?;
-    if backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(&bytes)
-        != expected_source
-    {
-        return None;
-    }
+    backend_compile::VerifiedSourceText::admit_stored(&bytes, expected_input, expected_source)
+        .ok()?;
     let frontend = frontends().ok()?.for_language(language)?;
     let analysis = frontend.baseline.analyze(relative, &bytes).ok()?;
     let name = label.rsplit("::").next()?;
@@ -1798,7 +3229,74 @@ pub(super) fn scan_project_for_unproven_authorities_cancellable_with_observation
         interpreter,
         None,
         observation,
+        NativeTsScanMode::Legacy,
     )
+}
+
+/// Refusal for a native TypeScript scan that also meets another supported
+/// source language. Only the forced and native-only modes can produce it.
+const NATIVE_TS_MIXED_REFUSAL: &str = "native TypeScript scan cannot admit mixed legacy source lanes";
+
+/// Chooses the TS-native lane from the same bounded walk. A prior selected
+/// NSE row forces that lane even after its last TS path disappears.
+///
+/// Native TypeScript admits only a project whose supported sources are all
+/// TypeScript. A walk with a TypeScript path and any other supported source
+/// language (Rust, Python, Go, Java, C#, C or C++) is rescanned in the legacy
+/// structural lane, which indexes every language exactly as it does without
+/// TypeScript routing. A project that already has selected native evidence
+/// cannot make that move here, so it refuses and says why instead of
+/// publishing a partial or empty result.
+pub(super) fn scan_project_with_native_typescript_auto(
+    coordinate: &str,
+    project: [u8; 32],
+    reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
+    cancellation: Arc<AtomicBool>,
+    force_native: bool,
+    interpreter: Option<&backend_engine::application::PythonInterpreterHostAdmission>,
+    observation: Option<&crate::builtin::index_work_observation::IndexWorkObservation>,
+) -> Result<IndexSnapshot, String> {
+    let policy = SourceAdmissionPolicy::from_environment()?;
+    let mut snapshot = scan_project_with_configuration_policy_attempt(
+        coordinate, project, reusable, source_selection_policy(), true, true,
+        Some(cancellation.as_ref()), policy, interpreter, None, observation,
+        if force_native { NativeTsScanMode::Native } else { NativeTsScanMode::Auto },
+    )
+    .map_err(|error| {
+        if force_native && error == NATIVE_TS_MIXED_REFUSAL {
+            format!(
+                "{error}: this project already has selected native TypeScript evidence and also \
+                 contains another supported source language; nothing was indexed or dropped, and \
+                 the workspace is unchanged"
+            )
+        } else {
+            error
+        }
+    })?;
+    if let Some(capture) = snapshot.native_typescript_capture.as_mut() {
+        capture.cancellation = Some(cancellation);
+    }
+    Ok(snapshot)
+}
+
+/// Native-only TS scan. Mixed legacy-source lanes are refused; no syntax
+/// frontend registry is initialized. Product routing reaches this lane through
+/// `scan_project_with_native_typescript_auto`.
+pub(super) fn scan_native_typescript_only(
+    coordinate: &str,
+    project: [u8; 32],
+    cancellation: Arc<AtomicBool>,
+) -> Result<IndexSnapshot, String> {
+    let source_policy = SourceAdmissionPolicy::from_environment()?;
+    let mut snapshot = scan_project_with_configuration_policy_attempt(
+        coordinate, project, &BTreeMap::new(), source_selection_policy(), true, false,
+        Some(cancellation.as_ref()), source_policy, None, None, None, NativeTsScanMode::Native,
+    )?;
+    check_scan_cancellation(Some(cancellation.as_ref()))?;
+    let capture = snapshot.native_typescript_capture.as_mut()
+        .ok_or("native TypeScript scan did not retain its capture")?;
+    capture.cancellation = Some(cancellation);
+    Ok(snapshot)
 }
 
 /// Reads supported sources under one shared discovery policy.
@@ -1835,7 +3333,18 @@ fn scan_project_with_configuration_policy(
         None,
         None,
         None,
+        NativeTsScanMode::Legacy,
     )
+}
+
+#[derive(Clone, Copy)]
+enum NativeTsScanMode {
+    /// Structural frontends only; TypeScript is an ordinary legacy language.
+    Legacy,
+    /// Native TypeScript only; any other supported language is refused.
+    Native,
+    /// Native when TypeScript is the only supported language, else legacy.
+    Auto,
 }
 
 fn scan_project_with_configuration_policy_attempt(
@@ -1850,6 +3359,7 @@ fn scan_project_with_configuration_policy_attempt(
     interpreter: Option<&backend_engine::application::PythonInterpreterHostAdmission>,
     captured_python: Option<PythonEnvironmentCapture>,
     observation: Option<&crate::builtin::index_work_observation::IndexWorkObservation>,
+    mode: NativeTsScanMode,
 ) -> Result<IndexSnapshot, String> {
     check_scan_cancellation(cancellation)?;
     let requested_root = absolute_path_spelling(Path::new(coordinate))?;
@@ -1860,21 +3370,63 @@ fn scan_project_with_configuration_policy_attempt(
         return Err(format!("project {} is not a directory", root.display()));
     }
     let root_capability = ProjectRoot::open(&root)?;
-    let frontends = frontends()?;
-    let frontier_policy_allowed = discovery == source_selection_policy();
+    // Classify the same bounded walk before constructing a frontend. A walk
+    // whose only supported language is TS takes the native lane, including
+    // when CSS also appears. Any other supported language beside TS is
+    // rescanned in the legacy lane below.
+    let static_discovery = !matches!(mode, NativeTsScanMode::Legacy);
+    let mut selected_frontends = if static_discovery { None } else { Some(frontends()?) };
     if let Some(observed) = observation {
         observed.begin_source_attempt();
     }
     let mut project_paths = project_paths_with_policy(
         &root,
         &root_capability,
-        Some(frontends),
+        selected_frontends,
+        static_discovery,
         discovery.clone(),
         cancellation,
     )?;
     check_scan_cancellation(cancellation)?;
     let mut paths = std::mem::take(&mut project_paths.sources);
     paths.sort();
+    let mut native_paths = std::mem::take(&mut project_paths.native_typescript_paths);
+    native_paths.sort();
+    let native_typescript = match mode {
+        NativeTsScanMode::Legacy => false,
+        NativeTsScanMode::Native => true,
+        NativeTsScanMode::Auto => !native_paths.is_empty(),
+    };
+    if static_discovery && !native_typescript {
+        selected_frontends = Some(frontends()?);
+    }
+    let frontends = selected_frontends;
+    let frontier_policy_allowed = !native_typescript && discovery == source_selection_policy();
+    if native_typescript && (!paths.is_empty() || !project_paths.vue_paths.is_empty()) {
+        if matches!(mode, NativeTsScanMode::Auto) {
+            // Native evidence cannot carry a second language (the v13 intent
+            // admits no structural rows), and dropping those files would hide
+            // them. The legacy lane covers every language, TypeScript
+            // included, so nothing is dropped and the result is the one
+            // this project gets without TypeScript routing. This rewalks the
+            // tree once, only for mixed projects.
+            return scan_project_with_configuration_policy_attempt(
+                coordinate,
+                project,
+                reusable,
+                discovery,
+                capture_configuration_contents,
+                allow_frontier_reuse,
+                cancellation,
+                source_policy,
+                interpreter,
+                captured_python,
+                observation,
+                NativeTsScanMode::Legacy,
+            );
+        }
+        return Err(NATIVE_TS_MIXED_REFUSAL.into());
+    }
     // Admission is project-wide and precedes every revision/delta/row/fact key.
     // A negative environment honestly uses the existing source-only 3.14 default.
     let no_cancellation = AtomicBool::new(false);
@@ -1884,7 +3436,7 @@ fn scan_project_with_configuration_policy_attempt(
     };
     let python_environment = if paths.iter().any(|path| {
         frontends
-            .for_path(path)
+            .and_then(|set| set.for_path(path))
             .is_some_and(|frontend| frontend.language() == SourceLanguage::Python)
     }) {
         Some(match captured_python {
@@ -1913,7 +3465,7 @@ fn scan_project_with_configuration_policy_attempt(
             None => (Vec::new(), false),
         };
     let mut file_revisions = BTreeMap::<PathBuf, CompilerFileRevision>::new();
-    for path in &paths {
+    for path in paths.iter().chain(&native_paths).chain(&project_paths.vue_paths) {
         let relative = path
             .strip_prefix(&root)
             .map_err(|_| "discovered source escaped its project root".to_owned())?
@@ -1970,6 +3522,48 @@ fn scan_project_with_configuration_policy_attempt(
                 metadata,
             });
     }
+    let mut vue_files = Vec::with_capacity(project_paths.vue_paths.len());
+    for path in &project_paths.vue_paths {
+        let relative_path = path.strip_prefix(&root).map_err(|_| "Vue candidate escaped project root")?.to_path_buf();
+        vue_files.push(CompilerFileRevision { relative_path, metadata: project_paths.file_revisions.get(path).copied().flatten() });
+    }
+    vue_files.sort_by(|a,b| a.relative_path.cmp(&b.relative_path));
+    let vue_walk = VueWalkEvidence {
+        project, root: root.clone(), files: vue_files,
+        complete: project_paths.vue_inventory_complete,
+        discovery_options: discovery.source_scope_identity_bytes(),
+        source_policy: source_policy.identity(),
+        local_policy_paths: local_policy_paths.clone(),
+    };
+    let mut stylo_files = Vec::with_capacity(project_paths.stylo_paths.len());
+    for path in &project_paths.stylo_paths {
+        let relative_path = path
+            .strip_prefix(&root)
+            .map_err(|_| "Stylo candidate escaped project root")?
+            .to_path_buf();
+        stylo_files.push(CompilerFileRevision {
+            relative_path,
+            metadata: project_paths.file_revisions.get(path).copied().flatten(),
+        });
+    }
+    stylo_files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    let stylo_walk = StyloWalkEvidence {
+        project,
+        root: root.clone(),
+        files: stylo_files,
+        inventory: project_paths.stylo_inventory,
+        inventory_complete: project_paths.stylo_inventory_complete,
+        discovery_options: discovery.source_scope_identity_bytes(),
+        source_policy: source_policy.identity(),
+        local_policy_paths: local_policy_paths.clone(),
+    };
+    let mut sql_files = Vec::with_capacity(project_paths.sql_paths.len());
+    for path in &project_paths.sql_paths {
+        let relative_path = path.strip_prefix(&root).map_err(|_| "SQL candidate escaped project root")?.to_path_buf();
+        sql_files.push(CompilerFileRevision { relative_path, metadata: project_paths.file_revisions.get(path).copied().flatten() });
+    }
+    sql_files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    let sql_walk = SqlWalkEvidence { project, root: root.clone(), files: sql_files, inventory_complete: project_paths.sql_inventory_complete };
     let revision_fence = CompilerRevisionFence {
         requested_root,
         root: root.clone(),
@@ -1981,8 +3575,9 @@ fn scan_project_with_configuration_policy_attempt(
     // bytes used by freshness, before any analysis/frontier/row key is made.
     let relevant_languages = paths
         .iter()
-        .filter_map(|path| profile_of(frontends, path))
+        .filter_map(|path| frontends.and_then(|set| profile_of(set, path)))
         .map(LanguageProfile::language)
+        .chain((native_typescript && !native_paths.is_empty()).then_some(Language::TypeScript))
         .collect::<BTreeSet<_>>();
     let has_go = relevant_languages.contains(&Language::Go);
     if let Some(observed) = observation {
@@ -2019,7 +3614,7 @@ fn scan_project_with_configuration_policy_attempt(
     let go_capture = &compiler_configuration.go_capture;
     for path in &paths {
         if frontends
-            .for_path(path)
+            .and_then(|set| set.for_path(path))
             .is_some_and(|frontend| frontend.language() == SourceLanguage::Go)
         {
             go_capture.validate_source(
@@ -2031,7 +3626,7 @@ fn scan_project_with_configuration_policy_attempt(
     let frontier_sources = paths
         .iter()
         .filter_map(|path| {
-            let frontend = frontends.for_path(path)?;
+            let frontend = frontends.and_then(|set| set.for_path(path))?;
             let relative = path
                 .strip_prefix(&root)
                 .ok()?
@@ -2090,7 +3685,7 @@ fn scan_project_with_configuration_policy_attempt(
                 reusable,
                 state,
                 source_policy.identity(),
-                |path| frontends.for_path(path).is_some(),
+                |path| frontends.and_then(|set| set.for_path(path)).is_some(),
             )
         })
     } else {
@@ -2099,29 +3694,68 @@ fn scan_project_with_configuration_policy_attempt(
     if let Some(observed) = observation {
         observed.phase("source-budget-preflight");
     }
-    preflight_source_bytes(&root, &paths, source_policy, cancellation)?;
+    let mut preflight_paths = paths.clone();
+    preflight_paths.extend(native_paths.iter().cloned());
+    preflight_source_bytes(&root, &preflight_paths, source_policy, cancellation)?;
     if let Some(observed) = observation {
-        observed.sources(paths.len());
+        observed.sources(paths.len().saturating_add(native_paths.len()));
         observed.phase("structural-source-analysis");
     }
-    let mut scanned = scan_source_paths(
-        &root,
-        &root_capability,
-        &paths,
-        project,
-        reusable,
-        frontends,
-        python_version,
-        go_capture,
-        source_delta.as_ref(),
-        source_policy,
-        cancellation,
-        observation,
-    )?;
-    let source_bytes_read = scanned
-        .iter()
-        .map(|file| file.source_bytes_read)
-        .sum::<usize>();
+    let mut source_ledger = SourceAdmissionLedger::default();
+    let mut scanned = if let Some(frontends) = frontends {
+        scan_source_paths(
+            &root, &root_capability, &paths, project, reusable, frontends,
+            python_version, go_capture, source_delta.as_ref(), source_policy,
+            &mut source_ledger, cancellation, observation,
+        )?
+    } else { Vec::new() };
+    // Vue script syntax belongs to the same source snapshot and facts plane,
+    // but the host file is never compiler input. Original byte offsets survive
+    // unchanged through source reads, search and structural declarations.
+    for path in &project_paths.vue_paths {
+        let (file, supported) = vue::scan(&root, &root_capability, path, project, source_policy, cancellation)?;
+        source_ledger.admit_with_fact_pages(source_policy,
+            source_policy.admit_actual_file(file.source_bytes).map_err(|e| e.to_string())?,
+            file.encoded_record_bytes, file.encoded_fact_bytes, false).map_err(|e| e.to_string())?;
+        if supported { project_paths.unsupported_vue = project_paths.unsupported_vue.saturating_sub(1); }
+        scanned.push(file);
+    }
+    let mut native_bytes_read = 0usize;
+    let mut native_typescript_capture = if native_typescript {
+        let mut capture = capture_native_typescript_sources(
+            &root, &native_paths, project, source_policy, &mut source_ledger,
+            &revision_fence, &mut native_bytes_read, cancellation,
+        ).map_err(|error| format!("{error}; native source bytes read: {native_bytes_read}"))?;
+        if discovery != source_selection_policy() {
+            return Err("native TypeScript scan policy differs from its fixed recipe".into());
+        }
+        capture.fixed_discovery_policy = true;
+        Some(capture)
+    } else { None };
+    let native_source_bytes = match &native_typescript_capture {
+        Some(capture) => capture.sources.iter().try_fold(0usize, |total, source| total.checked_add(source.evidence.byte_length as usize))
+            .ok_or("native source bytes overflow")?,
+        None => 0,
+    };
+    let native_record_bytes = native_typescript_capture.as_ref().map_or(0, |capture| capture.encoded_bytes);
+    let native_record_count = native_typescript_capture.as_ref().map_or(0, |capture| capture.sources.len());
+    let mut native_policy_bytes_read = 0usize;
+    let native_discovery = if native_typescript {
+        if !local_policy_paths_complete { return Err("native TypeScript discovery policy inputs are incomplete".into()); }
+        Some(native_typescript_discovery_basis(&stylo_walk, &revision_fence, cancellation, &mut native_policy_bytes_read)
+            .map_err(|error| format!("{error}; native policy bytes read: {native_policy_bytes_read}"))?)
+    } else { None };
+    let stylo_budget_baseline = StyloBudgetBaseline {
+        source_bytes: scanned.iter().try_fold(native_source_bytes, |total, file| total.checked_add(file.source_bytes))
+            .ok_or("source budget baseline overflow")?,
+        record_bytes: scanned.iter().try_fold(native_record_bytes, |total, file| {
+            total.checked_add(file.encoded_record_bytes)?.checked_add(file.encoded_fact_bytes)
+        }).ok_or("record budget baseline overflow")?,
+        records: scanned.len().checked_add(native_record_count).ok_or("source record count overflow")?,
+    };
+    let initial_read = native_bytes_read.checked_add(native_policy_bytes_read).ok_or("source read count overflow")?;
+    let source_bytes_read = scanned.iter().try_fold(initial_read, |total, file| total.checked_add(file.source_bytes_read))
+        .ok_or("source read count overflow")?;
     let cache_witness = git_before;
     if source_delta.is_some() {
         #[cfg(test)]
@@ -2165,6 +3799,7 @@ fn scan_project_with_configuration_policy_attempt(
                 interpreter,
                 python_environment.clone(),
                 observation,
+                if native_typescript { NativeTsScanMode::Native } else { NativeTsScanMode::Legacy },
             )?;
             full.source_bytes_read = full.source_bytes_read.saturating_add(source_bytes_read);
             return Ok(full);
@@ -2177,6 +3812,10 @@ fn scan_project_with_configuration_policy_attempt(
 
     let mut source = blake3::Hasher::new();
     source.update(b"backend.project-snapshot.v2\0");
+    if let Some(capture) = &native_typescript_capture {
+        source.update(b"nudox.native-typescript-source-set.v1\0");
+        source.update(&capture.source_version);
+    }
     let mut files = Vec::with_capacity(scanned.len());
     let mut source_facts = Vec::with_capacity(scanned.len());
     let mut encoded_fact_bytes = Vec::with_capacity(scanned.len());
@@ -2250,6 +3889,15 @@ fn scan_project_with_configuration_policy_attempt(
         compiler_sources.extend(compiler_source);
         reused_compiler_files.extend(reused_compiler);
     }
+    if let Some(capture) = &native_typescript_capture {
+        compiler_sources.extend(capture.sources.iter().map(|source| CompilerSourceHandle {
+            relative_path: source.evidence.path.clone(),
+            profile: source.evidence.profile,
+            content: source.evidence.input_digest,
+            source_fact_identity: source.source_fact_identity,
+            expected_byte_length: Some(source.evidence.byte_length),
+        }));
+    }
     files.sort_by_key(|(key, _)| *key);
     encoded_fact_bytes.sort_unstable_by_key(|(key, _)| *key);
     let relevant_languages = compiler_sources
@@ -2270,6 +3918,7 @@ fn scan_project_with_configuration_policy_attempt(
                 .iter()
                 .map(|source| source.profile.language()),
         )
+        .chain((native_typescript && !native_paths.is_empty()).then_some(Language::TypeScript))
         .collect();
     let compiler_configuration = if capture_configuration_contents {
         read_compiler_configuration_snapshot(
@@ -2283,16 +3932,55 @@ fn scan_project_with_configuration_policy_attempt(
     } else {
         CompilerConfigurationSnapshot::default()
     };
+    if let Some(discovery_basis) = native_discovery {
+        if !native_paths.is_empty() && !compiler_configuration.complete_languages.contains(&Language::TypeScript) {
+            return Err("native TypeScript configuration inputs are incomplete".into());
+        }
+        let mut configurations = Vec::new();
+        for file in &compiler_configuration.files {
+            if file.language == Language::TypeScript {
+                configurations.push((normalized_workspace_path(&file.relative_path)?, file.content));
+            }
+        }
+        configurations.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        if configurations.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            return Err("duplicate native TypeScript configuration path".into());
+        }
+        source.update(b"nudox.native-typescript-input-basis.v1\0");
+        source.update(&discovery_basis);
+        source.update(&[u8::from(compiler_configuration.complete_languages.contains(&Language::TypeScript))]);
+        source.update(&(configurations.len() as u64).to_be_bytes());
+        for (path, content) in configurations {
+            source.update(&(path.len() as u64).to_be_bytes());
+            source.update(path.as_bytes());
+            source.update(&content);
+        }
+        if !compiler_revision_is_current_with_cancellation(&revision_fence, cancellation)? {
+            return Err("native TypeScript source or configuration changed before scan completion".into());
+        }
+    }
+    let source_version = *source.finalize().as_bytes();
+    if let Some(capture) = &mut native_typescript_capture {
+        capture.project_source_version = Some(source_version);
+    }
     let snapshot = IndexSnapshot {
-        source_selection: backend_library::SourceSelectionObservation::project_vue(
+        vue_scan_identity: std::sync::Arc::new(()),
+        source_selection: backend_library::SourceSelectionObservation::project_extensions(
+            project_paths.unsupported_css,
+            project_paths.unsupported_sql,
             project_paths.unsupported_vue,
         ),
+        stylo_walk,
+        sql_walk,
+        vue_walk,
+        stylo_budget_baseline,
         python_environment: python_environment.map(PythonEnvironmentInput::Captured),
-        source_version: *source.finalize().as_bytes(),
+        source_version,
         files,
         source_facts,
         encoded_fact_bytes,
         compiler_sources,
+        native_typescript_capture,
         native_frontier,
         native_clang_candidates,
         native_csharp_candidates,
@@ -2480,13 +4168,28 @@ fn supported_paths_with_policy(
 ) -> Result<Vec<PathBuf>, String> {
     let root_capability = ProjectRoot::open(root)?;
     Ok(
-        project_paths_with_policy(root, &root_capability, Some(frontends), discovery, None)?
+        project_paths_with_policy(root, &root_capability, Some(frontends), false, discovery, None)?
             .sources,
     )
 }
 
 struct ProjectPaths {
     sources: Vec<PathBuf>,
+    // Direct native TS candidates from the same discovery walk. They are not
+    // structural declarations or proof that the compiler includes the file.
+    native_typescript_paths: Vec<PathBuf>,
+    // Captured from the same nonignored walk; unsupported disclosure remains
+    // in force until native Stylo facts can actually be published.
+    stylo_paths: Vec<PathBuf>,
+    vue_paths: Vec<PathBuf>,
+    vue_inventory_complete: bool,
+    stylo_inventory_complete: bool,
+    // None means even the bounded full-walk path witness could not be formed.
+    stylo_inventory: Option<(u64, [u8; 32])>,
+    sql_paths: Vec<PathBuf>,
+    sql_inventory_complete: bool,
+    unsupported_css: u64,
+    unsupported_sql: u64,
     unsupported_vue: u64,
     configurations: Vec<(Language, PathBuf)>,
     directories: Vec<(PathBuf, Option<FileSystemRevision>)>,
@@ -2499,10 +4202,26 @@ fn project_paths_with_policy(
     root: &Path,
     _root_capability: &ProjectRoot,
     frontends: Option<&FrontendSet>,
+    native_typescript: bool,
     discovery: DiscoveryPolicy,
     cancellation: Option<&AtomicBool>,
 ) -> Result<ProjectPaths, String> {
+    if native_typescript && frontends.is_some() {
+        return Err("native TypeScript discovery cannot use a syntax frontend registry".into());
+    }
     let mut sources = Vec::new();
+    let mut native_typescript_paths = Vec::new();
+    let mut stylo_paths = Vec::new();
+    let mut sql_paths = Vec::new();
+    let mut sql_inventory_complete = true;
+    let mut vue_paths = Vec::new();
+    let mut vue_inventory_complete = true;
+    let mut stylo_inventory_complete = true;
+    let mut stylo_witness_paths = Vec::<String>::new();
+    let mut stylo_witness_bytes = 0usize;
+    let mut stylo_witness_available = true;
+    let mut unsupported_css = 0_u64;
+    let mut unsupported_sql = 0_u64;
     let mut unsupported_vue = 0_u64;
     let mut configurations = Vec::new();
     #[cfg(windows)]
@@ -2536,28 +4255,158 @@ fn project_paths_with_policy(
             // same nonignored walk. Do not read them, assign TS authority, or
             // insert them into supported/compiler membership.
             let claimed = frontends.and_then(|set| set.for_path(entry.path()));
-            if frontends.is_some()
-                && claimed.is_none()
+            let relative = entry
+                .path()
+                .strip_prefix(root)
+                .map_err(|_| "discovered file escaped its project root".to_owned())?;
+            let exact_relative = relative.to_str();
+            let known_extension = entry
+                .path()
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(str::to_ascii_lowercase);
+            if native_typescript
+                && exact_relative.is_none()
+                && known_extension.as_deref().is_some_and(|ext| {
+                    matches!(
+                        ext,
+                        "ts" | "tsx"
+                            | "mts"
+                            | "cts"
+                            | "js"
+                            | "jsx"
+                            | "mjs"
+                            | "cjs"
+                            | "rs"
+                            | "py"
+                            | "pyi"
+                            | "pyw"
+                            | "go"
+                            | "java"
+                            | "cs"
+                            | "c"
+                            | "h"
+                            | "cc"
+                            | "cpp"
+                            | "cxx"
+                            | "hh"
+                            | "hpp"
+                            | "hxx"
+                            | "m"
+                            | "mm"
+                    )
+                })
+            {
+                return Err("native discovery source path is not exact UTF-8".to_owned());
+            }
+            let native_ts = native_typescript
+                && exact_relative.is_some_and(|path| {
+                    admitted_file_profile(SourceLanguage::TypeScript, path).is_some()
+                });
+            let native_other = native_typescript
+                && exact_relative.is_some_and(|path| {
+                    [
+                        SourceLanguage::Rust,
+                        SourceLanguage::Python,
+                        SourceLanguage::Go,
+                        SourceLanguage::Java,
+                        SourceLanguage::CSharp,
+                        SourceLanguage::Clang,
+                    ]
+                    .into_iter()
+                    .any(|language| admitted_file_profile(language, path).is_some())
+                });
+            let recognized = claimed.is_some() || native_ts || native_other;
+            if (frontends.is_some() || native_typescript) && !recognized {
+                let ext = entry.path().extension().and_then(|ext| ext.to_str());
+                let counter = match ext.map(str::to_ascii_lowercase).as_deref() {
+                    Some("css") => Some(&mut unsupported_css),
+                    Some("sql") => Some(&mut unsupported_sql),
+                    Some("vue") => Some(&mut unsupported_vue),
+                    _ => None,
+                };
+                if let Some(counter) = counter {
+                    *counter = counter
+                        .checked_add(1)
+                        .ok_or("unsupported source count overflow")?;
+                }
+            }
+            let is_vue_source = (frontends.is_some() || native_typescript)
+                && !recognized
+                && entry.path().extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("vue"));
+            if is_vue_source {
+                if exact_relative.is_none() || vue_paths.len() >= ProductSourceRecord::MAX_PROJECT_FILES {
+                    vue_inventory_complete = false;
+                } else {
+                    vue_paths.push(entry.path().to_owned());
+                }
+            }
+            let is_stylo_source = (frontends.is_some() || native_typescript)
+                && !recognized
                 && entry
                     .path()
                     .extension()
                     .and_then(|ext| ext.to_str())
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("vue"))
-            {
-                unsupported_vue = unsupported_vue
-                    .checked_add(1)
-                    .ok_or("unsupported Vue source count overflow")?;
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("css"));
+            // The static discovery walk carries no frontends but is flagged native;
+            // like CSS, SQL is collected by both the static and the legacy walk.
+            let is_sql_source = (frontends.is_some() || native_typescript) && !recognized
+                && entry.path().extension().and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("sql"));
+            if is_sql_source {
+                if sql_paths.len() < backend_engine::builtin::MAX_SQL_HOSTS as usize {
+                    sql_paths.push(entry.path().to_owned());
+                } else { sql_inventory_complete = false; }
+            }
+            if is_stylo_source {
+                if stylo_witness_available {
+                    let relative = entry
+                        .path()
+                        .strip_prefix(root)
+                        .ok()
+                        .and_then(Path::to_str)
+                        .map(|value| value.replace(std::path::MAIN_SEPARATOR, "/"));
+                    match relative.and_then(|path| {
+                        stylo_witness_bytes
+                            .checked_add(path.len())
+                            .map(|total| (path, total))
+                    }) {
+                        Some((path, total)) if total <= 16 * 1024 * 1024 => {
+                            stylo_witness_bytes = total;
+                            stylo_witness_paths.push(path);
+                        }
+                        _ => {
+                            stylo_witness_available = false;
+                            stylo_inventory_complete = false;
+                            stylo_witness_paths.clear();
+                        }
+                    }
+                }
+                if stylo_paths.len() < ProductSourceRecord::MAX_PROJECT_FILES {
+                    stylo_paths.push(entry.path().to_owned());
+                } else {
+                    stylo_inventory_complete = false;
+                }
             }
             let mut revision_path = entry
                 .path()
                 .file_name()
                 .and_then(|name| name.to_str())
                 .is_some_and(source_frontier::is_policy_file_name);
-            if claimed.is_some() {
-                if sources.len() >= ProductSourceRecord::MAX_PROJECT_FILES {
+            if is_stylo_source || is_sql_source || is_vue_source {
+                revision_path = true;
+            }
+            if recognized {
+                if sources.len().saturating_add(native_typescript_paths.len())
+                    >= ProductSourceRecord::MAX_PROJECT_FILES
+                {
                     return Err("project contains too many supported source files".to_owned());
                 }
-                sources.push(entry.path().to_owned());
+                if native_ts {
+                    native_typescript_paths.push(entry.path().to_owned());
+                } else {
+                    sources.push(entry.path().to_owned());
+                }
                 revision_path = true;
             }
             if let Some(language) = compiler_configuration_language(entry.path()) {
@@ -2602,7 +4451,9 @@ fn project_paths_with_policy(
     let mut go_candidates = BTreeSet::new();
     for source in &sources {
         check_scan_cancellation(cancellation)?;
-        if !frontends
+        let native_go = native_typescript && source.strip_prefix(root).ok().and_then(Path::to_str)
+            .is_some_and(|path| admitted_file_profile(SourceLanguage::Go, path).is_some());
+        if !native_go && !frontends
             .and_then(|frontends| frontends.for_path(source))
             .is_some_and(|frontend| frontend.language() == SourceLanguage::Go)
         {
@@ -2658,8 +4509,33 @@ fn project_paths_with_policy(
             );
         }
     }
+    let stylo_inventory = if stylo_witness_available {
+        stylo_witness_paths.sort_unstable();
+        let mut witness = backend_engine::builtin::StyloInventoryWitness::default();
+        if stylo_witness_paths
+            .iter()
+            .all(|path| witness.push(path).is_ok())
+        {
+            Some(witness.finish())
+        } else {
+            stylo_inventory_complete = false;
+            None
+        }
+    } else {
+        None
+    };
     Ok(ProjectPaths {
         sources,
+        native_typescript_paths,
+        stylo_paths,
+        vue_paths,
+        vue_inventory_complete,
+        stylo_inventory_complete,
+        stylo_inventory,
+        sql_paths,
+        sql_inventory_complete,
+        unsupported_css,
+        unsupported_sql,
         unsupported_vue,
         configurations,
         directories,
@@ -3127,6 +5003,7 @@ fn scan_one(
                 profile,
                 content,
                 source_fact_identity: SourceFactIdentity::from_canonical_bytes(error.as_bytes()),
+                expected_byte_length: None,
             });
             unavailable.source_bytes = source_bytes;
             return Ok(unavailable);
@@ -3149,10 +5026,7 @@ fn scan_one(
             if matches!(
                 profile,
                 LanguageProfile::Python(_) | LanguageProfile::C(_) | LanguageProfile::Cxx(_)
-            ) && !matches!(
-                &error,
-                SyntaxError::MalformedSource(SourceLanguage::Clang)
-            ) =>
+            ) && !matches!(&error, SyntaxError::MalformedSource(SourceLanguage::Clang)) =>
         {
             // Browsing keeps the truthful Unparsed row. A structural grammar
             // cannot decide whether the native compiler accepts this source:
@@ -3175,6 +5049,7 @@ fn scan_one(
                 profile,
                 content,
                 source_fact_identity: SourceFactIdentity::from_canonical_bytes(source.as_bytes()),
+                expected_byte_length: None,
             });
             unavailable.source_bytes = source_bytes;
             return Ok(unavailable);
@@ -3389,6 +5264,7 @@ fn scanned_file(
             relative_path: relative,
             content,
             source_fact_identity,
+            expected_byte_length: None,
         }),
         None,
         None,
@@ -3556,6 +5432,7 @@ pub(super) fn admit_compiler_sources_with_native_candidates_for_scan(
             profile: candidate.profile,
             content: candidate.content,
             source_fact_identity: candidate.source_fact_identity,
+            expected_byte_length: None,
         });
     }
     for candidate in csharp_candidates {
@@ -3568,6 +5445,7 @@ pub(super) fn admit_compiler_sources_with_native_candidates_for_scan(
             profile: candidate.profile,
             content: candidate.content,
             source_fact_identity: candidate.source_fact_identity,
+            expected_byte_length: None,
         });
     }
     let sources = admit_compiler_sources_for_scan(
@@ -3609,13 +5487,13 @@ fn materialize_compiler_sources(
     cancellation: Option<&AtomicBool>,
     mut after_source: impl FnMut(usize),
 ) -> Result<Vec<CompilerSource>, String> {
-    let mut pending = BTreeMap::<String, (LanguageProfile, [u8; 32], SourceFactIdentity)>::new();
+    let mut pending = BTreeMap::<String, (LanguageProfile, [u8; 32], SourceFactIdentity, Option<u32>)>::new();
     for source in fresh {
         let path = source.relative_path.clone();
         if pending
             .insert(
                 path.clone(),
-                (source.profile, source.content, source.source_fact_identity),
+                (source.profile, source.content, source.source_fact_identity, source.expected_byte_length),
             )
             .is_some()
         {
@@ -3627,7 +5505,7 @@ fn materialize_compiler_sources(
         if pending
             .insert(
                 path.clone(),
-                (source.profile, source.content, source.source_fact_identity),
+                (source.profile, source.content, source.source_fact_identity, None),
             )
             .is_some()
         {
@@ -3636,7 +5514,7 @@ fn materialize_compiler_sources(
     }
     let mut admitted = Vec::with_capacity(pending.len());
     let mut retained_bytes = 0_usize;
-    for (path, (profile, expected_content, expected_source_fact_identity)) in pending {
+    for (path, (profile, expected_content, expected_source_fact_identity, expected_byte_length)) in pending {
         check_scan_cancellation(cancellation)?;
         let bytes = capability
             .read(
@@ -3648,6 +5526,9 @@ fn materialize_compiler_sources(
         source_policy
             .admit_actual_file(bytes.len())
             .map_err(|refusal| refusal.to_string())?;
+        if expected_byte_length.is_some_and(|length| bytes.len() != length as usize) {
+            return Err(format!("source {path} changed after its byte length was admitted"));
+        }
         let content = typed_of::<InputContentSchema>(&bytes).to_bytes();
         if content != expected_content {
             return Err(format!(
@@ -3678,6 +5559,90 @@ fn materialize_compiler_sources(
         after_source(admitted.len());
     }
     Ok(admitted)
+}
+
+/// Replaces selected C# source owners with fresh post-selection confined
+/// reads. Exact original scan identities are checked before replacing buffers.
+pub(super) fn rematerialize_csharp_source_buffers(
+    fence: &CompilerRevisionFence,
+    sources: &mut [CompilerSource],
+    project_path: &str,
+    profile: LanguageProfile,
+    cancellation: &AtomicBool,
+) -> Result<bool, String> {
+    if !compiler_revision_is_current_with_cancellation(fence, Some(cancellation))? { return Ok(false); }
+    let root = fence.open_bound_root(&fence.requested_root)?;
+    let directory = project_path.rsplit_once('/').map_or("", |(parent, _)| parent);
+    let mut count = 0usize;
+    for source in sources.iter_mut() {
+        check_scan_cancellation(Some(cancellation))?;
+        if source.profile != profile || (!directory.is_empty() && !source.relative_path.strip_prefix(directory).is_some_and(|suffix| suffix.starts_with('/'))) {
+            return Ok(false);
+        }
+        if source.source.len() > 8 * 1024 * 1024 { return Err("C# source exceeds witness reread bound".to_owned()); }
+        let bytes = root.read(Path::new(&source.relative_path), 8 * 1024 * 1024)
+            .map_err(|error| reread_fault(&source.relative_path, error))?;
+        if bytes.len() != source.source.len() || bytes != source.source
+            || typed_of::<InputContentSchema>(&bytes).to_bytes() != source.content
+            || SourceFactIdentity::from_canonical_bytes(&bytes) != source.source_fact_identity {
+            return Ok(false);
+        }
+        source.source = bytes;
+        count = count.checked_add(1).ok_or("C# source count overflow")?;
+    }
+    if count == 0 { return Ok(false); }
+    compiler_revision_is_current_with_cancellation(fence, Some(cancellation))
+}
+
+#[cfg(test)]
+pub(super) fn csharp_test_revision_fence(snapshot: &CompilerWorkspaceSnapshot) -> CompilerRevisionFence {
+    CompilerRevisionFence {
+        requested_root: snapshot.requested_root.clone(), root: snapshot.root.clone(),
+        directories: snapshot.entries.iter().filter(|entry| entry.kind == CompilerWorkspaceEntryKind::Directory)
+            .map(|entry| (PathBuf::from(&entry.path), Some(entry.revision))).collect(),
+        files: snapshot.entries.iter().filter(|entry| entry.kind == CompilerWorkspaceEntryKind::File)
+            .map(|entry| CompilerFileRevision { relative_path: PathBuf::from(&entry.path), metadata: Some(entry.revision) }).collect(),
+        typescript_reuse: Vec::new(),
+    }
+}
+
+/// Reopens selected C# source bytes through the original confined root after
+/// source selection. This does not establish project membership or authority.
+pub(super) fn revalidate_csharp_source_buffers(
+    fence: &CompilerRevisionFence,
+    sources: &[CompilerSource],
+    project_path: &str,
+    profile: LanguageProfile,
+    cancellation: &AtomicBool,
+) -> Result<bool, String> {
+    if !compiler_revision_is_current_with_cancellation(fence, Some(cancellation))? {
+        return Ok(false);
+    }
+    let root = fence.open_bound_root(&fence.requested_root)?;
+    let directory = project_path.rsplit_once('/').map_or("", |(parent, _)| parent);
+    let mut previous: Option<&str> = None;
+    let mut count = 0usize;
+    for source in sources.iter().filter(|source| source.profile == profile) {
+        if !directory.is_empty() && !source.relative_path.strip_prefix(directory).is_some_and(|suffix| suffix.starts_with('/')) {
+            continue;
+        }
+        check_scan_cancellation(Some(cancellation))?;
+        if previous.is_some_and(|path| path >= source.relative_path.as_str()) { return Ok(false); }
+        previous = Some(&source.relative_path);
+        // This independent reread is charged to the 16 MiB C# capture lease;
+        // larger configured source files are explicitly outside this profile.
+        if source.source.len() > 8 * 1024 * 1024 { return Err("C# source exceeds witness reread bound".to_owned()); }
+        let bytes = root.read(Path::new(&source.relative_path), 8 * 1024 * 1024)
+            .map_err(|error| reread_fault(&source.relative_path, error))?;
+        if bytes != source.source
+            || typed_of::<InputContentSchema>(&bytes).to_bytes() != source.content
+            || SourceFactIdentity::from_canonical_bytes(&bytes) != source.source_fact_identity {
+            return Ok(false);
+        }
+        count = count.checked_add(1).ok_or("C# source count overflow")?;
+    }
+    if count == 0 { return Ok(false); }
+    compiler_revision_is_current_with_cancellation(fence, Some(cancellation))
 }
 
 /// Profiles that still have compiler input in this scan.
@@ -3920,8 +5885,38 @@ pub(super) fn source_record_profile(
             file.python_version.unwrap_or(PythonVersion::Python314),
         )));
     }
-    source_profile(Path::new(file.path))
+    Ok(admitted_file_profile(file.language, file.path))
 }
+
+/// Resolves an already-admitted language/path without constructing a parser.
+pub(super) fn admitted_file_profile(
+    language: SourceLanguage,
+    path: &str,
+) -> Option<LanguageProfile> {
+    let extension = Path::new(path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)?;
+    // The persisted file already carries its admitted language. Check the
+    // producer's extension set without constructing a syntax frontend.
+    let admitted = match language {
+        SourceLanguage::Rust => matches!(extension.as_str(), "rs"),
+        SourceLanguage::Java => matches!(extension.as_str(), "java"),
+        SourceLanguage::CSharp => matches!(extension.as_str(), "cs"),
+        SourceLanguage::TypeScript => matches!(
+            extension.as_str(),
+            "ts" | "mts" | "cts" | "js" | "mjs" | "cjs" | "tsx" | "jsx"
+        ),
+        SourceLanguage::Clang => matches!(
+            extension.as_str(),
+            "c" | "h" | "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" | "m" | "mm"
+        ),
+        SourceLanguage::Go => matches!(extension.as_str(), "go"),
+        SourceLanguage::Python => matches!(extension.as_str(), "py" | "pyi" | "pyw"),
+    };
+    admitted.then(|| dialect(language, &extension)).flatten()
+}
+
 
 fn project_analysis_version(
     frontend: &ProductFrontend,
@@ -3995,7 +5990,7 @@ pub(super) const fn lane_profile(profile: LanguageProfile) -> LanguageProfile {
 /// TypeScript and Clang extensions select their dialect. Python's path-only
 /// default is 3.14; project admission overrides it before producing any source
 /// record or compiler frontier. Saved Python records carry their literal minor.
-fn dialect(language: SourceLanguage, extension: &str) -> Option<LanguageProfile> {
+pub(super) fn dialect(language: SourceLanguage, extension: &str) -> Option<LanguageProfile> {
     Some(match language {
         SourceLanguage::Rust => LanguageProfile::Rust(RustEdition::Rust2024),
         SourceLanguage::Python => LanguageProfile::Python(PythonVersion::Python314),
@@ -4020,6 +6015,644 @@ fn dialect(language: SourceLanguage, extension: &str) -> Option<LanguageProfile>
 mod tests {
     use super::*;
     use backend_engine::CanonicalRelation;
+
+    #[cfg(unix)]
+    #[test]
+    fn selected_line_map_host_check_refuses_symlinks_and_stops() {
+        use backend_semantic::{ir::SourceIdentity, native_source_lines::{NativeSourceLineAggregate, NativeSourceLineAggregateView, NativeSourceLineFile}};
+        use backend_engine::builtin::{NativeSourceEvidence, NativeSourceEvidenceKind};
+        use backend_extension_turso::SelectedNativeHeaderBudget;
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("root");
+        let root = temp.path().canonicalize().expect("canonical root");
+        let bytes = b"export const x = 1;\r\n";
+        std::fs::write(root.join("a.ts"), bytes).expect("source");
+        let source = SourceIdentity::from_bytes(bytes).expect("source identity");
+        let evidence = NativeSourceEvidence {
+            project: [1; 32], profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+            path: "a.ts".into(), input_digest: typed_of::<InputContentSchema>(bytes.as_slice()).to_bytes(),
+            source_digest: *source.identity.as_ref(), byte_length: bytes.len() as u32,
+            kind: NativeSourceEvidenceKind::Image, line_starts: None, headers: None,
+        };
+        let aggregate = NativeSourceLineAggregate { files: vec![NativeSourceLineFile {
+            path: "a.ts".into(), source, line_starts: vec![0, bytes.len() as u32],
+        }] };
+        let size = aggregate.encoded_len_checkpointed(&mut |_| Ok::<(), ()>(())).expect("wire size");
+        let mut wire = vec![0; size];
+        aggregate.encode_into(&mut wire, &mut |_| Ok::<(), ()>(())).expect("wire");
+        let view = NativeSourceLineAggregateView::parse(&wire, &mut |_| Ok::<(), ()>(())).expect("view");
+        let file = view.find_file("a.ts", &mut |_| Ok::<(), ()>(())).expect("lookup").expect("file");
+        let check = |root: &Path, evidence: &NativeSourceEvidence, memory, stopped: &dyn Fn() -> bool| {
+            let mut budget = SelectedNativeHeaderBudget::new(memory, 1_000_000);
+            native_line_map_matches_host(root, evidence, source, file, &mut budget, stopped)
+        };
+        assert_eq!(check(&root, &evidence, bytes.len(), &|| false), Ok(true));
+        assert!(check(&root, &evidence, bytes.len() - 1, &|| false).is_err());
+        assert!(check(&root, &evidence, 0, &|| true).is_err());
+        let mut changed = bytes.to_vec();
+        changed[0] ^= 1;
+        std::fs::write(root.join("a.ts"), &changed).expect("same-length source change");
+        assert_eq!(check(&root, &evidence, bytes.len(), &|| false), Ok(false));
+        std::fs::write(root.join("a.ts"), bytes).expect("restore source");
+        let root_link = root.join("root-link");
+        symlink(&root, &root_link).expect("root link");
+        assert_eq!(check(&root_link, &evidence, bytes.len(), &|| false), Ok(false));
+        std::fs::remove_file(root.join("a.ts")).expect("remove source");
+        symlink(root.join("root-link").join("a.ts"), root.join("a.ts")).expect("file link");
+        assert_eq!(check(&root, &evidence, bytes.len(), &|| false), Ok(false));
+    }
+
+    #[test]
+    fn structural_readiness_preserves_baseline_until_a_manifest_is_observed() {
+        use backend_engine::{CapabilityFamily, CapabilityInventory, CapabilityLifecycle, CapabilityTarget};
+        let inventory = CapabilityInventory::explicitly_unavailable();
+        let baseline = *inventory.as_slice().iter().find(|status|
+            matches!(status.family(), CapabilityFamily::StructuralFrontend { .. })
+        ).expect("structural slot");
+        let target = CapabilityTarget::Native { os: native_os(), architecture: native_architecture() };
+        assert_eq!(structural_capability_from_observation(baseline, None, target), baseline);
+        let observed = structural_capability_from_observation(baseline, Some([7; 32]), target);
+        assert_eq!(observed.lifecycle(), CapabilityLifecycle::Ready);
+        assert_eq!(observed.manifest(), Some([7; 32]));
+        assert_eq!(structural_capability_from_observation(observed, None, target), observed,
+            "a previously admitted manifest must not become an invented negative");
+    }
+
+    #[test]
+    fn native_evidence_reader_checks_same_buffer_and_refuses_missing_or_retargeted_files() {
+        use backend_engine::builtin::NativeSourceEvidence;
+        use backend_semantic::ir::SourceIdentity;
+        let root = tempfile::tempdir().expect("root");
+        let source = "package fixture\n// π\n".as_bytes();
+        let file = root.path().join("fixture.go");
+        std::fs::write(&file, source).expect("source");
+        let image = SourceIdentity::from_bytes(source).expect("image source");
+        let mut evidence = NativeSourceEvidence {
+            project: [1; 32],
+            profile: LanguageProfile::Go(GoVersion::Go125),
+            path: "fixture.go".into(),
+            input_digest: typed_of::<InputContentSchema>(source).to_bytes(),
+            source_digest: *image.identity.as_ref(),
+            byte_length: source.len() as u32,
+            kind: backend_engine::builtin::NativeSourceEvidenceKind::Image,
+            line_starts: None,
+            headers: None,
+        };
+        assert_eq!(
+            indexed_native_evidence_matches(root.path(), &evidence, image),
+            Ok(true)
+        );
+        let extent = (0, source.len() as u32);
+        let page =
+            read_indexed_native_evidence_range(root.path(), &evidence, image, extent, 0, 4096)
+                .expect("verified range");
+        assert_eq!(page.text.as_bytes(), source);
+        assert_eq!(read_indexed_native_evidence_header(root.path(), &evidence, image, (0, 15)), Ok("package fixture".to_owned()));
+        assert_eq!(read_indexed_native_evidence_header(root.path(), &evidence, image, (0, 0)), Err(super::super::source_range::SourceRangeError::InvalidExtent));
+        assert_eq!(
+            read_indexed_native_evidence_range(root.path(), &evidence, image, (0, 0), 0, 4096),
+            Err(super::super::source_range::SourceRangeError::InvalidExtent)
+        );
+        std::fs::write(&file, "package fixture\n// λ\n".as_bytes()).expect("same-length change");
+        assert_eq!(read_indexed_native_evidence_header(root.path(), &evidence, image, (0, 15)), Err(super::super::source_range::SourceRangeError::Stale));
+        assert_eq!(
+            read_indexed_native_evidence_range(root.path(), &evidence, image, extent, 0, 4096),
+            Err(super::super::source_range::SourceRangeError::Stale)
+        );
+        assert_eq!(
+            indexed_native_evidence_matches(root.path(), &evidence, image),
+            Ok(false)
+        );
+        std::fs::write(&file, vec![b'x'; source.len() + 4096]).expect("grown source");
+        assert_eq!(indexed_native_evidence_matches(root.path(), &evidence, image), Ok(false));
+        assert_eq!(
+            read_indexed_native_evidence_range(root.path(), &evidence, image, extent, 0, 4096),
+            Err(super::super::source_range::SourceRangeError::Stale),
+        );
+        std::fs::write(&file, b"longer source").expect("length change");
+        assert_eq!(
+            indexed_native_evidence_matches(root.path(), &evidence, image),
+            Ok(false)
+        );
+        let mut invalid_utf8 = source.to_vec();
+        invalid_utf8[0] = 0xff;
+        std::fs::write(&file, invalid_utf8).expect("invalid UTF-8");
+        assert_eq!(
+            indexed_native_evidence_matches(root.path(), &evidence, image),
+            Ok(false)
+        );
+        std::fs::write(&file, source).expect("restore");
+        evidence.input_digest[0] ^= 1;
+        assert_eq!(
+            indexed_native_evidence_matches(root.path(), &evidence, image),
+            Ok(false)
+        );
+        evidence.input_digest[0] ^= 1;
+        evidence.source_digest[0] ^= 1;
+        assert_eq!(
+            indexed_native_evidence_matches(root.path(), &evidence, image),
+            Err(())
+        );
+        evidence.source_digest[0] ^= 1;
+        evidence.byte_length += 1;
+        assert_eq!(
+            indexed_native_evidence_matches(root.path(), &evidence, image),
+            Err(())
+        );
+        evidence.byte_length -= 1;
+        std::fs::remove_file(&file).expect("remove");
+        assert_eq!(
+            indexed_native_evidence_matches(root.path(), &evidence, image),
+            Err(())
+        );
+        #[cfg(unix)]
+        {
+            let outside = tempfile::tempdir().expect("outside");
+            std::fs::write(outside.path().join("other.go"), source).expect("outside source");
+            std::os::unix::fs::symlink(outside.path().join("other.go"), &file).expect("symlink");
+            assert_eq!(
+                indexed_native_evidence_matches(root.path(), &evidence, image),
+                Err(())
+            );
+        }
+    }
+
+    #[test]
+    fn native_typescript_walk_and_capture_use_exact_confined_bytes_without_frontends()
+    -> Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let root = tmp.path().canonicalize().map_err(|e| e.to_string())?;
+        std::fs::write(root.join("view.tsx"), "export const View = 'π';\n")
+            .map_err(|e| e.to_string())?;
+        std::fs::write(root.join("dep.ts"), "export const dep = 1;\n")
+            .map_err(|e| e.to_string())?;
+        std::fs::write(root.join("main.go"), "package main\n").map_err(|e| e.to_string())?;
+        std::fs::write(root.join("theme.css"), "body {}\n").map_err(|e| e.to_string())?;
+        std::fs::write(root.join("tsconfig.json"), "{}\n").map_err(|e| e.to_string())?;
+        let capability = ProjectRoot::open(&root)?;
+        let mut walk = project_paths_with_policy(
+            &root,
+            &capability,
+            None,
+            true,
+            source_selection_policy(),
+            None,
+        )?;
+        walk.native_typescript_paths.sort();
+        assert_eq!(
+            walk.native_typescript_paths,
+            [root.join("dep.ts"), root.join("view.tsx")]
+        );
+        assert_eq!(walk.sources, [root.join("main.go")]);
+        assert_eq!(walk.unsupported_css, 1);
+        let project =
+            backend_engine::PackageKey::from_value(root.to_str().ok_or("root UTF-8")?).to_bytes();
+        let make_fence = |walk: &ProjectPaths| -> Result<CompilerRevisionFence, String> {
+            let files = walk
+                .file_revisions
+                .iter()
+                .map(|(path, metadata)| {
+                    Ok(CompilerFileRevision {
+                        relative_path: path
+                            .strip_prefix(&root)
+                            .map_err(|e| e.to_string())?
+                            .to_path_buf(),
+                        metadata: *metadata,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            Ok(CompilerRevisionFence {
+                requested_root: root.clone(),
+                root: root.clone(),
+                directories: walk.directories.clone(),
+                files,
+                typescript_reuse: Vec::new(),
+            })
+        };
+        let fence = make_fence(&walk)?;
+        let policy = SourceAdmissionPolicy::from_environment()?;
+        let mut bytes_read = 0;
+        let mut ledger = SourceAdmissionLedger::default();
+        let captured = capture_native_typescript_sources(
+            &root,
+            &walk.native_typescript_paths,
+            project,
+            policy,
+            &mut ledger,
+            &fence,
+            &mut bytes_read,
+            None,
+        )?;
+        assert_eq!(captured.project, project);
+        assert_eq!(captured.canonical_root, root);
+        assert_eq!(captured.sources.len(), 2);
+        assert_eq!(
+            bytes_read,
+            captured
+                .sources
+                .iter()
+                .map(|source| source.evidence.byte_length as usize)
+                .sum::<usize>()
+        );
+        assert!(compiler_revision_is_current(&captured.revision_fence)?);
+        for source in &captured.sources {
+            let bytes = std::fs::read(root.join(&source.evidence.path)).map_err(|e| e.to_string())?;
+            assert_eq!(source.evidence.byte_length as usize, bytes.len());
+            assert!(
+                source
+                    .evidence
+                    .verify_host(
+                        &bytes,
+                        source.source_fact_identity
+                    )
+                    .is_ok()
+            );
+        }
+        let mut reversed = walk.native_typescript_paths.clone();
+        reversed.reverse();
+        let mut reversed_ledger = SourceAdmissionLedger::default();
+        let mut reversed_read = 0;
+        let reordered = capture_native_typescript_sources(
+            &root,
+            &reversed,
+            project,
+            policy,
+            &mut reversed_ledger,
+            &fence,
+            &mut reversed_read,
+            None,
+        )?;
+        assert_eq!(captured.source_version, reordered.source_version);
+        let first_len = captured.sources[0].evidence.byte_length as usize;
+        let limited = SourceAdmissionPolicy::new(SourceAdmissionLimits {
+            max_file_source_bytes: 64,
+            max_project_source_bytes: 128,
+            max_retained_compiler_source_bytes: first_len,
+            max_in_flight_source_bytes: 128,
+            ..SourceAdmissionLimits::default()
+        })
+        .map_err(|e| e.to_string())?;
+        let mut limited_ledger = SourceAdmissionLedger::default();
+        let mut limited_read = 0;
+        assert!(
+            capture_native_typescript_sources(
+                &root,
+                &walk.native_typescript_paths,
+                project,
+                limited,
+                &mut limited_ledger,
+                &fence,
+                &mut limited_read,
+                None,
+            )
+            .is_err()
+        );
+        assert_eq!(
+            limited_read, first_len,
+            "a refused second source was not read past remaining budget"
+        );
+        let other = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let other_root = other.path().canonicalize().map_err(|e| e.to_string())?;
+        std::fs::write(other_root.join("dep.ts"), b"export const dep = 1;\n")
+            .map_err(|e| e.to_string())?;
+        let other_project =
+            backend_engine::PackageKey::from_value(other_root.to_str().ok_or("other root UTF-8")?)
+                .to_bytes();
+        let mut foreign_ledger = SourceAdmissionLedger::default();
+        let mut foreign_read = 0;
+        assert!(
+            capture_native_typescript_sources(
+                &other_root,
+                &[other_root.join("dep.ts")],
+                other_project,
+                policy,
+                &mut foreign_ledger,
+                &fence,
+                &mut foreign_read,
+                None
+            )
+            .is_err()
+        );
+        assert_eq!(foreign_read, 0);
+        std::fs::write(root.join("tsconfig.json"), "{\"compilerOptions\":{}}\n")
+            .map_err(|e| e.to_string())?;
+        assert!(!compiler_revision_is_current(&captured.revision_fence)?);
+        let first_version = captured.source_version;
+        std::fs::write(root.join("view.tsx"), "export const View = 'λ';\n")
+            .map_err(|e| e.to_string())?;
+        // Even if filesystem metadata happens to retain the same timestamp,
+        // a fresh confined read must change the content-bound source version.
+        let mut walk = project_paths_with_policy(
+            &root,
+            &capability,
+            None,
+            true,
+            source_selection_policy(),
+            None,
+        )?;
+        walk.native_typescript_paths.sort();
+        let fence = make_fence(&walk)?;
+        let mut bytes_read = 0;
+        let mut ledger = SourceAdmissionLedger::default();
+        let changed = capture_native_typescript_sources(
+            &root,
+            &walk.native_typescript_paths,
+            project,
+            policy,
+            &mut ledger,
+            &fence,
+            &mut bytes_read,
+            None,
+        )?;
+        assert_ne!(first_version, changed.source_version);
+        std::fs::remove_file(root.join("dep.ts")).map_err(|e| e.to_string())?;
+        let mut ledger = SourceAdmissionLedger::default();
+        assert!(
+            capture_native_typescript_sources(
+                &root,
+                &walk.native_typescript_paths,
+                project,
+                policy,
+                &mut ledger,
+                &fence,
+                &mut bytes_read,
+                None
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_typescript_walk_rejects_non_utf8_candidate_path() -> Result<(), String> {
+        use std::os::unix::ffi::OsStringExt;
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let root = tmp.path().canonicalize().map_err(|e| e.to_string())?;
+        let relative = PathBuf::from(std::ffi::OsString::from_vec(b"bad-\xff.ts".to_vec()));
+        assert!(normalized_workspace_path(&relative).is_err());
+        let path = root.join(relative);
+        if let Err(error) = std::fs::write(path, b"export const value = 1;\n") {
+            if cfg!(target_os = "macos") && error.raw_os_error() == Some(92) {
+                eprintln!("filesystem rejected non-UTF-8 name; checked path admission directly");
+                return Ok(());
+            }
+            return Err(error.to_string());
+        }
+        let capability = ProjectRoot::open(&root)?;
+        assert!(project_paths_with_policy(&root, &capability, None, true, source_selection_policy(), None).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn native_typescript_scan_composes_sources_configuration_and_discovery_without_syntax()
+    -> Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let root = tmp.path().canonicalize().map_err(|e| e.to_string())?;
+        std::fs::write(root.join("view.tsx"), "export const View = 'π';\n")
+            .map_err(|e| e.to_string())?;
+        std::fs::write(root.join("dep.ts"), "export const dep = 1;\n")
+            .map_err(|e| e.to_string())?;
+        std::fs::write(root.join("tsconfig.json"), "{}\n").map_err(|e| e.to_string())?;
+        std::fs::write(root.join("theme.css"), "body {}\n").map_err(|e| e.to_string())?;
+        let root_text = root.to_str().ok_or("root UTF-8")?;
+        let project = backend_engine::PackageKey::from_value(root_text).to_bytes();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let automatic = scan_project_with_native_typescript_auto(
+            root_text, project, &BTreeMap::new(), Arc::clone(&cancelled), false, None, None,
+        )?;
+        assert!(automatic.native_typescript_capture.is_some());
+        assert!(automatic.files.is_empty());
+        assert_eq!(automatic.stylo_walk.files.len(), 1);
+        let first = scan_native_typescript_only(root_text, project, Arc::clone(&cancelled))?;
+        assert!(first.files.is_empty(), "no fake structural TS rows");
+        assert_eq!(first.compiler_sources.len(), 2);
+        assert_eq!(
+            first
+                .native_typescript_capture
+                .as_ref()
+                .ok_or("native capture")?
+                .sources
+                .len(),
+            2
+        );
+        assert_eq!(
+            first.stylo_walk.files.len(),
+            1,
+            "CSS stays available to its own native lane"
+        );
+        let mut rewalk_bytes = 0;
+        first.native_typescript_capture.as_ref().ok_or("capture")?
+            .revalidate(Some(cancelled.as_ref()), &mut rewalk_bytes)?;
+        assert!(rewalk_bytes > 0);
+        let mut repeated = scan_native_typescript_only(root_text, project, Arc::clone(&cancelled))?;
+        assert_eq!(repeated.source_version, first.source_version);
+        let mut admitted_bytes = 0;
+        let verified = repeated.native_typescript_capture.take().ok_or("repeated capture")?
+            .into_revalidated(&mut admitted_bytes)?;
+        assert_eq!(verified.project(), project);
+        assert_eq!(verified.project_source_version(), first.source_version);
+        assert_eq!(verified.bytes_read(), admitted_bytes);
+        assert!(admitted_bytes > 0);
+        assert!(verified.matches_cancellation(&cancelled));
+        assert!(!verified.matches_cancellation(&Arc::new(AtomicBool::new(false))));
+        assert!(verified.checked_retained_bytes().ok_or("retained accounting")? >= std::mem::size_of_val(&verified));
+        cancelled.store(true, Ordering::Release);
+        assert!(verified.cancelled(), "revalidation retains the original cancellation handle");
+        assert!(!verified.fence_is_current().unwrap_or(false));
+        cancelled.store(false, Ordering::Release);
+        let initial = first.source_version;
+        std::fs::write(root.join("view.tsx"), "export const View = 'λ';\n")
+            .map_err(|e| e.to_string())?;
+        let mut changed_rewalk_bytes = 0;
+        assert!(first.native_typescript_capture.as_ref().ok_or("capture")?
+            .revalidate(Some(cancelled.as_ref()), &mut changed_rewalk_bytes).is_err());
+        let changed = scan_native_typescript_only(root_text, project, Arc::clone(&cancelled))?;
+        assert_ne!(
+            initial, changed.source_version,
+            "same-length source edit changes input basis"
+        );
+        let before_config = changed.source_version;
+        std::fs::write(root.join("tsconfig.json"), "{\"compilerOptions\":{}}\n")
+            .map_err(|e| e.to_string())?;
+        let configured = scan_native_typescript_only(root_text, project, Arc::clone(&cancelled))?;
+        assert_ne!(
+            before_config, configured.source_version,
+            "config edit changes input basis"
+        );
+        let before_policy = configured.source_version;
+        std::fs::write(root.join(".ignore"), "# nonmatching rule\nnot-present\n")
+            .map_err(|e| e.to_string())?;
+        let policy = scan_native_typescript_only(root_text, project, Arc::clone(&cancelled))?;
+        assert_ne!(
+            before_policy, policy.source_version,
+            "discovery policy edit changes input basis"
+        );
+        std::fs::remove_file(root.join("dep.ts")).map_err(|e| e.to_string())?;
+        let removed = scan_native_typescript_only(root_text, project, Arc::clone(&cancelled))?;
+        assert_ne!(
+            policy.source_version, removed.source_version,
+            "source removal changes input basis"
+        );
+        std::fs::remove_file(root.join("view.tsx")).map_err(|e| e.to_string())?;
+        let empty = scan_native_typescript_only(root_text, project, Arc::clone(&cancelled))?;
+        assert_ne!(removed.source_version, empty.source_version, "last source removal changes input basis");
+        assert!(empty.native_typescript_discovery_incomplete());
+        let forced_empty = scan_project_with_native_typescript_auto(
+            root_text, project, &BTreeMap::new(), Arc::clone(&cancelled), true, None, None,
+        )?;
+        assert!(forced_empty.native_typescript_discovery_incomplete(), "prior evidence keeps native mode after last deletion");
+        assert!(forced_empty.compiler_sources.is_empty());
+        assert!(empty.compiler_sources.is_empty());
+        assert!(empty.files.is_empty(), "empty observation is not a Complete structural inventory");
+        std::fs::write(root.join("main.rs"), "pub fn example() {}\n").map_err(|e| e.to_string())?;
+        assert!(
+            scan_native_typescript_only(root_text, project, Arc::clone(&cancelled)).is_err(),
+            "mixed legacy source lanes refuse without syntax fallback"
+        );
+        Ok(())
+    }
+
+    /// A TypeScript project that also holds C# and Rust must index, not fail.
+    /// It leaves the native lane (which admits no second language), loses no
+    /// source row, and still discloses the CSS and Vue it cannot analyze.
+    #[test]
+    fn mixed_language_typescript_project_indexes_and_reports_coverage() -> Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let root = tmp.path().canonicalize().map_err(|e| e.to_string())?;
+        let root_text = root.to_str().ok_or("root UTF-8")?;
+        let project = backend_engine::PackageKey::from_value(root_text).to_bytes();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let write = |relative: &str, text: &str| -> Result<(), String> {
+            let path = root.join(relative);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            std::fs::write(path, text).map_err(|e| e.to_string())
+        };
+        write("tsconfig.json", "{}\n")?;
+        write("web/app.ts", "export function renderShell(depth: number): number { return depth; }\n")?;
+        write("web/theme.css", "body { margin: 0; }\n")?;
+        // Control: with TypeScript as the only supported language the native lane is kept.
+        let ts_only = scan_project_with_native_typescript_auto(
+            root_text, project, &BTreeMap::new(), Arc::clone(&cancelled), false, None, None,
+        )?;
+        assert!(ts_only.native_typescript_capture.is_some(), "TypeScript-only keeps the native lane");
+        assert!(ts_only.files.is_empty(), "native lane publishes no structural rows");
+
+        write("api/Program.cs", "public class OrderService { public int Count() { return 1; } }\n")?;
+        write("core/lib.rs", "pub fn ledger() {}\n")?;
+        write("web/Card.vue", "<template><div/></template>\n")?;
+        let mixed = scan_project_with_native_typescript_auto(
+            root_text, project, &BTreeMap::new(), Arc::clone(&cancelled), false, None, None,
+        )?;
+        assert!(mixed.native_typescript_capture.is_none(), "a second language leaves the native lane");
+        assert!(!mixed.native_typescript_discovery_incomplete());
+
+        // No source is dropped: every supported file has a complete row with its declarations.
+        let mut rows = BTreeMap::new();
+        for (_, record) in &mixed.files {
+            let fields = record.file_fields().ok_or("project file row")?;
+            let names = fields.declarations.iter().map(|d| d.name().to_owned()).collect::<Vec<_>>();
+            rows.insert(fields.path.to_owned(), (fields.retention, names));
+        }
+        assert_eq!(
+            rows.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["api/Program.cs", "core/lib.rs", "web/Card.vue", "web/app.ts"],
+        );
+        for (path, expected) in [
+            ("api/Program.cs", "OrderService"),
+            ("core/lib.rs", "ledger"),
+            ("web/app.ts", "renderShell"),
+        ] {
+            let (retention, names) = &rows[path];
+            assert_eq!(*retention, backend_engine::DeclarationRetention::Complete, "{path}");
+            assert!(names.iter().any(|name| name == expected), "{path}: {names:?}");
+        }
+
+        // Unanalyzed languages stay visible as counted exclusions and a CSS inventory.
+        let unsupported = mixed
+            .source_selection
+            .unsupported_extensions
+            .iter()
+            .map(|row| (row.extension.as_str(), row.files))
+            .collect::<Vec<_>>();
+        assert_eq!(unsupported, [("css", 1), ("sql", 0), ("vue", 1)]);
+        assert_eq!(mixed.stylo_walk.files().len(), 1);
+
+        // It is the same scan the project gets with no TypeScript routing at all.
+        let legacy = scan_project(root_text, project, &BTreeMap::new())?;
+        assert_eq!(mixed.source_version, legacy.source_version);
+        assert_eq!(mixed.files.len(), legacy.files.len());
+
+        // Prior native evidence cannot move to the structural lane here: refuse with a reason.
+        let Err(refusal) = scan_project_with_native_typescript_auto(
+            root_text, project, &BTreeMap::new(), Arc::clone(&cancelled), true, None, None,
+        ) else {
+            return Err("forced native lane must refuse a mixed project".into());
+        };
+        assert!(refusal.contains(NATIVE_TS_MIXED_REFUSAL), "{refusal}");
+        assert!(refusal.contains("selected native TypeScript evidence"), "{refusal}");
+        Ok(())
+    }
+
+    #[test]
+    fn admitted_profiles_use_language_and_extension_without_a_frontend() {
+        assert_eq!(
+            admitted_file_profile(SourceLanguage::TypeScript, "src/VIEW.TSX"),
+            Some(LanguageProfile::TypeScript(TypeScriptSource::Tsx))
+        );
+        assert_eq!(
+            admitted_file_profile(SourceLanguage::TypeScript, "src/util.mjs"),
+            Some(LanguageProfile::TypeScript(TypeScriptSource::TypeScript))
+        );
+        assert_eq!(
+            admitted_file_profile(SourceLanguage::Clang, "src/a.hpp"),
+            Some(LanguageProfile::Cxx(CxxStandard::Cxx23))
+        );
+        assert_eq!(admitted_file_profile(SourceLanguage::Rust, "src/a.ts"), None);
+        assert_eq!(
+            admitted_file_profile(SourceLanguage::TypeScript, "src/a.txt"),
+            None
+        );
+        assert_eq!(
+            admitted_file_profile(SourceLanguage::Java, "src/no_extension"),
+            None
+        );
+    }
+
+    #[test]
+    fn checked_source_range_reopens_confined_file_and_refuses_changed_bytes() -> Result<(), String> {
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+        }
+        let unique = format!("nudox-source-range-{}-{}", std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).map_err(|error| error.to_string())?.as_nanos());
+        let scratch = Scratch(std::env::temp_dir().join(unique));
+        fs::create_dir_all(&scratch.0).map_err(|error| error.to_string())?;
+        let body = format!("function ferris() {{\r\n{}\r\n}}\r\n", "const x = \"é漢🦀\";\r\n".repeat(200));
+        let host = format!("// prefix\n{body}// suffix");
+        fs::write(scratch.0.join("file.ts"), &host).map_err(|error| error.to_string())?;
+        let start = host.find("function ferris").ok_or("missing owner")?;
+        let name = host.find("ferris").ok_or("missing name")?;
+        let capture = backend_compile::SourceBindingCapture::new(start as u32, (start + body.len()) as u32, name as u32, (name + 6) as u32).ok_or("invalid capture")?;
+        let identity = backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(host.as_bytes());
+        let input = typed_of::<InputContentSchema>(host.as_bytes()).to_bytes();
+        let mut offset = 0; let mut output = String::new();
+        loop {
+            let page = read_indexed_source_range(&scratch.0, "file.ts", identity, input, capture, "ferris", offset, 4096)
+                .map_err(|error| format!("range: {error:?}"))?;
+            output.push_str(&page.text);
+            if page.end == page.total { break; }
+            assert!(page.end > offset); offset = page.end;
+        }
+        assert_eq!(output.as_bytes(), body.as_bytes());
+        fs::write(scratch.0.join("file.ts"), host.replace("prefix", "PREFIX")).map_err(|error| error.to_string())?;
+        assert_eq!(read_indexed_source_range(&scratch.0, "file.ts", identity, input, capture, "ferris", 0, 4096), Err(super::super::source_range::SourceRangeError::Stale));
+        Ok(())
+    }
 
     #[test]
     fn malformed_native_bytes_change_project_source_version() -> Result<(), String> {
@@ -4355,6 +6988,7 @@ mod tests {
             root,
             &capability,
             Some(frontends),
+            false,
             source_selection_policy(),
             None,
         )?;
@@ -4442,6 +7076,23 @@ mod tests {
             root.read(Path::new("real/lib.rs"), maximum)
                 .map_err(|error| format!("{error:?}"))?,
             b"pub fn safe() {}"
+        );
+        assert_eq!(
+            read_stylo_selected_source(&project, "real/lib.rs", maximum)
+                .map_err(|error| format!("{error:?}"))?,
+            b"pub fn safe() {}"
+        );
+        assert_eq!(
+            read_stylo_selected_source(&project, "missing.css", maximum),
+            Err(SelectedSourceReadError::Vanished)
+        );
+        assert_eq!(
+            read_stylo_selected_source(&project, "../outside.rs", maximum),
+            Err(SelectedSourceReadError::Invalid)
+        );
+        assert_eq!(
+            read_stylo_selected_source(&project, "real/lib.rs", 1),
+            Err(SelectedSourceReadError::TooLarge)
         );
         fs::remove_dir_all(project.join("real")).map_err(|error| error.to_string())?;
         symlink(&scratch.0, project.join("real")).map_err(|error| error.to_string())?;
@@ -4826,6 +7477,7 @@ mod tests {
                 profile,
                 content: typed_of::<InputContentSchema>(source).to_bytes(),
                 source_fact_identity,
+                expected_byte_length: None,
             }],
             vec![ReusedCompilerFile {
                 relative_path: "a.rs".to_owned(),
@@ -4876,6 +7528,7 @@ mod tests {
                 &root,
                 path,
                 identity,
+                typed_of::<InputContentSchema>(source).to_bytes(),
                 SourceLanguage::Rust,
                 label,
                 line,
@@ -5254,6 +7907,7 @@ mod tests {
             None,
             None,
             None,
+            NativeTsScanMode::Legacy,
         )
     }
 
@@ -6445,7 +9099,7 @@ mod tests {
                 &removed.compiler_sources,
                 &removed.reused_compiler_files
             ),
-            counts.keys().copied().collect(),
+            counts.keys().copied().collect::<BTreeSet<_>>(),
         );
         let present =
             present_compiler_paths(&removed.compiler_sources, &removed.reused_compiler_files);
@@ -6918,10 +9572,9 @@ mod robustness_tests {
             assert_eq!(handle.source_bytes.as_deref(), Some(source));
             let expected_byte_length =
                 u32::try_from(source.len()).map_err(|error| error.to_string())?;
-            let expected_chunk_count = u32::try_from(
-                source.len().div_ceil(NATIVE_SOURCE_CHUNK_BYTES),
-            )
-            .map_err(|error| error.to_string())?;
+            let expected_chunk_count =
+                u32::try_from(source.len().div_ceil(NATIVE_SOURCE_CHUNK_BYTES))
+                    .map_err(|error| error.to_string())?;
             assert!(
                 snapshot.native_frontier.iter().any(|record| matches!(
                     record,
@@ -7239,16 +9892,145 @@ mod profile_tests {
     use super::*;
 
     #[test]
-    fn vue_discovery_exclusions_are_counted_without_claiming_ts_authority_or_compiler_membership()
+    fn sql_explicit_settings_and_hosts_are_confined_and_revalidated() -> Result<(), String> {
+        let mut scratch = scratch("sql-explicit")?;
+        scratch.0 = scratch.0.canonicalize().map_err(|e| e.to_string())?;
+        fs::create_dir_all(scratch.0.join(".nudox")).map_err(|e| e.to_string())?;
+        fs::write(scratch.0.join("query.sql"), b"SELECT id FROM t").map_err(|e| e.to_string())?;
+        let initial_scan = scan(&scratch)?;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        // Without a settings file the same walk selects every `.sql` file, each dialect inferred.
+        let implicit = capture_sql_project(&initial_scan.sql_walk, &initial_scan.revision_fence, &scratch.0, &cancelled)
+            .map_err(|e| format!("{e:?}"))?;
+        assert!(implicit.implicit());
+        assert_eq!(implicit.hosts().len(), 1);
+        assert!(implicit.hosts()[0].inferred() && implicit.hosts()[0].oracle(), "no token decides the dialect of `SELECT id FROM t`");
+        cancelled.store(true, Ordering::Release);
+        assert!(matches!(capture_sql_project(&initial_scan.sql_walk, &initial_scan.revision_fence, &scratch.0, &cancelled), Err(SqlCaptureFailure::Cancelled)));
+        cancelled.store(false, Ordering::Release);
+        let config = br#"{"version":1,"sources":[{"path":"query.sql","dialect":"sqlite","context":{"kind":"sqlite_proposed","epoch":1,"tables":[{"name":"t","columns":["id"]}]}}]}"#;
+        fs::write(scratch.0.join(".nudox/sql.json"), config).map_err(|e| e.to_string())?;
+        let scan = scan(&scratch)?;
+        let captured = std::sync::Arc::new(capture_sql_project(&scan.sql_walk, &scan.revision_fence, &scratch.0, &cancelled).map_err(|e| format!("{e:?}"))?);
+        assert_eq!(captured.hosts().len(), 1);
+        assert_eq!(captured.hosts()[0].bytes(), b"SELECT id FROM t");
+        let witness = captured.witness();
+        assert!(witness.revalidate(&scan.sql_walk, &scan.revision_fence, &scratch.0, &cancelled).is_ok());
+        let other = Arc::new(AtomicBool::new(false));
+        assert!(matches!(witness.revalidate(&scan.sql_walk, &scan.revision_fence, &scratch.0, &other), Err(SqlCaptureFailure::Invalid)));
+        assert!(matches!(captured.revalidate(&scan.sql_walk, &scan.revision_fence, &scratch.0, &other), Err(SqlCaptureFailure::Invalid)));
+        assert!(captured.revalidate(&scan.sql_walk, &scan.revision_fence, &scratch.0, &cancelled).is_ok());
+        cancelled.store(true, Ordering::Release);
+        assert!(matches!(captured.revalidate(&scan.sql_walk, &scan.revision_fence, &scratch.0, &cancelled), Err(SqlCaptureFailure::Cancelled)));
+        cancelled.store(false, Ordering::Release);
+        let projection = super::super::sql_capture::project_sql_project(std::sync::Arc::clone(&captured),
+            scan.sql_walk.clone(), scan.revision_fence.clone(), scratch.0.clone(), None, None, &cancelled)
+            .map_err(|e| format!("{e:?}"))?;
+        assert!(projection.rows().iter().any(|(_, row)| matches!(row,
+            backend_engine::builtin::SqlAnalysisRecord::Host { terminal: backend_engine::builtin::SqlHostTerminal::Unavailable(
+                backend_engine::builtin::SqlUnavailable::EngineNotAdmitted), .. })));
+        assert!(!projection.rows().iter().any(|(_, row)| matches!(row, backend_engine::builtin::SqlAnalysisRecord::Fact { .. })));
+        fs::write(scratch.0.join("query.sql"), b"SELECT ix FROM t").map_err(|e| e.to_string())?;
+        assert!(matches!(witness.revalidate(&scan.sql_walk, &scan.revision_fence, &scratch.0, &cancelled), Err(SqlCaptureFailure::Stale)));
+        assert!(matches!(captured.revalidate(&scan.sql_walk, &scan.revision_fence, &scratch.0, &cancelled), Err(SqlCaptureFailure::Stale)));
+        fs::write(scratch.0.join("query.sql"), b"SELECT id FROM t").map_err(|e| e.to_string())?;
+        fs::write(scratch.0.join(".nudox/sql.json"), b"{} ").map_err(|e| e.to_string())?;
+        assert!(matches!(captured.revalidate(&scan.sql_walk, &scan.revision_fence, &scratch.0, &cancelled), Err(SqlCaptureFailure::Stale)));
+        Ok(())
+    }
+
+    #[test]
+    fn sql_project_queue_proof_drops_host_buffers_and_rechecks_them() -> Result<(), String> {
+        let mut scratch = scratch("sql-compact")?;
+        scratch.0 = scratch.0.canonicalize().map_err(|e| e.to_string())?;
+        fs::create_dir_all(scratch.0.join(".nudox")).map_err(|e| e.to_string())?;
+        let sql = vec![b' '; 400 * 1024];
+        fs::write(scratch.0.join("query.sql"), &sql).map_err(|e| e.to_string())?;
+        let config = br#"{"version":1,"sources":[{"path":"query.sql","dialect":"sqlite","context":{"kind":"unavailable"}}]}"#;
+        fs::write(scratch.0.join(".nudox/sql.json"), config).map_err(|e| e.to_string())?;
+        let label = scratch.0.to_str().ok_or("invalid test root")?;
+        let scan = scan_project(label, backend_engine::PackageKey::from_value(label).to_bytes(), &BTreeMap::new())?;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let captured = Arc::new(capture_sql_project(&scan.sql_walk, &scan.revision_fence, &scratch.0, &cancelled).map_err(|e| format!("{e:?}"))?);
+        let projection = super::super::sql_capture::project_sql_project(captured, scan.sql_walk.clone(), scan.revision_fence.clone(), scratch.0.clone(), None, None, &cancelled).map_err(|e| format!("{e:?}"))?;
+        assert!(projection.checked_retained_bytes().ok_or("unaccounted retained proof")? < sql.len());
+        assert!(projection.revalidate(&cancelled).is_ok());
+        let other = Arc::new(AtomicBool::new(false));
+        assert!(!projection.matches_cancellation(&other));
+        assert!(matches!(projection.revalidate(&other), Err(SqlCaptureFailure::Invalid)));
+        let digest = projection.checked_capture_digest(&cancelled).map_err(|e| format!("{e:?}"))?;
+        assert_eq!(digest, projection.checked_capture_digest(&cancelled).map_err(|e| format!("{e:?}"))?);
+        assert!(projection.checked_capture_digest(&other).is_err());
+        let selected_digest = projection.project_rows_digest(&cancelled).map_err(|e| format!("{e:?}"))?;
+        let mut retained_rows = projection.rows().to_vec();
+        let attempt = retained_rows.iter_mut().find_map(|(_, row)| match row {
+            backend_engine::builtin::SqlAnalysisRecord::Attempt { outcome, .. } => Some(outcome), _ => None,
+        }).ok_or("missing SQL attempt")?;
+        *attempt = backend_engine::builtin::SqlAttemptOutcome::Unavailable(backend_engine::builtin::SqlUnavailable::Read);
+        assert_eq!(selected_digest, super::super::sql_capture::sql_project_rows_digest(projection.project(), &retained_rows, cancelled.as_ref()).map_err(|e| format!("{e:?}"))?);
+        retained_rows.retain(|(_, row)| !matches!(row, backend_engine::builtin::SqlAnalysisRecord::Host { .. }));
+        assert!(super::super::sql_capture::sql_project_rows_digest(projection.project(), &retained_rows, cancelled.as_ref()).is_err());
+        cancelled.store(true, Ordering::Release);
+        assert!(matches!(projection.checked_capture_digest(&cancelled), Err(backend_engine::builtin::SqlUnavailable::Cancelled)));
+        cancelled.store(false, Ordering::Release);
+        let project = ProductSourceRecord::project_with_membership_pages_and_source_selection(
+            label, scan.source_version, scan.files.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
+            None, Some(scan.source_selection.clone()),
+        )?.project_record().clone();
+        let projection = Arc::new(projection);
+        assert!(super::super::sql_admission::SqlLiveProof::new(Arc::clone(&projection), &project, Arc::clone(&other)).is_err());
+        assert!(super::super::sql_admission::SqlLiveProof::new(Arc::clone(&projection), &project, Arc::clone(&cancelled)).is_ok());
+        let mut edited = sql; edited[0] = b'x';
+        fs::write(scratch.0.join("query.sql"), edited).map_err(|e| e.to_string())?;
+        assert!(matches!(projection.revalidate(&cancelled), Err(SqlCaptureFailure::Stale)));
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires an independently built PostgreSQL worker and its actual producer basis"]
+    fn postgres_project_capture_observes_native_column_source() -> Result<(), String> {
+        let mut scratch = scratch("sql-postgres")?;
+        scratch.0 = scratch.0.canonicalize().map_err(|e| e.to_string())?;
+        fs::create_dir_all(scratch.0.join(".nudox")).map_err(|e| e.to_string())?;
+        fs::write(scratch.0.join("query.sql"), b"SELECT id, id FROM t;").map_err(|e| e.to_string())?;
+        let config = br#"{"version":1,"sources":[{"path":"query.sql","dialect":"postgres","context":{"kind":"postgres_proposed","epoch":1,"search_path":["s1"],"schemas":[{"name":"s1","tables":[{"name":"t","columns":["id"]}]}]}}]}"#;
+        fs::write(scratch.0.join(".nudox/sql.json"), config).map_err(|e| e.to_string())?;
+        let scan = scan(&scratch)?;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let captured = std::sync::Arc::new(capture_sql_project(&scan.sql_walk, &scan.revision_fence, &scratch.0, &cancelled).map_err(|e| format!("{e:?}"))?);
+        let worker = std::path::PathBuf::from(std::env::var_os("NUDOX_TEST_POSTGRES_WORKER").ok_or("worker path missing")?);
+        let basis: backend_sql_contract::ProducerBasis = serde_json::from_str(&std::env::var("NUDOX_TEST_POSTGRES_BASIS").map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        let artifact = backend_compile::ToolchainArtifact::from_path(&worker, vec![]).map_err(|e| format!("{e:?}"))?;
+        let permit = super::super::sql_capture::PostgresWorkerPermit::from_admitted(worker, artifact, basis).map_err(str::to_owned)?;
+        let projected = super::super::sql_capture::project_sql_project(captured, scan.sql_walk.clone(), scan.revision_fence.clone(), scratch.0.clone(), None, Some(&permit), &cancelled).map_err(|e| format!("{e:?}"))?;
+        let reads = projected.rows().iter().filter_map(|(_, row)| match row {
+            backend_engine::builtin::SqlAnalysisRecord::Fact { fact: backend_semantic::sql_analysis::SqlFact::PostgresColumnRead { extent, .. }, .. } => Some(*extent),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(reads.len(), 2);
+        assert_ne!(reads[0].start, reads[1].start);
+        for read in reads {
+            assert_eq!(b"SELECT id, id FROM t;".get(read.start as usize..read.end as usize), Some(&b"id"[..]));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn vue_script_inventory_preserves_exclusions_without_compiler_membership()
     -> Result<(), String> {
         let scratch = scratch("unsupported-vue")?;
         fs::create_dir_all(scratch.0.join("src")).map_err(|e| e.to_string())?;
         fs::create_dir_all(scratch.0.join("node_modules/hidden")).map_err(|e| e.to_string())?;
-        fs::write(scratch.0.join(".gitignore"), "ignored.vue\n").map_err(|e| e.to_string())?;
+        fs::write(scratch.0.join(".gitignore"), "ignored.vue\nignored.css\n")
+            .map_err(|e| e.to_string())?;
         for path in [
             "src/App.vue",
             "src/Other.VUE",
+            "src/styles.CSS",
+            "src/query.sql",
             "ignored.vue",
+            "ignored.css",
+            "node_modules/hidden/hidden.sql",
             "node_modules/hidden/Hidden.vue",
         ] {
             fs::write(
@@ -7266,26 +10048,35 @@ mod profile_tests {
         )
         .map_err(|e| e.to_string())?;
         let first = scan(&scratch)?;
+        assert!(first.stylo_walk.inventory_complete());
+        assert_eq!(
+            first.stylo_walk.inventory().map(|witness| witness.0),
+            Some(1)
+        );
+        assert_eq!(
+            first.stylo_walk.files()[0].relative_path,
+            PathBuf::from("src/styles.CSS")
+        );
         assert_eq!(
             first.source_selection,
-            backend_library::SourceSelectionObservation::project_vue(2)
+            backend_library::SourceSelectionObservation::project_extensions(1, 1, 2)
         );
         let mut supported = paths_of(&first);
         supported.sort();
-        assert_eq!(supported, ["src/helpers.js", "src/main.ts"]);
+        assert_eq!(supported, ["src/App.vue", "src/Other.VUE", "src/helpers.js", "src/main.ts"]);
         assert_eq!(first.compiler_sources.len(), 2);
         assert_eq!(
             first.source_bytes_read,
-            "export const typed = 1;".len() + "export const scripted = 2;".len(),
-            "unsupported container bytes are not admitted or charged as compiler source"
+            "export const typed = 1;".len() + "export const scripted = 2;".len() + 2 + "<template><h1>unsupported Vue</h1></template>".len(),
+            "Vue host reads are charged without compiler membership"
         );
         assert!(
-            !first.revision_fence.files.iter().any(|file| file
+            first.revision_fence.files.iter().any(|file| file
                 .relative_path
                 .extension()
                 .and_then(|ext| ext.to_str())
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("vue"))),
-            "directory fences protect discovery counts without per-container metadata expansion"
+            "Vue host metadata is part of the same source revision fence"
         );
 
         assert!(
@@ -7298,24 +10089,371 @@ mod profile_tests {
             source_profile(Path::new("src/App.vue"))?.is_none(),
             "no Vue authority is fabricated"
         );
+        let unchanged = scan(&scratch)?;
+        assert_eq!(unchanged.source_selection, first.source_selection);
+        assert_eq!(unchanged.source_version, first.source_version);
         let source_version = first.source_version;
         let before = first.source_selection;
         fs::write(
             scratch.0.join("src/New.vue"),
-            "<script>not submitted to TSZ</script>",
+            "<script>function mounted() { return 1; }</script>",
         )
         .map_err(|e| e.to_string())?;
         let second = scan(&scratch)?;
         assert_eq!(
             second.source_selection,
-            backend_library::SourceSelectionObservation::project_vue(3)
+            backend_library::SourceSelectionObservation::project_extensions(1, 1, 2)
         );
-        assert_ne!(second.source_selection, before);
-        assert_eq!(
-            second.source_version, source_version,
-            "supported source identities are independent of excluded containers"
-        );
+        assert_eq!(second.source_selection, before);
+        assert_ne!(second.source_version, source_version, "Vue script edits change source identity");
+        assert!(names_of(&second, "src/New.vue").contains(&"mounted".to_owned()));
         assert_eq!(second.compiler_sources.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn stylo_worker_attempt_budget_counts_failures_and_stops_at_sixteen() {
+        let mut budget = StyloWorkerBudget::new();
+        let mut launches = 0;
+        for index in 0..16 {
+            let result = budget.run(|| -> Result<(), &str> {
+                launches += 1;
+                if index == 0 {
+                    Err("cancelled")
+                } else {
+                    Err("worker failed")
+                }
+            });
+            assert!(matches!(result, Some(Err(_))));
+        }
+        assert!(budget.exhausted());
+        assert!(
+            budget
+                .run(|| {
+                    launches += 1;
+                    Ok::<(), &str>(())
+                })
+                .is_none(),
+            "attempt 17 must never launch"
+        );
+        assert_eq!(launches, 16);
+    }
+
+    #[test]
+    fn stylo_selection_deadline_is_recorded_as_unknown_capability() -> Result<(), String> {
+        use backend_engine::builtin::{
+            StyloAnalysisRecord, StyloAttemptArtifact, StyloAttemptOutcome, StyloUnavailable,
+        };
+        let scratch = scratch("stylo-selection-deadline")?;
+        fs::write(scratch.0.join("site.css"), ".a {}").map_err(|error| error.to_string())?;
+        let label = scratch.0.to_str().ok_or("non-UTF-8 test root")?;
+        let package = backend_engine::PackageKey::from_value(label);
+        let scan = scan_project(label, package.to_bytes(), &BTreeMap::new())?;
+        let files = scan.files.iter().map(|(key, _)| *key).collect::<Vec<_>>();
+        let project = ProductSourceRecord::project_with_membership_pages_and_source_selection(
+            label,
+            scan.source_version,
+            files,
+            None,
+            Some(scan.source_selection.clone()),
+        )?
+        .project_record()
+        .clone();
+        let attempt = capture_stylo_attempt(
+            &scan,
+            project,
+            None,
+            Some(StyloUnavailable::Deadline),
+            None,
+            None,
+            &AtomicBool::new(false),
+            std::time::Duration::from_secs(30),
+            None,
+        )
+        .map_err(|error| format!("attempt: {error:?}"))?;
+        assert!(matches!(
+            attempt.row(),
+            StyloAnalysisRecord::Attempt {
+                worker_artifact: StyloAttemptArtifact::Unknown,
+                outcome: StyloAttemptOutcome::Unavailable(StyloUnavailable::Deadline),
+                served_selection: None,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn stylo_mandatory_attempt_capacity_refuses_before_publication() -> Result<(), String> {
+        let scratch = scratch("stylo-attempt-capacity")?;
+        fs::write(scratch.0.join("site.css"), ".a {}").map_err(|error| error.to_string())?;
+        let label = scratch.0.to_str().ok_or("non-UTF-8 test root")?;
+        let package = backend_engine::PackageKey::from_value(label);
+        let mut scan = scan_project(label, package.to_bytes(), &BTreeMap::new())?;
+        let files = scan.files.iter().map(|(key, _)| *key).collect::<Vec<_>>();
+        let project = ProductSourceRecord::project_with_membership_pages_and_source_selection(
+            label,
+            scan.source_version,
+            files,
+            None,
+            Some(scan.source_selection.clone()),
+        )?
+        .project_record()
+        .clone();
+        let limits = scan.source_admission_policy.limits();
+        scan.stylo_budget_baseline.records = limits.max_project_records;
+        let cancelled = AtomicBool::new(false);
+        assert!(matches!(
+            capture_stylo_attempt(
+                &scan,
+                project.clone(),
+                None,
+                None,
+                None,
+                None,
+                &cancelled,
+                std::time::Duration::from_secs(30),
+                None
+            ),
+            Err(StyloProjectCaptureFailure::AttemptCapacity)
+        ));
+        scan.stylo_budget_baseline.records = 0;
+        scan.stylo_budget_baseline.record_bytes = limits.max_project_record_bytes;
+        assert!(matches!(
+            capture_stylo_attempt(
+                &scan,
+                project,
+                None,
+                None,
+                None,
+                None,
+                &cancelled,
+                std::time::Duration::from_secs(30),
+                None
+            ),
+            Err(StyloProjectCaptureFailure::AttemptCapacity)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn stylo_growth_respects_remaining_read_quota_and_invalidates_fence() -> Result<(), String> {
+        let scratch = scratch("stylo-growth")?;
+        let css = scratch.0.join("site.css");
+        fs::write(&css, b"x").map_err(|error| error.to_string())?;
+        let snapshot = scan(&scratch)?;
+        let fence = snapshot.stylo_walk.bind_fence(&snapshot.revision_fence)?;
+        let root = fence.open_bound_root(&fence.requested_root)?;
+        fs::write(&css, b"grown").map_err(|error| error.to_string())?;
+        // Three bytes remain: reserve one for read_bounded's overflow probe.
+        let mut remaining = 3;
+        let mut observed = 0;
+        assert!(matches!(
+            read_stylo_bounded(
+                &root,
+                Path::new("site.css"),
+                100,
+                &mut remaining,
+                &mut observed
+            ),
+            Err(SourceFault::Unavailable(SourceUnavailableReason::TooLarge))
+                | Err(SourceFault::UnavailableRead(
+                    SourceUnavailableReason::TooLarge,
+                    0..=3
+                ))
+        ));
+        assert_eq!((remaining, observed), (3, 0));
+        assert!(!compiler_revision_is_current_with_cancellation(
+            &fence, None
+        )?);
+        // A file exactly at the allowance is deliberately refused to reserve
+        // the probe, even if no growth occurs.
+        fs::write(&css, b"abc").map_err(|error| error.to_string())?;
+        assert!(matches!(
+            read_stylo_bounded(
+                &root,
+                Path::new("site.css"),
+                100,
+                &mut remaining,
+                &mut observed
+            ),
+            Err(SourceFault::Unavailable(SourceUnavailableReason::TooLarge))
+        ));
+        assert_eq!((remaining, observed), (3, 0));
+        fs::write(&css, b"ab").map_err(|error| error.to_string())?;
+        assert_eq!(
+            read_stylo_bounded(
+                &root,
+                Path::new("site.css"),
+                100,
+                &mut remaining,
+                &mut observed
+            )
+            .map_err(|error| format!("{error:?}"))?,
+            b"ab"
+        );
+        assert_eq!((remaining, observed), (1, 2));
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires NUDOX_TEST_STYLO_WORKER pointing to a separately built fixture artifact"]
+    fn stylo_worker_cap_limits_seventeenth_host_and_preserves_repeatable_facts()
+    -> Result<(), String> {
+        let scratch = scratch("stylo-worker-cap")?;
+        for index in 0..17 {
+            fs::write(
+                scratch.0.join(format!("site{index:02}.css")),
+                format!(".c{index} {{ --ink: red; }}"),
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        let worker = PathBuf::from(
+            std::env::var_os("NUDOX_TEST_STYLO_WORKER").ok_or("worker fixture missing")?,
+        );
+        let artifact = backend_compile::ToolchainArtifact::from_path(&worker, Vec::new())
+            .map_err(|error| error.to_string())?;
+        let permit = super::super::stylo_worker::StyloWorkerPermit::from_admitted(
+            worker,
+            artifact,
+            backend_frontend_stylo::support_fingerprint(),
+        )
+        .map_err(|error| format!("worker permit: {error:?}"))?;
+        let cancellation = AtomicBool::new(false);
+        let capture = || {
+            let scan = scan(&scratch)?;
+            capture_stylo_project(
+                &scan,
+                &permit,
+                &cancellation,
+                std::time::Duration::from_secs(30),
+                None,
+            )
+            .map_err(|error| format!("native capture: {error:?}"))
+        };
+        let first = capture()?;
+        let second = capture()?;
+        assert_eq!(first.worker_attempts(), 16);
+        assert_eq!(second.worker_attempts(), 16);
+        assert_eq!(
+            first.rows(),
+            second.rows(),
+            "same source and policy must retain the same rows"
+        );
+        let mut limited = 0;
+        let mut parsed = 0;
+        for (_, row) in first.rows() {
+            if let backend_engine::builtin::StyloAnalysisRecord::Host {
+                path,
+                content,
+                terminal,
+                ..
+            } = row
+            {
+                match terminal {
+                    backend_engine::builtin::StyloTerminal::Unavailable(
+                        backend_engine::builtin::StyloUnavailable::Limit,
+                    ) => {
+                        assert_eq!(path, "site16.css");
+                        assert!(content.is_none(), "capped host bytes were not read");
+                        limited += 1;
+                    }
+                    backend_engine::builtin::StyloTerminal::Parsed(_) => parsed += 1,
+                    other => return Err(format!("unexpected host terminal: {other:?}")),
+                }
+            }
+        }
+        assert_eq!((parsed, limited), (16, 1));
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires NUDOX_TEST_STYLO_WORKER pointing to a separately built fixture artifact"]
+    fn same_walk_stylo_project_capture_binds_worker_facts_and_source_fence() -> Result<(), String> {
+        let scratch = scratch("stylo-project")?;
+        let css = scratch.0.join("site.css");
+        fs::write(&css, ".button { --ink: red; }").map_err(|error| error.to_string())?;
+        let worker = PathBuf::from(
+            std::env::var_os("NUDOX_TEST_STYLO_WORKER").ok_or("worker fixture missing")?,
+        );
+        let artifact = backend_compile::ToolchainArtifact::from_path(&worker, Vec::new())
+            .map_err(|error| error.to_string())?;
+        let permit = super::super::stylo_worker::StyloWorkerPermit::from_admitted(
+            worker,
+            artifact,
+            backend_frontend_stylo::support_fingerprint(),
+        )
+        .map_err(|error| format!("fixture permit: {error:?}"))?;
+        let cancellation = AtomicBool::new(false);
+        let first_scan = scan(&scratch)?;
+        let first = capture_stylo_project(
+            &first_scan,
+            &permit,
+            &cancellation,
+            std::time::Duration::from_secs(30),
+            None,
+        )
+        .map_err(|error| format!("first native capture: {error:?}"))?;
+        first
+            .verify(&cancellation)
+            .map_err(|error| format!("native proof: {error:?}"))?;
+        assert!(first.rows().iter().any(|(_, row)| matches!(row, backend_engine::builtin::StyloAnalysisRecord::Fact { fact: backend_engine::builtin::StyloProjectedRow::SourceOccurrence(site), .. } if site.raw == "button")));
+        let second_scan = scan(&scratch)?;
+        let second = capture_stylo_project(
+            &second_scan,
+            &permit,
+            &cancellation,
+            std::time::Duration::from_secs(30),
+            None,
+        )
+        .map_err(|error| format!("repeat native capture: {error:?}"))?;
+        assert_eq!(first.rows(), second.rows());
+        assert_eq!(first.source_bytes_read(), ".button { --ink: red; }".len());
+        fs::write(&css, ".buttOn { --ink: red; }").map_err(|error| error.to_string())?;
+        assert!(matches!(
+            first.verify(&cancellation),
+            Err(StyloProjectCaptureFailure::Stale)
+        ));
+        // Failure terminals retain the attempted parser and process policy.
+        fs::write(&css, [0xff]).map_err(|error| error.to_string())?;
+        let failed_scan = scan(&scratch)?;
+        let failed = |seconds| {
+            capture_stylo_project(
+                &failed_scan,
+                &permit,
+                &cancellation,
+                std::time::Duration::from_secs(seconds),
+                None,
+            )
+            .map_err(|error| format!("failed attempt capture: {error:?}"))
+        };
+        let a = failed(20)?;
+        let b = failed(30)?;
+        let host = |capture: &StyloProjectCapture| {
+            capture
+                .rows()
+                .into_iter()
+                .find_map(|(_, row)| {
+                    if let backend_engine::builtin::StyloAnalysisRecord::Host {
+                        config,
+                        worker_policy,
+                        terminal,
+                        ..
+                    } = row
+                    {
+                        Some((config.clone(), worker_policy.clone(), terminal.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .expect("failed host")
+        };
+        let (config_a, policy_a, terminal_a) = host(&a);
+        let (config_b, policy_b, terminal_b) = host(&b);
+        assert!(config_a.is_some() && policy_a.is_some());
+        assert_eq!(config_a, config_b);
+        assert_eq!(terminal_a, terminal_b);
+        assert_ne!(policy_a, policy_b);
         Ok(())
     }
 
@@ -7646,6 +10784,142 @@ mod compiler_workspace_snapshot_tests {
         let path = std::env::temp_dir().join(format!("bcw-{}-{serial}", std::process::id()));
         fs::create_dir_all(&path).map_err(|error| error.to_string())?;
         Ok(Scratch(path))
+    }
+
+    #[test]
+    fn confined_configuration_capture_includes_ignored_files_and_rechecks_absence()
+    -> Result<(), String> {
+        let scratch = scratch()?;
+        fs::write(scratch.0.join(".gitignore"), "Directory.Build.*\n")
+            .map_err(|e| e.to_string())?;
+        fs::write(
+            scratch.0.join("Directory.Build.props"),
+            "<Project/>
+",
+        )
+        .map_err(|e| e.to_string())?;
+        fs::write(scratch.0.join("App.csproj"), "<Project/>\n").map_err(|e| e.to_string())?;
+        let snapshot = CompilerWorkspaceSnapshot::open(&scratch.0)?;
+        let paths = vec![
+            "App.csproj".to_owned(),
+            "Directory.Build.props".to_owned(),
+            "Directory.Build.targets".to_owned(),
+        ];
+        let capture = snapshot.capture_configuration_paths(&paths, 1024)?;
+        let observed = capture.probes().collect::<Vec<_>>();
+        assert_eq!(observed, vec![
+            ("App.csproj", Some(b"<Project/>\n".as_slice())),
+            ("Directory.Build.props", Some(b"<Project/>\n".as_slice())),
+            ("Directory.Build.targets", None),
+        ]);
+        assert!(capture.revalidate(&snapshot)?);
+        let other = self::scratch()?;
+        fs::write(other.0.join(".gitignore"), "Directory.Build.*\n").map_err(|e| e.to_string())?;
+        fs::write(other.0.join("App.csproj"), "<Project/>\n").map_err(|e| e.to_string())?;
+        fs::write(other.0.join("Directory.Build.props"), "<Project/>\n").map_err(|e| e.to_string())?;
+        let other_snapshot = CompilerWorkspaceSnapshot::open(&other.0)?;
+        assert!(!capture.revalidate(&other_snapshot)?);
+        let make_fence = |snapshot: &CompilerWorkspaceSnapshot| CompilerRevisionFence {
+            requested_root: snapshot.requested_root.clone(),
+            root: snapshot.root.clone(),
+            directories: vec![(PathBuf::new(), Some(snapshot.entries[0].revision))],
+            files: Vec::new(),
+            typescript_reuse: Vec::new(),
+        };
+        let fence = make_fence(&snapshot);
+        let other_fence = make_fence(&other_snapshot);
+        assert!(capture.revalidate_revision_fence(&fence, None)?);
+        assert!(!capture.revalidate_revision_fence(&other_fence, None)?);
+        let project = snapshot.capture_confined_file("App.csproj", 1024)?;
+        assert!(project.revalidate_revision_fence(&fence, None)?);
+        assert!(!project.revalidate_revision_fence(&other_fence, None)?);
+        fs::write(
+            scratch.0.join("Directory.Build.targets"),
+            "<Project/>
+",
+        )
+        .map_err(|e| e.to_string())?;
+        assert!(!capture.revalidate(&snapshot)?);
+        assert!(!capture.revalidate_revision_fence(&fence, None)?);
+        Ok(())
+    }
+
+    #[test]
+    fn csharp_rematerialization_reopens_exact_selected_source_bytes() -> Result<(), String> {
+        let scratch = scratch()?;
+        fs::write(scratch.0.join("App.cs"), "class A {}\n").map_err(|e| e.to_string())?;
+        let snapshot = CompilerWorkspaceSnapshot::open(&scratch.0)?;
+        let fence = CompilerRevisionFence {
+            requested_root: snapshot.requested_root.clone(), root: snapshot.root.clone(),
+            directories: vec![(PathBuf::new(), Some(snapshot.entries[0].revision))],
+            files: Vec::new(), typescript_reuse: Vec::new(),
+        };
+        let bytes = b"class A {}\n".to_vec();
+        let profile = LanguageProfile::CSharp(backend_semantic::vocabulary::CSharpVersion::CSharp14);
+        let mut sources = vec![CompilerSource {
+            relative_path: "App.cs".to_owned(), profile,
+            content: typed_of::<InputContentSchema>(&bytes).to_bytes(),
+            source_fact_identity: SourceFactIdentity::from_canonical_bytes(&bytes), source: bytes,
+        }];
+        let cancellation = AtomicBool::new(false);
+        assert!(rematerialize_csharp_source_buffers(&fence, &mut sources, "App.csproj", profile, &cancellation)?);
+        fs::write(scratch.0.join("App.cs"), "class B {}\n").map_err(|e| e.to_string())?;
+        assert!(!rematerialize_csharp_source_buffers(&fence, &mut sources, "App.csproj", profile, &cancellation)?);
+        cancellation.store(true, Ordering::Release);
+        assert!(rematerialize_csharp_source_buffers(&fence, &mut sources, "App.csproj", profile, &cancellation).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn csharp_global_json_probes_are_ordered_and_recheck_ignored_absence() -> Result<(), String> {
+        let scratch = scratch()?;
+        fs::create_dir(scratch.0.join("src")).map_err(|e| e.to_string())?;
+        fs::write(scratch.0.join(".gitignore"), "global.json\n").map_err(|e| e.to_string())?;
+        fs::write(scratch.0.join("src/App.csproj"), "<Project/>\n").map_err(|e| e.to_string())?;
+        fs::write(scratch.0.join("global.json"), "{\"sdk\":{}}\n").map_err(|e| e.to_string())?;
+        let snapshot = CompilerWorkspaceSnapshot::open(&scratch.0)?;
+        let captured = snapshot.capture_csharp_global_json_paths("src/App.csproj")?;
+        assert_eq!(captured.probes().collect::<Vec<_>>(), vec![
+            ("src/global.json", None),
+            ("global.json", Some(b"{\"sdk\":{}}\n".as_slice())),
+        ]);
+        let fence = CompilerRevisionFence {
+            requested_root: snapshot.requested_root.clone(), root: snapshot.root.clone(),
+            directories: vec![(PathBuf::new(), Some(snapshot.entries[0].revision))],
+            files: Vec::new(), typescript_reuse: Vec::new(),
+        };
+        assert!(captured.revalidate_revision_fence(&fence, None)?);
+        fs::write(scratch.0.join("src/global.json"), "{}\n").map_err(|e| e.to_string())?;
+        assert!(!captured.revalidate_revision_fence(&fence, None)?);
+        assert!(snapshot.capture_csharp_global_json_paths(&format!("{}/App.csproj", vec!["x"; 8].join("/"))).is_err());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn csharp_global_json_probe_rejects_ignored_symlink() -> Result<(), String> {
+        use std::os::unix::fs::symlink;
+        let scratch = scratch()?;
+        fs::write(scratch.0.join(".gitignore"), "global.json\n").map_err(|e| e.to_string())?;
+        fs::write(scratch.0.join("App.csproj"), "<Project/>\n").map_err(|e| e.to_string())?;
+        symlink("App.csproj", scratch.0.join("global.json")).map_err(|e| e.to_string())?;
+        let snapshot = CompilerWorkspaceSnapshot::open(&scratch.0)?;
+        assert!(snapshot.capture_csharp_global_json_paths("App.csproj").is_err());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn confined_configuration_rejects_ignored_symlink() -> Result<(), String> {
+        use std::os::unix::fs::symlink;
+        let scratch = scratch()?;
+        fs::write(scratch.0.join(".gitignore"), "Directory.Build.*\n").map_err(|e| e.to_string())?;
+        fs::write(scratch.0.join("App.csproj"), "<Project/>\n").map_err(|e| e.to_string())?;
+        symlink("App.csproj", scratch.0.join("Directory.Build.props")).map_err(|e| e.to_string())?;
+        let snapshot = CompilerWorkspaceSnapshot::open(&scratch.0)?;
+        let paths = vec!["App.csproj".to_owned(), "Directory.Build.props".to_owned(), "Directory.Build.targets".to_owned()];
+        assert!(snapshot.capture_configuration_paths(&paths, 1024).is_err());
+        Ok(())
     }
 
     #[test]
@@ -8026,3 +11300,1505 @@ mod work_observation_tests {
         Ok(())
     }
 }
+
+/// Fixed per-project supervisor-attempt cap. Every claimed slot is charged
+/// before invocation, including failures and cancellations; remaining hosts
+/// retain explicit Limit terminals without reading their bytes.
+const MAX_STYLO_WORKER_ATTEMPTS: u32 = 16;
+struct StyloWorkerBudget {
+    remaining: u32,
+}
+impl StyloWorkerBudget {
+    fn new() -> Self {
+        Self {
+            remaining: MAX_STYLO_WORKER_ATTEMPTS,
+        }
+    }
+    fn exhausted(&self) -> bool {
+        self.remaining == 0
+    }
+    fn claim(&mut self) -> bool {
+        if self.remaining == 0 {
+            false
+        } else {
+            self.remaining -= 1;
+            true
+        }
+    }
+    fn run<T>(&mut self, invoke: impl FnOnce() -> T) -> Option<T> {
+        self.claim().then(invoke)
+    }
+}
+
+/// A selected native CSS host. Captured rows retain a private supervised
+/// witness; unavailable terminals never claim empty native facts.
+enum StyloProjectHost {
+    Captured(super::stylo_capture::StyloHostCapture),
+    Unavailable {
+        key: [u8; 32],
+        row: backend_engine::builtin::StyloAnalysisRecord,
+    },
+}
+impl StyloProjectHost {
+    fn key(&self) -> [u8; 32] {
+        match self {
+            Self::Captured(value) => value.host_key(),
+            Self::Unavailable { key, .. } => *key,
+        }
+    }
+    fn row(&self) -> &backend_engine::builtin::StyloAnalysisRecord {
+        match self {
+            Self::Captured(value) => value.host(),
+            Self::Unavailable { row, .. } => row,
+        }
+    }
+}
+/// Private project selection produced from one source walk and supervised
+/// workers. It is not a durable workspace admission or a query capability.
+pub(super) struct StyloProjectCapture {
+    selection_key: [u8; 32],
+    selection: backend_engine::builtin::StyloAnalysisRecord,
+    attempt: Option<StyloAttemptCapture>,
+    hosts: Vec<StyloProjectHost>,
+    fence: CompilerRevisionFence,
+    source_bytes_read: usize,
+    worker_attempts: u32,
+}
+#[derive(Debug)]
+pub(super) enum StyloProjectCaptureFailure {
+    Cancelled,
+    Stale,
+    Unavailable,
+    /// The mandatory latest-attempt row cannot fit the shared admission budget.
+    AttemptCapacity,
+    Invalid(String),
+}
+impl StyloProjectCapture {
+    pub(super) fn revision_fence(&self) -> &CompilerRevisionFence { &self.fence }
+    pub(super) fn selection_key(&self) -> [u8; 32] {
+        self.selection_key
+    }
+    pub(super) fn selection(&self) -> &backend_engine::builtin::StyloAnalysisRecord {
+        &self.selection
+    }
+    pub(super) fn source_bytes_read(&self) -> usize {
+        self.source_bytes_read
+    }
+    #[cfg(test)]
+    fn worker_attempts(&self) -> u32 {
+        self.worker_attempts
+    }
+    pub(super) fn bind_attempt(&mut self, attempt: StyloAttemptCapture) {
+        self.attempt = Some(attempt);
+    }
+    pub(super) fn attempt_project(&self) -> Option<&backend_engine::ProductSourceRecord> {
+        self.attempt.as_ref().map(StyloAttemptCapture::project)
+    }
+    pub(super) fn rows(&self) -> Vec<([u8; 32], &backend_engine::builtin::StyloAnalysisRecord)> {
+        let mut rows = vec![(self.selection_key, &self.selection)];
+        if let Some(attempt) = &self.attempt {
+            rows.push((attempt.key, &attempt.row));
+        }
+        for host in &self.hosts {
+            rows.push((host.key(), host.row()));
+            if let StyloProjectHost::Captured(value) = host {
+                rows.extend(value.facts().iter().map(|(key, row)| (*key, row)));
+            }
+        }
+        rows.sort_by_key(|entry| entry.0);
+        rows
+    }
+    /// Rechecks private host witnesses, full selection consistency and the
+    /// original confined discovery/file fence immediately before publication.
+    pub(super) fn verify(
+        &self,
+        cancellation: &AtomicBool,
+    ) -> Result<(), StyloProjectCaptureFailure> {
+        for host in &self.hosts {
+            if let StyloProjectHost::Captured(value) = host {
+                value.verify().map_err(|error| {
+                    StyloProjectCaptureFailure::Invalid(format!("Stylo host witness: {error:?}"))
+                })?;
+            }
+        }
+        if let Some(attempt) = &self.attempt {
+            attempt.verify(cancellation)?;
+        }
+        backend_engine::builtin::admit_stylo_relation(&self.rows())
+            .map_err(StyloProjectCaptureFailure::Invalid)?;
+        match compiler_revision_is_current_with_cancellation(&self.fence, Some(cancellation)) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(StyloProjectCaptureFailure::Stale),
+            Err(error) if cancellation.load(Ordering::Acquire) => {
+                Err(StyloProjectCaptureFailure::Cancelled)
+            }
+            Err(error) => Err(StyloProjectCaptureFailure::Invalid(error)),
+        }
+    }
+}
+
+/// Owner-private same-walk proof for a current or unavailable native attempt.
+pub(super) struct StyloAttemptCapture {
+    key: [u8; 32],
+    row: backend_engine::builtin::StyloAnalysisRecord,
+    project: backend_engine::ProductSourceRecord,
+    fence: CompilerRevisionFence,
+}
+impl StyloAttemptCapture {
+    pub(super) fn revision_fence(&self) -> &CompilerRevisionFence { &self.fence }
+    pub(super) fn row(&self) -> &backend_engine::builtin::StyloAnalysisRecord {
+        &self.row
+    }
+    pub(super) fn key(&self) -> [u8; 32] {
+        self.key
+    }
+    pub(super) fn project(&self) -> &backend_engine::ProductSourceRecord {
+        &self.project
+    }
+    pub(super) fn verify(
+        &self,
+        cancellation: &AtomicBool,
+    ) -> Result<(), StyloProjectCaptureFailure> {
+        self.row
+            .validate()
+            .map_err(StyloProjectCaptureFailure::Invalid)?;
+        match compiler_revision_is_current_with_cancellation(&self.fence, Some(cancellation)) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(StyloProjectCaptureFailure::Stale),
+            Err(_) if cancellation.load(Ordering::Acquire) => {
+                Err(StyloProjectCaptureFailure::Cancelled)
+            }
+            Err(error) => Err(StyloProjectCaptureFailure::Invalid(error)),
+        }
+    }
+}
+
+/// Bind attempt status to the same source scan and exact Project after-image.
+/// An unavailable witness never asserts host content or a complete inventory.
+pub(super) fn capture_stylo_attempt(
+    scan: &IndexSnapshot,
+    project: backend_engine::ProductSourceRecord,
+    permit: Option<&super::stylo_worker::StyloWorkerPermit>,
+    selection_failure: Option<backend_engine::builtin::StyloUnavailable>,
+    observed: Option<&StyloProjectCapture>,
+    retained: Option<&backend_engine::builtin::StyloAnalysisRecord>,
+    cancellation: &AtomicBool,
+    wall_time: std::time::Duration,
+    memory_limit: Option<usize>,
+) -> Result<StyloAttemptCapture, StyloProjectCaptureFailure> {
+    use backend_engine::builtin::{
+        StyloAnalysisProfile, StyloAnalysisRecord, StyloAttemptArtifact, StyloAttemptOutcome,
+        StyloInventory, StyloUnavailable, stylo_attempt_key, stylo_rows_digest,
+        stylo_selection_key,
+    };
+    if selection_failure.is_some() && (permit.is_some() || observed.is_some()) {
+        return Err(StyloProjectCaptureFailure::Invalid(
+            "conflicting Stylo selection outcome".into(),
+        ));
+    }
+    let walk = &scan.stylo_walk;
+    let fields = project.project_fields().ok_or_else(|| {
+        StyloProjectCaptureFailure::Invalid("attempt source is not a Project".into())
+    })?;
+    if backend_engine::PackageKey::from_value(fields.label).to_bytes() != walk.project
+        || fields.source_version != scan.source_version
+    {
+        return Err(StyloProjectCaptureFailure::Invalid(
+            "attempt Project differs from source scan".into(),
+        ));
+    }
+    let fence = walk
+        .bind_fence(&scan.revision_fence)
+        .map_err(StyloProjectCaptureFailure::Invalid)?;
+    if !compiler_revision_is_current_with_cancellation(&fence, Some(cancellation))
+        .map_err(StyloProjectCaptureFailure::Invalid)?
+    {
+        return Err(StyloProjectCaptureFailure::Stale);
+    }
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"nudox.stylo-attempt-scope-policy.v1\0");
+    hash.update(&(walk.discovery_options.len() as u64).to_be_bytes());
+    hash.update(&walk.discovery_options);
+    hash.update(&walk.source_policy);
+    hash.update(&(16u64 * 1024 * 1024).to_be_bytes());
+    hash.update(&(ProductSourceRecord::MAX_PROJECT_FILES as u64).to_be_bytes());
+    hash.update(&(backend_engine::builtin::MAX_STYLO_RELATION_ROW_BYTES as u64).to_be_bytes());
+    hash.update(&2u64.to_be_bytes()); // reserved selection + latest-attempt rows
+    hash.update(&MAX_STYLO_WORKER_ATTEMPTS.to_be_bytes());
+    let scope_policy = *hash.finalize().as_bytes();
+    let source_root = walk
+        .root
+        .to_str()
+        .ok_or(StyloProjectCaptureFailure::Unavailable)?
+        .to_owned();
+    let (discovery, inventory, inventory_count, inventory_digest, served_selection, outcome) =
+        if let Some(capture) = observed {
+            let StyloAnalysisRecord::Selection {
+                project,
+                source_root: selected_root,
+                discovery,
+                inventory,
+                inventory_count,
+                inventory_digest,
+                ..
+            } = capture.selection()
+            else {
+                return Err(StyloProjectCaptureFailure::Invalid(
+                    "captured Stylo selection missing".into(),
+                ));
+            };
+            if *project != walk.project || selected_root != &source_root {
+                return Err(StyloProjectCaptureFailure::Invalid(
+                    "captured Stylo selection differs from attempt scope".into(),
+                ));
+            }
+            let digest = stylo_rows_digest(&[(stylo_selection_key(*project), capture.selection())])
+                .map_err(StyloProjectCaptureFailure::Invalid)?;
+            (
+                Some(*discovery),
+                Some(*inventory),
+                Some(*inventory_count),
+                Some(*inventory_digest),
+                Some(digest),
+                StyloAttemptOutcome::Observed,
+            )
+        } else {
+            let root = fence
+                .open_bound_root(&fence.requested_root)
+                .map_err(StyloProjectCaptureFailure::Invalid)?;
+            let discovery = match stylo_discovery_witness(walk, &root, cancellation) {
+                Ok(value) => Some(value),
+                Err(StyloProjectCaptureFailure::Unavailable) => None,
+                Err(error) => return Err(error),
+            };
+            let (inventory, count, digest) = match walk.inventory {
+                Some((count, digest)) => (
+                    Some(if walk.inventory_complete {
+                        StyloInventory::Complete
+                    } else {
+                        StyloInventory::Incomplete
+                    }),
+                    Some(count),
+                    Some(digest),
+                ),
+                None => (None, None, None),
+            };
+            let served = retained
+                .map(|selection| {
+                    stylo_rows_digest(&[(stylo_selection_key(walk.project), selection)])
+                })
+                .transpose()
+                .map_err(StyloProjectCaptureFailure::Invalid)?;
+            let reason = if let Some(reason) = selection_failure {
+                reason
+            } else if permit.is_some() {
+                StyloUnavailable::SelectionUnavailable
+            } else {
+                StyloUnavailable::ParserUnavailable
+            };
+            (
+                discovery,
+                inventory,
+                count,
+                digest,
+                served,
+                StyloAttemptOutcome::Unavailable(reason),
+            )
+        };
+    let worker_artifact = if selection_failure.is_some() {
+        StyloAttemptArtifact::Unknown
+    } else {
+        permit.map_or(StyloAttemptArtifact::NoPermit, |permit| {
+            StyloAttemptArtifact::Admitted(permit.artifact_identity())
+        })
+    };
+    let requested_policy = super::stylo_worker::stylo_worker_policy(wall_time, memory_limit)
+        .map_err(|_| StyloProjectCaptureFailure::Unavailable)?;
+    let row = StyloAnalysisRecord::Attempt {
+        project: walk.project,
+        source_root,
+        profile: StyloAnalysisProfile::StyloStandaloneV1,
+        scope_policy,
+        discovery,
+        policy_complete: false,
+        max_worker_attempts: Some(MAX_STYLO_WORKER_ATTEMPTS),
+        inventory,
+        inventory_digest,
+        inventory_count,
+        expected_producer: Some(backend_frontend_stylo::support_fingerprint()),
+        expected_recipe: Some(backend_frontend_stylo::RECIPE.into()),
+        adapter: super::stylo_admission::stylo_adapter_fingerprint(),
+        worker_artifact,
+        requested_policy,
+        outcome,
+        served_selection,
+    };
+    let limits = scan.source_admission_policy.limits();
+    if limits
+        .max_project_records
+        .saturating_sub(scan.stylo_budget_baseline.records)
+        == 0
+    {
+        return Err(StyloProjectCaptureFailure::AttemptCapacity);
+    }
+    let mut encoded = Vec::new();
+    <backend_engine::builtin::StyloAnalysisRelation as backend_version::Relation>::encode_value(
+        &row,
+        &mut encoded,
+    );
+    if encoded.len()
+        > limits
+            .max_project_record_bytes
+            .saturating_sub(scan.stylo_budget_baseline.record_bytes)
+    {
+        return Err(StyloProjectCaptureFailure::AttemptCapacity);
+    }
+    let result = StyloAttemptCapture {
+        key: stylo_attempt_key(walk.project),
+        row,
+        project,
+        fence,
+    };
+    result.verify(cancellation)?;
+    Ok(result)
+}
+
+fn stylo_discovery_witness(
+    walk: &StyloWalkEvidence,
+    root: &ProjectRoot,
+    cancellation: &AtomicBool,
+) -> Result<[u8; 32], StyloProjectCaptureFailure> {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"nudox.stylo-discovery-v1\0");
+    hash.update(&(walk.discovery_options.len() as u64).to_be_bytes());
+    hash.update(&walk.discovery_options);
+    hash.update(&walk.source_policy);
+    hash.update(&(16u64 * 1024 * 1024).to_be_bytes());
+    hash.update(&(ProductSourceRecord::MAX_PROJECT_FILES as u64).to_be_bytes());
+    hash.update(&(backend_engine::builtin::MAX_STYLO_RELATION_ROW_BYTES as u64).to_be_bytes());
+    hash.update(&2u64.to_be_bytes()); // reserved selection + latest-attempt rows
+    hash.update(&MAX_STYLO_WORKER_ATTEMPTS.to_be_bytes());
+    let mut bytes = 0usize;
+    for path in &walk.local_policy_paths {
+        if cancellation.load(Ordering::Acquire) {
+            return Err(StyloProjectCaptureFailure::Cancelled);
+        }
+        let relative = path.strip_prefix(&walk.root).map_err(|_| {
+            StyloProjectCaptureFailure::Invalid("policy escaped selected root".into())
+        })?;
+        let name = relative
+            .to_str()
+            .ok_or(StyloProjectCaptureFailure::Unavailable)?
+            .replace(std::path::MAIN_SEPARATOR, "/");
+        hash.update(&(name.len() as u64).to_be_bytes());
+        hash.update(name.as_bytes());
+        let remaining = (16 * 1024 * 1024usize).saturating_sub(bytes);
+        if remaining == 0 {
+            return Err(StyloProjectCaptureFailure::Unavailable);
+        }
+        match root.read(relative, remaining.min(1024 * 1024)) {
+            Ok(value) => {
+                bytes = bytes
+                    .checked_add(value.len())
+                    .ok_or(StyloProjectCaptureFailure::Unavailable)?;
+                hash.update(&(value.len() as u64).to_be_bytes());
+                hash.update(&value);
+            }
+            Err(SourceFault::Vanished) => return Err(StyloProjectCaptureFailure::Stale),
+            Err(SourceFault::Fatal(error)) => {
+                return Err(StyloProjectCaptureFailure::Invalid(error));
+            }
+            Err(_) => return Err(StyloProjectCaptureFailure::Unavailable),
+        }
+    }
+    Ok(*hash.finalize().as_bytes())
+}
+
+/// Captures selected stylesheets once from the existing walk using an admitted
+/// supervised worker. Failure is scoped to native CSS; this function does not
+/// alter the shared source index or publish any workspace transition.
+/// Reads within the remaining project quota, including the overflow probe.
+fn read_stylo_bounded(
+    root: &ProjectRoot,
+    path: &Path,
+    max_file: usize,
+    remaining: &mut usize,
+    observed: &mut usize,
+) -> Result<Vec<u8>, SourceFault> {
+    if *remaining == 0 {
+        return Err(SourceFault::Unavailable(SourceUnavailableReason::TooLarge));
+    }
+    let result = root.read(path, max_file.min(remaining.saturating_sub(1)));
+    let charged = match &result {
+        Ok(bytes) => bytes.len(),
+        Err(SourceFault::UnavailableRead(_, bytes)) => *bytes,
+        _ => 0,
+    };
+    *remaining = remaining
+        .checked_sub(charged)
+        .ok_or_else(|| SourceFault::Fatal("Stylo source quota exceeded".into()))?;
+    *observed = observed
+        .checked_add(charged)
+        .ok_or_else(|| SourceFault::Fatal("Stylo source work overflow".into()))?;
+    result
+}
+
+pub(super) fn capture_stylo_project(
+    scan: &IndexSnapshot,
+    permit: &super::stylo_worker::StyloWorkerPermit,
+    cancellation: &AtomicBool,
+    wall_time: std::time::Duration,
+    memory_limit: Option<usize>,
+) -> Result<StyloProjectCapture, StyloProjectCaptureFailure> {
+    use super::stylo_capture::{StyloCaptureFailure, capture_stylo_host};
+    use super::stylo_worker::StyloWorkerFailure;
+    use backend_engine::builtin::{
+        StyloAnalysisProfile, StyloAnalysisRecord, StyloAnalysisRelation, StyloInventory,
+        StyloTerminal, StyloUnavailable, stylo_host_key, stylo_rows_digest, stylo_selection_key,
+    };
+    use backend_semantic::stylo_analysis::{StyloLimits, StyloParseConfig, StyloSourceKind};
+    use backend_version::Relation;
+    if cancellation.load(Ordering::Acquire) {
+        return Err(StyloProjectCaptureFailure::Cancelled);
+    }
+    if permit.support() != backend_frontend_stylo::support_fingerprint() {
+        return Err(StyloProjectCaptureFailure::Unavailable);
+    }
+    let walk = &scan.stylo_walk;
+    let (inventory_count, inventory_digest) = walk
+        .inventory
+        .ok_or(StyloProjectCaptureFailure::Unavailable)?;
+    let fence = walk
+        .bind_fence(&scan.revision_fence)
+        .map_err(StyloProjectCaptureFailure::Invalid)?;
+    if !compiler_revision_is_current_with_cancellation(&fence, Some(cancellation))
+        .map_err(StyloProjectCaptureFailure::Invalid)?
+    {
+        return Err(StyloProjectCaptureFailure::Stale);
+    }
+    let root = fence
+        .open_bound_root(&fence.requested_root)
+        .map_err(StyloProjectCaptureFailure::Invalid)?;
+    let discovery = stylo_discovery_witness(walk, &root, cancellation)?;
+    let source_root = walk
+        .root
+        .to_str()
+        .ok_or(StyloProjectCaptureFailure::Unavailable)?
+        .to_owned();
+    let limits = scan.source_admission_policy.limits();
+    let mut remaining_source = limits
+        .max_project_source_bytes
+        .saturating_sub(scan.stylo_budget_baseline.source_bytes);
+    let mut remaining_bytes = limits
+        .max_project_record_bytes
+        .saturating_sub(scan.stylo_budget_baseline.record_bytes)
+        .min(64 * 1024 * 1024);
+    let mut remaining_records = limits
+        .max_project_records
+        .saturating_sub(scan.stylo_budget_baseline.records)
+        .min(262_144);
+    if remaining_records < 2 {
+        return Err(StyloProjectCaptureFailure::Unavailable);
+    }
+    remaining_records -= 2; // project selection and latest-attempt rows
+    // The attempt is attached after the same-scan Project is constructed.
+    // Reserve its largest admissible row before retaining host facts.
+    remaining_bytes = remaining_bytes
+        .checked_sub(backend_engine::builtin::MAX_STYLO_RELATION_ROW_BYTES)
+        .ok_or(StyloProjectCaptureFailure::Unavailable)?;
+    let max_file = limits
+        .max_file_source_bytes
+        .min(limits.max_in_flight_source_bytes)
+        .min(backend_frontend_stylo::worker_protocol::MAX_SOURCE);
+    if max_file == 0 {
+        return Err(StyloProjectCaptureFailure::Unavailable);
+    }
+    let mut hosts = Vec::new();
+    let mut worker_budget = StyloWorkerBudget::new();
+    let mut source_bytes_read = 0usize;
+    let mut complete = walk.inventory_complete;
+    for file in &walk.files {
+        if cancellation.load(Ordering::Acquire) {
+            return Err(StyloProjectCaptureFailure::Cancelled);
+        }
+        if remaining_records == 0 || remaining_bytes == 0 {
+            complete = false;
+            break;
+        }
+        let name = file
+            .relative_path
+            .to_str()
+            .ok_or(StyloProjectCaptureFailure::Unavailable)?
+            .replace(std::path::MAIN_SEPARATOR, "/");
+        let key =
+            stylo_host_key(walk.project, &name).map_err(StyloProjectCaptureFailure::Invalid)?;
+        let size = file
+            .metadata
+            .and_then(|value| usize::try_from(value.length).ok());
+        let mut failure = if size.is_none() {
+            Some(StyloUnavailable::ReadUnavailable)
+        } else if remaining_source == 0
+            || size.is_some_and(|size| size > max_file || size >= remaining_source)
+            || worker_budget.exhausted()
+        {
+            Some(StyloUnavailable::Limit)
+        } else {
+            None
+        };
+        let mut captured = None;
+        let mut content = None;
+        let mut source = None;
+        let mut byte_length = None;
+        let mut attempted_config = None;
+        let mut attempted_policy = None;
+        if failure.is_none() {
+            match read_stylo_bounded(
+                &root,
+                &file.relative_path,
+                max_file,
+                &mut remaining_source,
+                &mut source_bytes_read,
+            ) {
+                Ok(bytes) => {
+                    content = Some(typed_of::<InputContentSchema>(&bytes).to_bytes());
+                    source = Some(*backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(&bytes).as_ref());
+                    byte_length = Some(bytes.len() as u64);
+                    let base_url = url::Url::from_file_path(walk.root.join(&file.relative_path))
+                        .map_err(|()| StyloProjectCaptureFailure::Unavailable)?
+                        .to_string();
+                    // Reserve disjoint native row quotas before launching the
+                    // non-interruptible parser inside its supervised process.
+                    let quota = remaining_records.saturating_sub(1);
+                    let rule_quota = (quota / 4).min(100_000);
+                    let record_quota = (quota / 2).min(200_000);
+                    let diagnostic_quota =
+                        quota.saturating_sub(rule_quota + record_quota).min(2_000);
+                    let config = StyloParseConfig {
+                        source_kind: StyloSourceKind::StandaloneUtf8,
+                        base_url,
+                        author_origin: true,
+                        no_quirks: true,
+                        allow_imports: false,
+                        limits: StyloLimits {
+                            input_bytes: max_file as u64,
+                            rules: u32::try_from(rule_quota)
+                                .map_err(|_| StyloProjectCaptureFailure::Unavailable)?,
+                            depth: 64,
+                            records: u32::try_from(record_quota)
+                                .map_err(|_| StyloProjectCaptureFailure::Unavailable)?,
+                            diagnostics: u32::try_from(diagnostic_quota)
+                                .map_err(|_| StyloProjectCaptureFailure::Unavailable)?,
+                            text_bytes: remaining_bytes.min(8 * 1024 * 1024) as u64,
+                        },
+                    };
+                    attempted_policy = Some(
+                        super::stylo_worker::stylo_worker_policy(wall_time, memory_limit)
+                            .map_err(|_| StyloProjectCaptureFailure::Unavailable)?,
+                    );
+                    attempted_config = Some(config.clone());
+                    let outcome = worker_budget
+                        .run(|| {
+                            capture_stylo_host(
+                                permit,
+                                walk.root.clone(),
+                                walk.project,
+                                &name,
+                                &bytes,
+                                &config,
+                                wall_time,
+                                memory_limit,
+                                remaining_bytes,
+                                remaining_records,
+                                cancellation,
+                            )
+                        })
+                        .ok_or_else(|| {
+                            StyloProjectCaptureFailure::Invalid(
+                                "Stylo worker budget was exhausted before invocation".into(),
+                            )
+                        })?;
+                    match outcome {
+                        Ok(value) => captured = Some(value),
+                        Err(StyloCaptureFailure::Limit)
+                        | Err(StyloCaptureFailure::Worker(StyloWorkerFailure::Limit)) => {
+                            failure = Some(StyloUnavailable::Limit)
+                        }
+                        Err(StyloCaptureFailure::Worker(StyloWorkerFailure::Process(
+                            backend_compile::ProcessError::Cancelled,
+                        )))
+                        | Err(StyloCaptureFailure::Worker(StyloWorkerFailure::Terminal(
+                            backend_compile::ProcessTerminal::Cancelled,
+                        )))
+                        | Err(StyloCaptureFailure::Worker(StyloWorkerFailure::Native(
+                            backend_frontend_stylo::StyloError::Cancelled,
+                        ))) => return Err(StyloProjectCaptureFailure::Cancelled),
+                        Err(StyloCaptureFailure::Worker(StyloWorkerFailure::Process(
+                            backend_compile::ProcessError::Deadline,
+                        )))
+                        | Err(StyloCaptureFailure::Worker(StyloWorkerFailure::Terminal(
+                            backend_compile::ProcessTerminal::Deadline,
+                        ))) => failure = Some(StyloUnavailable::Deadline),
+                        Err(StyloCaptureFailure::Worker(StyloWorkerFailure::Process(
+                            backend_compile::ProcessError::OutputLimit,
+                        )))
+                        | Err(StyloCaptureFailure::Worker(StyloWorkerFailure::Terminal(
+                            backend_compile::ProcessTerminal::OutputLimit,
+                        ))) => failure = Some(StyloUnavailable::Limit),
+                        Err(StyloCaptureFailure::Worker(StyloWorkerFailure::Process(
+                            backend_compile::ProcessError::UnsupportedLimit(_),
+                        ))) => failure = Some(StyloUnavailable::UnsupportedHardLimit),
+                        Err(StyloCaptureFailure::Worker(StyloWorkerFailure::Native(
+                            backend_frontend_stylo::StyloError::InvalidUtf8,
+                        ))) => failure = Some(StyloUnavailable::InvalidUtf8),
+                        Err(StyloCaptureFailure::Worker(StyloWorkerFailure::Native(
+                            backend_frontend_stylo::StyloError::PreferencesChanged,
+                        ))) => failure = Some(StyloUnavailable::PreferencesChanged),
+                        Err(_) => failure = Some(StyloUnavailable::WorkerFailure),
+                    }
+                }
+                Err(SourceFault::Vanished) => return Err(StyloProjectCaptureFailure::Stale),
+                Err(SourceFault::Fatal(error)) => {
+                    return Err(StyloProjectCaptureFailure::Invalid(error));
+                }
+                Err(SourceFault::UnavailableRead(reason, bytes_read)) => {
+                    let _ = bytes_read; // already charged by read_stylo_bounded
+                    failure = Some(if matches!(reason, SourceUnavailableReason::TooLarge) {
+                        StyloUnavailable::Limit
+                    } else {
+                        StyloUnavailable::ReadUnavailable
+                    });
+                }
+                Err(SourceFault::Unavailable(SourceUnavailableReason::TooLarge)) => {
+                    failure = Some(StyloUnavailable::Limit)
+                }
+                Err(_) => failure = Some(StyloUnavailable::ReadUnavailable),
+            }
+        }
+        let host = if let Some(value) = captured {
+            remaining_records = remaining_records.saturating_sub(value.facts().len() + 1);
+            remaining_bytes = remaining_bytes.saturating_sub(value.encoded_bytes());
+            StyloProjectHost::Captured(value)
+        } else {
+            let row = StyloAnalysisRecord::Host {
+                project: walk.project,
+                path: name,
+                content,
+                source,
+                byte_length,
+                utf8_bom_removed: None,
+                configuration: attempted_config
+                    .as_ref()
+                    .map(|config| {
+                        backend_engine::builtin::stylo_parser_configuration_id(
+                            backend_frontend_stylo::RECIPE,
+                            config,
+                        )
+                    })
+                    .transpose()
+                    .map_err(StyloProjectCaptureFailure::Invalid)?,
+                config: attempted_config,
+                preferences: None,
+                preference_stability: None,
+                analysis_basis: None,
+                worker_policy: attempted_policy,
+                source_coverage: None,
+                source_gaps: vec![],
+                source_observer_recipe: None,
+                terminal: StyloTerminal::Unavailable(
+                    failure.ok_or(StyloProjectCaptureFailure::Unavailable)?,
+                ),
+                fact_count: 0,
+                fact_digest: stylo_rows_digest(&[]).map_err(StyloProjectCaptureFailure::Invalid)?,
+            };
+            row.validate()
+                .map_err(StyloProjectCaptureFailure::Invalid)?;
+            let mut encoded = Vec::new();
+            StyloAnalysisRelation::encode_value(&row, &mut encoded);
+            if encoded.len() > remaining_bytes {
+                complete = false;
+                break;
+            }
+            remaining_bytes -= encoded.len();
+            remaining_records -= 1;
+            StyloProjectHost::Unavailable { key, row }
+        };
+        hosts.push(host);
+    }
+    hosts.sort_by_key(StyloProjectHost::key);
+    let host_refs: Vec<_> = hosts.iter().map(|host| (host.key(), host.row())).collect();
+    let host_digest = stylo_rows_digest(&host_refs).map_err(StyloProjectCaptureFailure::Invalid)?;
+    let selection = StyloAnalysisRecord::Selection {
+        project: walk.project,
+        source_root,
+        profile: StyloAnalysisProfile::StyloStandaloneV1,
+        recipe: backend_frontend_stylo::RECIPE.into(),
+        producer: permit.support(),
+        worker_artifact: permit.artifact_identity(),
+        adapter: super::stylo_admission::stylo_adapter_fingerprint(),
+        discovery,
+        policy_complete: false,
+        max_worker_attempts: Some(MAX_STYLO_WORKER_ATTEMPTS),
+        inventory: if complete && hosts.len() as u64 == inventory_count {
+            StyloInventory::Complete
+        } else {
+            StyloInventory::Incomplete
+        },
+        inventory_digest,
+        inventory_count,
+        host_count: u32::try_from(hosts.len())
+            .map_err(|_| StyloProjectCaptureFailure::Unavailable)?,
+        host_digest,
+    };
+    selection
+        .validate()
+        .map_err(StyloProjectCaptureFailure::Invalid)?;
+    let mut encoded = Vec::new();
+    StyloAnalysisRelation::encode_value(&selection, &mut encoded);
+    if encoded.len() > remaining_bytes {
+        return Err(StyloProjectCaptureFailure::Unavailable);
+    }
+    let result = StyloProjectCapture {
+        selection_key: stylo_selection_key(walk.project),
+        selection,
+        attempt: None,
+        hosts,
+        fence,
+        source_bytes_read,
+        worker_attempts: MAX_STYLO_WORKER_ATTEMPTS - worker_budget.remaining,
+    };
+    result.verify(cancellation)?;
+    Ok(result)
+}
+
+/// Private source/configuration capture; it is not an admitted SQL root.
+/// Publication must bind this witness to the selected project/snapshot and
+/// revalidate it at the owner barrier before making any facts visible.
+pub(super) struct SqlProjectCapture {
+    project: [u8; 32],
+    settings_bytes: Vec<u8>,
+    settings: backend_library::sql_workspace::ParsedSqlProjectSettings,
+    hosts: Vec<SqlCapturedHost>,
+    cancellation: Arc<AtomicBool>,
+    /// True when no `.nudox/sql.json` exists and the selection was derived from
+    /// the same bounded walk (every `.sql` file, dialect inferred per file).
+    implicit: bool,
+}
+pub(super) struct SqlCapturedHost {
+    selected: backend_library::sql_workspace::SqlProjectSource,
+    /// Dialect was inferred, not declared. `oracle` means the inference found no
+    /// signal, so the owner may try the other dialect when the first rejects it.
+    inferred: bool,
+    oracle: bool,
+    /// The host was selected but could not be read in full; no bytes were captured.
+    fault: Option<backend_engine::builtin::SqlUnavailable>,
+    bytes: Vec<u8>,
+    input: backend_compile::InputContentVersion,
+    source: backend_version::ContentId<backend_version::SourceFactDomain>,
+}
+/// Private replay witness after worker projection. It retains identities and
+/// paths, not source/configuration byte buffers or catalog authority.
+pub(super) struct SqlProjectWitness {
+    implicit: bool,
+    project: [u8; 32],
+    config_input: backend_compile::InputContentVersion,
+    config_source: backend_version::ContentId<backend_version::SourceFactDomain>,
+    config_len: usize,
+    hosts: Vec<SqlHostWitness>,
+    cancellation: Arc<AtomicBool>,
+}
+fn sql_charge_allocation(total: &mut usize, capacity: usize) -> Option<()> {
+    if capacity != 0 { *total = total.checked_add(capacity)?.checked_add(2 * std::mem::size_of::<usize>())?; }
+    Some(())
+}
+struct SqlHostWitness {
+    path: String,
+    input: backend_compile::InputContentVersion,
+    source: backend_version::ContentId<backend_version::SourceFactDomain>,
+    length: usize,
+}
+#[derive(Debug)]
+pub(super) enum SqlCaptureFailure {
+    NoConfiguration,
+    Unavailable,
+    Invalid,
+    Limit,
+    Stale,
+    Cancelled,
+}
+impl SqlProjectCapture {
+    /// Actual checked settings, still requiring owner selection admission.
+    pub(super) fn settings(&self) -> &backend_library::sql_workspace::ParsedSqlProjectSettings { &self.settings }
+    /// SQL hosts actually captured under the same confined root.
+    pub(super) fn hosts(&self) -> &[SqlCapturedHost] { &self.hosts }
+    /// Project claim carried by the source walk.
+    pub(super) fn project(&self) -> [u8; 32] { self.project }
+    pub(super) fn matches_cancellation(&self, cancellation: &Arc<AtomicBool>) -> bool { Arc::ptr_eq(&self.cancellation, cancellation) }
+    pub(super) fn settings_len(&self) -> usize { self.settings_bytes.len() }
+    /// Whether the selection was derived from the walk because no settings file exists.
+    pub(super) fn implicit(&self) -> bool { self.implicit }
+    pub(super) fn witness(&self) -> SqlProjectWitness {
+        SqlProjectWitness { implicit: self.implicit, project: self.project, config_input: self.settings.input(),
+            config_source: self.settings.source(), config_len: self.settings_bytes.len(),
+            hosts: self.hosts.iter().filter(|host| host.fault.is_none()).map(|host| SqlHostWitness {
+                path: host.selected.path.clone(), input: host.input, source: host.source, length: host.bytes.len(),
+            }).collect(), cancellation: Arc::clone(&self.cancellation) }
+    }
+    /// Re-read actual configuration and every host before owner publication.
+    pub(super) fn revalidate(&self, walk: &SqlWalkEvidence, fence: &CompilerRevisionFence,
+        requested_root: &Path, cancellation: &Arc<AtomicBool>) -> Result<(), SqlCaptureFailure> {
+        if !self.matches_cancellation(cancellation) { return Err(SqlCaptureFailure::Invalid); }
+        if self.project != walk.project || walk.root != fence.root { return Err(SqlCaptureFailure::Stale); }
+        if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+        let current = compiler_revision_is_current_with_cancellation(fence, Some(cancellation.as_ref()))
+            .map_err(|_| if cancellation.load(Ordering::Acquire) { SqlCaptureFailure::Cancelled } else { SqlCaptureFailure::Unavailable })?;
+        if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+        if !current {
+            return Err(SqlCaptureFailure::Stale);
+        }
+        let root_result = fence.open_bound_root(requested_root);
+        if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+        let root = root_result.map_err(|_| SqlCaptureFailure::Stale)?;
+        if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+        let config_result = root.read(Path::new(backend_library::sql_workspace::SQL_PROJECT_SETTINGS_PATH),
+            backend_library::sql_workspace::MAX_SQL_PROJECT_SETTINGS_BYTES);
+        if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+        if self.implicit {
+            // An implicit selection stays valid only while no settings file exists.
+            match config_result {
+                Err(SourceFault::Vanished) => {}
+                Ok(_) => return Err(SqlCaptureFailure::Stale),
+                Err(error) => return Err(sql_capture_fault(error)),
+            }
+        } else {
+            let config = config_result.map_err(sql_capture_fault)?;
+            if config != self.settings_bytes { return Err(SqlCaptureFailure::Stale); }
+        }
+        for host in self.hosts.iter().filter(|host| host.fault.is_none()) {
+            if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+            let result = root.read(Path::new(&host.selected.path), 512 * 1024);
+            if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+            let bytes = result.map_err(sql_capture_fault)?;
+            let verified = backend_compile::VerifiedSourceText::admit(&bytes, host.input, host.source)
+                .map_err(|_| SqlCaptureFailure::Stale)?;
+            let extent = verified.extent(0..bytes.len()).map_err(|_| SqlCaptureFailure::Stale)?;
+            if extent.text().as_bytes() != host.bytes { return Err(SqlCaptureFailure::Stale); }
+        }
+        let current = compiler_revision_is_current_with_cancellation(fence, Some(cancellation.as_ref()))
+            .map_err(|_| if cancellation.load(Ordering::Acquire) { SqlCaptureFailure::Cancelled } else { SqlCaptureFailure::Unavailable })?;
+        if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+        if !current {
+            return Err(SqlCaptureFailure::Stale);
+        }
+        Ok(())
+    }
+}
+impl SqlProjectWitness {
+    pub(super) fn project(&self) -> [u8; 32] { self.project }
+    pub(super) fn matches_cancellation(&self, cancellation: &Arc<AtomicBool>) -> bool { Arc::ptr_eq(&self.cancellation, cancellation) }
+    pub(super) fn checked_retained_bytes(&self) -> Option<usize> {
+        let mut total = std::mem::size_of::<Self>();
+        sql_charge_allocation(&mut total, self.hosts.capacity().checked_mul(std::mem::size_of::<SqlHostWitness>())?)?;
+        for host in &self.hosts { sql_charge_allocation(&mut total, host.path.capacity())?; }
+        total.checked_add(std::mem::size_of::<AtomicBool>())?.checked_add(2 * std::mem::size_of::<usize>())
+    }
+    /// Recheck both typed content domains from the same confined bytes.
+    pub(super) fn revalidate(&self, walk: &SqlWalkEvidence, fence: &CompilerRevisionFence,
+        requested_root: &Path, cancellation: &Arc<AtomicBool>) -> Result<(), SqlCaptureFailure> {
+        if !self.matches_cancellation(cancellation) { return Err(SqlCaptureFailure::Invalid); }
+        if self.project != walk.project || walk.root != fence.root { return Err(SqlCaptureFailure::Stale); }
+        let check_fence = || -> Result<(), SqlCaptureFailure> {
+            if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+            let current = compiler_revision_is_current_with_cancellation(fence, Some(cancellation.as_ref()))
+                .map_err(|_| if cancellation.load(Ordering::Acquire) { SqlCaptureFailure::Cancelled } else { SqlCaptureFailure::Unavailable })?;
+            if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+            if !current { return Err(SqlCaptureFailure::Stale); }
+            Ok(())
+        };
+        check_fence()?;
+        let root_result = fence.open_bound_root(requested_root);
+        if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+        let root = root_result.map_err(|_| SqlCaptureFailure::Stale)?;
+        let check_bytes = |relative: &Path, limit: usize, length: usize,
+                           input: backend_compile::InputContentVersion,
+                           source: backend_version::ContentId<backend_version::SourceFactDomain>| -> Result<(), SqlCaptureFailure> {
+            if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+            let result = root.read(relative, limit);
+            if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+            let bytes = result.map_err(sql_capture_fault)?;
+            if bytes.len() != length { return Err(SqlCaptureFailure::Stale); }
+            backend_compile::VerifiedSourceText::admit(&bytes, input, source).map_err(|_| SqlCaptureFailure::Stale)?;
+            Ok(())
+        };
+        if self.implicit {
+            if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+            let result = root.read(Path::new(backend_library::sql_workspace::SQL_PROJECT_SETTINGS_PATH),
+                backend_library::sql_workspace::MAX_SQL_PROJECT_SETTINGS_BYTES);
+            if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+            match result {
+                Err(SourceFault::Vanished) => {}
+                Ok(_) => return Err(SqlCaptureFailure::Stale),
+                Err(error) => return Err(sql_capture_fault(error)),
+            }
+        } else {
+            check_bytes(Path::new(backend_library::sql_workspace::SQL_PROJECT_SETTINGS_PATH),
+                backend_library::sql_workspace::MAX_SQL_PROJECT_SETTINGS_BYTES, self.config_len, self.config_input, self.config_source)?;
+        }
+        for host in &self.hosts { check_bytes(Path::new(&host.path), 512 * 1024, host.length, host.input, host.source)?; }
+        check_fence()
+    }
+}
+impl SqlCapturedHost {
+    /// Exact configured source selector; its catalog remains proposed.
+    pub(super) fn selected(&self) -> &backend_library::sql_workspace::SqlProjectSource { &self.selected }
+    /// Host bytes used to mint the checked identities.
+    pub(super) fn bytes(&self) -> &[u8] { &self.bytes }
+    pub(super) fn input(&self) -> backend_compile::InputContentVersion { self.input }
+    pub(super) fn source(&self) -> backend_version::ContentId<backend_version::SourceFactDomain> { self.source }
+    /// Why the host could not be captured, if it was selected but unreadable.
+    pub(super) fn fault(&self) -> Option<backend_engine::builtin::SqlUnavailable> { self.fault }
+    /// Whether the dialect was inferred from the file rather than declared.
+    pub(super) fn inferred(&self) -> bool { self.inferred }
+    /// Whether no signal decided the dialect, so the parsers should.
+    pub(super) fn oracle(&self) -> bool { self.oracle }
+    /// A copy of this host re-targeted at the other dialect.
+    pub(super) fn as_dialect(&self, dialect: backend_library::sql_workspace::SqlDialect) -> Self {
+        let mut other = Self { selected: self.selected.clone(), inferred: self.inferred, oracle: self.oracle, fault: self.fault,
+            bytes: self.bytes.clone(), input: self.input, source: self.source };
+        other.selected.dialect = dialect;
+        other
+    }
+}
+fn sql_capture_fault(fault: SourceFault) -> SqlCaptureFailure {
+    match fault {
+        SourceFault::Vanished => SqlCaptureFailure::Stale,
+        SourceFault::Unavailable(SourceUnavailableReason::TooLarge)
+        | SourceFault::UnavailableRead(SourceUnavailableReason::TooLarge, _) => SqlCaptureFailure::Limit,
+        SourceFault::Unavailable(_) | SourceFault::UnavailableRead(_, _) => SqlCaptureFailure::Unavailable,
+        SourceFault::Fatal(_) => SqlCaptureFailure::Invalid,
+    }
+}
+/// Capture only explicitly configured SQL hosts seen in the same bounded walk.
+/// A missing settings file selects no SQL profile; missing/ignored configured
+/// hosts and incomplete walks remain unavailable, not a complete empty result.
+pub(super) fn capture_sql_project(walk: &SqlWalkEvidence, fence: &CompilerRevisionFence,
+    requested_root: &Path, cancellation: &Arc<AtomicBool>) -> Result<SqlProjectCapture, SqlCaptureFailure> {
+    if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+    if walk.root != fence.root { return Err(SqlCaptureFailure::Unavailable); }
+    let root_result = fence.open_bound_root(requested_root);
+    if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+    let root = root_result.map_err(|_| SqlCaptureFailure::Stale)?;
+    let config_result = root.read(Path::new(backend_library::sql_workspace::SQL_PROJECT_SETTINGS_PATH),
+        backend_library::sql_workspace::MAX_SQL_PROJECT_SETTINGS_BYTES);
+    if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+    let (config, implicit) = match config_result {
+        Ok(bytes) => (bytes, false),
+        Err(SourceFault::Vanished) => (Vec::new(), true),
+        Err(error) => return Err(sql_capture_fault(error)),
+    };
+    let mut hosts = Vec::new();
+    let mut total = 0usize;
+    let (settings, config) = if implicit {
+        // No settings file: select every `.sql` file of the same bounded walk.
+        let mut paths = Vec::new();
+        for file in &walk.files {
+            if file.metadata.is_none() { continue; }
+            let Some(text) = file.relative_path.to_str() else { return Err(SqlCaptureFailure::Invalid) };
+            let text = text.replace('\\', "/");
+            if text == backend_library::sql_workspace::SQL_PROJECT_SETTINGS_PATH
+                || !text.rsplit_once('.').is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("sql")) { continue; }
+            paths.push(text);
+        }
+        paths.sort();
+        paths.dedup();
+        if paths.len() > backend_library::sql_workspace::MAX_SQL_PROJECT_HOSTS { return Err(SqlCaptureFailure::Limit); }
+        let mut sources = Vec::with_capacity(paths.len());
+        let mut read = Vec::with_capacity(paths.len());
+        for path in &paths {
+            if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+            let result = root.read(Path::new(path), 512 * 1024);
+            if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+            let (bytes, fault) = match result {
+                Ok(bytes) => (bytes, None),
+                // Too large or unreadable hosts are still selected so that the
+                // gap is recorded per host rather than silently dropped.
+                Err(error) => match sql_capture_fault(error) {
+                    SqlCaptureFailure::Limit => (Vec::new(), Some(backend_engine::builtin::SqlUnavailable::Limit)),
+                    SqlCaptureFailure::Unavailable => (Vec::new(), Some(backend_engine::builtin::SqlUnavailable::Read)),
+                    other => return Err(other),
+                },
+            };
+            total = total.checked_add(bytes.len()).ok_or(SqlCaptureFailure::Limit)?;
+            if total > 16 * 1024 * 1024 { return Err(SqlCaptureFailure::Limit); }
+            let guess = infer_sql_dialect(path, &bytes);
+            read.push((path.clone(), bytes, fault, guess));
+        }
+        // The migrations of one project share a dialect: when every file that
+        // shows a signal agrees, the files with none inherit it. Only a genuine
+        // mix leaves a file to the parsers.
+        let mut seen = read.iter().filter_map(|(_, _, _, guess)| *guess).collect::<Vec<_>>();
+        seen.sort_by_key(|dialect| matches!(dialect, backend_library::sql_workspace::SqlDialect::Postgres));
+        seen.dedup();
+        let consensus = (seen.len() == 1).then(|| seen[0]);
+        for (path, bytes, fault, guess) in read {
+            let decided = guess.or(consensus);
+            let dialect = decided.unwrap_or(backend_library::sql_workspace::SqlDialect::Sqlite);
+            let selected = backend_library::sql_workspace::SqlProjectSource {
+                path: path.clone(), dialect, context: backend_library::sql_workspace::SqlProjectContext::Unavailable,
+            };
+            let verified = backend_compile::VerifiedSourceText::capture(&bytes).map_err(|_| SqlCaptureFailure::Invalid)?;
+            let input = verified.content();
+            let source = verified.extent(0..bytes.len()).map_err(|_| SqlCaptureFailure::Invalid)?.source();
+            sources.push(selected.clone());
+            hosts.push(SqlCapturedHost { selected, inferred: true, oracle: decided.is_none(), fault, bytes, input, source });
+        }
+        let bytes = serde_json::to_vec(&backend_library::sql_workspace::SqlProjectSettings { version: 1, sources })
+            .map_err(|_| SqlCaptureFailure::Invalid)?;
+        let settings = backend_library::sql_workspace::ParsedSqlProjectSettings::parse(&bytes)
+            .map_err(|_| SqlCaptureFailure::Invalid)?;
+        (settings, bytes)
+    } else {
+        // A settings file selects hosts by name; a truncated walk cannot prove
+        // that every named file is present and unignored.
+        if !walk.inventory_complete { return Err(SqlCaptureFailure::Unavailable); }
+        let settings = backend_library::sql_workspace::ParsedSqlProjectSettings::parse(&config)
+            .map_err(|_| SqlCaptureFailure::Invalid)?;
+        for selected in &settings.settings().sources {
+            if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+            let path = Path::new(&selected.path);
+            if !walk.files.iter().any(|file| file.relative_path == path && file.metadata.is_some()) {
+                return Err(SqlCaptureFailure::Unavailable);
+            }
+            let result = root.read(path, 512 * 1024);
+            if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+            let bytes = result.map_err(sql_capture_fault)?;
+            total = total.checked_add(bytes.len()).ok_or(SqlCaptureFailure::Limit)?;
+            if total > 16 * 1024 * 1024 { return Err(SqlCaptureFailure::Limit); }
+            let verified = backend_compile::VerifiedSourceText::capture(&bytes).map_err(|_| SqlCaptureFailure::Invalid)?;
+            let input = verified.content();
+            let source = verified.extent(0..bytes.len()).map_err(|_| SqlCaptureFailure::Invalid)?.source();
+            hosts.push(SqlCapturedHost { selected: selected.clone(), inferred: false, oracle: false, fault: None, bytes, input, source });
+        }
+        (settings, config)
+    };
+    if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+    Ok(SqlProjectCapture { project: walk.project, settings_bytes: config, settings, hosts, cancellation: Arc::clone(cancellation), implicit })
+}
+
+/// Choose a dialect from the file's path and its own tokens. `None` means no
+/// signal; the owner then lets the native parsers decide. Never a guess that
+/// is hidden: such hosts are recorded as inferred.
+fn infer_sql_dialect(path: &str, bytes: &[u8]) -> Option<backend_library::sql_workspace::SqlDialect> {
+    use backend_library::sql_workspace::SqlDialect;
+    let lower_path = path.to_ascii_lowercase();
+    let head = &bytes[..bytes.len().min(256 * 1024)];
+    let text = String::from_utf8_lossy(head).to_ascii_lowercase();
+    const POSTGRES: &[&str] = &["$$", "::", "create extension", "plpgsql", " serial", "bigserial", "timestamptz",
+        "jsonb", "create schema", "returns ", "language sql", "set search_path", "create type", " uuid", "using gin",
+        "generated always as identity", "create or replace function", "create sequence", "materialized view"];
+    const SQLITE: &[&str] = &["pragma ", "autoincrement", "without rowid", "insert or replace", "insert or ignore",
+        "sqlite_", "create virtual table", "strict;"];
+    let pg = POSTGRES.iter().filter(|needle| text.contains(**needle)).count()
+        + usize::from(lower_path.contains("postgres") || lower_path.contains("pgsql") || lower_path.contains("psql"));
+    let lite = SQLITE.iter().filter(|needle| text.contains(**needle)).count()
+        + usize::from(lower_path.contains("sqlite"));
+    match (pg > 0, lite > 0) {
+        (true, false) => Some(SqlDialect::Postgres),
+        (false, true) => Some(SqlDialect::Sqlite),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod sql_dialect_tests {
+    #[test]
+    fn shared_upsert_syntax_does_not_select_postgres_or_poison_project_consensus() {
+        let upsert = b"INSERT INTO authors (id, name, country) VALUES (?1, ?2, ?3) ON CONFLICT (id) DO UPDATE SET name = excluded.name, country = excluded.country;";
+        assert_eq!(super::infer_sql_dialect("db/catalog.sql", upsert), None);
+        assert_eq!(super::infer_sql_dialect("db/catalog.sql", b"SELECT name FROM authors;"), None);
+        assert_eq!(super::infer_sql_dialect("db/analytics.sql", b"SELECT id::text FROM authors;"), Some(backend_library::sql_workspace::SqlDialect::Postgres));
+    }
+}
+
+/// Private same-walk Vue host capture. This capability does not authorize a
+/// workspace transition on its own; the owner must join the selected Project,
+/// exact predecessor, source/configuration basis and closure before publishing.
+pub(super) struct VueProjectCapture {
+    scan_identity: std::sync::Arc<()>,
+    project: [u8; 32],
+    basis: [u8; 32],
+    project_source_version: [u8; 32],
+    source_bytes_read: usize,
+    discovery: [u8; 32],
+    walk: VueWalkEvidence,
+    fence: CompilerRevisionFence,
+    rows: Vec<([u8; 32], backend_frontend_vue::VueInventoryRecord)>,
+}
+impl VueProjectCapture {
+    /// This is only a custody check; the owner must authenticate the selected root
+    /// and prove its staged project after-image came from this exact scan.
+    pub(super) fn belongs_to_scan(&self, scan: &IndexSnapshot, selected_root: &Path) -> bool {
+        std::sync::Arc::ptr_eq(&self.scan_identity, &scan.vue_scan_identity)
+            && self.walk.root == selected_root
+            && scan.vue_walk.root == selected_root
+            && self.project == scan.vue_walk.project
+            && self.project_source_version == scan.source_version
+    }
+    pub(super) fn project(&self) -> [u8; 32] {
+        self.project
+    }
+    pub(super) fn project_source_version(&self) -> [u8; 32] { self.project_source_version }
+    pub(super) fn walk_complete(&self) -> bool { self.walk.complete }
+    pub(super) fn source_bytes_read(&self) -> usize { self.source_bytes_read }
+    pub(super) fn rows(&self) -> &[([u8; 32], backend_frontend_vue::VueInventoryRecord)] {
+        &self.rows
+    }
+    /// Recheck exact host bytes and identities through the bound root before
+    /// an owner transition. Unavailable hosts cannot become complete negatives.
+    pub(super) fn verify(&self, cancellation: &AtomicBool) -> Result<(), String> {
+        use backend_frontend_vue::{ExecutionCheckpoint as _, VueInventoryRecord};
+        let budget = backend_frontend_vue::ProjectExecutionBudget::new(
+            std::time::Instant::now() + std::time::Duration::from_secs(10), cancellation, 5_000_000,
+        );
+        if !compiler_revision_is_current_with_cancellation(&self.fence, Some(cancellation))? {
+            return Err("Vue source fence changed".into());
+        }
+        let root = self.fence.open_bound_root(&self.fence.requested_root)?;
+        if vue_discovery_witness(&self.walk, &root, cancellation)? != self.discovery {
+            return Err("Vue discovery policy changed".into());
+        }
+        let mut verification_bytes = 0usize;
+        for (key, row) in &self.rows {
+            budget.checkpoint(1).map_err(|_| "Vue verification stopped")?;
+            if cancellation.load(Ordering::Acquire) {
+                return Err("Vue capture cancelled".into());
+            }
+            if row.key() != *key {
+                return Err("Vue row key differs".into());
+            }
+            if let VueInventoryRecord::Host(host) = row {
+                let (project, path) = host.owner();
+                if project != self.project {
+                    return Err("Vue host owner differs".into());
+                }
+                let bytes = root
+                    .read(Path::new(path), 1024 * 1024)
+                    .map_err(|_| "Vue host unavailable during revalidation")?;
+                verification_bytes = verification_bytes.checked_add(bytes.len()).ok_or("Vue verification work overflow")?;
+                if verification_bytes > 64 * 1024 * 1024 { return Err("Vue verification work limit".into()); }
+                host.verify_host_with_checkpoint(&bytes, *key, self.project, path, self.basis, &budget)?;
+            }
+        }
+        if !compiler_revision_is_current_with_cancellation(&self.fence, Some(cancellation))? {
+            return Err("Vue source changed during revalidation".into());
+        }
+        Ok(())
+    }
+}
+fn vue_discovery_witness(walk: &VueWalkEvidence, root: &ProjectRoot, cancellation: &AtomicBool) -> Result<[u8; 32], String> {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"nudox.vue-discovery.v1\0");
+    hash.update(&(walk.discovery_options.len() as u64).to_be_bytes());
+    hash.update(&walk.discovery_options);
+    hash.update(&walk.source_policy);
+    let mut charged = 0usize;
+    for path in &walk.local_policy_paths {
+        if cancellation.load(Ordering::Acquire) { return Err("Vue discovery cancelled".into()); }
+        let relative = path.strip_prefix(&walk.root).map_err(|_| "Vue policy escaped root")?;
+        let name = relative.to_str().ok_or("Vue policy path is not UTF-8")?;
+        let remaining = (16 * 1024 * 1024usize).saturating_sub(charged);
+        if remaining == 0 { return Err("Vue policy byte limit".into()); }
+        let bytes = root.read(relative, remaining.min(1024 * 1024)).map_err(|_| "Vue policy unavailable")?;
+        charged = charged.checked_add(bytes.len()).ok_or("Vue policy byte overflow")?;
+        hash.update(&(name.len() as u64).to_be_bytes()); hash.update(name.as_bytes());
+        hash.update(&(bytes.len() as u64).to_be_bytes()); hash.update(&bytes);
+    }
+    Ok(*hash.finalize().as_bytes())
+}
+
+/// Capture Vue candidates from the already-confined source walk. Read and
+/// parse failures are explicit host rows; the selection is always partial.
+pub(super) fn capture_vue_project(
+    scan: &IndexSnapshot,
+    cancellation: &AtomicBool,
+) -> Result<VueProjectCapture, String> {
+    use backend_frontend_vue::{
+        ExecutionCheckpoint as _, VueHostInventory, VueInventoryRecord, VueSourceError, VueUnavailable,
+    };
+    let budget = backend_frontend_vue::ProjectExecutionBudget::new(
+        std::time::Instant::now() + std::time::Duration::from_secs(10), cancellation, 5_000_000,
+    );
+    let walk = &scan.vue_walk;
+    let fence = walk.bind_fence(&scan.revision_fence)?;
+    if !compiler_revision_is_current_with_cancellation(&fence, Some(cancellation))? {
+        return Err("Vue source fence changed".into());
+    }
+    let root = fence.open_bound_root(&fence.requested_root)?;
+    let discovery = vue_discovery_witness(walk, &root, cancellation)?;
+    let mut digest = blake3::Hasher::new();
+    digest.update(b"nudox.vue-analysis-basis.v1\0");
+    digest.update(&backend_frontend_vue::support_fingerprint());
+    digest.update(&discovery);
+    let basis = *digest.finalize().as_bytes();
+    let limits = scan.source_admission_policy.limits();
+    let max_file = limits
+        .max_file_source_bytes
+        .min(limits.max_in_flight_source_bytes)
+        .min(1024 * 1024);
+    let mut remaining = limits
+        .max_project_source_bytes
+        .saturating_sub(scan.stylo_budget_baseline.source_bytes)
+        .min(64 * 1024 * 1024);
+    let mut work = 0usize;
+    let mut unavailable = 0u32;
+    let mut rows = Vec::with_capacity(walk.files.len().saturating_add(1));
+    for file in &walk.files {
+        budget.checkpoint(1).map_err(|_| "Vue capture stopped")?;
+        if cancellation.load(Ordering::Acquire) {
+            return Err("Vue capture cancelled".into());
+        }
+        let path = file
+            .relative_path
+            .to_str()
+            .ok_or("Vue path is not UTF-8")?
+            .replace(std::path::MAIN_SEPARATOR, "/");
+        let read = match read_stylo_bounded(
+            &root, &file.relative_path, max_file, &mut remaining, &mut work,
+        ) {
+            Ok(bytes) => Ok(bytes),
+            Err(SourceFault::Fatal(message)) => return Err(message),
+            Err(SourceFault::Unavailable(SourceUnavailableReason::TooLarge))
+            | Err(SourceFault::UnavailableRead(SourceUnavailableReason::TooLarge, _)) => Err(VueUnavailable::Limit),
+            Err(_) => Err(VueUnavailable::Read),
+        };
+        let result = read.and_then(|bytes| {
+            let parsed = backend_frontend_vue::parse(&bytes).map_err(|error| match error {
+                VueSourceError::NonUtf8 => VueUnavailable::InvalidUtf8,
+                VueSourceError::SourceLimit | VueSourceError::WorkLimit => VueUnavailable::Limit,
+                _ => VueUnavailable::Parser,
+            })?;
+            VueHostInventory::capture_with_checkpoint(walk.project, &path, basis, &parsed, &budget)
+                .map_err(|_| VueUnavailable::Limit)
+        });
+        budget.checkpoint(1).map_err(|_| "Vue capture stopped")?;
+        let row = match result {
+            Ok(host) => VueInventoryRecord::Host(host),
+            Err(reason) => {
+                unavailable = unavailable
+                    .checked_add(1)
+                    .ok_or("Vue unavailable count overflow")?;
+                VueInventoryRecord::Unavailable {
+                    project: walk.project,
+                    path,
+                    reason,
+                }
+            }
+        };
+        rows.push((row.key(), row));
+    }
+    let mut paths = walk.files.iter().map(|file| file.relative_path.to_str().map(|path| path.replace(std::path::MAIN_SEPARATOR, "/")).ok_or("Vue path is not UTF-8")).collect::<Result<Vec<_>, _>>()?;
+    paths.sort();
+    let inventory_digest = backend_frontend_vue::vue_path_inventory_digest(&paths)?;
+    let selection = VueInventoryRecord::Selection {
+        project: walk.project,
+        source_root: walk.root.to_str().ok_or("Vue root is not UTF-8")?.to_owned(),
+        basis,
+        producer: backend_frontend_vue::support_fingerprint(),
+        discovered: u32::try_from(walk.files.len()).map_err(|_| "Vue selection overflow")?,
+        inventory_digest,
+        unavailable,
+        walk_truncated: !walk.complete,
+    };
+    rows.push((selection.key(), selection));
+    rows.sort_unstable_by_key(|(key, _)| *key);
+    backend_engine::builtin::validate_vue_inventory_rows(&rows)?;
+    if !compiler_revision_is_current_with_cancellation(&fence, Some(cancellation))? {
+        return Err("Vue source changed during capture".into());
+    }
+    Ok(VueProjectCapture {
+        scan_identity: std::sync::Arc::clone(&scan.vue_scan_identity),
+        project: walk.project,
+        basis,
+        project_source_version: scan.source_version,
+        source_bytes_read: work,
+        discovery,
+        walk: walk.clone(),
+        fence,
+        rows,
+    })
+}
+
+#[cfg(test)]
+mod vue_same_walk_tests {
+    use super::*;
+    use backend_frontend_vue::VueInventoryRecord;
+    use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn same_walk_vue_capture_rejects_add_edit_and_delete() -> Result<(), String> {
+        let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        fs::create_dir_all(temp.path().join("src")).map_err(|e| e.to_string())?;
+        let path = temp.path().join("src/Card.vue");
+        fs::write(&path, "\u{feff}<!-- π🚀 -->\r\n<script setup lang='ts'>const café = 1;</script>").map_err(|e| e.to_string())?;
+        let root = temp.path().to_str().ok_or("non-UTF8 scratch")?;
+        let scan = scan_project(root, [7;32], &BTreeMap::new())?;
+        let cancellation = AtomicBool::new(false);
+        let capture = capture_vue_project(&scan, &cancellation)?;
+        assert_eq!(capture.rows().len(), 2);
+        assert!(capture.rows().iter().any(|(_, row)| matches!(row, VueInventoryRecord::Host(_))));
+        capture.verify(&cancellation)?;
+        assert!(capture.belongs_to_scan(&scan, &scan.vue_walk.root));
+        let other = tempfile::tempdir().map_err(|e| e.to_string())?;
+        fs::create_dir_all(other.path().join("src")).map_err(|e| e.to_string())?;
+        fs::copy(&path, other.path().join("src/Card.vue")).map_err(|e| e.to_string())?;
+        let other_root = other.path().to_str().ok_or("non-UTF8 scratch")?;
+        let other_scan = scan_project(other_root, [7;32], &BTreeMap::new())?;
+        assert_eq!(scan.source_version, other_scan.source_version);
+        assert!(!capture.belongs_to_scan(&other_scan, &other_scan.vue_walk.root));
+        assert!(!capture.belongs_to_scan(&scan, &other_scan.vue_walk.root));
+        let added = temp.path().join("src/New.vue");
+        fs::write(&added, "<script>const added = 1;</script>").map_err(|e| e.to_string())?;
+        assert!(capture.verify(&cancellation).is_err());
+        fs::remove_file(&added).map_err(|e| e.to_string())?;
+        let scan = scan_project(root, [7;32], &BTreeMap::new())?;
+        let capture = capture_vue_project(&scan, &cancellation)?;
+        capture.verify(&cancellation)?;
+        fs::write(&path, "<script>const edited = 2;</script>").map_err(|e| e.to_string())?;
+        assert!(capture.verify(&cancellation).is_err());
+        fs::remove_file(path).map_err(|e| e.to_string())?;
+        assert!(capture.verify(&cancellation).is_err());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod vue_stylo_region_tests {
+    use backend_compile::VerifiedSourceText;
+    use backend_frontend_stylo::worker_protocol::{decode_fragment_response, encode_fragment_request, serve};
+    use backend_semantic::stylo_analysis::{StyloLimits, StyloParseConfig, StyloSourceKind};
+
+    #[test]
+    fn vue_plain_css_flows_through_fragment_worker_with_host_offsets() {
+        let text = "\u{feff}<!-- π🚀 -->\r\n<template><p>hello</p></template>\r\n<style scoped>\u{feff} {} .card { --brand: red; }</style>\r\n<style lang='scss'>.skip { @include mix; }</style>";
+        let vue = backend_frontend_vue::parse(text.as_bytes()).unwrap();
+        let css = vue.inline_css(1).unwrap();
+        assert!(vue.inline_css(2).is_err());
+        let source = VerifiedSourceText::capture(text.as_bytes()).unwrap();
+        let host = source.extent(0..text.len()).unwrap();
+        let range = css.byte_range();
+        let config = StyloParseConfig {
+            source_kind: StyloSourceKind::EmbeddedUnicodeFragment,
+            base_url: "https://example.invalid/src/Card.vue".into(), author_origin: true,
+            no_quirks: true, allow_imports: false,
+            limits: StyloLimits { input_bytes: 4096, rules: 128, depth: 16, records: 256, diagnostics: 32, text_bytes: 65_536 },
+        };
+        let request = encode_fragment_request(&host, range.clone(), &config).unwrap();
+        let mut response = Vec::new();
+        serve(request.as_slice(), &mut response).unwrap();
+        let analysis = decode_fragment_response(&response, &host, range, &config, backend_frontend_stylo::support_fingerprint()).unwrap();
+        assert!(!analysis.analysis().utf8_bom_removed);
+        let i = analysis.analysis().occurrences.iter().position(|o| o.raw == "card").unwrap();
+        let site = analysis.host_occurrence(i).unwrap();
+        assert_eq!(&text[site.byte_range()], "card");
+        assert_eq!(site.source(), vue.host().source());
+    }
+}
+
+/// Revalidates a selected line claim against confined exact host bytes.
+/// The source buffer is charged to the caller's operation ledger and does not escape.
+#[cfg(unix)]
+pub(super) fn native_line_map_matches_host(
+    root: &Path,
+    evidence: &backend_engine::builtin::NativeSourceEvidence,
+    source: backend_semantic::ir::SourceIdentity,
+    lines: backend_semantic::native_source_lines::NativeSourceLineFileView<'_>,
+    budget: &mut backend_extension_turso::SelectedNativeHeaderBudget,
+    stopped: &dyn Fn() -> bool,
+) -> Result<bool, String> {
+    use backend_version::Schema as _;
+    use rustix::fs::{Mode, OFlags, open, openat};
+    use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
+    if evidence.validate().is_err() || !evidence.admits_image() || evidence.path != lines.path
+        || source != lines.source || evidence.byte_length != source.byte_len
+        || evidence.source_digest.as_slice() != source.identity.as_ref() { return Ok(false); }
+    let expected = source.byte_len as usize;
+    SourceAdmissionPolicy::from_environment().map_err(|e| format!("native line source policy: {e}"))?
+        .admit_actual_file(expected).map_err(|e| format!("native line source bound: {e:?}"))?;
+    budget.checkpoint(1, stopped).map_err(|e| format!("native line source stopped: {e:?}"))?;
+    if !root.is_absolute() { return Ok(false); }
+    let root_name = std::ffi::CStr::from_bytes_with_nul(b"/\0").map_err(|_| "invalid native line root")?;
+    let mut directory = match open(root_name, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map(fs::File::from) {
+        Ok(directory) => directory, Err(_) => return Ok(false),
+    };
+    for part in root.components() {
+        budget.checkpoint(1, stopped).map_err(|e| format!("native line source stopped: {e:?}"))?;
+        let name = match part { std::path::Component::RootDir => continue, std::path::Component::Normal(name) => name, _ => return Ok(false) };
+        let component = name.as_bytes();
+        if component.is_empty() || component.len() > 4096 || component.contains(&0) { return Ok(false); }
+        let mut name_buffer = [0u8; 4097];
+        name_buffer[..component.len()].copy_from_slice(component);
+        let name = std::ffi::CStr::from_bytes_with_nul(&name_buffer[..=component.len()]).map_err(|_| "invalid native line root")?;
+        directory = match openat(&directory, name, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map(fs::File::from) {
+            Ok(directory) => directory, Err(_) => return Ok(false),
+        };
+    }
+    let mut components = Path::new(&evidence.path).components().peekable();
+    let mut file = loop {
+        budget.checkpoint(1, stopped).map_err(|e| format!("native line source stopped: {e:?}"))?;
+        let Some(std::path::Component::Normal(name)) = components.next() else { return Ok(false) };
+        let component = name.as_bytes();
+        if component.is_empty() || component.len() > 4096 || component.contains(&0) { return Ok(false); }
+        let mut name_buffer = [0u8; 4097];
+        name_buffer[..component.len()].copy_from_slice(component);
+        let name = std::ffi::CStr::from_bytes_with_nul(&name_buffer[..=component.len()]).map_err(|_| "invalid native line path")?;
+        let last = components.peek().is_none();
+        let flags = if last { OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC }
+            else { OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC };
+        let opened = match openat(&directory, name, flags, Mode::empty()).map(fs::File::from) { Ok(file) => file, Err(_) => return Ok(false) };
+        if last { break opened; }
+        directory = opened;
+    };
+    let metadata = match file.metadata() { Ok(value) => value, Err(_) => return Ok(false) };
+    if !metadata.is_file() || metadata.len() != expected as u64 { return Ok(false); }
+    budget.reserve_retained(expected).map_err(|e| format!("native line source budget: {e:?}"))?;
+    let mut bytes = backend_store::try_allocate_exact_zeroed_bytes(expected).map_err(|e| format!("native line source allocation: {e:?}"))?;
+    let schema = backend_version::SchemaIdentity::new(backend_compile::InputContentSchema::DOMAIN, backend_compile::InputContentSchema::TYPE, backend_compile::InputContentSchema::VERSION);
+    let encoded_len = expected.checked_add(8).ok_or("native input length overflow")?;
+    let mut input = backend_version::ObjectVersionHasher::new(schema, encoded_len).map_err(|e| format!("native input hash: {e:?}"))?;
+    input.update(&(expected as u64).to_be_bytes()).map_err(|e| format!("native input hash: {e:?}"))?;
+    let mut at = 0usize;
+    while at < expected {
+        budget.checkpoint(1, stopped).map_err(|e| format!("native line source stopped: {e:?}"))?;
+        let end = at.saturating_add(64 * 1024).min(expected);
+        match file.read(&mut bytes[at..end]) {
+            Ok(0) => return Ok(false),
+            Ok(n) => { input.update(&bytes[at..at + n]).map_err(|e| format!("native input hash: {e:?}"))?; at += n; },
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return Ok(false),
+        }
+    }
+    budget.checkpoint(1, stopped).map_err(|e| format!("native line source stopped: {e:?}"))?;
+    let mut extra = [0u8; 1];
+    loop {
+        match file.read(&mut extra) {
+            Ok(0) => break,
+            Ok(_) => return Ok(false),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => { budget.checkpoint(1, stopped).map_err(|e| format!("native line source stopped: {e:?}"))?; },
+            Err(_) => return Ok(false),
+        }
+    }
+    let after = match file.metadata() { Ok(value) => value, Err(_) => return Ok(false) };
+    if metadata.dev() != after.dev() || metadata.ino() != after.ino() || metadata.len() != after.len()
+        || metadata.mtime() != after.mtime() || metadata.mtime_nsec() != after.mtime_nsec()
+        || metadata.ctime() != after.ctime() || metadata.ctime_nsec() != after.ctime_nsec() { return Ok(false); }
+    if input.finish().map_err(|e| format!("native input hash: {e:?}"))? != evidence.input_digest { return Ok(false); }
+    lines.matches_source(&bytes, &mut |_| budget.checkpoint(1, stopped).map_err(|e| format!("native line verification stopped: {e:?}")))
+}
+
+#[cfg(not(unix))]
+pub(super) fn native_line_map_matches_host(
+    _root: &Path, _evidence: &backend_engine::builtin::NativeSourceEvidence,
+    _source: backend_semantic::ir::SourceIdentity,
+    _lines: backend_semantic::native_source_lines::NativeSourceLineFileView<'_>,
+    _budget: &mut backend_extension_turso::SelectedNativeHeaderBudget,
+    _stopped: &dyn Fn() -> bool,
+) -> Result<bool, String> { Ok(false) }
