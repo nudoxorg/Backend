@@ -91,6 +91,13 @@ impl SemanticTally {
         match record {
             ProductSemanticPublicationRecord::Published { coverage, .. } => {
                 self.published = self.published.checked_add(1).ok_or_else(count_overflow)?;
+                // No selected C# publication currently carries an authenticated
+                // compiler-input/generator closure. Source-mode results remain
+                // useful, but cannot certify the full semantic scope. Replace
+                // this conservative gap only when such a receipt is admitted.
+                if matches!(key.profile(), backend_semantic::vocabulary::LanguageProfile::CSharp(_)) {
+                    self.gapped = true;
+                }
                 if matches!(coverage, SemanticPublicationCoverage::Partial(_)) {
                     // Every published artifact is complete; the authority
                     // checked only part of the declared scope. Readable and
@@ -105,6 +112,26 @@ impl SemanticTally {
             ProductSemanticPublicationRecord::Unavailable(reason) => self.retain_terminal(*reason),
         }
         Ok(())
+    }
+
+    /// Selected native file observations do not establish an exhaustive
+    /// discovery inventory or stable ambient ignore policy.
+    fn qualify_observed_native(
+        &mut self,
+        key: &ProductSemanticPublicationKey,
+        record: &ProductSemanticPublicationRecord,
+        activated: &ActivatedProfiles,
+        observed_owners: &BTreeSet<[u8; 32]>,
+        project_present: bool,
+    ) {
+        if project_present && key.is_selected()
+            && matches!(key.profile(), backend_semantic::vocabulary::LanguageProfile::TypeScript(_))
+            && matches!(record, ProductSemanticPublicationRecord::Published { .. })
+            && activated.contains(&(key.package_key(), key.profile()))
+            && observed_owners.contains(key.package_key().as_bytes())
+        {
+            self.gapped = true;
+        }
     }
 
     /// Folds a capture when no separately proved current retained selection applies.
@@ -204,9 +231,9 @@ impl SemanticTally {
             }
         }
         if let Some(capture) = capture
-            && cancelled_selection_is_current(source, key, selected, capture, generations)?
+            && retained_selection_is_current(source, key, selected, capture, generations)?
         {
-            // The cancelled attempt selected nothing new. Its exact current
+            // The in-flight or cancelled attempt selected nothing new. Its exact current
             // retained publication is still what reads serve, with its own
             // complete/partial coverage and activation status. Cancellation
             // remains in the capture/operation receipt, not this served lane.
@@ -244,8 +271,8 @@ impl SemanticTally {
     /// 1. Work still moving (a pending capture, or a publication awaiting
     ///    activation) reads as the exact fraction. A reader may wait.
     /// 2. Once everything settled, a readable publication stands for the
-    ///    lane. Source gaps, or a profile refused while another published,
-    ///    make it `Gapped`: usable, and nothing further will change it.
+    ///    lane. Source gaps, unproven compiler-input closure, or a profile
+    ///    refused while another published make it `Gapped`.
     /// 3. With no readable publication, a refused or stale scope is
     ///    `Unavailable`.
     /// 4. With no native refusal, the observed compiler scope is complete.
@@ -338,23 +365,27 @@ pub(super) fn capture_matches_source(
         .is_some_and(|project| &project.source_version == capture.capture().source_version()))
 }
 
-/// Cancellation describes an attempt, not the freshness of a retained image.
+/// Pending work and cancellation describe an attempt, not the freshness of a retained image.
 /// Both the package frontier and the native selected compiler-input proof must
 /// agree with that attempt's capture before the selected coverage can stand in
 /// for the served lane. Neither a prior claim nor process activation proves it.
-fn cancelled_selection_is_current(
+pub(super) fn retained_selection_is_current(
     source: &backend_engine::WorkspaceRelationHandle<super::BuiltinWorkspaceRelation>,
     key: &ProductSemanticPublicationKey,
     selected: Option<&ProductSemanticPublicationRecord>,
     capture: &ProductSemanticCaptureRecord,
     generations: &super::generation_residence::SemanticGenerationResidence,
 ) -> Result<bool, BuiltinModelError> {
-    let ProductSemanticCaptureOutcome::Failed {
-        prior,
-        reason: SemanticUnavailableReason::Cancelled,
-    } = capture.outcome()
-    else {
+    if !key.is_selected() {
         return Ok(false);
+    }
+    let prior = match capture.outcome() {
+        ProductSemanticCaptureOutcome::Pending { prior: Some(prior) }
+        | ProductSemanticCaptureOutcome::Failed {
+            prior,
+            reason: SemanticUnavailableReason::Cancelled,
+        } => prior,
+        _ => return Ok(false),
     };
     let Some(ProductSemanticPublicationRecord::Published { coverage, claim }) = selected else {
         return Ok(false);
@@ -395,7 +426,7 @@ fn captured_package_state(
     selected: Option<&ProductSemanticPublicationRecord>,
     generations: &super::generation_residence::SemanticGenerationResidence,
 ) -> Result<backend_engine::RowState, BuiltinModelError> {
-    Ok(if cancelled_selection_is_current(source, key, selected, capture, generations)? {
+    Ok(if retained_selection_is_current(source, key, selected, capture, generations)? {
         backend_engine::RowState::Ready
     } else if capture_matches_source(source, key, capture)? {
         capture_row_state(capture.outcome())
@@ -657,6 +688,13 @@ pub(super) fn view_coverage(
     let source = snapshot
         .relation::<super::BuiltinWorkspaceRelation>()
         .map_err(|error| BuiltinModelError(error.to_string()))?;
+    let mut evidence_budget = super::MAX_REBUILD_BYTES;
+    let observed_owners = backend_engine::builtin::native_source_evidence_relation_budgeted(snapshot, &mut evidence_budget)
+        .map_err(|error| BuiltinModelError(error.to_string()))?
+        .as_ref()
+        .map(|relation| super::view_build::selected_nse_typescript_owners(relation, &mut evidence_budget))
+        .transpose()?
+        .unwrap_or_default();
     let mut tally = SemanticTally::default();
     let mut after = None;
     loop {
@@ -673,6 +711,12 @@ pub(super) fn view_coverage(
                 .transpose()
                 .map_err(|error| BuiltinModelError(error.to_string()))?
                 .flatten();
+            let project_present = if observed_owners.contains(key.package_key().as_bytes()) {
+                source.lookup(&key.package_key().to_bytes())
+                    .map_err(|error| BuiltinModelError(format!("read native coverage project: {error}")))?
+                    .as_ref().and_then(|record| record.project_fields()).is_some()
+            } else { false };
+            tally.qualify_observed_native(key, record, activated, &observed_owners, project_present);
             tally.observe_scoped(
                 key,
                 Some(record),
@@ -719,7 +763,56 @@ pub(super) fn view_coverage(
             after = Some(next);
         }
     }
-    Ok(tally.coverage())
+    let mut coverage = tally.coverage();
+    if let Some(sql) = backend_engine::builtin::sql_analysis_preflight_relation(snapshot)
+        .map_err(|error| BuiltinModelError(error.to_string()))? {
+        let mut after = None;
+        // Requested-layout quota; the per-allocation allowance is not an RSS
+        // or allocator-overhead bound.
+        let prior = coverage.capacity().checked_mul(std::mem::size_of::<ViewCoverage>())
+            .and_then(|n| n.checked_add(if coverage.capacity() == 0 { 0 } else { 64 }))
+            .ok_or_else(|| BuiltinModelError("SQL coverage quota overflow".into()))?;
+        let mut remaining = super::MAX_REBUILD_BYTES.checked_sub(prior)
+            .ok_or_else(|| BuiltinModelError("SQL coverage quota exhausted".into()))?;
+        let mut rows = 0usize;
+        loop {
+            let next = backend_engine::builtin::sql_visit_preflighted(
+                &sql, after.as_ref(), 64, &mut remaining, 64,
+                &mut |_, row, budget| {
+                rows = rows.checked_add(1).ok_or(backend_store::StoreError::Bounds)?;
+                if rows > 262_144 { return Err(backend_store::StoreError::Bounds); }
+                let sql_incomplete = sql_row_incomplete(&row);
+                if sql_incomplete && !coverage.contains(&ViewCoverage::Gapped { lane: Lane::Names }) {
+                    if coverage.len() == coverage.capacity() {
+                        let requested = coverage.len().checked_add(1)
+                            .and_then(|n| n.checked_mul(std::mem::size_of::<ViewCoverage>()))
+                            .and_then(|n| n.checked_add(64)).ok_or(backend_store::StoreError::Bounds)?;
+                        *budget = budget.checked_sub(requested).ok_or(backend_store::StoreError::Bounds)?;
+                        coverage.try_reserve_exact(1).map_err(|_| backend_store::StoreError::Bounds)?;
+                    }
+                    coverage.push(ViewCoverage::Gapped { lane: Lane::Names });
+                }
+                Ok(())
+            }).map_err(|error| BuiltinModelError(error.to_string()))?;
+            match next {
+                Some(next) if after.is_none_or(|previous| previous < next) => after = Some(next),
+                Some(_) => return Err(BuiltinModelError("SQL coverage cursor did not advance".into())),
+                None => break,
+            }
+        }
+    }
+    Ok(coverage)
+}
+
+fn sql_row_incomplete(row: &backend_engine::builtin::SqlAnalysisRecord) -> bool {
+    match row {
+        backend_engine::builtin::SqlAnalysisRecord::Selection { inventory, gaps, .. } =>
+            !matches!(inventory, backend_engine::builtin::SqlInventory::Complete)
+                || *gaps != Default::default(),
+        backend_engine::builtin::SqlAnalysisRecord::Attempt { outcome, .. } =>
+            !matches!(outcome, backend_engine::builtin::SqlAttemptOutcome::Observed),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
