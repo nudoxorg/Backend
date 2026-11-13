@@ -1,7 +1,7 @@
 //! Small queue transport over exact typed CAS evidence.
 
 use super::profile::{BuiltinIntent, BuiltinIntentSchema, BuiltinModel, BuiltinModelError};
-use super::staged_intent::{self, EvidenceKind, StageAdmission, StageBasis, StagePool};
+use super::staged_intent::{self, EvidenceKind, StageAdmission, StageBasis, StagePool, StagePools};
 use backend_engine::{WorkspaceModel, WorkspaceSnapshot};
 use backend_store::{
     ArtifactBudget, ArtifactClosureClaim, ClosureCompositionBudget, DurableClosureManifest,
@@ -89,16 +89,19 @@ fn budgets(
     ))
 }
 
-fn pool() -> Result<StagePool, StoreError> {
-    static POOL: OnceLock<StagePool> = OnceLock::new();
+fn pool(store: &FileStore) -> Result<StagePool, StoreError> {
+    static POOLS: OnceLock<StagePools> = OnceLock::new();
     let (bytes, pages) = configured_limits()?;
     // Include the bounded queued-page payload before admitting a live stage.
     // Source/page/live-stage limits are unchanged; this is a conservative
     // metadata reservation, shared with the writer's own admission check.
     let metadata = StagePool::metadata_required(pages.checked_add(256).ok_or(StoreError::Bounds)?)?;
     let total = bytes.checked_mul(4).ok_or(StoreError::Bounds)?;
-    let shared = POOL.get_or_init(|| StagePool::new(4, total, pages, metadata));
-    Ok(shared.with_limits(4, total, pages, metadata))
+    // The live-stage ledger is process-wide per store: concurrent owners of
+    // different stores in one process do not compete for each other's slots.
+    POOLS
+        .get_or_init(StagePools::default)
+        .for_store(store, 4, total, pages, metadata)
 }
 
 fn basis(snapshot: &WorkspaceSnapshot, request: [u8; 32]) -> StageBasis {
@@ -270,16 +273,64 @@ impl RawSourceAdmission {
 }
 
 pub(super) fn stage(
-    mut intent: BuiltinIntent,
+    intent: BuiltinIntent,
     snapshot: &WorkspaceSnapshot,
     source_root: Option<&Path>,
     cancellation: Arc<AtomicBool>,
 ) -> Result<BuiltinIntent, BuiltinModelError> {
+    stage_inner(intent, snapshot, source_root, cancellation, false, None)
+}
+
+/// Owner-worker staging with the single already-bound receipt authority.
+pub(super) fn stage_with_owner(
+    intent: BuiltinIntent,
+    snapshot: &WorkspaceSnapshot,
+    source_root: Option<&Path>,
+    cancellation: Arc<AtomicBool>,
+    owner: Option<&super::owner_receipt_context::OwnerReceiptContext>,
+) -> Result<BuiltinIntent, BuiltinModelError> {
+    stage_inner(intent, snapshot, source_root, cancellation, false, owner)
+}
+
+#[cfg(test)]
+pub(super) fn stage_for_test(
+    intent: BuiltinIntent,
+    snapshot: &WorkspaceSnapshot,
+    source_root: Option<&Path>,
+    cancellation: Arc<AtomicBool>,
+) -> Result<BuiltinIntent, BuiltinModelError> {
+    stage_inner(intent, snapshot, source_root, cancellation, true, None)
+}
+
+fn stage_inner(
+    mut intent: BuiltinIntent,
+    snapshot: &WorkspaceSnapshot,
+    source_root: Option<&Path>,
+    cancellation: Arc<AtomicBool>,
+    force: bool,
+    owner: Option<&super::owner_receipt_context::OwnerReceiptContext>,
+) -> Result<BuiltinIntent, BuiltinModelError> {
+    intent.validate_native_stage_cancellation(&cancellation)?;
+    intent.validate_csharp_stage_custody(snapshot, &cancellation)?;
     if intent.staged().is_some() {
         return Ok(intent);
     }
     let (bytes, source_end) = intent.staging_parts();
-    if bytes.len() <= QUEUE_STAGE_THRESHOLD && snapshot.closure().stored_membership().is_none() {
+    // Every later workspace transaction must preserve already selected SQL
+    // receipt members, even when its own intent is an older non-SQL version.
+    let has_sql_base = backend_engine::builtin::sql_analysis_relation(snapshot)
+        .map_err(|e| BuiltinModelError(format!("open SQL staging basis: {e}")))?.is_some();
+    let has_receipt_base = backend_engine::builtin::sql_receipt_index_relation(snapshot)
+        .map_err(|e| BuiltinModelError(format!("open SQL receipt staging basis: {e}")))?.is_some();
+    let needs_receipt_custody = intent.requires_v14_worker() || has_sql_base || has_receipt_base;
+    if needs_receipt_custody && owner.is_none() {
+        return Err(BuiltinModelError("SQL receipt custody requires the publication worker".into()));
+    }
+    if !force
+        && !needs_receipt_custody
+        && bytes.len() <= QUEUE_STAGE_THRESHOLD
+        && snapshot.closure().stored_membership().is_none()
+    {
         return Ok(intent);
     }
     let (maximum_bytes, maximum_pages) =
@@ -294,7 +345,7 @@ pub(super) fn stage(
     })?;
     let request = ObjectVersion::<BuiltinIntentSchema>::from_value(&bytes).to_bytes();
     let bound = basis(snapshot, request);
-    let mut writer = pool()
+    let mut writer = pool(store)
         .map_err(|e| error("stage pool", e))?
         .begin(store, bound, maximum_bytes)
         .map_err(|e| error("admit staged intent", e))?;
@@ -342,6 +393,15 @@ pub(super) fn stage(
         DurableClosureManifest::from_pinned(store, receipt, base_budget)
             .map_err(|e| error("lease exact staged base membership", e))?
     };
+    if needs_receipt_custody {
+        let owner = owner.ok_or_else(|| BuiltinModelError("SQL receipt staging owner unavailable".into()))?;
+        let excluded = intent.replaces_sql_project().then_some(intent.package.to_bytes());
+        let retained = super::sql_receipt_index::collect_retained_receipts(snapshot, owner, excluded, cancellation.as_ref())?;
+        for receipt in &retained {
+            cancelled(&cancellation).map_err(|e| error("SQL receipt staging cancelled", e))?;
+            writer.retain_sql_receipt(receipt, &base_membership).map_err(|e| error("stage retained SQL receipt", e))?;
+        }
+    }
     writer
         .append(
             EvidenceKind::SourceRows,
@@ -467,6 +527,78 @@ pub(super) fn stage(
     Ok(intent)
 }
 
+/// Authenticate the staged set and require the candidate to be exactly its
+/// union with the control frontier, allowing exact identity overlap.
+pub(super) fn validate_staged_membership_union(
+    store: &FileStore,
+    manifest_id: ObjectId,
+    basis: StageBasis,
+    cancelled: &AtomicBool,
+    membership: &DurableClosureManifest,
+    controls: &backend_store::ClosureManifest,
+) -> Result<(), BuiltinModelError> {
+        let manifest = store
+            .read_object(manifest_id)
+            .map_err(|e| error("read exact staged manifest", e))?;
+        let staged_count = staged_intent::staged_member_count(&manifest)
+            .map_err(|e| error("stage member count", e))?;
+        let (pages, payload) = staged_intent::staged_scope_limits(&manifest)
+            .map_err(|e| error("staged union scope", e))?;
+        let (artifact_budget, _) =
+            budgets(pages, payload).map_err(|e| error("staged union budgets", e))?;
+        // Reauthenticate the manifest's exact members against the candidate
+        // closure. Reopen may already include control objects, so the closure's
+        // full membership alone cannot identify the staged subset.
+        let staged_ids = staged_intent::visit_staged_scope_ids(
+            store,
+            manifest_id,
+            membership.id(),
+            basis,
+            artifact_budget,
+            Some(staged_count),
+            Some(cancelled),
+            |_, _| Ok(()),
+        )
+        .map_err(|e| error("authenticate staged union members", e))?;
+        let mut count = u64::try_from(staged_ids.len())
+            .map_err(|_| error("staged union count", StoreError::Bounds))?;
+        for object in controls.objects() {
+            if object.schema().domain() == 0x96
+                && matches!(object.schema().ty(), 10..=14)
+                && object.id() != manifest_id
+            {
+                return Err(BuiltinModelError(
+                    "staged page entered typed control frontier".to_owned(),
+                ));
+            }
+            if !membership
+                .contains(object.id())
+                .map_err(|e| error("control membership", e))?
+            {
+                return Err(error(
+                    "control object missing from staged union",
+                    StoreError::Corrupt,
+                ));
+            }
+            if !staged_ids.contains(&object.id()) {
+                count = count
+                    .checked_add(1)
+                    .ok_or_else(|| error("staged union count", StoreError::Bounds))?;
+            }
+        }
+        if membership.object_count() != count {
+            return Err(BuiltinModelError(format!(
+                "selected membership is not exact union of controls and staged evidence: \
+                 membership {} objects, expected {} (controls {}, staged members {})",
+                membership.object_count(),
+                count,
+                controls.objects().len(),
+                staged_count,
+            )));
+        }
+        Ok(())
+}
+
 impl StagedIntent {
     pub(super) fn validate_control_union(
         &self,
@@ -480,40 +612,7 @@ impl StagedIntent {
         membership: &DurableClosureManifest,
         controls: &backend_store::ClosureManifest,
     ) -> Result<(), BuiltinModelError> {
-        let manifest = self
-            .store
-            .read_object(self.manifest)
-            .map_err(|e| error("read exact staged manifest", e))?;
-        let mut count = staged_intent::staged_member_count(&manifest)
-            .map_err(|e| error("stage member count", e))?;
-        for object in controls.objects() {
-            if object.id() == self.manifest {
-                continue;
-            }
-            if object.schema().domain() == 0x96 && matches!(object.schema().ty(), 10..=13) {
-                return Err(BuiltinModelError(
-                    "staged page entered typed control frontier".to_owned(),
-                ));
-            }
-            count = count
-                .checked_add(1)
-                .ok_or_else(|| error("staged union count", StoreError::Bounds))?;
-            if !membership
-                .contains(object.id())
-                .map_err(|e| error("control membership", e))?
-            {
-                return Err(error(
-                    "control object missing from staged union",
-                    StoreError::Corrupt,
-                ));
-            }
-        }
-        if membership.object_count() != count {
-            return Err(BuiltinModelError(
-                "selected membership is not exact union of controls and staged evidence".to_owned(),
-            ));
-        }
-        Ok(())
+        validate_staged_membership_union(&self.store, self.manifest, self.basis, self.cancelled.as_ref(), membership, controls)
     }
     pub(super) fn decode(
         bytes: &[u8],
@@ -594,6 +693,9 @@ impl StagedIntent {
         }
         bytes
     }
+    pub(super) fn matches_cancellation(&self, cancellation: &Arc<AtomicBool>) -> bool {
+        Arc::ptr_eq(&self.cancelled, cancellation)
+    }
     pub(super) fn hydrate(
         &self,
         expected: Option<&WorkspaceSnapshot>,
@@ -618,6 +720,7 @@ impl StagedIntent {
             self.basis,
             artifact_budget,
             None,
+            Some(self.cancelled.as_ref()),
             |kind, payload| {
                 cancelled(&self.cancelled)?;
                 if kind == EvidenceKind::RawSource {
