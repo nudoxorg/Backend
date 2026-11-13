@@ -188,7 +188,9 @@ fn decode_reply_body_with(
     {
         decode_certificate(bytes)
     } else {
-        serde_json::from_value(value).map_err(|error| error.to_string())
+        // Decode the original envelope so duplicate correlation fields cannot
+        // be collapsed by serde_json::Value before the strict DTO sees them.
+        serde_json::from_slice(bytes).map_err(|error| error.to_string())
     }
 }
 
@@ -209,6 +211,23 @@ pub fn decode_reply_body_with_verifier<V: ProducerObservationVerifier>(
     decode_reply_body_with(bytes, |bytes| {
         ReplyDto::decode_with_verifier(bytes, verifier)
     })
+}
+
+/// Decode a policy-bearing reply on an authenticated local owner channel.
+/// The carried policy remains an observation, never compiler authority.
+/// # Errors
+/// Returns an error for invalid framing, identities, channel, or claim.
+#[cfg(any(unix, windows))]
+pub fn decode_reply_body_with_local_source_policy(
+    bytes: &[u8], channel: &backend_replication::AuthenticatedLocalPeer,
+) -> Result<ReplyDto, String> {
+    let envelope: super::reply::ReplyEnvelope = parse_reply_body(bytes)?;
+    if envelope.certificate.is_none()
+        && matches!(envelope.reply, super::reply::ReplyWire::Surface(crate::SurfaceReply::Read(_) | crate::SurfaceReply::References { .. }))
+    {
+        return ReplyDto::decode_with_local_source_policy(bytes, channel);
+    }
+    decode_reply_body_with(bytes, |body| ReplyDto::decode_with_local_source_policy(body, channel))
 }
 
 #[cfg(test)]
@@ -282,8 +301,55 @@ mod tests {
     }
 
     #[test]
+    fn dto40_reference_coverage_and_adjacent_cohort_preflight() {
+        use crate::{CommandReply, ProductText, ReferenceCoverage, ReferenceRecord, SemanticConfidence, SemanticDeclarationIdentity, SemanticLinkEvidence, SemanticLinkKind, SemanticLinkTarget, SurfaceReply};
+        let site = ReferenceRecord {
+                site_symbol: None,
+                source_policy: Default::default(),
+            site: ProductText::from_static("fixture::page.tsx:2::Page"),
+            target: SemanticLinkTarget::Local { declaration: SemanticDeclarationIdentity { family: [1; 16], variant: [2; 16] } },
+            relation: SemanticLinkKind::Calls,
+            evidence: SemanticLinkEvidence { confidence: SemanticConfidence::Syntactic, source: None },
+        };
+        for (coverage, references) in [
+            (ReferenceCoverage::Unknown { reason: ProductText::from_static("TSX unavailable") }, Vec::new()),
+            (ReferenceCoverage::Partial { reason: ProductText::from_static("TSX partial") }, vec![site]),
+        ] {
+            let reply = ReplyDto::new(41, CommandReply::Surface(SurfaceReply::References {
+                target: ProductText::from_static("fixture::target"), coverage, references: references.into_boxed_slice(),
+            }));
+            let bytes = serde_json::to_vec(&reply).expect("DTO40 reply");
+            assert_eq!(decode_reply_body(&bytes).expect("strict DTO40 decode"), reply);
+            let encoded = std::str::from_utf8(&bytes).expect("JSON text");
+            let duplicated = encoded.replace("\"request_id\":41", "\"request_id\":41,\"request_id\":42");
+            assert_ne!(duplicated, encoded);
+            assert!(decode_reply_body(duplicated.as_bytes()).is_err(), "duplicate correlation must not be collapsed");
+            let mut invalid_coverage: serde_json::Value = serde_json::from_slice(&bytes).expect("reply JSON");
+            assert!(invalid_coverage["reply"]["data"]["data"]["coverage"].is_object());
+            invalid_coverage["reply"]["data"]["data"]["coverage"]["extra"] = serde_json::json!(true);
+            assert!(decode_reply_body(&serde_json::to_vec(&invalid_coverage).expect("invalid coverage")).is_err(), "coverage fields are closed");
+            let old_peer = super::check_version_header_against(&bytes, "reply", 39).expect_err("39 refuses 40");
+            assert!(old_peer.contains("reply DTO version 40"));
+            let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("reply JSON");
+            value["version"] = serde_json::json!(39);
+            value["reply"] = serde_json::json!({"unknown_future_field": true});
+            let error = decode_reply_body(&serde_json::to_vec(&value).expect("old envelope")).expect_err("40 refuses 39 before body");
+            assert!(error.contains("reply DTO version 39"));
+            assert!(!error.contains("unknown_future_field"));
+        }
+        for bytes in [
+            br#"{"version":40,"version":40,"request_id":1,"reply":{}}"#.as_slice(),
+            br#"{"version":40,"request_id":1,"request_id":2,"reply":{}}"#.as_slice(),
+            br#"{"version":41,"request_id":1,"reply":{"unknown_future_field":true}}"#.as_slice(),
+            br#"{"version":40,"request_id":1,"reply":{"unknown_future_field":true}}"#.as_slice(),
+        ] {
+            assert!(decode_reply_body(bytes).is_err());
+        }
+    }
+
+    #[test]
     fn dto36_rejects_batched_coverage_before_payload_admission() {
-        assert_eq!(crate::DTO_VERSION, 39);
+        assert_eq!(crate::DTO_VERSION, 40);
         let mut envelope = serde_json::json!({
             "version": crate::DTO_VERSION,
             "request_id": 41,
@@ -299,7 +365,7 @@ mod tests {
         let current = serde_json::to_vec(&envelope).expect("bounded versioned envelope");
         let old_peer = super::check_version_header_against(&current, "reply", 36)
             .expect_err("DTO36 client refuses the DTO39 coverage page before shape admission");
-        assert!(old_peer.contains("reply DTO version 39"));
+        assert!(old_peer.contains("reply DTO version 40"));
         assert!(old_peer.contains("this build supports 36"));
         assert!(!old_peer.contains("unknown_batch_field"));
         envelope["version"] = serde_json::json!(36);
@@ -307,13 +373,13 @@ mod tests {
         let error = super::decode_reply_body(&old_bytes)
             .expect_err("current client refuses a v36 multirow payload before deserialization");
         assert!(error.contains("reply DTO version 36"));
-        assert!(error.contains("this build supports 39"));
+        assert!(error.contains("this build supports 40"));
         assert!(!error.contains("unknown_batch_field"));
     }
 
     #[test]
     fn outline_order_cutover_refuses_dto33_before_page_shape_or_verification() {
-        assert_eq!(crate::DTO_VERSION, 39);
+        assert_eq!(crate::DTO_VERSION, 40);
         let current = serde_json::to_vec(&serde_json::json!({
             "request_id": 41,
             "certificate": null,
@@ -327,7 +393,7 @@ mod tests {
         // old binary, rejects the new cohort before its strict page grammar.
         let old_peer = super::check_version_header_against(&current, "reply", 33)
             .expect_err("v33 peer refuses the v39 owner");
-        assert!(old_peer.contains("reply DTO version 39"));
+        assert!(old_peer.contains("reply DTO version 40"));
         assert!(old_peer.contains("this build supports 33"));
         assert!(!old_peer.contains("unknown field"));
         let mut old: serde_json::Value = serde_json::from_slice(&current).expect("envelope");
@@ -346,7 +412,7 @@ mod tests {
                 .expect_err("certificate path version guard"),
         ] {
             assert!(error.contains("reply DTO version 33"));
-            assert!(error.contains("this build supports 39"));
+            assert!(error.contains("this build supports 40"));
             assert!(!error.contains("unknown field"));
         }
         assert_eq!(verifier.calls(), 0);
@@ -367,7 +433,7 @@ mod tests {
 
     #[test]
     fn source_selection_cutover_refuses_dto34_before_health_shape_or_verification() {
-        assert_eq!(crate::DTO_VERSION, 39);
+        assert_eq!(crate::DTO_VERSION, 40);
         let current = serde_json::to_vec(&serde_json::json!({
             "request_id": 41,
             "certificate": null,
@@ -379,7 +445,7 @@ mod tests {
         .expect("new health envelope");
         let old_peer = super::check_version_header_against(&current, "reply", 34)
             .expect_err("v34 peer refuses the v39 owner before health shape");
-        assert!(old_peer.contains("reply DTO version 39"));
+        assert!(old_peer.contains("reply DTO version 40"));
         assert!(old_peer.contains("this build supports 34"));
         assert!(!old_peer.contains("unknown field"));
         let mut old: serde_json::Value = serde_json::from_slice(&current).expect("envelope");
@@ -398,7 +464,7 @@ mod tests {
                 .expect_err("certificate path version guard"),
         ] {
             assert!(error.contains("reply DTO version 34"));
-            assert!(error.contains("this build supports 39"));
+            assert!(error.contains("this build supports 40"));
             assert!(!error.contains("unknown field"));
         }
         assert_eq!(verifier.calls(), 0);
@@ -410,7 +476,7 @@ mod tests {
 
     #[test]
     fn profile_refusal_cutover_refuses_dto35_before_closed_event_shape() {
-        assert_eq!(crate::DTO_VERSION, 39);
+        assert_eq!(crate::DTO_VERSION, 40);
         let current = serde_json::to_vec(&serde_json::json!({
             "version": crate::DTO_VERSION,
             "request_id": 41,
@@ -426,7 +492,7 @@ mod tests {
         // supported cohort. It does not pretend to execute an old binary.
         let old_peer = super::check_version_header_against(&current, "reply", 35)
             .expect_err("installed DTO35 CLI/MCP/GUI refuses DTO39 owner before tag parsing");
-        assert!(old_peer.contains("reply DTO version 39"));
+        assert!(old_peer.contains("reply DTO version 40"));
         assert!(old_peer.contains("this build supports 35"));
         assert!(old_peer.contains("same build"));
         assert!(!old_peer.contains("unknown"));
@@ -441,7 +507,7 @@ mod tests {
                 ReplyDto::decode_with_certificate(&bytes, None).expect_err("same byte-entry guard"),
             ] {
                 assert!(error.contains(&format!("reply DTO version {version}")));
-                assert!(error.contains("this build supports 39"));
+                assert!(error.contains("this build supports 40"));
                 assert!(error.contains("CLI/MCP/GUI"));
                 assert!(!error.contains("unknown"));
             }
