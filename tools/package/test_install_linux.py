@@ -112,10 +112,20 @@ class InstallerFilesystemTests(unittest.TestCase):
         saved_umask = os.umask(0o077)
         try:
             with patch.object(installer, "_glibc_version", return_value=(99, 0)), \
-                 patch.object(installer.subprocess, "run", return_value=type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()):
+                 patch.object(installer.subprocess, "run", return_value=type("Result", (), {"returncode": 0, "stdout": "backend 0.2.0\n", "stderr": ""})()):
                 installer.install(prefix, entry, manifest, archive)
         finally:
             os.umask(saved_umask)
+
+    def test_install_rejects_cli_version_mismatched_to_release(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            entry, manifest, archive = self._fixture_release(root, "d" * 40, "20261010")
+            with patch.object(installer, "_glibc_version", return_value=(99, 0)), \
+                 patch.object(installer.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="backend 9.9.9\n", stderr="")):
+                with self.assertRaisesRegex(installer.InstallError, "CLI version.*release"):
+                    installer.install(root / "prefix", entry, manifest, archive)
 
     def test_install_restores_callers_umask_after_success_and_error(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -128,7 +138,7 @@ class InstallerFilesystemTests(unittest.TestCase):
                     try:
                         selected = {**entry, "tag": "../invalid"} if bad_entry else entry
                         with patch.object(installer, "_glibc_version", return_value=(99, 0)), \
-                             patch.object(installer.subprocess, "run", return_value=type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()):
+                             patch.object(installer.subprocess, "run", return_value=type("Result", (), {"returncode": 0, "stdout": "backend 0.2.0\n", "stderr": ""})()):
                             if bad_entry:
                                 with self.assertRaises(installer.InstallError):
                                     installer.install(prefix, selected, manifest, archive)
@@ -147,7 +157,7 @@ class InstallerFilesystemTests(unittest.TestCase):
              patch.object(installer, "load_release", return_value=(entry, manifest, "https://example.invalid/archive")), \
              patch.object(installer, "download_archive", side_effect=download_archive) as download, \
              patch.object(installer, "_glibc_version", return_value=(99, 0)), \
-             patch.object(installer.subprocess, "run", return_value=type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()):
+             patch.object(installer.subprocess, "run", return_value=type("Result", (), {"returncode": 0, "stdout": "backend 0.2.0\n", "stderr": ""})()):
             result = installer.main(["--prefix", str(prefix)])
         loader_target.assert_called_once_with()
         return result, download
@@ -577,7 +587,7 @@ class DesktopInstallerTests(unittest.TestCase):
 
     def install_fixture(self, prefix, entry, manifest, archive):
         with patch.object(installer, "_glibc_version", return_value=(99, 0)), \
-             patch.object(installer.subprocess, "run", return_value=type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()) as probes:
+             patch.object(installer.subprocess, "run", return_value=type("Result", (), {"returncode": 0, "stdout": "backend 0.2.0\n", "stderr": ""})()) as probes:
             installer.install(prefix, entry, manifest, archive)
         return probes
 
@@ -698,6 +708,40 @@ class DesktopInstallerTests(unittest.TestCase):
                 self.install_fixture(prefix, *self.fixture(root, "b" * 40, "20261017", include_desktop=True))
             self.assertEqual(os.readlink(current), before)
             self.assertEqual((prefix / "bin/nudox-desktop").read_bytes(), b"user-owned launcher")
+
+
+class SQLiteClosureTests(unittest.TestCase):
+    def test_installer_binds_worker_library_and_owner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "bin").mkdir()
+            (root / "lib").mkdir()
+            worker = root / "bin/backend-sqlite-worker"
+            library = root / "lib/libgcc_s.so.1"
+            worker.write_bytes(b"worker")
+            worker.chmod(0o755)
+            library.write_bytes(b"library")
+            digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+            record = {"path": "bin/backend-sqlite-worker", "bytes": worker.stat().st_size,
+                      "sha256": digest(worker), "dependency_path": "lib/libgcc_s.so.1",
+                      "dependency_bytes": library.stat().st_size, "dependency_sha256": digest(library),
+                      "owner_source_sha256": "a" * 64, "owner_receipt_sha256": "b" * 64,
+                      "artifact_identity": "c" * 64, "sqlite_lock_sha256": "d" * 64}
+            package = {"sqlite_worker": record, "executables": [{"name": "backend-locald", "original_sha256": "a" * 64}],
+                       "stylo_worker": {"bound_owner": {"receipt_sha256": "b" * 64, "dependency_sha256": digest(library)}},
+                       "libraries": {"libgcc_s.so.1": {"packaged_sha256": digest(library)}}}
+            installer.verify_sqlite_worker(root, package)
+            for path in (worker, library):
+                original = path.read_bytes()
+                path.write_bytes(b"tampered")
+                with self.assertRaises(installer.InstallError):
+                    installer.verify_sqlite_worker(root, package)
+                path.write_bytes(original)
+            record["owner_source_sha256"] = "e" * 64
+            with self.assertRaises(installer.InstallError):
+                installer.verify_sqlite_worker(root, package)
+            with self.assertRaises(installer.InstallError):
+                installer.verify_sqlite_worker(root, {})
 
 
 if __name__ == "__main__":

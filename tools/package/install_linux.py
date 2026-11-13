@@ -316,7 +316,7 @@ def safe_extract(archive: Path, destination: Path, *, manifest: dict | None = No
                 source = bundle.extractfile(member)
                 if source is None:
                     raise InstallError(f"archive member could not be read: {member.name!r}")
-                mode = 0o755 if relative in allowed_bin or relative in {"share/nudox/typescript/node/bin/node", "share/nudox/embedding/bin/backend-embedding-candle"} else 0o644
+                mode = 0o755 if relative in allowed_bin or relative in {"bin/backend-stylo-worker", "bin/backend-sqlite-worker", "share/nudox/typescript/node/bin/node", "share/nudox/embedding/bin/backend-embedding-candle"} else 0o644
                 flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
                 descriptor = os.open(target, flags, mode)
                 with os.fdopen(descriptor, "wb") as output, source:
@@ -610,6 +610,86 @@ def verify_embedding_setup(root: Path, package: dict) -> None:
         raise InstallError("local embedding helper is not executable")
 
 
+def verify_stylo_worker(root: Path, package: dict) -> None:
+    """Verify optional packaged bytes, without granting an owner capability."""
+    record = package.get("stylo_worker")
+    if record is None:
+        if (root / "bin/backend-stylo-worker").exists() or (root / "bin/backend-stylo-worker").is_symlink():
+            raise InstallError("unreceipted Stylo worker is present")
+        return
+    if not isinstance(record, dict) or record.get("path") != "bin/backend-stylo-worker" or record.get("build_receipt") != "share/nudox/stylo/build-receipt.json":
+        raise InstallError("invalid Stylo worker package record")
+    worker = _verified_package_path(root, record["path"])
+    evidence = _verified_package_path(root, record["build_receipt"])
+    if type(record.get("size_bytes")) is not int or not 0 < record["size_bytes"] <= MAX_MEMBER_BYTES or worker.stat().st_size != record["size_bytes"] or _file_sha256(worker) != record.get("sha256") or not os.access(worker, os.X_OK):
+        raise InstallError("installed Stylo worker differs from its package receipt")
+    if evidence.stat().st_size > 65536 or _file_sha256(evidence) != record.get("build_receipt_sha256"):
+        raise InstallError("Stylo build receipt differs from its package record")
+    try:
+        receipt = json.loads(evidence.read_text())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise InstallError("Stylo build receipt is unreadable") from error
+    source = package.get("source")
+    if not isinstance(receipt, dict) or not isinstance(source, dict) or not isinstance(receipt.get("source"), dict):
+        raise InstallError("Stylo build source evidence is absent")
+    built = receipt["source"]
+    if receipt.get("schema") != "nudox.stylo-worker-build-receipt.v2" or receipt.get("remap_schema") != "nudox.stylo-worker-remap.v2" or any(built.get(key) != source.get(key) for key in ("commit", "tree", "cargo_lock_sha256")) or built.get("clean_before") is not True or built.get("clean_after") is not True:
+        raise InstallError("Stylo worker source differs from this package")
+    source_sha = record.get("source_sha256")
+    if not isinstance(source_sha, str) or not re.fullmatch(r"[a-f0-9]{64}", source_sha) or not isinstance(receipt.get("artifact"), dict) or receipt["artifact"].get("sha256") != source_sha:
+        raise InstallError("Stylo worker build bytes differ from package provenance")
+    if receipt.get("argv") != ["cargo", "build", "--release", "--locked", "-p", "backend-frontend-stylo", "--bin", "backend-stylo-worker"] or type(receipt.get("exit")) is not int or receipt["exit"] != 0 or not isinstance(receipt.get("execution"), dict) or receipt["execution"].get("process_group_retired") is not True or type(receipt["execution"].get("exit")) is not int or receipt["execution"]["exit"] != 0 or not isinstance(receipt.get("toolchain"), dict) or receipt["toolchain"].get("unchanged") is not True or not isinstance(receipt.get("environment"), dict) or receipt["environment"].get("CARGO_BUILD_TARGET") != "x86_64-unknown-linux-gnu" or receipt["environment"].get("CARGO_NET_OFFLINE") != "true" or receipt["artifact"].get("architecture") != "x86_64":
+        raise InstallError("Stylo worker build evidence is incomplete")
+    bound = record.get("bound_owner")
+    if bound is not None:
+        if not isinstance(bound, dict) or bound.get("schema") != "nudox.stylo-bound-owner-build-receipt.v4" or bound.get("remap_schema") != "nudox.stylo-owner-remap.v1" or bound.get("c_remap_schema") != "nudox.stylo-c-prefix-map.v1" or bound.get("closure_policy") != "linux-libgcc-single-v1" or bound.get("runpath_kind") != "DT_RUNPATH" or bound.get("cli_build_manifest_sha256") != package.get("original_build_manifest_sha256"):
+            raise InstallError("Stylo bound-owner evidence is invalid")
+        for key in ("receipt_sha256", "owner_source_sha256", "worker_anchor", "source_loader_sha256", "dependency_source_sha256"):
+            if not isinstance(bound.get(key), str) or not re.fullmatch(r"[a-f0-9]{64}", bound[key]) or bound[key] == "0" * 64:
+                raise InstallError("Stylo bound-owner identity is malformed")
+        tools = bound.get("relocation_tool_sha256")
+        if not isinstance(tools, dict) or set(tools) != {"patchelf", "readelf"} or any(not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value) for value in tools.values()):
+            raise InstallError("Stylo relocation tool identities are invalid")
+        owners = [item for item in package.get("executables", []) if isinstance(item, dict) and item.get("name") == "backend-locald"]
+        if len(owners) != 1 or owners[0].get("original_sha256") != bound["owner_source_sha256"]:
+            raise InstallError("Stylo bound owner differs from packaged locald")
+        if bound.get("dependency_path") != "lib/libgcc_s.so.1" or type(bound.get("dependency_bytes")) is not int or not 0 < bound["dependency_bytes"] <= 16 * 1024 * 1024:
+            raise InstallError("Stylo bound dependency path or size is invalid")
+        library = _verified_package_path(root, bound["dependency_path"])
+        libraries = package.get("libraries")
+        entry = libraries.get("libgcc_s.so.1") if isinstance(libraries, dict) else None
+        if not isinstance(entry, dict) or entry.get("source_sha256") != bound.get("dependency_source_sha256") or entry.get("packaged_sha256") != bound.get("dependency_sha256") or library.stat().st_size != bound["dependency_bytes"] or _file_sha256(library) != bound.get("dependency_sha256"):
+            raise InstallError("Stylo bound dependency differs from the package closure")
+
+
+def verify_sqlite_worker(root: Path, package: dict) -> None:
+    """Verify the exact SQLite worker closure bound to the packaged owner."""
+    record = package.get("sqlite_worker")
+    path = root / "bin/backend-sqlite-worker"
+    if record is None:
+        if path.exists() or path.is_symlink():
+            raise InstallError("unreceipted SQLite worker is present")
+        return
+    if not isinstance(record, dict) or record.get("path") != "bin/backend-sqlite-worker" or record.get("dependency_path") != "lib/libgcc_s.so.1":
+        raise InstallError("invalid SQLite closure record")
+    for key in ("sha256", "dependency_sha256", "owner_source_sha256", "owner_receipt_sha256", "artifact_identity", "sqlite_lock_sha256"):
+        if not isinstance(record.get(key), str) or not re.fullmatch(r"[a-f0-9]{64}", record[key]) or record[key] == "0" * 64:
+            raise InstallError("invalid SQLite closure identity")
+    for name, size_key, digest_key, limit in ((record["path"], "bytes", "sha256", MAX_MEMBER_BYTES),
+            (record["dependency_path"], "dependency_bytes", "dependency_sha256", 16 * 1024 * 1024)):
+        artifact = _verified_package_path(root, name)
+        if type(record.get(size_key)) is not int or not 0 < record[size_key] <= limit or artifact.stat().st_size != record[size_key] or _file_sha256(artifact) != record[digest_key]:
+            raise InstallError("SQLite closure differs from package evidence")
+    if not os.access(path, os.X_OK):
+        raise InstallError("SQLite worker is not executable")
+    owners = [item for item in package.get("executables", []) if isinstance(item, dict) and item.get("name") == "backend-locald"]
+    stylo = package.get("stylo_worker")
+    bound = stylo.get("bound_owner") if isinstance(stylo, dict) else None
+    library = package.get("libraries", {}).get("libgcc_s.so.1") if isinstance(package.get("libraries"), dict) else None
+    if len(owners) != 1 or owners[0].get("original_sha256") != record["owner_source_sha256"] or not isinstance(bound, dict) or bound.get("receipt_sha256") != record["owner_receipt_sha256"] or bound.get("dependency_sha256") != record["dependency_sha256"] or not isinstance(library, dict) or library.get("packaged_sha256") != record["dependency_sha256"]:
+        raise InstallError("SQLite closure differs from the bound owner or package library")
+
+
 def verify_package(root: Path, entry: dict, manifest: dict) -> None:
     expected_binaries = release_binaries(manifest)
     _verified_package_path(root, "", directory=True)
@@ -673,6 +753,8 @@ def verify_package(root: Path, entry: dict, manifest: dict) -> None:
             raise InstallError(f"package omits executable {name}")
     verify_typescript_sdk(root, package)
     verify_embedding_setup(root, package)
+    verify_stylo_worker(root, package)
+    verify_sqlite_worker(root, package)
     # Run harmless entrypoint checks with build-machine loader overrides removed.
     clean_env = {key: value for key, value in os.environ.items() if key not in {"LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT", "NIX_LD", "NIX_LD_LIBRARY_PATH"}}
     for name, args in (("backend-cli", ["--version"]), ("backend-mcp", ["--help"])):
@@ -683,6 +765,8 @@ def verify_package(root: Path, entry: dict, manifest: dict) -> None:
         if result.returncode != 0:
             detail = (result.stderr or result.stdout).strip().splitlines()
             raise InstallError(f"packaged {name} startup check failed: {detail[0] if detail else 'nonzero exit'}")
+        if name == "backend-cli" and result.stdout.strip() != f"backend {entry['version']}":
+            raise InstallError("packaged CLI version differs from the selected release")
 
 
 def _version_root(prefix: Path) -> Path:
