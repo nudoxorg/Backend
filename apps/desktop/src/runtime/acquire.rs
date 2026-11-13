@@ -23,7 +23,7 @@ pub(crate) use work::{Dependency, NOT_CARGO, Origin};
 #[cfg(test)]
 pub(crate) use work::dependency_origin;
 #[cfg(test)]
-pub(crate) use work::{Listed, Refusals, dependencies, index_release, listed_already, run};
+pub(crate) use work::{Listed, Refusals, dependencies, index_release, listed_already, remove_release, run};
 
 use super::offload::Asker;
 use super::ui_graph::UiRootEntity;
@@ -95,6 +95,35 @@ impl Stage {
     pub(crate) const fn working(&self) -> bool {
         matches!(self, Self::Queued | Self::Resolving | Self::Unpacking | Self::Indexing)
     }
+}
+
+/// Where removing one release from the library stands.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Removal {
+    /// Waiting for the worker.
+    Queued,
+    /// The owner is removing it and its derived indexes.
+    Removing,
+    /// Out of the library, from this indexed root; its source stays on
+    /// this machine.
+    Removed(PackageRef),
+    /// Not removed, in the source's or the owner's words.
+    Failed(Arc<str>),
+}
+
+impl Removal {
+    /// Whether work is still under way (or waiting to be).
+    pub(crate) const fn working(&self) -> bool {
+        matches!(self, Self::Queued | Self::Removing)
+    }
+}
+
+/// One removal and the views waiting on it.
+struct RemovalEntry {
+    generation: Option<CompositionGeneration>,
+    owner: OwnerRequest,
+    removal: Removal,
+    askers: Vec<Asker>,
 }
 
 /// A project's packages as the worker read them, and how far adding them got.
@@ -187,7 +216,11 @@ struct Project {
 /// Every addition this window started.
 struct Additions {
     entries: HashMap<Release, Entry>,
+    removals: HashMap<Release, RemovalEntry>,
     projects: HashMap<LocalProjectId, Project>,
+    /// Adds and removals asked for while no owner was serving: said, not dropped.
+    unserved_adds: HashMap<Release, Arc<str>>,
+    unserved_removals: HashMap<Release, Arc<str>>,
     queue: Arc<Queue>,
     mailbox: Arc<Mutex<Vec<(CompositionGeneration, OwnerRequest, Landed)>>>,
     wake: WakeSender,
@@ -211,6 +244,9 @@ fn additions(cx: &mut App) -> &mut Additions {
         });
         cx.set_global(Additions {
             entries: HashMap::new(),
+            removals: HashMap::new(),
+            unserved_adds: HashMap::new(),
+            unserved_removals: HashMap::new(),
             projects: HashMap::new(),
             queue: Queue::new(),
             mailbox: Arc::default(),
@@ -268,7 +304,10 @@ pub(crate) fn stage(release: &Release, asker: Asker, cx: &mut App) -> Option<Sta
 
 fn stage_in(release: &Release, asker: Asker, generation: Option<CompositionGeneration>, cx: &mut App) -> Option<Stage> {
     cx.try_global::<Additions>()?;
-    let entry = cx.global_mut::<Additions>().entries.get_mut(release)?;
+    let additions = cx.global_mut::<Additions>();
+    let Some(entry) = additions.entries.get_mut(release) else {
+        return additions.unserved_adds.get(release).map(|words| Stage::Failed(Arc::clone(words)));
+    };
     if entry.generation != generation || !entry.owner.current() { return None; }
     if !entry.askers.contains(&asker) {
         entry.askers.push(asker);
@@ -308,9 +347,15 @@ pub(crate) fn add_owned(release: Release, composition: Option<Composition>, owne
     let generation = composition.as_ref().map(|composition| composition.generation);
     let additions = additions(cx);
     additions.root = Some(root);
+    additions.unserved_adds.remove(&release);
     if additions.entries.get(&release).is_some_and(|entry| entry.generation == generation && entry.owner.same_owner(&owner) && entry.owner.current() && !matches!(entry.stage, Stage::Failed(_) | Stage::Partial { .. })) {
         return;
     }
+    // A removal still under way finishes first; one that finished is over.
+    if additions.removals.get(&release).is_some_and(|entry| entry.generation == generation && entry.owner.current() && entry.removal.working()) {
+        return;
+    }
+    additions.removals.remove(&release);
     let askers = additions.entries.remove(&release).map(|entry| entry.askers).unwrap_or_default();
     let Some(composition) = composition else {
         additions.entries.insert(release, Entry { generation, owner: owner.clone(), stage: Stage::Failed(Arc::from("the index is not open yet")), askers });
@@ -320,6 +365,69 @@ pub(crate) fn add_owned(release: Release, composition: Option<Composition>, owne
     additions.entries.insert(release.clone(), Entry { generation, owner: owner.clone(), stage: Stage::Queued, askers });
     push(Job::Release(release), composition, owner, cx);
     cx.refresh_windows();
+}
+
+/// Words for an add or removal asked for while the index is not serving.
+const UNSERVED: &str = "The index is not open yet, so nothing was sent. Try again once it is.";
+
+/// An add asked for while no owner is serving the library (starting, replaced
+/// or unconfirmed): nothing can be sent, so the release says so, with the
+/// ordinary "Try again", instead of the press doing nothing.
+pub(crate) fn refuse_unserved_add(release: Release, cx: &mut App) {
+    let additions = additions(cx);
+    additions.entries.remove(&release);
+    additions.unserved_adds.insert(release, Arc::from(UNSERVED));
+    cx.refresh_windows();
+}
+
+/// [`refuse_unserved_add`] for a removal.
+pub(crate) fn refuse_unserved_removal(release: Release, cx: &mut App) {
+    let additions = additions(cx);
+    additions.removals.remove(&release);
+    additions.unserved_removals.insert(release, Arc::from(UNSERVED));
+    cx.refresh_windows();
+}
+
+/// Removes `release`, at the indexed root `page`, from the library through
+/// the owner. Asking again while it is under way does nothing; asking after
+/// it failed tries again. It is not an addition any more once removed.
+pub(crate) fn remove_owned(release: Release, page: PackageRef, composition: Option<Composition>, owner: OwnerRequest, root: WeakEntity<UiRootEntity>, cx: &mut App) {
+    if !owner.current() { return; }
+    let generation = composition.as_ref().map(|composition| composition.generation);
+    let additions = additions(cx);
+    additions.root = Some(root);
+    additions.unserved_removals.remove(&release);
+    if additions.removals.get(&release).is_some_and(|entry| entry.generation == generation && entry.owner.same_owner(&owner) && entry.owner.current() && entry.removal.working()) {
+        return;
+    }
+    if additions.entries.get(&release).is_some_and(|entry| entry.generation == generation && entry.owner.current() && entry.stage.working()) {
+        return;
+    }
+    let askers = additions.removals.remove(&release).map(|entry| entry.askers).unwrap_or_default();
+    let Some(composition) = composition else {
+        additions.removals.insert(release, RemovalEntry { generation, owner: owner.clone(), removal: Removal::Failed(Arc::from("the index is not open yet")), askers });
+        cx.refresh_windows();
+        return;
+    };
+    additions.removals.insert(release.clone(), RemovalEntry { generation, owner: owner.clone(), removal: Removal::Queued, askers });
+    push(Job::Remove(release, page), composition, owner, cx);
+    cx.refresh_windows();
+}
+
+/// Where removing `release` stands, if it was ever asked for; `asker` is
+/// told when it moves.
+pub(crate) fn removal(release: &Release, asker: Asker, cx: &mut App) -> Option<Removal> {
+    let generation = current_generation(cx);
+    cx.try_global::<Additions>()?;
+    let additions = cx.global_mut::<Additions>();
+    let Some(entry) = additions.removals.get_mut(release) else {
+        return additions.unserved_removals.get(release).map(|words| Removal::Failed(Arc::clone(words)));
+    };
+    if entry.generation != generation || !entry.owner.current() { return None; }
+    if !entry.askers.contains(&asker) {
+        entry.askers.push(asker);
+    }
+    Some(entry.removal.clone())
 }
 
 /// Adds every registry package the projects the owner just answered for
@@ -494,6 +602,26 @@ fn drain_in(generation: Option<CompositionGeneration>, cx: &mut App) {
                     if project.read.as_ref().is_ok_and(|read| read.as_ref().is_some_and(|found| found.iter().any(|dependency| dependency.release == release))) {
                         tell(&project.askers);
                     }
+                }
+            }
+            Landed::Removal(release, removal) => {
+                let entry = additions.removals.entry(release.clone()).or_insert_with(|| RemovalEntry { generation, owner: owner.clone(), removal: Removal::Queued, askers: Vec::new() });
+                if entry.generation == generation && !entry.owner.same_owner(&owner) && entry.owner.current() { continue; }
+                entry.generation = generation;
+                entry.owner = owner.clone();
+                let removed = matches!(&removal, Removal::Removed(_));
+                if let Removal::Removed(page) = &removal && entry.removal != removal {
+                    // The library reads its root again; the release's
+                    // registry page offers it to be added once more.
+                    published.insert(page.clone());
+                    if let Ok(package) = PackageRef::parse(&release.purl()) {
+                        published.insert(package);
+                    }
+                }
+                entry.removal = removal;
+                tell(&entry.askers);
+                if removed && let Some(added) = additions.entries.remove(&release) {
+                    tell(&added.askers);
                 }
             }
             Landed::Dependencies(project, read) => {
