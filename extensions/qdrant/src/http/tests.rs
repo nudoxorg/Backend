@@ -832,7 +832,7 @@ fn resident_frontier_move_keeps_old_vectors_under_their_original_ids() {
     )
     .expect("beta");
     let (endpoint, server) = serve_delta(DeltaScript {
-        requests: 5,
+        requests: 4,
         corrupt_after_put: false,
     });
     let client = QdrantHttpClient::new(test_config(endpoint), recipe).expect("client");
