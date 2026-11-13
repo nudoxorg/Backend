@@ -145,10 +145,11 @@ fn publication_revision_reconnects_a_retired_command_stream_but_never_retries_pr
         } else {
             "cached protocol refusal"
         };
+        let shown = format!("{result:?}");
         assert!(
             matches!(result, Err(EngineFault::Failed(error))
             if error.code() == FaultCode::Protocol && error.message().contains(expected)),
-            "the exact correlated terminal reply is retained"
+            "the exact correlated terminal reply is retained (case retire_cached={retire_cached}: expected {expected:?}, got {shown})"
         );
         assert_eq!(
             gate.ready_epoch(),
@@ -231,8 +232,10 @@ fn index_read_reconnects_once_with_original_context_and_preserves_correlated_own
     });
     let listener = server.join().map_err(|_| anyhow::anyhow!("physical index owner panicked"))??;
     assert_eq!(attempts, 2);
+    let shown = format!("{:?}", result.as_ref().map(|_| "a revision"));
     assert!(matches!(result, Err(EngineFault::Failed(error))
-        if error.code() == FaultCode::Protocol && error.message().contains("same owner answered index retry")));
+        if error.code() == FaultCode::Protocol && error.message().contains("same owner answered index retry")),
+        "index retry result: {shown}");
     assert_eq!(context.read_deadline(Duration::from_secs(30))?, deadline);
     assert_eq!(gate.ready_epoch(), Some(attachment));
     assert!(matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
@@ -282,7 +285,7 @@ fn accepted_index_cancel_rechecks_exact_ticket_sends_once_and_never_restarts_wor
         stream.set_read_timeout(Some(Duration::from_secs(2)))?;
         stream.set_write_timeout(Some(Duration::from_secs(2)))?;
         let bytes = read_frame(stream, LocalControlLimits::default())
-            .map_err(|error| anyhow::anyhow!("cancel control read: {error:?}"))?;
+            .map_err(|error| anyhow::anyhow!("cancel control read: {error:?} (case {expected:?})"))?;
         let request = backend_library::decode_command_body(&bytes).map_err(anyhow::Error::msg)?;
         assert_eq!(request.command, backend_library::Command::Surface(expected), "no Start or unrelated ticket command");
         let reply = backend_library::ReplyDto::new(request.request_id, backend_library::CommandReply::Surface(reply));
