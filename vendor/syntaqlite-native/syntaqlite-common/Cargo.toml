@@ -1,0 +1,12 @@
+[package]
+name = "syntaqlite-common"
+version = "0.13.5"
+edition = "2024"
+description = "Internal shared primitives for syntaqlite — not intended for direct use"
+license = "Apache-2.0"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+
+[lints]
+workspace = true
