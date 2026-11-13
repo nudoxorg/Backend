@@ -178,6 +178,10 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
             )
             .map_err(WorkspaceError::store)?,
         );
+        lease.assert_current()?;
+        model.bind_owner_context(&admission, &store)
+            .map_err(|error| WorkspaceError::Model(format!("bind owner recovery context: {error}")))?;
+        lease.assert_current()?;
         let journal_path = directory.join(JOURNAL_FILE);
         let limits = JournalLimits {
             max_frames: MAX_JOURNAL_FRAMES,

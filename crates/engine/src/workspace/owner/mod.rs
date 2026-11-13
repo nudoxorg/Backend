@@ -56,7 +56,7 @@ pub use handoff::{
     UnselectedWorkspaceCandidate, WorkspaceCandidateClaim, WorkspacePublicationFailure,
     WorkspaceWriter,
 };
-pub use lease::{OwnerLease, OwnerLeaseIdentity, WorkspaceDirectoryAdmission};
+pub use lease::{OwnerLease, OwnerLeaseIdentity, WorkspaceDirectoryAdmission, WorkspaceDirectoryWitness};
 pub(crate) use recovery::{store_head_matches, sync_directory, write_diagnostic};
 
 const DIAGNOSTIC_FILE: &str = "workspace.diagnostic";

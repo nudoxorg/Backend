@@ -207,7 +207,89 @@ pub struct WorkspaceDirectoryAdmission {
     fence: [u8; 32],
 }
 
+/// Non-owning owner witness. Parked witnesses do not retain the kernel lease.
+#[derive(Clone, Debug)]
+pub struct WorkspaceDirectoryWitness {
+    directory: PathBuf,
+    root: DirectoryCapability,
+    authority: backend_store::WeakPublicationAuthority,
+    epoch: u64,
+    fence: [u8; 32],
+}
+impl WorkspaceDirectoryWitness {
+    /// Run an operation under the still-held owner lease, after checking the
+    /// exact existing private directory and owner fence.
+    pub fn with_existing<T>(&self, relative: &Path, operation: impl FnOnce(&DirectoryCapability) -> io::Result<T>) -> io::Result<T> {
+        self.authority.with_live(|| {
+            self.root.verify_path(&self.directory)?;
+            self.root.validate_private()?;
+            let (epoch, fence) = decode_owner_state(&read_private_owner_state(&self.root)?)
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            if epoch != self.epoch || fence != self.fence { return Err(io::Error::new(io::ErrorKind::PermissionDenied, "workspace owner was fenced")); }
+            let mut current = self.root.clone();
+            let mut path = self.directory.clone();
+            let mut count = 0usize;
+            for component in relative.components() {
+                count += 1;
+                if count > 64 { return Err(io::Error::new(io::ErrorKind::InvalidInput, "directory depth exceeded")); }
+                let std::path::Component::Normal(name) = component else { return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid directory")); };
+                let name = name.to_str().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "non-UTF8 directory"))?;
+                current = current.open_dir(name)?;
+                current.validate_private()?;
+                path.push(name);
+                current.verify_path(&path)?;
+            }
+            if count == 0 { return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty directory")); }
+            let result = operation(&current);
+            current.verify_path(&path)?;
+            self.root.verify_path(&self.directory)?;
+            let (epoch, fence) = decode_owner_state(&read_private_owner_state(&self.root)?)
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            if epoch != self.epoch || fence != self.fence { return Err(io::Error::new(io::ErrorKind::PermissionDenied, "workspace owner was fenced")); }
+            result
+        }).ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, "owner lease released"))?
+    }
+}
+
 impl WorkspaceDirectoryAdmission {
+    /// Create a non-owning witness for bounded receipt operations.
+    #[must_use]
+    pub fn downgrade(&self) -> WorkspaceDirectoryWitness {
+        WorkspaceDirectoryWitness { directory: self.directory.clone(), root: self.root.clone(), authority: self.authority.downgrade(), epoch: self.epoch, fence: self.fence }
+    }
+
+    /// Reopen an existing private directory under this held owner lease without
+    /// creating, repairing, or changing permissions on any component.
+    ///
+    /// # Errors
+    /// Returns an error on a missing/unsafe path or a changed owner fence.
+    pub fn verify_existing(&self, relative: impl AsRef<Path>) -> io::Result<DirectoryCapability> {
+        let names = relative.as_ref().components().take(65).map(|component| match component {
+            std::path::Component::Normal(name) => name.to_str().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "state directory name is not UTF-8")),
+            _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "state directory must be workspace-relative")),
+        }).collect::<io::Result<Vec<_>>>()?;
+        if names.is_empty() || names.len() > 64 { return Err(io::Error::new(io::ErrorKind::InvalidInput, "state directory component bound exceeded")); }
+        let check_owner = || -> io::Result<()> {
+            let _authority = &self.authority;
+            self.root.verify_path(&self.directory)?;
+            self.root.validate_private()?;
+            let (epoch, fence) = decode_owner_state(&read_private_owner_state(&self.root)?)
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            if epoch != self.epoch || fence != self.fence { return Err(io::Error::new(io::ErrorKind::PermissionDenied, "workspace owner was fenced")); }
+            Ok(())
+        };
+        check_owner()?;
+        let mut current = self.root.clone();
+        let mut path = self.directory.clone();
+        for name in names {
+            current = current.open_dir(name)?;
+            current.validate_private()?;
+            path.push(name);
+            current.verify_path(&path)?;
+        }
+        check_owner()?;
+        Ok(current)
+    }
     /// Admits one known application directory relative to this locked workspace.
     /// On Unix, existing current-user-owned components are made private through
     /// their held handles. Windows requires already-private existing DACLs.
@@ -465,6 +547,25 @@ mod tests {
             .stdout(Stdio::piped())
             .spawn()
             .expect("spawn owner lease child")
+    }
+
+    #[test]
+    fn nonowning_directory_witness_releases_and_fails_after_reclaim() {
+        let directory = test_directory("weak-witness");
+        let owner = OwnerLease::acquire(&directory).expect("owner");
+        let admission = owner.directory_admission();
+        admission.admit("objects").expect("objects");
+        let witness = admission.downgrade();
+        drop(admission);
+        witness.with_existing(Path::new("objects"), |_| {
+            drop(owner);
+            assert!(matches!(OwnerLease::reclaim(&directory), Err(WorkspaceError::AlreadyOwned)));
+            Ok(())
+        }).expect("in-flight operation holds original lease");
+        let next = OwnerLease::reclaim(&directory).expect("parked witness does not hold lease");
+        assert!(witness.with_existing(Path::new("objects"), |_| Ok(())).is_err());
+        drop(next);
+        fs::remove_dir_all(directory).expect("test cleanup");
     }
 
     #[test]
