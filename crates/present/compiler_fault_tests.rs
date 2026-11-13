@@ -531,14 +531,13 @@ fn partial_publication_keeps_useful_languages_all_refusals_and_exact_machine_bas
     let dto = ProductDto::new(&product_view(
         &backend_library::SurfaceReply::IndexTerminal(terminal),
     ));
-    assert!(
-        dto.fault
-            .as_ref()
-            .expect("partial is not full success")
-            .partial_publication
-            .is_some()
-    );
-    assert!(dto.records[0].tags.join(" ").contains(sentence));
+    assert!(dto.fault.is_none());
+    let warning = dto.partial_publication_warning.as_ref().expect("qualified partial publication");
+    assert_eq!(warning.published_profiles, Some(1));
+    assert_eq!(warning.refused_profiles, 1);
+    assert!(warning.detail.contains("refused profiles do not have current semantic coverage"));
+    assert!(dto.index_job.is_some(), "exact source capture and receipt stay available");
+    assert!(warning.detail.contains(sentence));
     assert!(
         dto.records[0]
             .tags
