@@ -640,7 +640,7 @@ impl RenderOnce for Find {
             list = list.child(inspector(&child(&self.id, format!("loose-inspect-{}", answer.key)), &unqualified, Some(answer), &state, &self.actions, !updating, &list_m, cx));
         }
         if model.candidates.is_empty() && model.loose.is_empty() {
-            list = list.child(words(child(&self.id, "empty"), "No recorded match yet. Try a package name or an item such as from_str.", ty::LEDE, p.ink2, &list_m));
+            list = list.child(words(child(&self.id, "empty"), "No recorded match yet. Try a package name, name@version for an exact release, or an item such as from_str.", ty::LEDE, p.ink2, &list_m));
         }
         let mut spread = div().flex().items_start().gap(m.space(Space::Section)).child(list);
         if wide && arrived && let Some((candidate, answer)) = resolved {
@@ -836,7 +836,11 @@ fn inspector(id: &ElementId, candidate: &Candidate, answer: Option<&Answer>, sta
     if answer.is_none() && let Some((offer, acquire)) = offered {
         let action_state = state.clone();
         let acquire = acquire.clone().admitted(Rc::new(move |window, cx| result_action_ready(&action_state, window, cx)));
-        return detail.child(add_control_enabled(child(id, "acquire"), offer, &acquire, m, enabled, cx)).into_any_element();
+        // Find offers the newest release here; an exact one is asked for by name.
+        let name = offer.label.split_whitespace().next().unwrap_or_default().to_owned();
+        return detail.child(add_control_enabled(child(id, "acquire"), offer, &acquire, m, enabled, cx))
+            .child(words(child(id, "acquire-exact"), format!("For another release, search {name}@VERSION."), ty::SMALL, p.ink2, m))
+            .into_any_element();
     }
     if answer.is_none() && !candidate.key.is_empty() {
         let open = Rc::clone(&actions.open_package);
