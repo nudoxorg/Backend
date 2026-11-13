@@ -254,7 +254,7 @@ fn cross_file_const_read_targets_workout_service_namespace_constant_key() -> Res
     let end = usize::try_from(auth_end).map_err(|_| TestError::Fact {
         message: "authority span end does not fit usize".to_owned(),
     })?;
-    if weeks_source.get(start..end) != Some(b"Limit") {
+    if weeks_source.get(start..end) != Some(&b"Limit"[..]) {
         return Err(TestError::Fact {
             message: "authority span bytes must be Limit, not WorkoutService.Limit".to_owned(),
         });
