@@ -67,7 +67,7 @@ impl PackageDossier {
             return PackageRecordEvidence::Unbound;
         }
         match (self.package.reference(), record.source) {
-            (PackageReference::Local(_), RecordSource::LocalManifest) =>
+            (PackageReference::Local(_), RecordSource::LocalManifest | RecordSource::PublishedSource) =>
                 PackageRecordEvidence::Bound(record),
             (PackageReference::Purl(coordinate), RecordSource::Registry)
                 if record.name.as_ref() == coordinate.lineage_name()
@@ -179,6 +179,9 @@ pub enum RecordSource {
     Registry,
     /// The local project's own manifest.
     LocalManifest,
+    /// The manifest of a registry release's unpacked source tree: a
+    /// publication, read here without its registry record.
+    PublishedSource,
 }
 
 /// Registry release standing (the bevel voice of a release tick).

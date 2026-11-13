@@ -6,6 +6,7 @@ pub(crate) mod document_identity;
 pub mod hand;
 pub mod index_operation;
 pub mod local_package;
+pub mod native;
 pub mod pages;
 pub mod persistence;
 pub mod project_lifecycle;
