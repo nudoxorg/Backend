@@ -12,6 +12,75 @@ use std::thread;
 
 static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
 
+#[test]
+fn explicit_main_v7_open_preserves_legacy_domain_and_rejects_foreign_ids() {
+    futures_executor::block_on(async {
+        let file = path();
+        let mut legacy = TursoAuthority::open(&file).await.expect("fresh legacy authority");
+        let observed = legacy.record_source_observation(observation(SourceObservationValue::KnownCount(3), 100)).await.expect("legacy observation");
+        let attempt = legacy.begin_attempt(&namespace(), [91; 32], &observed).await.expect("legacy attempt");
+        let claim = attempt.recovery_claim();
+        drop(legacy);
+        let workspace = [41; 32];
+        let domain = [42; 32];
+        let migrated = TursoAuthority::migrate_and_open_main_v7_untrusted(&file, workspace, domain).await.expect("main migration");
+        drop(migrated);
+        assert!(TursoAuthority::open(&file).await.is_err());
+        assert!(TursoAuthority::migrate_and_open_main_v7_untrusted(&file, [43; 32], domain).await.is_err());
+        assert!(UntrustedCSharpUnitStore::open_untrusted(&file, workspace, domain).await.is_err());
+        let mut reopened = TursoAuthority::migrate_and_open_main_v7_untrusted(&file, workspace, domain).await.expect("idempotent reopen");
+        assert_eq!(reopened.recover_candidate_attempt(&claim).await.expect("legacy attempt preserved"), attempt);
+        drop(reopened);
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_file(file.with_extension("db-wal"));
+        let _ = std::fs::remove_file(file.with_extension("db-shm"));
+    });
+}
+
+#[test]
+fn isolated_unit_store_reopens_and_legacy_open_refuses_it() {
+    futures_executor::block_on(async {
+        let file = path();
+        let workspace = [31; 32];
+        let domain = [32; 32];
+        let mut store = UntrustedCSharpUnitStore::open_untrusted(&file, workspace, domain)
+            .await
+            .expect("fresh unit store");
+        let key = [33; 32];
+        let target = [34; 32];
+        let claim = UnitFenceClaim {
+            unit_key: &key,
+            package: "package",
+            coordinate: "pkg:nuget/demo@1",
+            profile: "CSharp",
+            project_path: "App.csproj",
+            target: &target,
+        };
+        store
+            .record_untrusted_fence(&claim)
+            .await
+            .expect("first mapping");
+        drop(store);
+        assert!(TursoAuthority::open(&file).await.is_err());
+        assert!(
+            UntrustedCSharpUnitStore::open_untrusted(&file, [35; 32], domain)
+                .await
+                .is_err()
+        );
+        let mut reopened = UntrustedCSharpUnitStore::open_untrusted(&file, workspace, domain)
+            .await
+            .expect("same domain reopen");
+        reopened
+            .record_untrusted_fence(&claim)
+            .await
+            .expect("same mapping");
+        drop(reopened);
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_file(file.with_extension("db-wal"));
+        let _ = std::fs::remove_file(file.with_extension("db-shm"));
+    });
+}
+
 pub(super) struct AcceptVerifiedClosure;
 
 impl DurableClosureVerifier for AcceptVerifiedClosure {
@@ -49,14 +118,16 @@ async fn fixture_database(path: &PathBuf, read_only: bool) -> turso::Database {
         .expect("fixture shared database")
 }
 
+async fn raw_execute_async(path: &PathBuf, sql: &str) {
+    let database = fixture_database(path, false).await;
+    let connection = database.connect().expect("fixture connection");
+    connection.execute_batch(sql).await.expect("fixture SQL");
+    drop(connection);
+    drop(database);
+}
+
 fn raw_execute(path: &PathBuf, sql: &str) {
-    futures_executor::block_on(async {
-        let database = fixture_database(path, false).await;
-        let connection = database.connect().expect("fixture connection");
-        connection.execute_batch(sql).await.expect("fixture SQL");
-        drop(connection);
-        drop(database);
-    });
+    futures_executor::block_on(raw_execute_async(path, sql));
 }
 
 fn seed_authority(path: &PathBuf, ddl: &str, marker_rows: &str) {
@@ -66,37 +137,41 @@ fn seed_authority(path: &PathBuf, ddl: &str, marker_rows: &str) {
     }
 }
 
-fn database_snapshot(path: &PathBuf) -> (Vec<Vec<turso::Value>>, Vec<Vec<turso::Value>>) {
-    futures_executor::block_on(async {
-        let database = fixture_database(path, true).await;
-        let connection = database.connect().expect("snapshot connection");
-        let schema = snapshot_query(
-            &connection,
-            "SELECT type, name, tbl_name, sql FROM sqlite_schema \
-             ORDER BY type, name, tbl_name",
-        )
-        .await;
-        let marker = match connection
-            .query("SELECT * FROM backend_index_authority_meta LIMIT 3", ())
-            .await
-        {
-            Ok(mut rows) => {
-                let mut values = Vec::new();
-                while let Some(row) = rows.next().await.expect("snapshot marker row") {
-                    values.push(
-                        (0..row.column_count())
-                            .map(|index| row.get_value(index).expect("snapshot marker value"))
-                            .collect(),
-                    );
-                }
-                values
+async fn database_snapshot_async(
+    path: &PathBuf,
+) -> (Vec<Vec<turso::Value>>, Vec<Vec<turso::Value>>) {
+    let database = fixture_database(path, true).await;
+    let connection = database.connect().expect("snapshot connection");
+    let schema = snapshot_query(
+        &connection,
+        "SELECT type, name, tbl_name, sql FROM sqlite_schema \
+         ORDER BY type, name, tbl_name",
+    )
+    .await;
+    let marker = match connection
+        .query("SELECT * FROM backend_index_authority_meta LIMIT 3", ())
+        .await
+    {
+        Ok(mut rows) => {
+            let mut values = Vec::new();
+            while let Some(row) = rows.next().await.expect("snapshot marker row") {
+                values.push(
+                    (0..row.column_count())
+                        .map(|index| row.get_value(index).expect("snapshot marker value"))
+                        .collect(),
+                );
             }
-            Err(_) => Vec::new(),
-        };
-        drop(connection);
-        drop(database);
-        (schema, marker)
-    })
+            values
+        }
+        Err(_) => Vec::new(),
+    };
+    drop(connection);
+    drop(database);
+    (schema, marker)
+}
+
+fn database_snapshot(path: &PathBuf) -> (Vec<Vec<turso::Value>>, Vec<Vec<turso::Value>>) {
+    futures_executor::block_on(database_snapshot_async(path))
 }
 
 async fn snapshot_query(connection: &turso::Connection, sql: &str) -> Vec<Vec<turso::Value>> {
@@ -190,16 +265,16 @@ fn fresh_authority_roundtrips_the_turso_catalogue_witness() {
                 .await
                 .unwrap_or_else(|error| panic!("fresh open: {error}")),
         );
-        let after_initialize = database_snapshot(&fresh_path);
+        let after_initialize = database_snapshot_async(&fresh_path).await;
         drop(
             TursoAuthority::open(&fresh_path)
                 .await
                 .unwrap_or_else(|error| panic!("cold current open: {error}")),
         );
-        assert_eq!(database_snapshot(&fresh_path), after_initialize);
+        assert_eq!(database_snapshot_async(&fresh_path).await, after_initialize);
 
         let existing_empty = path();
-        raw_execute(&existing_empty, "");
+        raw_execute_async(&existing_empty, "").await;
         drop(
             TursoAuthority::open(&existing_empty)
                 .await
@@ -1634,6 +1709,20 @@ fn selecting_retained_generation_requires_history_ack_and_uses_head_cas() {
         );
         assert_eq!(second_page.len(), 1);
         assert_eq!(second_page[0].generation(), 3);
+        assert_eq!(
+            reopened
+                .selected_generation_for_binding(&namespace(), &[45; 32], &[25; 32])
+                .await
+                .unwrap_or_else(|error| panic!("lookup exact binding: {error}")),
+            Some(second_page[0].clone()),
+        );
+        assert_eq!(
+            reopened
+                .selected_generation_for_binding(&namespace(), &[45; 32], &[26; 32])
+                .await
+                .unwrap_or_else(|error| panic!("reject mismatched input: {error}")),
+            None,
+        );
         assert_eq!(
             second_page[0].selection_origin(),
             SelectionOrigin::RetainedHistoricalObservation
