@@ -462,6 +462,7 @@ impl Render for Form {
         }
         let input_admit = Rc::clone(&admit);
         let enter_admit = Rc::clone(&admit);
+        let tab_admit = Rc::clone(&admit);
         div()
             .id("add-folder")
             .flex()
@@ -483,6 +484,22 @@ impl Render for Form {
                         }
                     });
                 });
+            }))
+            // The component Root binds Tab to an action, and GPUI runs bound
+            // actions before any key-down listener, so the capture handler
+            // below never sees Tab. Take the action here, before it reaches
+            // the Shell's zone walk: Tab completes the path when it can, and
+            // otherwise goes on to move focus as it does everywhere else.
+            .on_action(cx.listener(move |add, _: &gpui_component::Tab, window, cx| {
+                if !tab_admit(cx) {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    return;
+                }
+                if add.complete(window, cx) {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                }
             }))
             .capture_key_down(cx.listener(move |add, event: &KeyDownEvent, window, cx| {
                 let plain = !event.keystroke.modifiers.platform && !event.keystroke.modifiers.control && !event.keystroke.modifiers.alt;
