@@ -23,6 +23,7 @@ use crate::model::pages::{
     TreeSubject, VersionEntry,
 };
 use crate::model::pages::VerifiedRegistryRelease;
+use crate::model::release::Release;
 use backend_client::ClientError;
 use backend_library::{
     DeclarationKind, Document, Fragment, GraphEdgeKind, GraphNodeId, GraphRelation, HealthReport,
@@ -974,10 +975,10 @@ impl<'a> Neighbourhood<'a> {
         self.rows.iter().find(|row| row.id == id)
     }
 
-    fn confidence(&self, edge: &GraphRelation) -> SemanticConfidence {
+    fn confidence(&self, edge: &GraphRelation) -> Option<SemanticConfidence> {
         let from = GraphNodeId::for_row(edge.from);
         let to = GraphNodeId::for_row(edge.to);
-        self.rich
+        match self.rich
             .and_then(|rich| {
                 rich.edges.iter().find(|candidate| {
                     candidate.from == from
@@ -987,10 +988,10 @@ impl<'a> Neighbourhood<'a> {
                                 relation: edge.relation,
                             }
                 })
-            })
-            .and_then(|candidate| candidate.provenance.confidence)
-            // The sidecar is emitted only by the compiler graph authority.
-            .unwrap_or(SemanticConfidence::Compiler)
+            }) {
+            Some(candidate) => candidate.provenance.confidence,
+            None => edge.confidence,
+        }
     }
 }
 
@@ -1028,6 +1029,7 @@ pub fn rose(
             )
         });
         return Rose {
+            relations_gap: None,
             up: Known::Unknown(gap.clone()),
             down: Known::Unknown(gap.clone()),
             left: Known::Unknown(gap.clone()),
@@ -1052,6 +1054,7 @@ pub fn rose(
             "the engine answered with containment only; typed relations need a compiler publication for this package",
         );
         return Rose {
+            relations_gap: None,
             up: Known::Unknown(gap.clone()),
             down: Known::Known(down.into()),
             left: Known::Unknown(gap.clone()),
@@ -1063,10 +1066,12 @@ pub fn rose(
     let mut left = Vec::new();
     let mut right = Vec::new();
     let mut implemented_by = Vec::new();
+    let mut unmapped_relation = false;
     for edge in edges {
-        let provenance = Provenance::Semantic(neighbourhood.confidence(edge));
+        let provenance = neighbourhood.confidence(edge).map_or(Provenance::Unspecified, Provenance::Semantic);
         if edge.from == centre && edge.to != centre {
             let Some(decl) = neighbourhood.row(edge.to).and_then(DeclRef::from_row) else {
+                unmapped_relation = true;
                 continue;
             };
             let item = relation(decl, RelationKind::Semantic(edge.relation), provenance);
@@ -1077,6 +1082,7 @@ pub fn rose(
             }
         } else if edge.to == centre && edge.from != centre {
             let Some(decl) = neighbourhood.row(edge.from).and_then(DeclRef::from_row) else {
+                unmapped_relation = true;
                 continue;
             };
             let item = relation(decl, RelationKind::Semantic(edge.relation), provenance);
@@ -1095,7 +1101,23 @@ pub fn rose(
         &mut up,
         &mut implemented_by,
     );
+    let mut relations_gap = neighbourhood.rich.map_or_else(
+        || Some(Gap::new(GapReason::NoSemanticPublication, "Graph relation coverage was not supplied")),
+        |rich| match &rich.availability {
+            backend_library::GraphAvailability::Ready => None,
+            backend_library::GraphAvailability::Unavailable(reason) | backend_library::GraphAvailability::Failed(reason) => Some(Gap::new(GapReason::NoSemanticPublication, reason.as_str())),
+            backend_library::GraphAvailability::Partial { .. } | backend_library::GraphAvailability::Loading => Some(Gap::new(GapReason::NoSemanticPublication, "Graph relation evidence is incomplete")),
+        },
+    );
+    if unmapped_relation {
+        const DETAIL: &str = "Some graph relations could not be mapped to declarations";
+        relations_gap = Some(match relations_gap {
+            Some(gap) => Gap::new(gap.reason, format!("{}; {DETAIL}", gap.detail)),
+            None => Gap::new(GapReason::ReadFailed, DETAIL),
+        });
+    }
     Rose {
+        relations_gap,
         up: Known::Known(up.into()),
         down: Known::Known(down.into()),
         left: Known::Known(left.into()),
@@ -1189,9 +1211,8 @@ fn derive_impl_blocks(
             let Some(decl) = DeclRef::from_row(target) else {
                 continue;
             };
-            let confidence = neighbourhood
-                .confidence(edge)
-                .min(neighbourhood.confidence(self_edge));
+            let confidence = neighbourhood.confidence(edge).zip(neighbourhood.confidence(self_edge))
+                .map(|(left, right)| left.min(right));
             up.push(Relation {
                 decl,
                 kind: RelationKind::Semantic(SemanticLinkKind::Implements),
@@ -1212,8 +1233,8 @@ pub fn references(
     reply: Result<&SurfaceReply, &ClientError>,
     outline: Option<&OutlineIndex>,
 ) -> Known<Arc<[ReferenceSite]>> {
-    let records = match reply {
-        Ok(SurfaceReply::References { references, .. }) => references,
+    let (records, coverage) = match reply {
+        Ok(SurfaceReply::References { references, coverage, .. }) => (references, coverage),
         Ok(other) => {
             return Known::unknown(
                 GapReason::ReadFailed,
@@ -1264,7 +1285,34 @@ pub fn references(
             })
         })
         .collect::<Vec<_>>();
+    if sites.is_empty() && !records.is_empty() {
+        return Known::unknown(GapReason::ReadFailed, "reference sites could not be read from their declaration coordinates");
+    }
+    if sites.is_empty() {
+        if let backend_library::ReferenceCoverage::Unknown { reason } | backend_library::ReferenceCoverage::Partial { reason } = coverage {
+            return Known::unknown(GapReason::Unknown, reason.as_str());
+        }
+    }
     Known::Known(sites.into())
+}
+
+pub(super) fn references_gap(reply: Option<&SurfaceReply>, outline: Option<&OutlineIndex>) -> Option<Gap> {
+    let Some(SurfaceReply::References { references, coverage, .. }) = reply else { return None };
+    let dropped = references.iter().any(|record| {
+        let label = record.site.as_str();
+        let row = outline.and_then(|outline| outline.row_by_label(label));
+        row.map_or_else(|| DeclRef::from_label(label, None, None, None), DeclRef::from_row).is_none()
+    });
+    let coverage_reason = match coverage {
+        backend_library::ReferenceCoverage::Unknown { reason } | backend_library::ReferenceCoverage::Partial { reason } => Some(reason.as_str()),
+        backend_library::ReferenceCoverage::Complete => None,
+    };
+    match (dropped, coverage_reason) {
+        (true, Some(reason)) => Some(Gap::new(GapReason::ReadFailed, format!("Some reference sites could not be read from their declaration coordinates; {reason}"))),
+        (true, None) => Some(Gap::new(GapReason::ReadFailed, "Some reference sites could not be read from their declaration coordinates")),
+        (false, Some(reason)) => Some(Gap::new(GapReason::Unknown, reason)),
+        (false, None) => None,
+    }
 }
 
 /// Lowers one client failure into a typed gap.
@@ -1474,6 +1522,7 @@ pub fn symbol_page(inputs: &SymbolInputs<'_>) -> SymbolPage {
         // may touch the disk; the mapping stays pure.
         workspace: Arc::from([]),
         references,
+        references_gap: references_gap(inputs.references.as_ref().ok().copied(), outline),
         outline: outline_position(centre, outline, inputs.outline.as_ref().err().cloned()),
         identity,
     }
@@ -1747,6 +1796,7 @@ pub fn source_view(
         declaration,
         identifiers,
         uses,
+        references_gap: None,
         uses_elsewhere: uses_elsewhere.into(),
     }
 }
@@ -1837,16 +1887,30 @@ fn local_manifest_facts(local: &LocalPackage) -> bool {
     )
 }
 
+/// Why a registry fact is absent from a local tree's page: a project of
+/// yours has none, while a registry release's unpacked source has one that
+/// this page did not read.
+fn local_fact_gap(what: &str, published: Option<&Release>) -> Gap {
+    match published {
+        None => local_gap(what),
+        Some(release) => Gap::new(
+            GapReason::NotRecorded,
+            format!("{what} for {release} was not read; this page reads its unpacked source"),
+        ),
+    }
+}
+
 fn local_manifest_record(
     package: &PackageRef,
     local: Option<&LocalPackage>,
     is_local: bool,
+    published: Option<&Release>,
 ) -> Known<PackageRecord> {
     if let Some(manifest) = local.filter(|manifest| is_local && local_manifest_facts(manifest)) {
-        return Known::Known(local_record(package, manifest));
+        return Known::Known(local_record(package, manifest, published));
     }
     Known::Unknown(if is_local {
-        local_gap("a registry record")
+        local_fact_gap("a registry record", published)
     } else {
         Gap::new(
             GapReason::NotRecorded,
@@ -1855,20 +1919,28 @@ fn local_manifest_record(
     })
 }
 
-fn local_record(package: &PackageRef, local: &LocalPackage) -> PackageRecord {
+fn local_record(package: &PackageRef, local: &LocalPackage, published: Option<&Release>) -> PackageRecord {
     PackageRecord {
         package: package.clone(),
-        source: RecordSource::LocalManifest,
+        source: if published.is_some() { RecordSource::PublishedSource } else { RecordSource::LocalManifest },
         name: Arc::clone(&local.name),
         version: local.version.clone().map_or_else(
             || Known::unknown(GapReason::NotRecorded, "the manifest states no version"),
             Known::Known,
         ),
         ecosystem: Known::Known(RegistryEcosystem::Cargo),
-        standing: Known::Unknown(local_gap("release standing")),
-        downloads: Known::Unknown(local_gap("download count")),
-        bytes: Known::Unknown(local_gap("archive size")),
-        advisory: Known::Unknown(local_gap("advisory coverage")),
+        standing: Known::Unknown(local_fact_gap("release standing", published)),
+        downloads: Known::Unknown(local_fact_gap("download count", published)),
+        bytes: Known::Unknown(local_fact_gap("archive size", published)),
+        // A publication is not a project of yours: its advisories are
+        // unknown here, never skipped as if no feed could name it.
+        advisory: Known::Unknown(published.map_or_else(
+            || local_gap("advisory coverage"),
+            |release| Gap::new(
+                GapReason::Unconfigured,
+                format!("advisory feeds were not read for {release}; this page reads its unpacked source"),
+            ),
+        )),
         description: local.description.clone().map_or_else(
             || Known::unknown(GapReason::NotRecorded, "the manifest states no description"),
             Known::Known,
@@ -1936,6 +2008,9 @@ pub struct PackageInputs<'a> {
     pub outline: Result<&'a OutlineIndex, Gap>,
     /// Local manifest facts, for a local project.
     pub local: Option<&'a LocalPackage>,
+    /// The registry release a local tree is the unpacked source of, when the
+    /// registry source itself owns that tree.
+    pub published: Option<&'a Release>,
 }
 
 fn surface_gap(reply: Result<&SurfaceReply, &ClientError>, what: &str) -> Gap {
@@ -1971,14 +2046,14 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
     let record = match &registry_records {
         Ok(records) => package_record_for(records, package)
             .map_or_else(
-                || local_manifest_record(package, inputs.local, local),
+                || local_manifest_record(package, inputs.local, local, inputs.published),
                 |record| Known::Known(registry_record(record)),
             ),
         Err(gap) => inputs.local.filter(|_| local).map_or_else(
             || Known::Unknown(gap.clone()),
             |manifest| {
                 if local_manifest_facts(manifest) {
-                    Known::Known(local_record(package, manifest))
+                    Known::Known(local_record(package, manifest, inputs.published))
                 } else {
                     Known::Unknown(gap.clone())
                 }
@@ -1988,7 +2063,7 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
     let versions = match inputs.versions {
         // A local source can share a manifest name and version with a
         // publication without acquiring that publication's release history.
-        _ if local => Known::Unknown(local_gap("release history")),
+        _ if local => Known::Unknown(local_fact_gap("release history", inputs.published)),
         Ok(SurfaceReply::PackageVersions(records))
             if !records.iter().all(|record| version_record_for(record, package)) =>
         {
@@ -2082,7 +2157,7 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
         ),
         Ok(SurfaceReply::Dependents(backend_library::RegistryMetadata::NotRecorded(text))) => (
             if local {
-                Known::Unknown(local_gap("reverse dependencies"))
+                Known::Unknown(local_fact_gap("reverse dependencies", inputs.published))
             } else {
                 Known::unknown(GapReason::NotRecorded, text.as_str())
             },
@@ -2534,9 +2609,8 @@ pub fn health_model(report: &HealthReport) -> HealthModel {
         lanes: CoverageLine::new(report.coverage(), Some(report.row_count())),
         rows: report.row_count(),
         ingest: IngestModel {
-            source_selection: progress
-                .source_selection()
-                .map(|observation| observation.render()),
+            source_selection: progress.source_selection_scope().map(|scope| scope.render())
+                .or_else(|| progress.source_selection().map(|observation| observation.render())),
             files_discovered: progress.files_discovered(),
             files_indexed: progress.files_indexed(),
             files_unavailable: progress.files_unavailable(),
@@ -2584,6 +2658,89 @@ mod tests {
 
     const PRESENT: &str = "/work/crates/present";
     const RICH: &str = "/work/rich_project";
+
+    #[test]
+    fn missing_graph_provenance_must_not_be_compiler_evidence() {
+        let mut edge = GraphRelation::new(
+            RowId::Symbol(key("caller")),
+            RowId::Symbol(key("callee")),
+            SemanticLinkKind::Calls,
+        );
+        edge.confidence = None;
+        let hood = Neighbourhood { rows: &[], relations: Some(&[]), rich: None };
+        assert_eq!(hood.confidence(&edge), None);
+        edge.confidence = Some(SemanticConfidence::Syntactic);
+        assert_eq!(hood.confidence(&edge), Some(SemanticConfidence::Syntactic));
+        let revision = backend_library::RichGraphRevision::new([0; 32], backend_library::SemanticGenerationId::new([1; 32]), [2; 32]);
+        let from = GraphNodeId::for_row(edge.from);
+        let to = GraphNodeId::for_row(edge.to);
+        let rich_edge = backend_library::RichGraphEdge::new(from, to, GraphEdgeKind::Code { relation: edge.relation }, backend_library::GraphAvailability::Ready, backend_library::GraphProvenance::package(backend_library::GraphAuthority::RegistryMetadata, [0; 32]));
+        let rich = backend_library::RichGraphSnapshot {
+            schema: backend_library::RICH_GRAPH_SCHEMA_VERSION,
+            revision, center: from, nodes: Arc::from([]), edges: Arc::from([rich_edge]),
+            availability: backend_library::GraphAvailability::Ready,
+            layout: backend_library::GraphLayoutInput { revision, center: from, nodes: Box::new([]), edges: Box::new([]), seed: [0; 32] },
+        };
+        let hood = Neighbourhood { rows: &[], relations: Some(&[]), rich: Some(&rich) };
+        assert_eq!(hood.confidence(&edge), None, "an explicitly unobserved rich edge must not acquire sidecar confidence");
+        let unmapped = rose(edge.from, None, Some(Neighbourhood { rows: &[], relations: Some(&[edge]), rich: Some(&rich) }), None);
+        assert_eq!(unmapped.relations_gap.as_ref().map(|gap| gap.reason), Some(GapReason::ReadFailed));
+        let mut partial = rich;
+        partial.availability = backend_library::GraphAvailability::unavailable("TSX profile partial").unwrap();
+        let missing = rose(edge.from, None, Some(Neighbourhood { rows: &[], relations: Some(&[edge]), rich: Some(&partial) }), None);
+        assert!(missing.relations_gap.as_ref().is_some_and(|gap| gap.detail.contains("TSX profile partial") && gap.detail.contains("could not be mapped")));
+        let hood = Neighbourhood { rows: &[], relations: Some(&[]), rich: Some(&partial) };
+        let mapped = rose(edge.from, None, Some(hood), None);
+        assert!(mapped.relations_gap.as_ref().is_some_and(|gap| gap.detail.contains("TSX profile partial")));
+        assert!(mapped.right.known().is_some());
+        let (rows, relations) = rich_rows();
+        let boxed = self::rich("18207de4::Boxed");
+        let mapped = rose(
+            RowId::Symbol(key(&boxed)), Some(DeclarationKind::Struct),
+            Some(Neighbourhood { rows: &rows, relations: Some(&relations), rich: Some(&partial) }), None,
+        );
+        assert!(mapped.relations_gap.is_some());
+        assert_eq!(mapped.left.known().unwrap().len(), 1, "positive relations remain visible alongside the gap");
+    }
+
+    #[test]
+    fn reference_coverage_distinguishes_partial_unknown_and_complete_empty() {
+        use backend_library::{ProductText, ReferenceCoverage};
+        let target = ProductText::from_static("/work/rich_project::src/lib.rs:1::target");
+        let unknown = SurfaceReply::References { target: target.clone(), references: Box::new([]), coverage: ReferenceCoverage::Unknown { reason: ProductText::from_static("TSX unavailable") } };
+        assert!(references(Ok(&unknown), None).gap().is_some());
+        assert!(references_gap(Some(&unknown), None).is_some());
+        let partial = SurfaceReply::References {
+            target: target.clone(),
+            references: Box::new([ReferenceRecord {
+                site_symbol: None,
+                source_policy: Default::default(),
+                site: ProductText::from_static("/work/rich_project::src/lib.rs:2::caller"),
+                target: SemanticLinkTarget::Local { declaration: SemanticDeclarationIdentity { family: [1; 16], variant: [2; 16] } },
+                relation: SemanticLinkKind::Calls,
+                evidence: SemanticLinkEvidence { confidence: SemanticConfidence::Syntactic, source: None },
+            }]),
+            coverage: ReferenceCoverage::Partial { reason: ProductText::from_static("TSX partial") },
+        };
+        assert_eq!(references(Ok(&partial), None).known().map(|sites| sites.len()), Some(1));
+        assert!(references_gap(Some(&partial), None).is_some());
+        let complete = SurfaceReply::References { target, references: Box::new([]), coverage: ReferenceCoverage::Complete };
+        assert!(references(Ok(&complete), None).known().is_some_and(|sites| sites.is_empty()));
+        assert!(references_gap(Some(&complete), None).is_none());
+        let mut malformed = partial.clone();
+        if let SurfaceReply::References { references, coverage, .. } = &mut malformed {
+            references[0].site = ProductText::from_static("bad\ncoordinate");
+            *coverage = ReferenceCoverage::Complete;
+        }
+        assert!(references(Ok(&malformed), None).gap().is_some());
+        assert!(references_gap(Some(&malformed), None).is_some());
+        let mut mixed = partial.clone();
+        if let (SurfaceReply::References { references, .. }, SurfaceReply::References { references: invalid, .. }) = (&mut mixed, &malformed) {
+            *references = vec![references[0].clone(), invalid[0].clone()].into_boxed_slice();
+        }
+        assert_eq!(references(Ok(&mixed), None).known().map(|sites| sites.len()), Some(1));
+        assert!(references_gap(Some(&mixed), None).is_some());
+    }
 
     #[cfg(unix)]
     #[test]
@@ -2974,6 +3131,7 @@ mod tests {
             dependents: Err(&failure),
             outline: Ok(&complete),
             local: Some(&local),
+            published: None,
         });
         assert_eq!(
             live.readme_exact_targets
@@ -2997,6 +3155,7 @@ mod tests {
             dependents: Err(&failure),
             outline: Ok(&partial),
             local: Some(&local),
+            published: None,
         });
         assert!(
             live.readme_exact_targets.known().is_none(),
@@ -3526,7 +3685,7 @@ mod tests {
             marker.provenance,
             Provenance::Derived {
                 via: Derivation::ImplBlock,
-                confidence: SemanticConfidence::Compiler,
+                confidence: Some(SemanticConfidence::Compiler),
             }
         );
         assert_eq!(marker.arrival, Arrival::NotReported);
@@ -3585,7 +3744,10 @@ mod tests {
 
         let reply = SurfaceReply::References {
             target: backend_library::ProductText::new(marker.clone()).expect("target"),
+            coverage: backend_library::ReferenceCoverage::Complete,
             references: Box::new([ReferenceRecord {
+                site_symbol: None,
+                source_policy: Default::default(),
                 site: backend_library::ProductText::new(rich("b578f79d::Boxed")).expect("site"),
                 target: SemanticLinkTarget::Local {
                     declaration: SemanticDeclarationIdentity {
@@ -3665,6 +3827,7 @@ mod tests {
             dependents: Ok(&dependents),
             outline: Err(Gap::new(GapReason::ReadFailed, "outline refused")),
             local: None,
+            published: None,
         });
         let head = dossier.record.known().expect("record");
         assert_eq!(head.name.as_ref(), "beta");
@@ -3765,6 +3928,7 @@ mod tests {
             dependents: Err(&unavailable),
             outline: Err(Gap::new(GapReason::ReadFailed, "not needed")),
             local: None,
+            published: None,
         });
         assert_eq!(dossier.record.gap().map(|gap| gap.reason), Some(GapReason::NotRecorded));
         assert!(dossier.record.known().is_none());
@@ -3793,6 +3957,7 @@ mod tests {
             dependents: Err(&unavailable),
             outline: Err(Gap::new(GapReason::ReadFailed, "not needed")),
             local: None,
+            published: None,
         });
         assert_eq!(dossier.record.known().map(|record| record.source), Some(RecordSource::Registry));
         assert_eq!(dossier.versions.gap().map(|gap| gap.reason), Some(GapReason::ReadFailed));
@@ -3829,6 +3994,7 @@ mod tests {
             dependents: Ok(&dependents),
             outline: Err(Gap::new(GapReason::ReadFailed, "not needed")),
             local: None,
+            published: None,
         });
 
         assert!(dossier.dependents.known().is_none());
@@ -3889,6 +4055,7 @@ mod tests {
             dependents: Ok(&dependents),
             outline: Err(Gap::new(GapReason::ReadFailed, "outline refused")),
             local: Some(&local),
+            published: None,
         });
         let head = dossier.record.known().expect("record");
         assert_eq!(head.source, RecordSource::Registry);
@@ -3930,7 +4097,7 @@ mod tests {
         let registry = crate::runtime::tests::registry_record("backend-present", "0.3.0");
         let records = SurfaceReply::Package(Box::new([registry.clone()]));
         let other = PackageRef::parse("pkg:nuget/Widget@1.0.0").expect("registry route");
-        assert!(local_manifest_record(&other, Some(&local), false).known().is_none(),
+        assert!(local_manifest_record(&other, Some(&local), false, None).known().is_none(),
             "a registry route cannot borrow this local Cargo manifest");
         let versions = SurfaceReply::PackageVersions(Box::new([registry]));
         let dependencies =
@@ -3952,6 +4119,7 @@ mod tests {
             dependents: Ok(&dependents),
             outline: Ok(&outline),
             local: Some(&local),
+            published: None,
         });
         let head = dossier.record.known().expect("manifest record");
         assert_eq!(head.source, RecordSource::LocalManifest);
@@ -4020,6 +4188,7 @@ mod tests {
             dependents: Err(&unavailable),
             outline: Err(Gap::new(GapReason::ReadFailed, "not needed")),
             local: None,
+            published: None,
         });
         assert_eq!(registry_dossier.record.known().map(|record| record.source), Some(RecordSource::Registry));
         assert_eq!(registry_dossier.versions.known().map(|rows| rows[0].current), Some(true));
@@ -4049,6 +4218,71 @@ mod tests {
             label.as_ref() == "Advisory coverage" && value.contains("No advisory feed coverage")));
         assert!(!comparison.candidates[1].facts.iter().any(|(label, value)|
             label.as_ref() == "Advisories in the configured authority" && value.starts_with('0')));
+    }
+
+    /// GUI-12: a registry release's unpacked tree is a publication. Its page
+    /// must not call it a project of yours, which skips advisories.
+    #[test]
+    fn an_unpacked_registry_release_is_not_a_project_of_yours() {
+        let package = PackageRef::parse(PRESENT).expect("local package");
+        let local = LocalPackage {
+            project: crate::core::LocalProjectId::new(PRESENT).expect("project"),
+            source: LocalPackageSource::Cargo,
+            name: Arc::from("itoa"),
+            version: Some(Arc::from("1.0.18")),
+            description: None,
+            license: Known::Known(crate::model::pages::LicenseDeclaration::Expression(Arc::from("MIT OR Apache-2.0"))),
+            rust_version: None,
+            repository: None,
+            homepage: None,
+            documentation: None,
+            keywords: Arc::from([]),
+            categories: Arc::from([]),
+            readme: Arc::from([]),
+            readme_markdown: None,
+            readme_links: Arc::from([]),
+            readme_headings: Arc::from([]),
+            dependencies: Arc::from([]),
+            features: Arc::from([]),
+            members: 1,
+        };
+        let records = SurfaceReply::Package(Box::new([]));
+        let versions = SurfaceReply::PackageVersions(Box::new([]));
+        let dependencies = SurfaceReply::Dependencies(backend_library::DependencyFacts::Unavailable(
+            backend_library::ProductText::new("not recorded").expect("reason"),
+        ));
+        let dependents = SurfaceReply::Dependents(backend_library::RegistryMetadata::NotRecorded(
+            backend_library::ProductText::new("not recorded").expect("reason"),
+        ));
+        let release = Release::new("itoa", "1.0.18").expect("release");
+        let read = |published: Option<&Release>| package_dossier(&PackageInputs {
+            package: &package,
+            records: Ok(&records),
+            versions: Ok(&versions),
+            dependencies: Ok(&dependencies),
+            dependents: Ok(&dependents),
+            outline: Err(Gap::new(GapReason::ReadFailed, "outline refused")),
+            local: Some(&local),
+            published,
+        });
+        let yours = read(None);
+        let head = yours.record.known().expect("manifest record");
+        assert_eq!(head.source, RecordSource::LocalManifest, "an unowned tree stays a project of yours");
+        assert_eq!(head.advisory.gap().map(|gap| gap.reason), Some(GapReason::LocalProject));
+
+        let unpacked = read(Some(&release));
+        let head = unpacked.record.known().expect("manifest record");
+        assert_eq!(head.source, RecordSource::PublishedSource);
+        assert_eq!(head.name.as_ref(), "itoa");
+        let advisory = head.advisory.gap().expect("advisories are not known here");
+        assert_eq!(advisory.reason, GapReason::Unconfigured, "unknown, not skipped as yours");
+        assert!(advisory.detail.contains("itoa 1.0.18"), "{advisory:?}");
+        for (what, gap) in [("standing", head.standing.gap()), ("downloads", head.downloads.gap()), ("bytes", head.bytes.gap()),
+            ("versions", unpacked.versions.gap()), ("dependents", unpacked.dependents.gap())] {
+            let gap = gap.unwrap_or_else(|| panic!("{what} stays unknown"));
+            assert_eq!(gap.reason, GapReason::NotRecorded, "{what}: {gap:?}");
+            assert!(!gap.detail.contains("local project"), "{what}: {gap:?}");
+        }
     }
 
     #[test]
@@ -4114,6 +4348,7 @@ mod tests {
             dependents: Ok(&dependents),
             outline: Err(Gap::new(GapReason::ReadFailed, "outline refused")),
             local: Some(&local),
+            published: None,
         });
         let head = dossier.record.known().expect("local manifest");
         assert_eq!(head.source, RecordSource::LocalManifest);
@@ -4170,6 +4405,7 @@ mod tests {
             dependents: Ok(&dependents),
             outline: Err(Gap::new(GapReason::ReadFailed, "outline refused")),
             local: Some(&local),
+            published: None,
         });
         assert_eq!(
             dossier.record.gap().map(|gap| gap.reason),
@@ -4471,9 +4707,16 @@ mod tests {
                 )],
                 Vec::new(),
             )
-            .expect("progress"),
+            .expect("progress")
+            .with_source_selection_scope(backend_library::SourceSelectionScopeCoverage {
+                project_count: 3,
+                extensions: [("css", 1, 2, 0), ("sql", 1, 2, 2), ("vue", 2, 1, 0)]
+                    .into_iter().map(|(extension, projects_observed, projects_unknown, excluded_files)|
+                        backend_library::SourceSelectionExtensionCoverage { extension: extension.into(), projects_observed, projects_unknown, excluded_files }).collect(),
+            }).expect("scope"),
         );
         let health = health_model(&report);
+        assert!(health.ingest.source_selection.as_ref().unwrap().contains(".sql: 2 known exclusions; observed in 1/3 projects, 2 unknown"));
         assert_eq!(health.rows, 1_270);
         assert_eq!(health.ingest.files_discovered, 23);
         assert_eq!(health.ingest.files_indexed, 22);

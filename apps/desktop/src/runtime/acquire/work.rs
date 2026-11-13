@@ -7,7 +7,7 @@
 //! the window, so a test drives them against a real owner exactly as the
 //! worker does.
 
-use super::{OwnerRequest, Stage};
+use super::{OwnerRequest, Removal, Stage};
 use super::super::actor::{CancellationToken, CancellationWake};
 use backend_client::{RequestContext, RequestCancellationReason};
 use crate::core::LocalProjectId;
@@ -111,6 +111,9 @@ pub(crate) enum Job {
     Release(Release),
     /// The registry packages `project` builds with.
     Dependencies(LocalProjectId),
+    /// A release a person asked to remove, at the exact indexed root its page
+    /// reads.
+    Remove(Release, PackageRef),
 }
 
 /// Where one of a project's packages comes from.
@@ -139,6 +142,8 @@ pub(crate) enum Landed {
     Stage(Release, Stage),
     /// A project's packages were read (in the order they are added), or why not.
     Dependencies(LocalProjectId, Result<Arc<[Dependency]>, Arc<str>>),
+    /// Removing a release reached a step.
+    Removal(Release, Removal),
 }
 
 /// The jobs waiting, and whether a worker is draining them.
@@ -207,7 +212,7 @@ impl Queue {
             if pending.jobs.iter().any(|queued| queued.job == job && queued.composition.generation == composition.generation && queued.owner.owner.same_owner(&owner) && queued.owner.current()) {
                 return false;
             }
-            let release = matches!(&job, Job::Release(_));
+            let release = matches!(&job, Job::Release(_) | Job::Remove(..));
             let queued = Queued { job, owner: WorkOwner::new(owner, composition.generation, #[cfg(test)] producer.clone()), composition, post, #[cfg(test)] producer };
             if release {
                 pending.jobs.push_front(queued);
@@ -252,6 +257,7 @@ impl Queue {
                 match job {
                     Job::Release(release) => post(Landed::Stage(release, Stage::Failed(words))),
                     Job::Dependencies(project) => post(Landed::Dependencies(project, Err(words))),
+                    Job::Remove(release, _) => post(Landed::Removal(release, Removal::Failed(words))),
                 }
             }
         }
@@ -585,6 +591,9 @@ fn run_in(job: &Job, composition: &Composition, owner: Option<&WorkOwner>, post:
         Job::Release(release) => {
             index_release_in(composition, release, owner, Listed::Ready, &|stage| post(Landed::Stage(release.clone(), stage)));
         }
+        Job::Remove(release, page) => {
+            remove_release_in(composition, release, page, owner, &|removal| post(Landed::Removal(release.clone(), removal)));
+        }
         Job::Dependencies(project) => {
             let root = project.path();
             let read = if root.join("Cargo.toml").is_file() {
@@ -621,6 +630,44 @@ fn run_in(job: &Job, composition: &Composition, owner: Option<&WorkOwner>, post:
                 Err(words) => post(Landed::Dependencies(project.clone(), Err(Arc::from(words)))),
             }
         }
+    }
+}
+
+/// [`remove_release_in`] without a window's captured owner, for tests that
+/// drive a real owner as the worker does.
+#[cfg(test)]
+pub(crate) fn remove_release(composition: &Composition, release: &Release, page: &PackageRef, post: &dyn Fn(Removal)) {
+    remove_release_in(composition, release, page, None, post);
+}
+
+/// Removes `release` from the library through the owner's `remove` command:
+/// only the exact root `page` reads, only when this machine's registry
+/// source owns that tree as `release`, and only while the owner lists it.
+/// Its source tree stays on this machine, so it can be added again.
+fn remove_release_in(composition: &Composition, release: &Release, page: &PackageRef, owner: Option<&WorkOwner>, post: &dyn Fn(Removal)) {
+    let failed = |words: String| post(Removal::Failed(Arc::from(words)));
+    if let Err(error) = check(owner) { return failed(error.to_string()); }
+    let coordinate = page.as_str();
+    if !page.is_local() || composition.source.release_of(Path::new(coordinate)).as_ref() != Some(release) {
+        return failed(format!("{coordinate} is not the registry source of {release}; nothing was removed"));
+    }
+    let removed = connect(composition, owner).and_then(|mut session| {
+        if !is_listed(&mut session, coordinate, Listed::Any) {
+            return Err(backend_client::ClientError::Protocol(format!("{release} is not in the library; nothing was removed")));
+        }
+        before_send(owner, &mut session)?;
+        post(Removal::Removing);
+        session.remove(coordinate).map(|_| ())
+    });
+    if let Err(error) = check(owner) { return failed(error.to_string()); }
+    match removed {
+        Ok(()) => {
+            if let Some(refusals) = composition.refusals.as_deref().map(Refusals::at) {
+                refusals.forget(coordinate);
+            }
+            post(Removal::Removed(page.clone()));
+        }
+        Err(error) => failed(format!("the index did not remove {release}: {error}")),
     }
 }
 
@@ -689,6 +736,20 @@ pub(crate) fn dependency_origin(origin: &PackageOrigin, release: &Release, sourc
             "source {} is unresolved: no release is offered",
             source.as_deref().unwrap_or("not recorded")
         ))),
+    }
+}
+
+/// The owner's refusal, with what to do about the one it can only name with a
+/// closed tag. Cargo resolves a release's dev-dependencies too, and the desktop
+/// reads Cargo offline: when their sources are not in the Cargo cache the
+/// authority cannot bind the release, and says only "authority binding".
+pub(crate) fn refusal_words(owner_words: String) -> String {
+    if owner_words.contains("authority binding") {
+        format!(
+            "{owner_words}. This is most often because Cargo reads offline here and the sources of this release's dev-dependencies are not in your Cargo cache. Run `cargo fetch` in the release's folder to put them there, then add it again."
+        )
+    } else {
+        owner_words
     }
 }
 
@@ -807,7 +868,7 @@ fn index_release_in(composition: &Composition, release: &Release, owner: Option<
             if connect(composition, owner).is_ok_and(|mut session| is_listed(&mut session, coordinate, Listed::Any)) =>
         {
             if let Err(error) = check(owner) { return failed(error.to_string()); }
-            let words: Arc<str> = Arc::from(error.to_string());
+            let words: Arc<str> = Arc::from(refusal_words(error.to_string()));
             if let Some(refusals) = &refusals {
                 refusals.keep(coordinate, &words);
             }
@@ -890,7 +951,7 @@ fn add_published_release(
             stage
         }
         (Err(error), Ok(Some(package))) => {
-            let words: Arc<str> = Arc::from(error.to_string());
+            let words: Arc<str> = Arc::from(refusal_words(error.to_string()));
             if let Some(refusals) = composition.refusals.as_deref() {
                 Refusals::at(refusals).keep(package.as_str(), &words);
             }
@@ -1035,4 +1096,22 @@ fn is_listed(session: &mut Session, coordinate: &str, listed: Listed) -> bool {
     let Ok(reply) = session.packages() else { return false };
     let backend_library::CommandReply::Packages(snapshot) = reply.reply else { return false };
     snapshot.root.rows().iter().any(|row| row.label == coordinate && (listed == Listed::Any || row.state == backend_library::RowState::Ready))
+}
+
+#[cfg(test)]
+mod refusal_word_tests {
+    use super::refusal_words;
+
+    #[test]
+    fn an_authority_binding_refusal_says_what_usually_causes_it_and_what_to_do() {
+        let said = refusal_words("every language profile was refused: build.rs (authority_binding): resolve authority fault: authority binding".to_owned());
+        assert!(said.starts_with("every language profile was refused"), "the owner's words come first: {said}");
+        assert!(said.contains("dev-dependencies") && said.contains("cargo fetch"), "{said}");
+    }
+
+    #[test]
+    fn any_other_refusal_is_left_as_the_owner_said_it() {
+        let words = "the compiler stopped at src/lib.rs: type check authority fault".to_owned();
+        assert_eq!(refusal_words(words.clone()), words);
+    }
 }
