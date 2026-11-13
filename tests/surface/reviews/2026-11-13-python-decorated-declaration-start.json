@@ -1,0 +1,35 @@
+{
+  "cases": [
+    "python-cachetools",
+    "python-itsdangerous"
+  ],
+  "changes": {
+    "python-cachetools": {
+      "cli search TTLCache records[5]": "property ttl, src/cachetools/__init__.py 540 -> 539",
+      "cli search cached": "src/cachetools/__init__.pyi: cached 185,176,168 and cachedmethod 236,225,217 each -1 (three overloads each); classes _cached_wrapper 153 -> 152, _cached_wrapper_info 165 -> 164, _cachedmethod_wrapper 195 -> 194, _cachedmethod_wrapper_info 211 -> 210",
+      "evidence": "Every changed record is a decorated kind: a property, overloaded functions in a stub, and the stub's protocol-wrapper classes. Every shift is exactly one line. The undecorated records in the same answers did not move: cached __init__.py:738, cachedmethod __init__.py:769, keys.py methodkey :46 and typedmethodkey :64, __get__ __init__.pyi:204, and the test classes. Decorated classes move through the same excerpt_node rule, which names both function_definition and class_definition under a decorated_definition.",
+      "mcp search cached": "structuredContent records[1] and [2] repeat cached 186 -> 185 and 177 -> 176"
+    },
+    "python-itsdangerous": {
+      "cli search Signer records[7]": "signer, kind method, tests/test_itsdangerous/test_signer.py: identity.line and identity.trail 24 -> 23",
+      "evidence": "The same outline shows _CompactJSON at :7 and loads/dumps four lines apart (:10 and :14), the shape of a decorated method (decorator line, def line, one-line body, blank) with the decorator line now reported. The two Serializer.__init__ shifts are the two overload declarations. Declarations the same outline shows without a decorator keep their lines: _PDataSerializer.loads :27, _PDataSerializer.dumps :31, BadData.__init__ :14, BadData.__str__ :18. The pinned fixture source was not available to this review, so the existence of each individual decorator line was not read from the file.",
+      "mcp outline text": [
+        "_CompactJSON.loads  src/itsdangerous/_json.py:11 -> :10",
+        "_CompactJSON.dumps  src/itsdangerous/_json.py:15 -> :14",
+        "Serializer.__init__ src/itsdangerous/serializer.py:110 -> :109",
+        "Serializer.__init__ src/itsdangerous/serializer.py:177 -> :176"
+      ]
+    }
+  },
+  "limits": "No fixture source file was read: the pinned source trees were not available to this review. The classification rests on the product rule above, the unit assertions that pin it, and the pattern in the recorded answers (all shifts are -1, only decorated kinds move, undecorated neighbours stay). A multi-decorator declaration would shift by more than one line; none is present in the recorded rows.",
+  "performance": {
+    "action": "Reviewed performance objects retained byte-for-byte."
+  },
+  "required_before_merge": "Normal full T2 on the final exact head must reproduce these lines and pass every other correctness and performance check. The python source_root and revision movement is reviewed in a separate record.",
+  "reviewer": "Claude Code / Sonnet 5.5, 2026-11-13",
+  "rule": "A Python decorator is part of the declaration's authored extent, so the declaration's location starts at its first decorator line (crates/compile/src/syntax.rs, declarations_of, with the comment 'A Python decorator is part of the declaration's authored extent, so its source location starts at the decorator'). excerpt_node climbs decorated_definition for function_definition and class_definition so the line number and the source excerpt start together. Unit assertions in frontends/python/lib.rs (a decorated class User must start at line 10, its decorator line) and in the local-service structural_source test (a decorated function reports its decorator line, also through paged source reads) pin this rule. Before this change set the location was the def/class line.",
+  "schema": 1,
+  "scope": "Answer-only update of authored line numbers in Python search records and the MCP outline text. Performance objects, tolerances and normalizers are unchanged.",
+  "task": "Review Python declaration start lines that now begin at the decorator",
+  "unchanged": "Record order, kinds, scores, semantic coordinates, counts and continuation evidence are identical to the reviewed snapshots; only identity.line, identity.trail and the outline text line numbers moved."
+}
