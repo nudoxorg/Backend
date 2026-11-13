@@ -172,11 +172,20 @@ impl EmbeddedLocalService {
     /// # Errors
     /// Returns an error when composition, binding, or thread creation fails.
     pub fn start(config: ProcessConfig) -> Result<Self, ProcessError> {
-        let owner = crate::builtin::compose_owner(&config)?;
+        Self::start_with_shutdown(config, crate::listener::ListenerShutdown::new())
+    }
+
+    /// Starts with a caller-owned lifecycle capability. A clone held by the
+    /// caller can request shutdown while durable owner recovery is underway.
+    ///
+    /// # Errors
+    /// Returns an error when composition, binding, or thread creation fails.
+    pub fn start_with_shutdown(config: ProcessConfig, shutdown: crate::listener::ListenerShutdown) -> Result<Self, ProcessError> {
+        let owner = crate::builtin::compose_owner_with_shutdown(&config, Some(shutdown.clone()))?;
         let service =
             LocaldService::new(owner, config.listener.limits).map_err(ProcessError::Protocol)?;
         let mut listener =
-            UnixListenerService::bind(service, config.listener).map_err(ProcessError::Listener)?;
+            UnixListenerService::bind_with_shutdown(service, config.listener, shutdown).map_err(ProcessError::Listener)?;
         let endpoint = listener.path().to_path_buf();
         let shutdown = listener.shutdown_handle();
         let thread = thread::Builder::new()
