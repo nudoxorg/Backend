@@ -1320,6 +1320,9 @@ mod tests {
         for activation in ["enter", "secondary-enter"] {
             let mut rig = rig_with_reads(cx, Some(page_route("RelationDirection")), 1440.0, 900.0,
                 ReadPool::start(2, |_| Fixture).expect("fixture pool"));
+            // `a11y_frame_number` counts native trees, which the platform builds
+            // only for a client that asked; this test counts them below.
+            rig.cx.update(|window, _| window.set_a11y_forced(true));
             rig.go(crate::navigation::Intent::SetMotion(crate::model::MotionPreference::Reduced));
             rig.keys("secondary-k");
             let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
@@ -2467,7 +2470,6 @@ mod tests {
         assert_eq!(ask.read_with(rig.cx, |ask, cx| ask.choices(cx).len()), 16);
         let store = rig.graph.store.clone();
         let route = rig.route();
-        let frame = rig.cx.update(|window, _| window.a11y_frame_number());
         let focus = rig.cx.update(|window, cx| {
             let editor = input.read(cx).focus_handle(cx);
             assert!(editor.is_focused(window));
@@ -2484,12 +2486,15 @@ mod tests {
                 assert!(editor.is_focused(window), "old query rows cannot take native Tab focus");
                 assert_eq!(store.read(cx).snapshot().route(), &route, "arrows cannot preview the old query");
                 assert!(!ask.read(cx).walked);
-                assert_eq!(window.a11y_frame_number(), frame);
+                // GPUI redraws a dirty window before key dispatch. Repainting
+                // is allowed; the race being tested is the still-queued Change
+                // notification, not reuse of a particular accessibility frame.
+                assert_eq!(ask.read(cx).draft.query().expect("retained draft").text.as_ref(), "many",
+                    "the native editor must refuse stale rows before Change is delivered");
             }
             window.focused(cx)
         });
         assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focus);
-        assert_eq!(rig.cx.update(|window, _| window.a11y_frame_number()), frame);
         assert_eq!(rig.route(), route, "queued preview cannot land after this input batch");
         rig.settle();
         assert_eq!(ask.read_with(rig.cx, |ask, cx| ask.choices(cx).len()), 1);
