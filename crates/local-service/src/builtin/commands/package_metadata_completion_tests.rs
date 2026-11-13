@@ -22,6 +22,7 @@ fn generic(package: &PackageCoordinate) -> CommandReply {
     CommandReply::Surface(SurfaceReply::PackageDiscovery {
         package: package.clone(),
         observation: unavailable("registry package metadata has not been observed yet"),
+        advisory: None,
     })
 }
 
@@ -52,6 +53,7 @@ fn exact_metadata_failures_survive_completion_and_shared_client_wire() -> TestRe
         let expected = CommandReply::Surface(SurfaceReply::PackageDiscovery {
             package: package.clone(),
             observation,
+            advisory: None,
         });
         assert_eq!(reply, expected);
         let dto = backend_library::ReplyDto::new(71, reply);
@@ -75,6 +77,7 @@ fn exact_metadata_failures_survive_completion_and_shared_client_wire() -> TestRe
         CommandReply::Surface(SurfaceReply::PackageDiscovery {
             package,
             observation,
+            advisory: None,
         })
     );
     Ok(())
