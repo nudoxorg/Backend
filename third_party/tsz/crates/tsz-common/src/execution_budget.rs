@@ -775,6 +775,113 @@ mod tests {
         assert!(!slice.is_exhausted());
     }
 
+    /// Scripted per-file work: (spend before the file would finish, slice allowance 100).
+    /// Two files are over their slice; every other file fits.
+    const SCRIPTED_FILE_WORK: [u64; 8] = [30, 250, 90, 40, 100, 101, 10, 60];
+    const SCRIPTED_SLICE: u64 = 100;
+
+    /// What each file sees: Ok(()) when it finished, Err(true) when its own slice
+    /// refused it, Err(false) when the shared program stopped it.
+    fn run_scripted_file(budget: &ProjectExecutionBudget<'_>, work: u64) -> Result<(), bool> {
+        let slice = FileWorkSlice::new(budget, SCRIPTED_SLICE);
+        let mut left = work;
+        while left > 0 {
+            let step = left.min(7);
+            left -= step;
+            if slice.checkpoint(step).is_err() {
+                return Err(slice.is_exhausted());
+            }
+            std::thread::yield_now();
+        }
+        Ok(())
+    }
+
+    fn scripted_outcome(order: &[usize], workers: usize, program: u64) -> Vec<(usize, Result<(), bool>)> {
+        let cancelled = AtomicBool::new(false);
+        let budget =
+            ProjectExecutionBudget::new(Instant::now() + Duration::from_secs(30), &cancelled, program);
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let results = std::sync::Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                scope.spawn(|| loop {
+                    let at = next.fetch_add(1, Ordering::AcqRel);
+                    let Some(&file) = order.get(at) else { return };
+                    let outcome = run_scripted_file(&budget, SCRIPTED_FILE_WORK[file]);
+                    results.lock().unwrap().push((file, outcome));
+                });
+            }
+        });
+        let mut results = results.into_inner().unwrap();
+        results.sort_by_key(|(file, _)| *file);
+        results
+    }
+
+    fn scripted_orders() -> Vec<Vec<usize>> {
+        // Every rotation and reversal, plus a few fixed shuffles: the hot files
+        // arrive first, last and in the middle.
+        let base: Vec<usize> = (0..SCRIPTED_FILE_WORK.len()).collect();
+        let mut orders = Vec::new();
+        for shift in 0..base.len() {
+            let mut rotated = base.clone();
+            rotated.rotate_left(shift);
+            orders.push(rotated.clone());
+            rotated.reverse();
+            orders.push(rotated);
+        }
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        for _ in 0..16 {
+            let mut shuffled = base.clone();
+            for at in (1..shuffled.len()).rev() {
+                state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+                shuffled.swap(at, (state >> 33) as usize % (at + 1));
+            }
+            orders.push(shuffled);
+        }
+        orders
+    }
+
+    #[test]
+    fn program_sized_for_the_slices_makes_file_outcomes_independent_of_arrival_order() {
+        // The program can pay for every slice in full, so only slices can refuse.
+        let program = SCRIPTED_FILE_WORK.len() as u64 * SCRIPTED_SLICE;
+        let mut outcomes = std::collections::BTreeSet::new();
+        for order in scripted_orders() {
+            for workers in 1..=4 {
+                outcomes.insert(format!("{:?}", scripted_outcome(&order, workers, program)));
+            }
+        }
+        assert_eq!(outcomes.len(), 1, "{outcomes:#?}");
+        let only = outcomes.into_iter().next().unwrap();
+        let refused = SCRIPTED_FILE_WORK
+            .iter()
+            .enumerate()
+            .filter(|(_, work)| **work > SCRIPTED_SLICE)
+            .map(|(file, _)| format!("({file}, Err(true))"))
+            .collect::<Vec<_>>();
+        for file in refused {
+            assert!(only.contains(&file), "{file} is refused by its own slice: {only}");
+        }
+        assert_eq!(only.matches("Err(false)").count(), 0, "the program never refuses: {only}");
+    }
+
+    #[test]
+    fn program_smaller_than_the_slices_makes_the_refused_files_depend_on_arrival_order() {
+        // The same files with a program that cannot pay for what the slices admit:
+        // which file the shared stop lands on is just the order of the charges.
+        // Sequential (one worker) orders make that deterministic to demonstrate.
+        let admitted: u64 = SCRIPTED_FILE_WORK.iter().map(|work| (*work).min(SCRIPTED_SLICE)).sum();
+        let program = admitted - 60;
+        let mut outcomes = std::collections::BTreeSet::new();
+        for order in scripted_orders() {
+            outcomes.insert(format!("{:?}", scripted_outcome(&order, 1, program)));
+        }
+        assert!(
+            outcomes.len() > 1,
+            "an undersized shared program is order dependent, which is why it is sized from the admitted input"
+        );
+    }
+
     #[test]
     fn cancellation_after_file_exhaustion_keeps_the_program_stop_authoritative() {
         let cancelled = AtomicBool::new(false);
