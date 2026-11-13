@@ -152,6 +152,9 @@ impl Drop for Fixture {
     }
 }
 
+#[path = "compiler_coverage_private_reexport.rs"]
+mod private_reexport;
+
 const EXCLUDED: [&str; 9] = [
     "playwright.config.ts",
     "src/app/core/auth/services/jwt.service.spec.ts",
