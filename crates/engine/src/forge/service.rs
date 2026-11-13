@@ -161,17 +161,17 @@ impl ForgeAcquisitionService {
         })
     }
 
+    /// Waits for the journal fence while another holder finishes its short
+    /// journal refresh. Every step of a holder is a durable write, so under
+    /// heavy I/O contention it can keep the fence for much longer than a few
+    /// milliseconds. Only a fence still held after `FORGE_FENCE_PATIENCE` is
+    /// reported busy.
     fn acquire_journal_lease(&self) -> io::Result<Option<LeaseGuard>> {
-        for _ in 0..32 {
-            if let Some(lease) = self
-                .leases
-                .acquire(self.journal_work_key, FORGE_LEASE_TTL)?
-            {
-                return Ok(Some(lease));
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        Ok(None)
+        self.leases.acquire_within(
+            self.journal_work_key,
+            FORGE_LEASE_TTL,
+            FORGE_FENCE_PATIENCE,
+        )
     }
 
     fn with_journal_fence<T>(
@@ -189,6 +189,11 @@ impl ForgeAcquisitionService {
             self.refresh_catalog_suffix(&mut catalog)?;
             read(&mut catalog)
         })
+    }
+
+    #[cfg(test)]
+    pub(super) fn journal_lease_for_test(&self) -> io::Result<Option<LeaseGuard>> {
+        self.acquire_journal_lease()
     }
 
     #[cfg(test)]
@@ -397,10 +402,16 @@ impl ForgeAcquisitionService {
                     Err(_) => ForgeAcquisitionOutcome::Corrupt,
                 };
             }
+            Err(ForgeTransportError::HttpStatus(status)) => {
+                return ForgeAcquisitionOutcome::Rejected(ForgeRejectReason::HttpStatus(status));
+            }
             Err(ForgeTransportError::Bounds) => {
                 return ForgeAcquisitionOutcome::Rejected(ForgeRejectReason::Bounds);
             }
-            Err(ForgeTransportError::Protocol | ForgeTransportError::Policy) => {
+            Err(ForgeTransportError::Protocol) => {
+                return ForgeAcquisitionOutcome::Rejected(ForgeRejectReason::Protocol);
+            }
+            Err(ForgeTransportError::Policy) => {
                 return ForgeAcquisitionOutcome::Rejected(ForgeRejectReason::Policy);
             }
             Err(ForgeTransportError::Integrity) => {
@@ -416,6 +427,9 @@ impl ForgeAcquisitionService {
             Err(ForgeTransportError::RetryAfter(millis)) => {
                 return ForgeAcquisitionOutcome::RetryAfter(millis);
             }
+            Err(ForgeTransportError::HttpStatus(status)) => {
+                return ForgeAcquisitionOutcome::Rejected(ForgeRejectReason::HttpStatus(status));
+            }
             Err(ForgeTransportError::Bounds) => {
                 return ForgeAcquisitionOutcome::Rejected(ForgeRejectReason::Bounds);
             }
@@ -430,6 +444,9 @@ impl ForgeAcquisitionService {
         };
         let metadata = match transport.fetch_metadata(coordinate, &resolution) {
             Ok(metadata) => metadata,
+            Err(ForgeTransportError::HttpStatus(status)) => {
+                return ForgeAcquisitionOutcome::Rejected(ForgeRejectReason::HttpStatus(status));
+            }
             Err(ForgeTransportError::Bounds) => {
                 return ForgeAcquisitionOutcome::Rejected(ForgeRejectReason::Bounds);
             }

@@ -46,6 +46,8 @@ const MAX_METADATA_BYTES: usize = 2 * 1024 * 1024;
 const MAX_README_BYTES: usize = 256 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
 const FORGE_LEASE_TTL: Duration = Duration::from_secs(30);
+/// How long a caller waits for a contended journal fence before reporting it busy.
+const FORGE_FENCE_PATIENCE: Duration = Duration::from_secs(5);
 
 fn forge_root_identity(root: &std::path::Path) -> [u8; ID_BYTES] {
     digest_fields(
