@@ -1109,7 +1109,7 @@ fn an_admitted_dependency_refusal_keeps_json_evidence_and_a_nonzero_exit() {
 }
 
 #[test]
-fn admitted_durable_partial_matches_ticket_fault_and_cli_exit_without_inventing_source_facts() {
+fn admitted_partial_is_qualified_cli_success_with_exact_receipts() {
     use backend_library::{
         CompileExecutionIntent, IndexJobOutcome, IndexJobPartialPublication, IndexJobTerminal,
         IndexJobTicket, IndexOperationFailureReason, IndexOperationKey, IndexOperationObservation,
@@ -1198,6 +1198,22 @@ fn admitted_durable_partial_matches_ticket_fault_and_cli_exit_without_inventing_
     )
     .with_source_capture(Some(capture));
     let operation = IndexOperationObservation::Known(status.clone());
+    let (waited, stop) = crate::index_wait::project_result(
+        backend_client::IndexOperationWaitResult::Terminal(operation.clone()),
+    );
+    assert!(stop.is_none());
+    assert_eq!(render::answer_exit_code(&waited), ExitCode::SUCCESS);
+    let waited_json: serde_json::Value =
+        serde_json::from_str(&render::json(&waited)).expect("wait JSON");
+    assert!(waited_json["fault"].is_null());
+    assert_eq!(
+        waited_json["partial_publication_warning"]["receipt"],
+        serde_json::to_value(&partial.receipt).expect("wait receipt")
+    );
+    assert_eq!(
+        waited_json["index_operation"],
+        serde_json::to_value(&operation).expect("exact wait observation")
+    );
     let cases = [
         (
             SurfaceCommand::IndexAwait {
@@ -1226,15 +1242,27 @@ fn admitted_durable_partial_matches_ticket_fault_and_cli_exit_without_inventing_
         let answer = Answer::Product(Box::new(backend_present::product_view_for_command(
             &command, &reply,
         )));
-        assert_eq!(
-            render::answer_exit_code(&answer),
-            ExitCode::from(render::EXIT_REFUSED)
-        );
-        let fault = answer.fault().expect("partial is a fault");
-        assert_eq!(fault.slug(), FaultSlug::PartiallyPublished);
-        causes.push(fault.cause().sentence().to_owned());
+        assert_eq!(render::answer_exit_code(&answer), ExitCode::SUCCESS);
+        assert!(answer.fault().is_none());
         let json: serde_json::Value = serde_json::from_str(&render::json(&answer)).expect("JSON");
-        assert_eq!(json["fault"]["slug"], "partially-published");
+        assert!(json["fault"].is_null());
+        causes.push(
+            json["partial_publication_warning"]["detail"]
+                .as_str()
+                .expect("warning")
+                .to_owned(),
+        );
+        assert_eq!(
+            json["partial_publication_warning"]["receipt"],
+            serde_json::to_value(&partial.receipt).expect("receipt")
+        );
+        assert_eq!(json["partial_publication_warning"]["published_profiles"], 1);
+        assert_eq!(json["partial_publication_warning"]["refused_profiles"], 1);
+        assert_eq!(
+            json["partial_publication_warning"]["call"]["name"],
+            "backend.package_profile"
+        );
+        assert!(render::answer(&answer, &plain()).contains("package-profile"));
         assert!(
             render::answer(&answer, &plain())
                 .contains("refused profiles do not have current semantic coverage")
@@ -1244,18 +1272,14 @@ fn admitted_durable_partial_matches_ticket_fault_and_cli_exit_without_inventing_
                 json["index_operation"],
                 serde_json::to_value(&operation).expect("operation")
             );
-            assert!(
-                json["fault"]["partial_publication"].is_null(),
-                "no fabricated legacy source summary"
-            );
             assert_eq!(
                 json["index_operation"]["detail"]["source_capture"],
                 serde_json::to_value(&status.source_capture).expect("exact capture")
             );
         } else {
-            assert_eq!(
-                json["fault"]["partial_publication"],
-                serde_json::to_value(&partial).expect("legacy receipt")
+            assert!(
+                !json["index_job"].is_null(),
+                "legacy job retains exact partial source capture"
             );
         }
     }
