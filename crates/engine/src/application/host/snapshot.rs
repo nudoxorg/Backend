@@ -17,6 +17,7 @@ pub const MAX_CLOSED_LOCAL_HOST_ENVIRONMENT_BYTES: usize = 30 * 1024;
 const SNAPSHOT_VERSION: u8 = 1;
 const SNAPSHOT_WITH_FAILURE_VERSION: u8 = 2;
 const SNAPSHOT_WITH_DEFERRED_CARGO_HOME_VERSION: u8 = 3;
+const SNAPSHOT_WITH_PYTHON_CHECKER_FAILURE_VERSION: u8 = 4;
 const SNAPSHOT_PREFIX_BYTES: usize = br#"{"version":1,"paths":["#.len();
 const SNAPSHOT_SUFFIX_BYTES: usize = 2; // `]}`
 const ENTRY_FIXED_BYTES: usize = br#"{"variable":"","path":}"#.len();
@@ -31,13 +32,106 @@ pub enum LocalHostCargoHomeSelection {
     DeferredDefault,
 }
 
+/// Bounded reason an explicitly configured Python checker could not be admitted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum LocalPythonCheckerFailureCause {
+    /// The configured path was empty or relative.
+    RelativePath,
+    /// The configured object was not a regular file.
+    NotFile,
+    /// The configured path could not be inspected or canonicalized.
+    Filesystem {
+        /// Stable category of the filesystem error.
+        kind: LocalPythonCheckerIoKind,
+        /// Exact operating-system error code, when available.
+        os_code: Option<i32>,
+    },
+}
+
+/// Stable filesystem categories for an explicitly selected checker.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalPythonCheckerIoKind {
+    /// A path component was absent.
+    NotFound,
+    /// A path component was not a directory.
+    NotDirectory,
+    /// Access was denied.
+    PermissionDenied,
+    /// Another operating-system failure, identified by its retained code when available.
+    Other,
+}
+
+/// Exact configured `NUDOX_PYREFLY` spelling and bounded admission cause.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalPythonCheckerFailure {
+    path: PathBuf,
+    cause: LocalPythonCheckerFailureCause,
+}
+
+impl LocalPythonCheckerFailure {
+    pub(super) fn from_error(path: PathBuf, error: &super::LocalCompilerHostError) -> Option<Self> {
+        use std::io::ErrorKind;
+        let cause = match error {
+            super::LocalCompilerHostError::RelativeEnvironmentPath {
+                variable: super::LocalHostVariable::NudoxPyrefly,
+                ..
+            } => LocalPythonCheckerFailureCause::RelativePath,
+            super::LocalCompilerHostError::ConfiguredPathKind {
+                variable: super::LocalHostVariable::NudoxPyrefly,
+                ..
+            } => LocalPythonCheckerFailureCause::NotFile,
+            super::LocalCompilerHostError::ConfiguredPath {
+                variable: super::LocalHostVariable::NudoxPyrefly,
+                source,
+                ..
+            }
+            | super::LocalCompilerHostError::Canonicalize {
+                role: super::LocalHostPathRole::Pyrefly,
+                source,
+                ..
+            } => {
+                let kind = match source.kind() {
+                    ErrorKind::NotFound => LocalPythonCheckerIoKind::NotFound,
+                    ErrorKind::NotADirectory => LocalPythonCheckerIoKind::NotDirectory,
+                    ErrorKind::PermissionDenied => LocalPythonCheckerIoKind::PermissionDenied,
+                    _ => LocalPythonCheckerIoKind::Other,
+                };
+                LocalPythonCheckerFailureCause::Filesystem {
+                    kind,
+                    os_code: source.raw_os_error(),
+                }
+            }
+            _ => return None,
+        };
+        Some(Self { path, cause })
+    }
+
+    /// The configured variable associated with this failure.
+    #[must_use]
+    pub const fn variable(&self) -> super::LocalHostVariable {
+        super::LocalHostVariable::NudoxPyrefly
+    }
+    /// Exact native configured spelling, including an empty or relative spelling.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+    /// Bounded reason and optional original OS error code.
+    #[must_use]
+    pub const fn cause(&self) -> LocalPythonCheckerFailureCause {
+        self.cause
+    }
+}
+
 /// How the current local owner obtained its compiler-host paths.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LocalCompilerHostSelectionSource {
     /// locald captured installed paths from this process before the owner began serving.
     CapturedInstalledTools,
-    /// The launching host supplied a complete version-1, version-2, or version-3 snapshot.
+    /// The launching host supplied a complete version-1 through version-4 snapshot.
     IncomingClosedSnapshot,
 }
 
@@ -55,6 +149,11 @@ pub enum LocalCompilerHostSelectionIssue {
     MissingPythonInterpreter,
     /// Legacy status for hosts that do not select an external Pyrefly checker.
     MissingPyreflyChecker,
+    /// An explicitly configured Python checker could not be admitted.
+    PythonCheckerUnavailable {
+        /// Bounded admission cause; the snapshot retains the exact configured path.
+        cause: LocalPythonCheckerFailureCause,
+    },
     /// No Go compiler was captured.
     MissingGoCompiler,
     /// A selected Go toolchain or package root could not be admitted.
@@ -85,6 +184,9 @@ impl LocalCompilerHostSelectionIssue {
             }
             Self::MissingPyreflyChecker => {
                 "Native Python source processing can run without an external Pyrefly checker; configure NUDOX_PYREFLY only to select one."
+            }
+            Self::PythonCheckerUnavailable { .. } => {
+                "Check the configured NUDOX_PYREFLY path and restart locald; other language tools remain available."
             }
             Self::MissingGoCompiler => "Install Go or configure NUDOX_GO, then restart locald.",
             Self::GoAuthorityUnavailable { .. } => {
@@ -156,6 +258,11 @@ impl LocalCompilerHostSelection {
         hasher.update(&[go_failure.map_or(0, go_failure_identity)]);
         let fingerprint = *hasher.finalize().as_bytes();
         let mut issues = selection_issues(&snapshot);
+        if let Some(failure) = snapshot.python_checker_failure() {
+            issues.push(LocalCompilerHostSelectionIssue::PythonCheckerUnavailable {
+                cause: failure.cause(),
+            });
+        }
         if let Some(cause) = go_failure {
             issues.retain(|issue| *issue != LocalCompilerHostSelectionIssue::MissingGoCompiler);
             issues.push(LocalCompilerHostSelectionIssue::GoAuthorityUnavailable { cause });
@@ -296,6 +403,7 @@ pub struct ClosedLocalHostEnvironmentSnapshot {
     paths: Vec<(LocalHostVariable, PathBuf)>,
     go_failure: Option<LocalRuntimeGoAuthorityFailure>,
     cargo_home_selection: LocalHostCargoHomeSelection,
+    python_checker_failure: Option<LocalPythonCheckerFailure>,
 }
 
 impl ClosedLocalHostEnvironmentSnapshot {
@@ -369,6 +477,7 @@ impl ClosedLocalHostEnvironmentSnapshot {
             paths: selected,
             go_failure: None,
             cargo_home_selection: LocalHostCargoHomeSelection::Strict,
+            python_checker_failure: None,
         })
     }
 
@@ -399,6 +508,37 @@ impl ClosedLocalHostEnvironmentSnapshot {
     #[must_use]
     pub const fn go_authority_failure(&self) -> Option<LocalRuntimeGoAuthorityFailure> {
         self.go_failure
+    }
+
+    /// Binds one failed explicit Python checker to this closed launch.
+    pub(super) fn with_python_checker_failure(
+        mut self,
+        failure: Option<LocalPythonCheckerFailure>,
+    ) -> Result<Self, ClosedLocalHostEnvironmentSnapshotError> {
+        if let Some(failure) = &failure {
+            if self.path(LocalHostVariable::NudoxPyrefly).is_some() {
+                return Err(ClosedLocalHostEnvironmentSnapshotError::ConflictingPythonChecker);
+            }
+            let relative = matches!(failure.cause, LocalPythonCheckerFailureCause::RelativePath);
+            if relative == failure.path.is_absolute() {
+                return Err(ClosedLocalHostEnvironmentSnapshotError::InvalidPythonCheckerFailure);
+            }
+            if !failure.path.as_os_str().is_empty()
+                && native_path_wire_json_size(&failure.path)?
+                    > MAX_CLOSED_LOCAL_HOST_ENVIRONMENT_BYTES
+            {
+                return Err(ClosedLocalHostEnvironmentSnapshotError::TooLarge);
+            }
+        }
+        self.python_checker_failure = failure;
+        self.encode()?;
+        Ok(self)
+    }
+
+    /// Returns the exact explicitly configured checker failure, if any.
+    #[must_use]
+    pub fn python_checker_failure(&self) -> Option<&LocalPythonCheckerFailure> {
+        self.python_checker_failure.as_ref()
     }
 
     /// Returns how the selected Cargo home may be used.
@@ -453,7 +593,7 @@ impl ClosedLocalHostEnvironmentSnapshot {
             .map(|(variable, path)| (*variable, path.as_path()))
     }
 
-    /// Encodes the snapshot as canonical bounded version-1, version-2, or version-3 JSON.
+    /// Encodes a canonical bounded version-1 through version-4 snapshot.
     ///
     /// # Errors
     ///
@@ -472,17 +612,26 @@ impl ClosedLocalHostEnvironmentSnapshot {
             });
         }
         let wire = SnapshotWire {
-            version: match self.cargo_home_selection {
-                LocalHostCargoHomeSelection::DeferredDefault => {
-                    SNAPSHOT_WITH_DEFERRED_CARGO_HOME_VERSION
+            version: if self.python_checker_failure.is_some() {
+                SNAPSHOT_WITH_PYTHON_CHECKER_FAILURE_VERSION
+            } else {
+                match self.cargo_home_selection {
+                    LocalHostCargoHomeSelection::DeferredDefault => {
+                        SNAPSHOT_WITH_DEFERRED_CARGO_HOME_VERSION
+                    }
+                    LocalHostCargoHomeSelection::Strict if self.go_failure.is_some() => {
+                        SNAPSHOT_WITH_FAILURE_VERSION
+                    }
+                    LocalHostCargoHomeSelection::Strict => SNAPSHOT_VERSION,
                 }
-                LocalHostCargoHomeSelection::Strict if self.go_failure.is_some() => {
-                    SNAPSHOT_WITH_FAILURE_VERSION
-                }
-                LocalHostCargoHomeSelection::Strict => SNAPSHOT_VERSION,
             },
             paths,
             go_failure: self.go_failure,
+            python_checker_failure: self
+                .python_checker_failure
+                .as_ref()
+                .map(PythonCheckerFailureWire::from_failure)
+                .transpose()?,
             cargo_home_selection: (self.cargo_home_selection
                 == LocalHostCargoHomeSelection::DeferredDefault)
                 .then_some(self.cargo_home_selection),
@@ -495,7 +644,7 @@ impl ClosedLocalHostEnvironmentSnapshot {
         Ok(encoded)
     }
 
-    /// Parses a canonical bounded version-1, version-2, or deferred-Cargo-home version-3 snapshot.
+    /// Parses a canonical bounded version-1 through version-4 snapshot.
     ///
     /// # Errors
     ///
@@ -508,14 +657,20 @@ impl ClosedLocalHostEnvironmentSnapshot {
             .map_err(|_| ClosedLocalHostEnvironmentSnapshotError::InvalidEncoding)?;
         let supported_version = match wire.version {
             SNAPSHOT_VERSION => {
-                wire.go_failure.is_none() && wire.cargo_home_selection.is_none()
+                wire.go_failure.is_none()
+                    && wire.cargo_home_selection.is_none()
+                    && wire.python_checker_failure.is_none()
             }
             SNAPSHOT_WITH_FAILURE_VERSION => {
-                wire.go_failure.is_some() && wire.cargo_home_selection.is_none()
+                wire.go_failure.is_some()
+                    && wire.cargo_home_selection.is_none()
+                    && wire.python_checker_failure.is_none()
             }
             SNAPSHOT_WITH_DEFERRED_CARGO_HOME_VERSION => {
                 wire.cargo_home_selection == Some(LocalHostCargoHomeSelection::DeferredDefault)
+                    && wire.python_checker_failure.is_none()
             }
+            SNAPSHOT_WITH_PYTHON_CHECKER_FAILURE_VERSION => wire.python_checker_failure.is_some(),
             _ => false,
         };
         if !supported_version {
@@ -546,7 +701,13 @@ impl ClosedLocalHostEnvironmentSnapshot {
             paths.push((variable, path));
         }
 
-        let mut snapshot = Self::from_paths(paths)?.with_go_failure(wire.go_failure)?;
+        let failure = wire
+            .python_checker_failure
+            .map(PythonCheckerFailureWire::into_failure)
+            .transpose()?;
+        let mut snapshot = Self::from_paths(paths)?
+            .with_go_failure(wire.go_failure)?
+            .with_python_checker_failure(failure)?;
         if wire.cargo_home_selection == Some(LocalHostCargoHomeSelection::DeferredDefault) {
             snapshot = snapshot.with_deferred_default_cargo_home()?;
         }
@@ -581,7 +742,7 @@ pub(super) fn validate_deferred_cargo_home_parent(
 /// Safe failures from closed compiler-host snapshot admission.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClosedLocalHostEnvironmentSnapshotError {
-    /// The encoded data is not a valid version-1 snapshot.
+    /// The encoded data is not a valid snapshot.
     InvalidEncoding,
     /// The encoded version is not supported.
     UnsupportedVersion,
@@ -597,6 +758,10 @@ pub enum ClosedLocalHostEnvironmentSnapshotError {
     ConflictingTypeScriptNodeRoles,
     /// Explicit Python and independent installed Python paths cannot claim the same policy.
     ConflictingPythonRoles,
+    /// A failed Python checker and a selected checker cannot both be present.
+    ConflictingPythonChecker,
+    /// The failed checker's reason does not match its configured spelling.
+    InvalidPythonCheckerFailure,
     /// The snapshot contains more roles than the vocabulary permits.
     TooManyRoles,
     /// A selected value is not an absolute path.
@@ -632,6 +797,8 @@ impl fmt::Display for ClosedLocalHostEnvironmentSnapshotError {
                 "compiler environment snapshot contains conflicting TypeScript Node roles"
             }
             Self::ConflictingPythonRoles => "compiler environment snapshot mixes explicit and installed Python selection",
+            Self::ConflictingPythonChecker => "compiler environment snapshot contains a failed and selected Python checker",
+            Self::InvalidPythonCheckerFailure => "compiler environment snapshot has an invalid Python checker failure",
             Self::TooManyRoles => "compiler environment snapshot has too many roles",
             Self::RelativePath => "compiler environment snapshot contains a relative path",
             Self::InvalidPath => "compiler environment snapshot contains an invalid native path",
@@ -652,6 +819,58 @@ struct SnapshotWire {
     go_failure: Option<LocalRuntimeGoAuthorityFailure>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cargo_home_selection: Option<LocalHostCargoHomeSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    python_checker_failure: Option<PythonCheckerFailureWire>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PythonCheckerFailureWire {
+    variable: String,
+    // None represents the exact empty configured spelling, which NativePath rejects.
+    path: Option<NativePathWire>,
+    cause: LocalPythonCheckerFailureCause,
+}
+
+impl PythonCheckerFailureWire {
+    fn from_failure(
+        failure: &LocalPythonCheckerFailure,
+    ) -> Result<Self, ClosedLocalHostEnvironmentSnapshotError> {
+        let path = if failure.path.as_os_str().is_empty() {
+            None
+        } else {
+            Some(
+                NativePath::from_path(&failure.path)
+                    .and_then(|path| path.to_wire())
+                    .map_err(ClosedLocalHostEnvironmentSnapshotError::invalid_path)?,
+            )
+        };
+        Ok(Self {
+            variable: LocalHostVariable::NudoxPyrefly
+                .environment_name()
+                .to_owned(),
+            path,
+            cause: failure.cause,
+        })
+    }
+    fn into_failure(
+        self,
+    ) -> Result<LocalPythonCheckerFailure, ClosedLocalHostEnvironmentSnapshotError> {
+        if self.variable != LocalHostVariable::NudoxPyrefly.environment_name() {
+            return Err(ClosedLocalHostEnvironmentSnapshotError::UnsupportedRole);
+        }
+        let path = match self.path {
+            Some(wire) => NativePath::from_wire(&wire)
+                .map_err(ClosedLocalHostEnvironmentSnapshotError::invalid_path)?
+                .as_path()
+                .to_path_buf(),
+            None => PathBuf::new(),
+        };
+        Ok(LocalPythonCheckerFailure {
+            path,
+            cause: self.cause,
+        })
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -764,6 +983,131 @@ mod tests {
     use crate::application::LocalHostVariable;
     use backend_platform::{NativePath, NativePathWire};
     use std::path::PathBuf;
+
+    #[test]
+    fn python_checker_failure_is_bounded_canonical_and_keeps_old_versions() {
+        use super::{
+            LocalPythonCheckerFailure, LocalPythonCheckerFailureCause as Cause,
+            LocalPythonCheckerIoKind as IoKind,
+        };
+        use crate::application::LocalRuntimeGoAuthorityFailure;
+        let clean = ClosedLocalHostEnvironmentSnapshot::from_paths([]).unwrap();
+        assert_eq!(clean.encode().unwrap(), r#"{"version":1,"paths":[]}"#);
+        let path = if cfg!(windows) {
+            PathBuf::from("C:/missing/pyrefly.exe")
+        } else {
+            PathBuf::from("/missing/pyrefly")
+        };
+        let failure = LocalPythonCheckerFailure {
+            path: path.clone(),
+            cause: Cause::Filesystem {
+                kind: IoKind::NotFound,
+                os_code: Some(2),
+            },
+        };
+        let snapshot = clean
+            .clone()
+            .with_go_failure(Some(LocalRuntimeGoAuthorityFailure::OracleUnavailable))
+            .unwrap()
+            .with_python_checker_failure(Some(failure.clone()))
+            .unwrap();
+        let encoded = snapshot.encode().unwrap();
+        assert!(encoded.contains(r#""version":4"#));
+        assert_eq!(
+            ClosedLocalHostEnvironmentSnapshot::parse(&encoded).unwrap(),
+            snapshot
+        );
+        assert_eq!(snapshot.python_checker_failure(), Some(&failure));
+        let mut unknown_wire: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        unknown_wire["python_checker_failure"]["unexpected"] = serde_json::json!(true);
+        assert!(ClosedLocalHostEnvironmentSnapshot::parse(&unknown_wire.to_string()).is_err());
+        let mut unknown_cause: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        unknown_cause["python_checker_failure"]["cause"]["filesystem"]["unexpected"] =
+            serde_json::json!(true);
+        assert!(ClosedLocalHostEnvironmentSnapshot::parse(&unknown_cause.to_string()).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let native = PathBuf::from(std::ffi::OsString::from_vec(
+                b"/missing/pyrefly-\xff".to_vec(),
+            ));
+            let non_utf8 = LocalPythonCheckerFailure {
+                path: native,
+                cause: failure.cause,
+            };
+            let snapshot = clean
+                .clone()
+                .with_python_checker_failure(Some(non_utf8.clone()))
+                .unwrap();
+            let decoded =
+                ClosedLocalHostEnvironmentSnapshot::parse(&snapshot.encode().unwrap()).unwrap();
+            assert_eq!(decoded.python_checker_failure(), Some(&non_utf8));
+            let selection =
+                super::LocalCompilerHostSelection::from_closed_snapshot(decoded).unwrap();
+            let receipt: serde_json::Value =
+                serde_json::from_str(&selection.encode_receipt().unwrap()).unwrap();
+            let from_receipt =
+                ClosedLocalHostEnvironmentSnapshot::parse(receipt["snapshot"].as_str().unwrap())
+                    .unwrap();
+            assert_eq!(from_receipt.python_checker_failure(), Some(&non_utf8));
+        }
+        assert!(
+            ClosedLocalHostEnvironmentSnapshot::parse(
+                &encoded.replace("NUDOX_PYREFLY", "NUDOX_GO")
+            )
+            .is_err()
+        );
+        let selected = ClosedLocalHostEnvironmentSnapshot::from_paths([(
+            LocalHostVariable::NudoxPyrefly,
+            path.clone(),
+        )])
+        .unwrap();
+        let mut conflicting_wire: serde_json::Value =
+            serde_json::from_str(&selected.encode().unwrap()).unwrap();
+        let failure_wire: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        conflicting_wire["version"] = serde_json::json!(4);
+        conflicting_wire["python_checker_failure"] = failure_wire["python_checker_failure"].clone();
+        assert_eq!(
+            ClosedLocalHostEnvironmentSnapshot::parse(&conflicting_wire.to_string()),
+            Err(ClosedLocalHostEnvironmentSnapshotError::ConflictingPythonChecker)
+        );
+        assert_eq!(
+            selected.with_python_checker_failure(Some(failure.clone())),
+            Err(ClosedLocalHostEnvironmentSnapshotError::ConflictingPythonChecker)
+        );
+        let contradictory = LocalPythonCheckerFailure {
+            path,
+            cause: Cause::RelativePath,
+        };
+        assert_eq!(
+            clean
+                .clone()
+                .with_python_checker_failure(Some(contradictory)),
+            Err(ClosedLocalHostEnvironmentSnapshotError::InvalidPythonCheckerFailure)
+        );
+        let empty = LocalPythonCheckerFailure {
+            path: PathBuf::new(),
+            cause: Cause::RelativePath,
+        };
+        let snapshot = clean
+            .clone()
+            .with_python_checker_failure(Some(empty.clone()))
+            .unwrap();
+        assert_eq!(
+            ClosedLocalHostEnvironmentSnapshot::parse(&snapshot.encode().unwrap())
+                .unwrap()
+                .python_checker_failure(),
+            Some(&empty)
+        );
+        let huge = LocalPythonCheckerFailure {
+            path: PathBuf::from("x".repeat(MAX_CLOSED_LOCAL_HOST_ENVIRONMENT_BYTES)),
+            cause: Cause::RelativePath,
+        };
+        assert_eq!(
+            clean.with_python_checker_failure(Some(huge)),
+            Err(ClosedLocalHostEnvironmentSnapshotError::TooLarge)
+        );
+    }
 
     #[test]
     fn explicit_python_and_frozen_candidate_authorities_cannot_mix() {
@@ -964,6 +1308,7 @@ mod tests {
             .to_wire()
             .expect("temp path wire");
         let workspace_role = SnapshotWire {
+            python_checker_failure: None,
             version: 1,
             go_failure: None,
             cargo_home_selection: None,
@@ -980,6 +1325,7 @@ mod tests {
             Err(ClosedLocalHostEnvironmentSnapshotError::WorkspaceOwnedRole)
         );
         let out_of_order = SnapshotWire {
+            python_checker_failure: None,
             version: 1,
             go_failure: None,
             cargo_home_selection: None,
@@ -1008,6 +1354,7 @@ mod tests {
     #[test]
     fn snapshot_rejects_duplicate_roles_and_wrong_platform_path_units_from_wire() {
         let duplicate = SnapshotWire {
+            python_checker_failure: None,
             version: 1,
             go_failure: None,
             cargo_home_selection: None,
@@ -1034,6 +1381,7 @@ mod tests {
             NativePathWire::Unix(b"/tmp/nudox".to_vec())
         };
         let wrong_platform = SnapshotWire {
+            python_checker_failure: None,
             version: 1,
             go_failure: None,
             cargo_home_selection: None,
@@ -1054,6 +1402,7 @@ mod tests {
             NativePathWire::Windows(vec![b'C'.into(), b':'.into(), 0])
         };
         let nul_path = SnapshotWire {
+            python_checker_failure: None,
             version: 1,
             go_failure: None,
             cargo_home_selection: None,
@@ -1082,6 +1431,7 @@ mod tests {
             path: native_path_wire(),
         });
         let encoded = serde_json::to_string(&SnapshotWire {
+            python_checker_failure: None,
             version: 1,
             paths,
             go_failure: None,
@@ -1156,6 +1506,34 @@ mod tests {
         assert_eq!(
             ClosedLocalHostEnvironmentSnapshot::parse(&encoded).expect("parse v3"),
             deferred
+        );
+        let combined = deferred
+            .clone()
+            .with_go_failure(Some(
+                crate::application::LocalRuntimeGoAuthorityFailure::OracleUnavailable,
+            ))
+            .unwrap()
+            .with_python_checker_failure(Some(super::LocalPythonCheckerFailure {
+                path: home.join("missing-pyrefly"),
+                cause: super::LocalPythonCheckerFailureCause::Filesystem {
+                    kind: super::LocalPythonCheckerIoKind::NotFound,
+                    os_code: Some(2),
+                },
+            }))
+            .unwrap();
+        let combined_wire = combined.encode().unwrap();
+        assert!(combined_wire.starts_with("{\"version\":4,"));
+        assert_eq!(
+            ClosedLocalHostEnvironmentSnapshot::parse(&combined_wire).unwrap(),
+            combined
+        );
+        assert_eq!(
+            combined.cargo_home_selection(),
+            LocalHostCargoHomeSelection::DeferredDefault
+        );
+        assert_eq!(
+            combined.go_authority_failure(),
+            Some(crate::application::LocalRuntimeGoAuthorityFailure::OracleUnavailable)
         );
         let strict_selection = LocalCompilerHostSelection::captured_installed_tools(
             strict,
@@ -1281,6 +1659,7 @@ mod tests {
             .to_wire()
             .expect("relative path wire");
         let relative_home = SnapshotWire {
+            python_checker_failure: None,
             version: 3,
             paths: vec![SnapshotPathWire {
                 variable: LocalHostVariable::Home.environment_name().to_owned(),
