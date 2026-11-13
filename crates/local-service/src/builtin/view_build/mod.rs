@@ -27,6 +27,8 @@ mod kinds;
 mod native_sites;
 #[cfg(test)]
 mod native_sites_tests;
+#[cfg(test)]
+mod native_retained_view_tests;
 mod native_target_aliases;
 #[cfg(test)]
 mod py_function_field_join;
@@ -43,6 +45,7 @@ mod semantic;
 mod semantic_content_admission;
 mod source_availability;
 mod structural;
+mod sql;
 #[cfg(test)]
 mod typescript_import_native;
 
@@ -89,6 +92,7 @@ pub(super) fn semantic_display_name(
 }
 
 pub(in crate::builtin) use call_join::RetargetingScope;
+pub(in crate::builtin) use sql::locate_row as sql_row_host;
 pub(crate) use call_join::{
     ProjectCallableIndex, foreign_namespace_call_retarget, foreign_package_call_retarget,
     join_native_typescript_target, join_project_field, join_project_mention, join_project_value,
@@ -108,14 +112,24 @@ pub(super) use identity::{external_semantic_symbol, semantic_symbol};
 pub(super) use query::{semantic_query_corpus, semantic_query_corpus_controlled};
 pub(crate) use semantic::compiled_source_path;
 pub(super) use semantic::{ForeignPublication, rows_for_indexed_sources};
-pub(in crate::builtin) use source_availability::{
-    CurrentNativeProgram, SelectedSourceArtifacts, SourceAvailability,
+pub(in crate::builtin) use semantic::{
+    AdmittedNativeEvidence, NseProgramAdmission, NseProgramProof, admitted_native_evidence, has_selected_typescript_publication,
+    admitted_native_source_extent, admitted_native_source_file, load_selected_nse_program,
+    selected_nse_typescript_owners,
 };
+#[cfg(test)]
+pub(in crate::builtin) use identity::semantic_symbol as test_native_symbol;
+pub(in crate::builtin) use source_availability::{
+    CurrentNativeProgram, ObservedNativeArtifacts, ObservedNativeProgram, SelectedSourceArtifacts,
+    SourceAvailability,
+};
+pub(in crate::builtin) use structural::admitted_complete_declarations_for_file;
 #[cfg(test)]
 pub(crate) use structural::view_row_for_structural_coordinate;
 pub(crate) use structural::{
     StructuralCallEndpoint, StructuralCallResidence, StructuralCallRows,
     structural_call_endpoint_relations_mapped, structural_call_graph_relations_resident,
+    scan_structural_call_graph_relations_resident,
     structural_call_span, structural_file_span, structural_reference_facts_resident,
     structural_symbol_identity,
 };
@@ -220,6 +234,15 @@ const MAX_SEMANTIC_TYPE_DEPTH: usize = 256;
 const MAX_SEMANTIC_SIGNATURE_BYTES: usize = 16 * 1024;
 const MAX_SEMANTIC_DOCUMENT_BYTES: usize = 256 * 1024;
 const MAX_SEMANTIC_QUERY_ROWS: usize = 65_536;
+/// Requested-layout budget for one admitted semantic query corpus.
+///
+/// Admission charges each fact's retained allocations (with a per-allocation
+/// credit) in addition to its wire envelope, so a corpus measures several
+/// times what the wire envelope alone charged. `MAX_REBUILD_BYTES` was sized
+/// for the envelope; this budget is derived from the measured per-row and
+/// per-edge layout cost so that every corpus the row and envelope bounds
+/// admitted still admits (see `query_budget_tests`).
+pub(super) const MAX_SEMANTIC_CORPUS_BYTES: usize = 8 * super::MAX_REBUILD_BYTES;
 
 /// Document note appended to every row projected from a stale semantic image.
 pub(super) const STALE_NOTE: &str =
@@ -530,6 +553,8 @@ pub fn execute() {}
             path: FIXTURE_PATH,
             site_declarations: &[],
             native_source: None,
+            native_ts_evidence: None,
+            native_ts_lines: None,
         };
         super::append_image_rows(
             &view,
@@ -648,6 +673,8 @@ pub fn execute() {}
             path: FIXTURE_PATH,
             site_declarations: &[],
             native_source: None,
+            native_ts_evidence: None,
+            native_ts_lines: None,
         };
         super::append_image_rows(&view, &project, profile, &mut sink)
             .map_err(|error| error.to_string())?;
@@ -2528,6 +2555,82 @@ pub fn execute() {}
     }
 
     #[test]
+    fn release_tsx_reexport_alias_jsx_reference_reproduction() -> Result<(), String> {
+        let button_source = "export function Button() { return <button />; }\n";
+        let barrel_source = "export { Button as Action } from './button';\n";
+        let button = analyze_source(backend_engine::SourceLanguage::TypeScript, "ui/button.tsx", button_source)?;
+        let barrel = analyze_source(backend_engine::SourceLanguage::TypeScript, "ui/index.ts", barrel_source)?;
+        let page_source = "import { Action as Confirm } from './ui';\nexport function Page() { return <><Confirm /><Confirm /></>; }\n";
+        let page = analyze_source(backend_engine::SourceLanguage::TypeScript, "page.tsx", page_source)?;
+        let (mut sources, package) = cross_file_sources(&[("ui/button.tsx", backend_engine::SourceLanguage::TypeScript, button), ("ui/index.ts", backend_engine::SourceLanguage::TypeScript, barrel), ("page.tsx", backend_engine::SourceLanguage::TypeScript, page)])?;
+        let root = tempfile::tempdir().map_err(|error| error.to_string())?;
+        std::fs::create_dir(root.path().join("ui")).map_err(|error| error.to_string())?;
+        for (path, content) in [("ui/button.tsx", button_source), ("ui/index.ts", barrel_source), ("page.tsx", page_source)] {
+            std::fs::write(root.path().join(path), content).map_err(|error| error.to_string())?;
+        }
+        for (_, record) in &mut sources.files {
+            let path = record.file_fields().ok_or("fixture is not a file")?.path;
+            let content = match path { "ui/button.tsx" => button_source, "ui/index.ts" => barrel_source, "page.tsx" => page_source, _ => return Err("unexpected fixture path".to_owned()) };
+            let identity = backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(content.as_bytes());
+            *record = record.clone().with_source_identity(identity)?;
+        }
+        let root_label = root.path().to_str().ok_or("non-UTF-8 fixture root")?.to_owned();
+        sources.projects.get_mut(&package.to_bytes()).ok_or("fixture project missing")?.label = root_label.clone();
+        let (view, rows) = cross_file_view(&sources)?;
+        let facts = structural_reference_facts(&view, &sources, &format!("{root_label}::ui/button.tsx:1::Button")).map_err(|error| error.to_string())?;
+        let page = row_for_coordinate(&rows, &format!("{root_label}::page.tsx:2::Page"))?;
+        let sites = facts.iter().filter(|fact| backend_engine::RowId::Symbol(fact.site) == page && fact.relation == backend_engine::SemanticLinkKind::Calls).collect::<Vec<_>>();
+        assert_eq!(sites.len(), 2, "Page JSX calls through the renamed barrel re-export were omitted");
+        assert_eq!(facts.len(), sites.len(), "barrel declaration must not be reported as a JSX call");
+        let mut starts = std::collections::BTreeSet::new();
+        for site in sites {
+            assert_eq!(site.evidence.confidence, backend_engine::SemanticConfidence::Syntactic);
+            let span = site.evidence.source.as_ref().ok_or("Page JSX call has no captured source span")?;
+            assert_eq!(span.file.as_str(), "page.tsx");
+            let bytes = page_source.as_bytes().get(span.start as usize..span.end as usize).ok_or("invalid JSX occurrence span")?;
+            assert_eq!(bytes, b"Confirm");
+            starts.insert(span.start);
+        }
+        assert_eq!(starts.len(), 2, "distinct JSX occurrences must remain distinct");
+        Ok(())
+    }
+
+    #[test]
+    fn jsx_reexport_rejects_shadowed_unresolved_type_only_and_cycles() -> Result<(), String> {
+        use backend_engine::SourceLanguage::TypeScript;
+        let button = analyze_source(TypeScript, "ui/button.tsx", "export function Button() { return <button />; }\n")?;
+        for (barrel_text, page_text) in [
+            ("export { Button as Action } from './button';\n", "import { Action as Confirm } from './ui';\nexport function Page(Confirm: unknown) { return <Confirm />; }\n"),
+            ("export { Button as Action } from './button';\n", "import { Action as Confirm } from './ui';\nexport function Page() { const Confirm = 0; return <Confirm />; }\n"),
+            ("export { Button as Action } from './missing';\n", "import { Action as Confirm } from './ui';\nexport function Page() { return <Confirm />; }\n"),
+            ("export type { Button as Action } from './button';\n", "import { Action as Confirm } from './ui';\nexport function Page() { return <Confirm />; }\n"),
+            ("export { Button as Action } from './button';\n", "import type { Action as Confirm } from './ui';\nexport function Page() { return <Confirm />; }\n"),
+            ("export { Action } from './index';\n", "import { Action as Confirm } from './ui';\nexport function Page() { return <Confirm />; }\n"),
+            ("export { Button as Action } from './button';\nexport { Button as Action } from './button';\n", "import { Action as Confirm } from './ui';\nexport function Page() { return <Confirm />; }\n"),
+        ] {
+            let barrel = analyze_source(TypeScript, "ui/index.ts", barrel_text)?;
+            let page = analyze_source(TypeScript, "page.tsx", page_text)?;
+            let (sources, _) = cross_file_sources(&[("ui/button.tsx", TypeScript, button.clone()), ("ui/index.ts", TypeScript, barrel), ("page.tsx", TypeScript, page)])?;
+            let (view, _) = cross_file_view(&sources)?;
+            let facts = structural_reference_facts(&view, &sources, "fixture::ui/button.tsx:1::Button").map_err(|error| error.to_string())?;
+            assert!(facts.is_empty(), "unsafe JSX target for {barrel_text:?} {page_text:?}: {facts:?}");
+        }
+        let barrel = analyze_source(TypeScript, "ui/index.ts", "export { Button as Action } from './button';\n")?;
+        let page = analyze_source(TypeScript, "page.tsx", "import { Action as Confirm } from './ui';\nexport function Page() { return <Confirm />; }\n")?;
+        let duplicate = analyze_source(TypeScript, "ui/button.ts", "export function Button() {}\n")?;
+        let (sources, _) = cross_file_sources(&[("ui/button.tsx", TypeScript, button.clone()), ("ui/button.ts", TypeScript, duplicate), ("ui/index.ts", TypeScript, barrel.clone()), ("page.tsx", TypeScript, page.clone())])?;
+        let (view, _) = cross_file_view(&sources)?;
+        let facts = structural_reference_facts(&view, &sources, "fixture::ui/button.tsx:1::Button").map_err(|error| error.to_string())?;
+        assert!(facts.is_empty(), "ambiguous module candidates cannot select a JSX target");
+        let alternate = analyze_source(TypeScript, "ui.ts", "export function Action() {}\n")?;
+        let (sources, _) = cross_file_sources(&[("ui/button.tsx", TypeScript, button), ("ui.ts", TypeScript, alternate), ("ui/index.ts", TypeScript, barrel), ("page.tsx", TypeScript, page)])?;
+        let (view, _) = cross_file_view(&sources)?;
+        let facts = structural_reference_facts(&view, &sources, "fixture::ui/button.tsx:1::Button").map_err(|error| error.to_string())?;
+        assert!(facts.is_empty(), "ambiguous importing module cannot select a JSX target");
+        Ok(())
+    }
+
+    #[test]
     fn cross_file_call_typescript_alias_import() -> Result<(), String> {
         let apply = analyze_source(
             backend_engine::SourceLanguage::TypeScript,
@@ -3325,6 +3428,18 @@ pub fn decoy_mention() { let _ = "parse_config("; }
             .with_confidence(backend_library::SemanticConfidence::Syntactic);
             assert_eq!(outgoing, vec![edge.clone()]);
             assert_eq!(incoming, vec![edge]);
+            let mut paged = Vec::new();
+            super::scan_structural_call_graph_relations_resident(
+                &mut residence, &view, &sources, package, target, true,
+                |relation| paged.push(relation),
+            ).map_err(|error| error.to_string())?;
+            assert_eq!(paged, incoming, "bounded scanner retains the exact incoming caller");
+            let mut outgoing_from_target = Vec::new();
+            super::scan_structural_call_graph_relations_resident(
+                &mut residence, &view, &sources, package, target, false,
+                |relation| outgoing_from_target.push(relation),
+            ).map_err(|error| error.to_string())?;
+            assert!(outgoing_from_target.is_empty(), "outgoing mode must not include callers");
             let label = view.row_ref(target).ok_or("target row")?.label.as_str();
             let references = super::structural_reference_facts(&view, &sources, label)
                 .map_err(|error| error.to_string())?;
@@ -3808,3 +3923,6 @@ pub fn decoy_mention() { let _ = "parse_config("; }
         ));
     }
 }
+
+#[cfg(test)]
+pub(in crate::builtin) use semantic::native_evidence_lookup_budget_control;
