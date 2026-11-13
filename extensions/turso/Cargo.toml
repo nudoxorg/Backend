@@ -13,9 +13,11 @@ backend-semantic = { path = "../../crates/semantic" }
 backend-store = { path = "../../crates/store" }
 backend-version = { path = "../../crates/version" }
 blake3.workspace = true
+futures-util = { workspace = true, features = ["std"] }
 turso = { workspace = true }
 
 [dev-dependencies]
+allocation-counter.workspace = true
 backend-engine = { path = "../../crates/engine" }
 futures-executor.workspace = true
 
