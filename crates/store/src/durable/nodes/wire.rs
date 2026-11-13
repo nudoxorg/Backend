@@ -12,6 +12,8 @@ use crate::digest;
 use backend_version::SchemaIdentity;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -132,7 +134,7 @@ pub(super) fn decode_tree_descriptor(
     })
 }
 
-pub(super) fn relation_ref_encoded_len() -> usize {
+pub(super) const fn relation_ref_encoded_len() -> usize {
     RELATION_REF_MAGIC.len() + 1 + 2 + 1 + 32 + 32 + 32
 }
 
@@ -222,6 +224,7 @@ fn write_immutable_descriptor_with_status(
     bytes: &[u8],
     directory: &Path,
 ) -> Result<bool, StoreError> {
+    let _temp_lease = super::super::objects::TempNamespaceLease::writer(directory)?;
     if let Ok(existing) = fs::read(path) {
         return if existing == bytes {
             Ok(false)
@@ -242,7 +245,13 @@ fn write_immutable_descriptor_with_status(
         .create_new(true)
         .open(&temporary)
         .map_err(|error| io_error(&error))?;
-    if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+    // Seal the private inode before its existing durability barrier. Otherwise
+    // the first immutable read has to chmod and flush this published file again.
+    if let Err(error) = file.write_all(bytes).and_then(|()| {
+        #[cfg(unix)]
+        file.set_permissions(fs::Permissions::from_mode(0o400))?;
+        file.sync_all()
+    }) {
         let _ = fs::remove_file(&temporary);
         return Err(io_error(&error));
     }
@@ -272,4 +281,66 @@ pub(super) fn hex(bytes: &Hash) -> String {
         output.push(char::from(b"0123456789abcdef"[usize::from(byte & 0x0f)]));
     }
     output
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::durable::{FileStore, artifact_fs};
+    use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn relation_reference_is_sealed_before_first_read_and_conflicts_preserve_bytes() {
+        let ordinal = NODE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "backend-store-sealed-ref-{}-{ordinal}",
+            std::process::id()
+        ));
+        let _cleanup = artifact_fs::TestDirectoryCleanup::new(&root);
+        let store = FileStore::open(&root, 64 * 1024).expect("private store");
+        let schema = SchemaIdentity::new(0xf1, 1, 1);
+        let version = [7; 32];
+        let object = ObjectId::from_bytes([9; 32]);
+        let path = store.relation_ref_path(schema, &version);
+        assert!(
+            write_relation_ref(&path, schema, &version, object, &root.join("nodes"))
+                .expect("new reference")
+        );
+        let published = fs::metadata(&path).expect("published metadata");
+        assert_eq!(published.mode() & 0o7777, 0o400);
+        assert_eq!(published.nlink(), 1);
+        let name = path
+            .file_name()
+            .expect("reference name")
+            .to_str()
+            .expect("UTF-8 name");
+        let opened = artifact_fs::open_store_file(&store, "nodes", name)
+            .expect("immutable read")
+            .expect("published reference");
+        let read = opened.metadata().expect("read metadata");
+        assert_eq!((published.dev(), published.ino()), (read.dev(), read.ino()));
+        assert_eq!(
+            (published.ctime(), published.ctime_nsec()),
+            (read.ctime(), read.ctime_nsec())
+        );
+        assert!(
+            !write_relation_ref(&path, schema, &version, object, &root.join("nodes"))
+                .expect("idempotent reference")
+        );
+        assert_eq!(
+            write_relation_ref(
+                &path,
+                schema,
+                &version,
+                ObjectId::from_bytes([10; 32]),
+                &root.join("nodes")
+            ),
+            Err(StoreError::Corrupt)
+        );
+        assert_eq!(
+            decode_relation_ref(&fs::read(&path).expect("reference bytes"), schema, &version)
+                .expect("original framing"),
+            object
+        );
+    }
 }
