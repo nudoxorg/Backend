@@ -31,6 +31,8 @@ struct PublishedNames<'a> {
 }
 #[derive(Serialize)]
 struct Page<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    graph_alias_witness: Option<super::super::reply_content::DocumentWire>,
     snapshot: Snapshot<'a>,
     terminal: PageTerminalWire,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -303,6 +305,7 @@ pub(super) fn serialize<S: serde::Serializer>(
             })
         }
         CommandReply::ProjectionPage(page) => CatalogReply::ProjectionPage(Page {
+            graph_alias_witness: page.graph_alias_witness.as_ref().map(super::super::reply_content::document_to_wire),
             snapshot: Snapshot::new(&page.snapshot),
             outline_order: page.outline_order.as_ref().map(super::super::reply_page::order_to_wire),
             terminal: match page.terminal {
