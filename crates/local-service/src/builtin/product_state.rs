@@ -2779,7 +2779,16 @@ fn natural_version_order(left: &str, right: &str) -> std::cmp::Ordering {
             return order;
         }
     }
-    left_runs.len().cmp(&right_runs.len())
+    // A spelling which only continues the other with a pre-release tag (`-rc1`,
+    // `rc1`, `_beta`) ranks below it; any other continuation (`.1`, `+build`) above.
+    let pre_release = |run: &(bool, &str)| {
+        !run.0 && run.1.trim_start_matches(['-', '_']).starts_with(|ch: char| ch.is_ascii_alphabetic())
+    };
+    match left_runs.len().cmp(&right_runs.len()) {
+        std::cmp::Ordering::Greater if pre_release(&left_runs[right_runs.len()]) => std::cmp::Ordering::Less,
+        std::cmp::Ordering::Less if pre_release(&right_runs[left_runs.len()]) => std::cmp::Ordering::Greater,
+        order => order,
+    }
 }
 
 fn discovery_candidates(
@@ -4442,6 +4451,16 @@ mod tests {
         let mut versions = ["0.9.0", "0.10.0", "0.2.1", "1.0.0"];
         versions.sort_by(|left, right| natural_version_order(right, left));
         assert_eq!(versions, ["1.0.0", "0.10.0", "0.9.0", "0.2.1"]);
+
+        // A pre-release lists below the release it precedes, and among themselves numerically.
+        let mut versions = ["1.0.0-rc1", "0.10.0", "1.0.0", "1.0.0-rc10", "1.0.0-rc2", "1.0.0.1", "1.0.0+build"];
+        versions.sort_by(|left, right| natural_version_order(right, left));
+        assert_eq!(
+            versions,
+            ["1.0.0.1", "1.0.0+build", "1.0.0", "1.0.0-rc10", "1.0.0-rc2", "1.0.0-rc1", "0.10.0"]
+        );
+        assert_eq!(natural_version_order("1.0.0rc1", "1.0.0"), std::cmp::Ordering::Less);
+        assert_eq!(natural_version_order("1.0.0", "1.0.0rc1"), std::cmp::Ordering::Greater);
     }
 
     #[test]
