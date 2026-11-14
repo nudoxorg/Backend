@@ -605,5 +605,133 @@ def gate_on_signed_out(bin_dir, out):
         r.stop()
 
 
-SCENARIOS = {"gate_on_signed_out": gate_on_signed_out, "verify_budget": verify_budget, "probe_budget_no_csharp": probe_budget_no_csharp, "probe_budget_no_appshell": probe_budget_no_appshell, "probe_budget_no_next": probe_budget_no_next, "probe_refusals": probe_refusals, "probe_refs_mixed": probe_refs_mixed, "startup_missing_checker": startup_missing_checker, "probe_crm": probe_crm, "probe_budget_diag": probe_budget_diag, "probe_reindex_refusal": probe_reindex_refusal, "probe_refs_nested": probe_refs_nested, "probe_refs_gap": probe_refs_gap, "probe_react_variants": probe_react_variants, "probe_budget": probe_budget, "startup_path": startup_path, "probe_refs": probe_refs,
+
+def _timed_add(route, label, project):
+    started = time.monotonic()
+    code, obj, text = route.cli(label, ["add", str(project), "--wait", "--wait-timeout", "900"], project, timeout=1000)
+    return round(time.monotonic() - started, 2), code, text
+
+
+def _row_count(route, project, label):
+    code, obj, text = route.cli(label, ["status"], project)
+    import re
+    found = re.search(r'"rows":\s*(\d+)', text)
+    return int(found.group(1)) if found else None
+
+
+def verify_reuse(bin_dir, out, fixture="next_bulk"):
+    """Reuse: an unchanged re-add reuses the publication; every real change still recompiles."""
+    r = Route(bin_dir, out)
+    results = {}
+    try:
+        proj = _project(r, fixture)
+        r.start_owner(proj)
+        cold, code, _ = _timed_add(r, "add-cold", proj)
+        rows = _row_count(r, proj, "status-cold")
+        warm, warm_code, _ = _timed_add(r, "add-warm", proj)
+        r.retire_for_reopen()
+        r.start_owner(proj)
+        restart, restart_code, _ = _timed_add(r, "add-after-restart", proj)
+        warm2, warm2_code, _ = _timed_add(r, "add-warm-again", proj)
+        rows_after = _row_count(r, proj, "status-after")
+        ratio = max(warm, restart, warm2) / cold if cold else 1.0
+        results["REUSE-01"] = {
+            "pass": code == 0 and warm_code == 0 and restart_code == 0 and warm2_code == 0
+                    and ratio < 0.25 and rows == rows_after,
+            "detail": {"cold_s": cold, "warm_s": warm, "after_restart_s": restart, "warm_again_s": warm2,
+                       "rows_before": rows, "rows_after": rows_after,
+                       "worst_reuse_over_cold": round(ratio, 3)}}
+        # Freshness: each of these must still recompile and show the change.
+        edits = {
+            "source": ("lib/m0.ts", lambda t: t + "\nexport const freshSource = 1;\n", "freshSource"),
+            "config": ("tsconfig.json", lambda t: t.replace('"strict":true', '"strict":false'), None),
+            "lockfile": ("package-lock.json", lambda t: t + " ", None),
+        }
+        (proj / "package-lock.json").write_text('{"name":"synthetic-shop","lockfileVersion":3,"packages":{}}\n')
+        _timed_add(r, "add-lockfile-created", proj)
+        fresh = {}
+        for name, (path, edit, probe) in edits.items():
+            target = proj / path
+            target.write_text(edit(target.read_text()))
+            seconds, edit_code, _ = _timed_add(r, f"add-after-{name}-edit", proj)
+            found = True
+            if probe:
+                _, _, text = r.cli(f"search-{name}", ["search", probe], proj)
+                found = probe in text
+            fresh[name] = {"seconds": seconds, "exit": edit_code, "visible": found,
+                           "recompiled": seconds > 0.5 * cold}
+        results["REUSE-02"] = {"pass": all(v["exit"] == 0 and v["visible"] and v["recompiled"] for v in fresh.values()),
+                               "detail": fresh}
+        return results
+    finally:
+        r.stop()
+
+
+
+def verify_old_state(bin_dir, out, fixture="next_bulk"):
+    """A state written by an older build must open with this build, or be replaced with a notice.
+
+    `NUDOX_OLD_BIN_DIR` holds `backend-cli` and `backend-locald` of the older build. The same
+    private workspace is indexed by the older owner, then reopened by the one under test.
+    """
+    old = os.environ["NUDOX_OLD_BIN_DIR"]
+    r = Route(old, out)
+    results = {}
+    try:
+        proj = _project(r, fixture)
+        r.start_owner(proj)
+        code, _, _ = r.cli("add-old-build", ["add", str(proj), "--wait", "--wait-timeout", "900"], proj, timeout=1000)
+        _, _, before = r.cli("search-old-build", ["search", "Panel0"], proj)
+        r.retire_for_reopen()
+        r.bin = pathlib.Path(bin_dir)
+        started, failure = True, None
+        try:
+            r.start_owner(proj)
+        except RuntimeError as error:
+            started, failure = False, str(error)
+        stderr = (pathlib.Path(out) / "owner-stderr.log").read_text(errors="replace")
+        results["N37-01"] = {"pass": code == 0 and started, "detail": {
+            "old_build_add_exit": code, "new_owner_started": started, "failure": failure,
+            "owner_stderr_tail": stderr[-1200:]}}
+        if started:
+            _, _, status = r.cli("status-new-build", ["status"], proj)
+            code2, _, text2 = r.cli("search-new-build", ["search", "Panel0"], proj)
+            code3, _, text3 = r.cli("add-new-build", ["add", str(proj), "--wait", "--wait-timeout", "900"], proj, timeout=1000)
+            _, _, after = r.cli("search-after-add", ["search", "Panel0"], proj)
+            results["N37-02"] = {"pass": code2 == 0 and code3 == 0 and "Panel0" in after,
+                                 "detail": {"search_exit": code2, "add_exit": code3,
+                                            "notice_in_stderr": [l for l in stderr.splitlines() if "state" in l.lower()][-3:]}}
+        return results
+    finally:
+        r.stop()
+
+
+
+def verify_resolve_app(bin_dir, out):
+    """`App` must list the Vue file module before the case-folded Python `app` on every route."""
+    r = Route(bin_dir, out)
+    try:
+        proj = _project(r, "crm")
+        r.start_owner(proj)
+        code, _, _ = r.cli("add", ["add", str(proj), "--wait", "--wait-timeout", "900"], proj)
+
+        def names(obj):
+            return [(row.get("identity", {}).get("name"), row.get("kind")) for row in _rows(obj)]
+        _, search, _ = r.cli("search-app", ["search", "App", "--limit", "10"], proj)
+        _, resolve, _ = r.cli("resolve-app", ["resolve", "App", "--limit", "10"], proj)
+        r.start_mcp(proj)
+        mcp = r.tool("backend.resolve", {"query": "App", "limit": 10})
+        mcp_names = [(row.get("identity", {}).get("name"), row.get("kind"))
+                     for row in mcp.get("structuredContent", {}).get("records", [])]
+        routes = {"cli-search": names(search), "cli-resolve": names(resolve), "mcp-resolve": mcp_names}
+
+        def first_is_module(listing):
+            return bool(listing) and listing[0][1] == "module"
+        return {"RESOLVE-01": {"pass": code == 0 and all(first_is_module(v) for v in routes.values()),
+                               "detail": routes}}
+    finally:
+        r.stop()
+
+
+SCENARIOS = {"verify_resolve_app": verify_resolve_app, "verify_old_state": verify_old_state, "verify_reuse": verify_reuse, "gate_on_signed_out": gate_on_signed_out, "verify_budget": verify_budget, "probe_budget_no_csharp": probe_budget_no_csharp, "probe_budget_no_appshell": probe_budget_no_appshell, "probe_budget_no_next": probe_budget_no_next, "probe_refusals": probe_refusals, "probe_refs_mixed": probe_refs_mixed, "startup_missing_checker": startup_missing_checker, "probe_crm": probe_crm, "probe_budget_diag": probe_budget_diag, "probe_reindex_refusal": probe_reindex_refusal, "probe_refs_nested": probe_refs_nested, "probe_refs_gap": probe_refs_gap, "probe_react_variants": probe_react_variants, "probe_budget": probe_budget, "startup_path": startup_path, "probe_refs": probe_refs,
              "probe_edits": probe_edits, "probe_churn": probe_churn, "probe_mcp": probe_mcp}
