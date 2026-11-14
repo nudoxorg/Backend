@@ -538,6 +538,17 @@ pub fn lower_with_opener(
         CommandId::Related => declaration_request(invocation, DeclarationRead::Related),
         CommandId::Graph | CommandId::GraphQuery if invocation.option("component").is_some() => {
             // The neighbourhood of a component in the style graph: what it relies on.
+            // It starts from the name alone, so a declaration or a page position
+            // would be ignored; refuse them rather than answer something else.
+            if invocation.at(0).is_some()
+                || invocation.option("selected-id").is_some()
+                || invocation.option("cursor").is_some()
+            {
+                return Err(Fault::usage(
+                    "component",
+                    "--component starts from a component name; drop the coordinate, --selected-id and --cursor",
+                ));
+            }
             let name = invocation.option("component").unwrap_or_default();
             let seed = backend_library::impact::ImpactSeedSpec {
                 domain: backend_library::impact::ImpactDomain::Code,

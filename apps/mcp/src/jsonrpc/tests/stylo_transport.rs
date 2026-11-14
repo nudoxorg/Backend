@@ -74,3 +74,38 @@ fn css_tool_default_and_full_retain_bounded_typed_scope() {
         }
     }
 }
+
+#[test]
+fn graph_around_a_component_reaches_the_style_graph_over_mcp() {
+    let mut server = ready(Fake::default());
+    let _ = call(
+        &mut server,
+        "backend.graph",
+        &json!({"component":"Button","in":"src/Button.tsx"}),
+    );
+    let Some(SurfaceCommand::Impact { request }) = server.product.surface_commands.last() else {
+        panic!(
+            "graph with a component lowers to the style graph: {:?}",
+            server.product.surface_commands
+        );
+    };
+    let backend_library::impact::ImpactSeed::Named(seed) = &request.seed else {
+        panic!("a component seed is named: {request:?}");
+    };
+    assert_eq!(
+        (seed.kind.as_str(), seed.name.as_str(), seed.path.as_deref()),
+        ("component", "Button", Some("src/Button.tsx"))
+    );
+}
+
+#[test]
+fn graph_around_a_component_refuses_a_declaration_or_a_position() {
+    let mut server = ready(Fake::default());
+    let result = call(
+        &mut server,
+        "backend.graph",
+        &json!({"component":"Button","coordinate":"pkg/src/lib.rs::run"}),
+    );
+    assert_eq!(result["isError"], true, "{result}");
+    assert!(server.product.surface_commands.is_empty(), "nothing was dispatched");
+}

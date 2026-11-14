@@ -1296,7 +1296,12 @@ impl<P: Product> Server<P> {
         if matches!(route, ToolRoute::Query) {
             return self.query_tool(arguments, detail, continuation, invocation, response_id);
         }
-        if grammar.is_some_and(|grammar| matches!(grammar.name(), "graph" | "related")) {
+        // A declaration neighbourhood takes the selector route. `graph` with a
+        // component reads the style graph and lowers like any registry command.
+        if grammar.is_some_and(|grammar| {
+            grammar.name() == "related"
+                || (grammar.name() == "graph" && !arguments.contains_key("component"))
+        }) {
             return self.graph_tool(arguments, detail, continuation, invocation, response_id);
         }
         let Some(grammar) = grammar else {
