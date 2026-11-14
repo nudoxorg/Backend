@@ -87,6 +87,7 @@ mod readiness_agreement_tests;
 #[cfg(test)]
 mod readiness_tests;
 mod record;
+mod reference_page;
 mod render;
 mod sections;
 mod shelf;
@@ -119,7 +120,7 @@ pub use budget::{
     BudgetExceeded, DEFAULT_RESPONSE_BUDGET_BYTES, DEFAULT_RESPONSE_TOKEN_BUDGET, Detail,
     ESTIMATED_BYTES_PER_TOKEN, EncodedPayload, MAX_PREVIEW_TEXT_BYTES, MAX_RESPONSE_BUDGET_BYTES,
     PayloadBudget, bounded_text, encode_answer, encode_answer_with_call, encode_package_graph_json,
-    encode_serializable, encode_value, estimate_tokens, oversized_fault,
+    encode_serializable, encode_value, estimate_tokens, oversized_fault, oversized_fault_advising, OversizeAdvice,
 };
 pub use call::{
     DEFAULT_LIMIT, Invocation, Request, SURFACE_VERB, declaration_selector,
@@ -163,9 +164,10 @@ pub use product::{
     CursorProjection, CursorTarget, DeclarationSourceRange, IndexJobProjection, IndexSearchPageInfo,
     PartialPublicationWarning, ProductRecord, ProductSemanticData, ProductSemanticHistoryProofSummary, ReferenceDetails,
     ProductSemanticHistoryStatus,
-    ProductView, index_profile_progress_text, index_stage_name, package_graph_markdown,
+    ProductView, ReferencePageInfo, index_profile_progress_text, index_stage_name, package_graph_markdown,
     product_view, product_view_for_command, product_view_for_owned_command,
 };
+pub use reference_page::is_reference_cursor;
 pub use projection::{PageProjection, PageSection};
 pub use readiness::{PublishedFacts, ReadinessState};
 pub use record::{GraphSourcePolicy, Record, RecordList, RecordState, RelatedEdge, Score};

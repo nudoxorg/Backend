@@ -1337,6 +1337,10 @@ pub struct ProductDto {
     /// Exact source-only package metadata lookup evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package_discovery: Option<crate::product::PackageDiscoveryProjection>,
+    /// Where this page sits in a complete references listing: how many uses it
+    /// holds, how many exist and how many remain after it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub references_page: Option<crate::ReferencePageInfo>,
 }
 
 /// Copyable CLI and MCP actions for the same admitted index observation.
@@ -1513,7 +1517,13 @@ impl ProductDto {
                     extent: record.extent(),
                     title: record.title().to_owned(),
                     operand: record.operand().map(ToOwned::to_owned),
-                    tags: record.tags().to_vec(),
+                    // A use's relation, authority class and span are typed in
+                    // `reference_details`; the tags only restate them as prose.
+                    tags: if detail == Some(Detail::Summary) && record.reference_details().is_some() {
+                        Vec::new()
+                    } else {
+                        record.tags().to_vec()
+                    },
                     native_metadata: record.native_metadata().cloned(),
                     source_metadata: record.source_metadata().cloned(),
                     forge: record.forge_details().cloned(),
@@ -1605,6 +1615,7 @@ impl ProductDto {
                 _ => None,
             },
             package_discovery: view.package_discovery().cloned(),
+            references_page: view.reference_page().copied(),
         }
     }
 }

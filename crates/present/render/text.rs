@@ -740,6 +740,9 @@ fn product_projection(view: &ProductView, theme: Theme, detail: Detail) -> Strin
         lines.push(format!("Continue: {command}"));
     }
     index_search_page_footer(view, &mut lines);
+    if let Some(cursor) = view.reference_cursor() {
+        lines.push(format!("  next cursor (pass --cursor): {}", cursor.token()));
+    }
     index_job_footer(view, &mut lines, theme);
     lines.finish()
 }

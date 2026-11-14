@@ -37,6 +37,8 @@ mod package_compiler_outcomes;
 mod package_graph_budget;
 #[path = "tests/record_budget_pages.rs"]
 mod record_budget_pages;
+#[path = "tests/references_pages.rs"]
+mod references_pages;
 #[path = "tests/document_section_pages.rs"]
 mod document_section_pages;
 #[path = "tests/semantic_selection.rs"]
@@ -55,10 +57,10 @@ mod stylo_transport;
 mod token_outline;
 #[path = "tests/typescript_admission.rs"]
 mod typescript_admission;
-
-const PROJECT: &str = "/abs/polyglot";
 #[path = "tests/usage_argument_names.rs"]
 mod usage_argument_names;
+
+const PROJECT: &str = "/abs/polyglot";
 const MODULE: &str = "/abs/polyglot::src/lib.rs";
 const DECLARATION: &str = "/abs/polyglot::src/lib.rs:2::ferris";
 const MISSING: &str = "/abs/polyglot::src/lib.rs:999::nothing";

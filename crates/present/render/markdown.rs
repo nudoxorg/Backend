@@ -1057,6 +1057,12 @@ fn product_projection(
         lines.push(format!("Continue: `{command}`"));
     }
     index_search_page_footer(view, &mut lines, target);
+    if let Some(cursor) = view.reference_cursor() {
+        lines.push(continuation_note(
+            target.unwrap_or(ContinuationTarget::CliOption),
+            cursor.token(),
+        ));
+    }
     index_job_footer(view, detail, &mut lines);
     lines.finish()
 }

@@ -466,9 +466,16 @@ pub(crate) fn render_admitted_answer(
     render::try_answer_with_cursor(answer, options, related_cursor.or(cursor.as_deref()))
 }
 
+/// The page of a references listing the caller asked for.
+struct ReferencePaging {
+    limit: usize,
+    cursor: Option<String>,
+}
+
 struct Plan {
     request: Request,
     source_range: Option<crate::source_range::Request>,
+    references: Option<ReferencePaging>,
     wait: Option<crate::index_wait::IndexWaitPolicy>,
     output: Options,
 }
@@ -497,6 +504,19 @@ fn execute_plan_with_recovery(
         let answer = crate::source_range::read(session, workspace, request)?;
         render::admit_answer_with_cursor(&answer, &plan.output, None)?;
         answer
+    } else if let Some(paging) = &plan.references {
+        // The owner answers every use at once; the page is chosen here, so the
+        // complete listing is not itself held to the response budget.
+        let listing = run::execute_with_output_admission(
+            session,
+            &plan.request,
+            Some(workspace),
+            recovery.as_deref_mut(),
+            plan.output.detail(),
+            cli_context.as_ref(),
+            |_, _| Ok(()),
+        )?;
+        page_references(listing, paging, &plan.output)?
     } else {
         run::execute_with_output_admission(
             session,
@@ -530,6 +550,57 @@ fn execute_plan_with_recovery(
     Ok((answer, exit))
 }
 
+fn reference_paging(invocation: &backend_present::Invocation) -> Result<ReferencePaging, Fault> {
+    let limit = match invocation.option("limit") {
+        None => usize::from(backend_present::DEFAULT_LIMIT),
+        Some(value) => value
+            .parse::<u16>()
+            .ok()
+            .filter(|limit| (1..=backend_library::QueryLimit::MAX).contains(limit))
+            .map(usize::from)
+            .ok_or_else(|| {
+                Fault::usage(
+                    "limit",
+                    format!(
+                        "`{value}` is not a page bound; choose a whole number from 1 to {}",
+                        backend_library::QueryLimit::MAX
+                    ),
+                )
+            })?,
+    };
+    Ok(ReferencePaging {
+        limit,
+        cursor: invocation.option("cursor").map(str::to_owned),
+    })
+}
+
+/// Presents the largest window of a complete references listing which fits the response.
+fn page_references(
+    listing: Answer,
+    paging: &ReferencePaging,
+    output: &Options,
+) -> Result<Answer, Fault> {
+    let Answer::Product(listing) = listing else {
+        return Ok(listing);
+    };
+    let mut limit = paging.limit;
+    loop {
+        let page = listing.reference_window(
+            paging.cursor.as_deref(),
+            limit,
+            backend_present::CursorTarget::CliOption,
+        )?;
+        let answer = Answer::Product(Box::new(page));
+        match render::admit_answer_with_cursor(&answer, output, None) {
+            Err(fault) if fault.cause().slug() == CauseSlug::Oversized && limit > 1 => {
+                limit = limit.div_ceil(2);
+            }
+            Err(fault) => return Err(fault),
+            Ok(()) => return Ok(answer),
+        }
+    }
+}
+
 fn plan(words: &[String], options: &Options, project: &str) -> Result<Plan, Fault> {
     if words.first().is_some_and(|word| word == SURFACE_VERB) {
         let encoded = words.get(1).ok_or_else(|| {
@@ -541,6 +612,7 @@ fn plan(words: &[String], options: &Options, project: &str) -> Result<Plan, Faul
         return lower_surface_json(encoded).map(|request| Plan {
             request,
             source_range: None,
+            references: None,
             wait: None,
             output: options.clone(),
         });
@@ -575,9 +647,24 @@ fn plan(words: &[String], options: &Options, project: &str) -> Result<Plan, Faul
     };
     let request = lower(&invocation, project)?;
     let request = normalize_package_profile_path(request, project)?;
+    let references = match &request {
+        Request::Surface(command)
+            if matches!(command.as_ref(), backend_library::SurfaceCommand::References { .. }) =>
+        {
+            Some(reference_paging(&invocation)?)
+        }
+        _ => None,
+    };
+    if references.is_none() && invocation.grammar().name() == "references" && invocation.option("cursor").is_some() {
+        return Err(Fault::usage(
+            "cursor",
+            "a references cursor continues a declaration's uses; a CSS name lists its components in one answer",
+        ));
+    }
     Ok(Plan {
         request,
         source_range,
+        references,
         wait,
         output: options.clone(),
     })

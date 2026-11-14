@@ -869,8 +869,8 @@ pub const GRAMMARS: [CommandGrammar; 64] = [
             ArgumentKind::Coordinate,
             "Exact declaration coordinate whose uses are requested. Selected row IDs are not supported by the references protocol.",
         )],
-        options: &[],
-        when: "Use to answer where is this symbol used: every row carries the relation kind, the authority class, and the exact source span that proves the use. Give a CSS name instead (.card, #hero, --brand, or .title@src/Header.module.css to narrow it to one stylesheet) to list the components which use that class, id or custom property, each marked exact or candidate.",
+        options: &[LIMIT, CURSOR],
+        when: "Use to answer where is this symbol used: every row carries the relation kind, the authority class, and the exact source span that proves the use. A long list is paged: the answer says how many uses remain; use --limit to choose the page size and pass the returned --cursor to read the next page. Give a CSS name instead (.card, #hero, --brand, or .title@src/Header.module.css to narrow it to one stylesheet) to list the components which use that class, id or custom property, each marked exact or candidate.",
     },
     CommandGrammar {
         name: "read",

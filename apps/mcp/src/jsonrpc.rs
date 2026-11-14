@@ -36,9 +36,9 @@ use backend_present::{
     Answer, BudgetExceeded, CL100K_POLICY, CL100K_VOCABULARY_SHA256, ContinuationCursor,
     ContinuationTarget, CursorTarget, DEFAULT_RESPONSE_BUDGET_BYTES, Detail,
     ESTIMATED_BYTES_PER_TOKEN, Engine, Fault, Invocation, McpExecutableCall, McpExposure,
-    McpInvocation, Probe, Request, answer_paged, bounded_text, encode_answer_with_call,
+    McpInvocation, OversizeAdvice, Probe, Request, answer_paged, bounded_text, encode_answer_with_call,
     encode_serializable, estimate_tokens, fault_value, lower_with_opener, markdown,
-    oversized_fault,
+    oversized_fault, oversized_fault_advising,
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{
@@ -1284,11 +1284,15 @@ impl<P: Product> Server<P> {
         if grammar.is_some_and(|grammar| grammar.name() == "related") {
             return self.related_edge_tool(arguments, detail, invocation, response_id);
         }
+        // A references cursor indexes the complete reply this server holds; it is
+        // not an owner continuation, so it is read by `references_tool`.
+        let references_tool = grammar.is_some_and(|grammar| grammar.name() == "references");
         let continuation = if matches!(route, ToolRoute::Query)
-            || matches!(
-                cursor_domain,
-                Some(backend_present::ContinuationDomain::PresentationPage)
-            ) {
+            || (!references_tool
+                && matches!(
+                    cursor_domain,
+                    Some(backend_present::ContinuationDomain::PresentationPage)
+                )) {
             self.continuation(arguments, &context)?
         } else {
             None
@@ -1386,6 +1390,19 @@ impl<P: Product> Server<P> {
                 ) =>
             {
                 self.select_semantic_version_tool(&command, detail, invocation, response_id)
+            }
+            Ok(request @ Request::Surface(_))
+                if references_tool
+                    && matches!(&request, Request::Surface(command)
+                        if matches!(command.as_ref(), SurfaceCommand::References { .. })) =>
+            {
+                self.references_tool(&request, arguments, detail, invocation, response_id)
+            }
+            Ok(_) if references_tool && arguments.contains_key("cursor") => {
+                Err(RpcError::invalid_argument(
+                    "cursor",
+                    "a references cursor continues a declaration's uses; a CSS name lists its components in one answer",
+                ))
             }
             Ok(request) if matches!(&request, Request::Search { .. } | Request::Resolve { .. }) => {
                 self.records_tool(&request, detail, continuation, invocation, response_id)
@@ -1801,6 +1818,77 @@ impl<P: Product> Server<P> {
                 Ok(result) => return Ok(result),
                 Err(error) if delivery > 1 && semantic_pages::oversized(&error) => { delivery = delivery.div_ceil(2); }
                 Err(error) => return Err(error),
+            }
+        }
+    }
+
+    /// The uses of one declaration, a page at a time.
+    ///
+    /// The owner answers every use at once, so the complete reply is read once and a
+    /// window of it is presented. The cursor binds that exact listing, never a limit, so
+    /// the page size may change between pages. A page too large for the response budget
+    /// is halved until it fits, and the answer says how many uses remain.
+    fn references_tool(
+        &mut self,
+        request: &Request,
+        arguments: &Map<String, Value>,
+        detail: Detail,
+        invocation: McpInvocation<'_>,
+        response_id: &Value,
+    ) -> Result<Value, RpcError> {
+        let mut effective = usize::from(limit(arguments)?);
+        let mut context_arguments = arguments.clone();
+        context_arguments.remove("limit");
+        let context = continuation_context(
+            &self.project,
+            invocation.selected_name(),
+            &context_arguments,
+            detail,
+        );
+        let cursor = match arguments.get("cursor") {
+            None => None,
+            Some(value) => {
+                let token = value
+                    .as_str()
+                    .filter(|token| !token.is_empty())
+                    .ok_or_else(|| RpcError::invalid("cursor must be a non-empty opaque string"))?;
+                let owner = self
+                    .verify_cursor_token(token, &context)?
+                    .filter(|owner| backend_present::is_reference_cursor(owner))
+                    .ok_or_else(|| {
+                        RpcError::invalid(
+                            "cursor is unknown, expired, or belongs to another workspace authority",
+                        )
+                    })?;
+                Some(owner)
+            }
+        };
+        let Answer::Product(listing) = answer_paged(&mut self.product, request, None)
+            .map_err(|fault| RpcError::from_fault(&fault))?
+        else {
+            return Err(RpcError::tool("references reply changed shape"));
+        };
+        let budget = wire_admission::ResponseBudget::new(response_id);
+        let mut page_arguments = arguments.clone();
+        loop {
+            let page = listing
+                .reference_window(cursor.as_deref(), effective, CursorTarget::CliOption)
+                .map_err(|fault| RpcError::from_fault(&fault))?;
+            let result = self
+                .rendered_admitted(
+                    Answer::Product(Box::new(page)),
+                    detail,
+                    &context,
+                    CursorTarget::CliOption,
+                    invocation.with_arguments(&page_arguments),
+                )
+                .and_then(|result| budget.admit(result));
+            match result {
+                Err(error) if semantic_pages::oversized(&error) && effective > 1 => {
+                    effective = effective.div_ceil(2);
+                    page_arguments.insert("limit".to_owned(), json!(effective));
+                }
+                result => return result,
             }
         }
     }
@@ -2385,7 +2473,11 @@ impl<P: Product> Server<P> {
                     {
                         continue;
                     }
-                    return Ok(refused(&oversized_fault(error)));
+                    // Neither the surface route nor a progress read has a page `limit`.
+                    return Ok(refused(&oversized_fault_advising(
+                        error,
+                        OversizeAdvice::for_tool(SURFACE_TOOL, detail),
+                    )));
                 }
             };
             let structured: Value = serde_json::from_slice(&payload.bytes).map_err(|error| {
@@ -2550,6 +2642,7 @@ impl<P: Product> Server<P> {
             // This cursor is already authenticated by the durable native owner
             // and binds exact roots/package/key/limit, including after restart.
             ContinuationCursor::SemanticVersions(cursor) => return Ok(cursor.as_str().to_owned()),
+            ContinuationCursor::ReferencePage(token) => token,
         };
         self.sign_cursor_token(&owner_token, context)
     }
@@ -3036,6 +3129,7 @@ impl<P: Product> Server<P> {
             next.as_deref()
                 .filter(|_| {
                     native_versions
+                        || matches!(&answer, Answer::Product(product) if product.reference_page().is_some())
                         || matches!(&answer, Answer::Records(_))
                         || invocation.exposure() == McpExposure::RegisteredCall
                 })
@@ -3065,7 +3159,12 @@ impl<P: Product> Server<P> {
             continuation_call.as_ref(),
         ) {
             Ok(payload) => payload,
-            Err(error) => return Err(RpcError::from_fault(&oversized_fault(error))),
+            Err(error) => {
+                return Err(RpcError::from_fault(&oversized_fault_advising(
+                    error,
+                    OversizeAdvice::for_tool(invocation.selected_name(), detail),
+                )));
+            }
         };
         let structured: Value = serde_json::from_slice(&payload.bytes)
             .map_err(|error| RpcError::tool(format!("typed projection decode failed: {error}")))?;
@@ -3304,6 +3403,11 @@ fn valid_direct_cursor_owner(owner: &str) -> bool {
     if let Some(encoded) = owner.strip_prefix("re1-") {
         return encoded.len() <= backend_library::MAX_INDEX_SEARCH_CURSOR_BYTES.saturating_sub(4)
             && URL_SAFE_NO_PAD.decode(encoded).ok().is_some_and(|bytes| serde_json::from_slice::<backend_library::RelatedPageCursor>(&bytes).is_ok());
+    }
+    if let Some(encoded) = owner.strip_prefix("rf1-") {
+        // An offset and the digest of the listing it indexes: lowercase hex only.
+        return encoded.len() == 8 + 64
+            && encoded.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
     }
     if let Some(encoded) = owner.strip_prefix("sr1-") {
         let Ok(decoded) = URL_SAFE_NO_PAD.decode(encoded) else { return false; };
@@ -4018,6 +4122,7 @@ impl RpcError {
         self.fault = self
             .fault
             .map(|fault| fault.with_mcp_exposure(invocation.exposure()));
+        self.name_arguments_for(invocation);
         if let Some(fault) = &self.fault
             && fault.startup_recovery()
                 == Some(backend_client::StartupRecovery::RetryOriginalCommand)
@@ -4072,6 +4177,28 @@ impl RpcError {
         self.into_tool_result()
     }
 
+    /// A usage refusal names the JSON arguments of the tool called, never the CLI flags
+    /// its sentence was written with.
+    fn name_arguments_for(&mut self, invocation: McpInvocation<'_>) {
+        let Some(grammar) = backend_present::grammar_for_tool(invocation.selected_name()) else {
+            return;
+        };
+        let Some(fault) = self.fault.as_ref().filter(|fault| fault.slug().is_usage()) else {
+            return;
+        };
+        let renamed = fault.clone().with_mcp_argument_names(grammar);
+        if &renamed == fault {
+            return;
+        }
+        if self.structured.is_some() {
+            self.structured = Some(fault_value(&renamed));
+            self.detail = Some(bounded_text(&markdown::fault(&renamed)));
+        } else {
+            self.detail = Some(renamed.cause().sentence().to_owned());
+        }
+        self.fault = Some(renamed);
+    }
+
     const fn new(code: i64, message: &'static str) -> Self {
         Self {
             code,
@@ -4118,7 +4245,6 @@ impl RpcError {
                 backend_present::Operand::Argument("cursor".to_owned()),
             )),
             detail: Some(
-        self.name_arguments_for(invocation);
                 "the continuation belongs to an older immutable revision; restart the query"
                     .to_owned(),
             ),
@@ -4173,28 +4299,6 @@ impl RpcError {
                 | FaultSlug::LaneUnavailable
                 | FaultSlug::LanePartial
                 | FaultSlug::SourceUnavailable
-    /// A usage refusal names the JSON arguments of the tool called, never the CLI flags
-    /// its sentence was written with.
-    fn name_arguments_for(&mut self, invocation: McpInvocation<'_>) {
-        let Some(grammar) = backend_present::grammar_for_tool(invocation.selected_name()) else {
-            return;
-        };
-        let Some(fault) = self.fault.as_ref().filter(|fault| fault.slug().is_usage()) else {
-            return;
-        };
-        let renamed = fault.clone().with_mcp_argument_names(grammar);
-        if &renamed == fault {
-            return;
-        }
-        if self.structured.is_some() {
-            self.structured = Some(fault_value(&renamed));
-            self.detail = Some(bounded_text(&markdown::fault(&renamed)));
-        } else {
-            self.detail = Some(renamed.cause().sentence().to_owned());
-        }
-        self.fault = Some(renamed);
-    }
-
                 | FaultSlug::Rejected
                 | FaultSlug::Usage => true,
             };

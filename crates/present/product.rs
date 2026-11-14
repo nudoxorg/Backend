@@ -13,6 +13,8 @@
 //! reader learns it once.
 
 use crate::drive::ContinuationCursor;
+use crate::reference_page::ReferenceCursor;
+pub use crate::reference_page::ReferencePageInfo;
 use crate::fault::{Fault, Operand};
 use crate::words::wire_words;
 use backend_library::{
@@ -739,6 +741,7 @@ pub struct ProductView {
     package_graph_request_authority: Option<backend_library::PackageGraphSourceAuthority>,
     semantic_data: Option<ProductSemanticData>,
     references_result: bool,
+    reference_page: Option<ReferencePageInfo>,
     pub(crate) mcp_exposure: crate::McpExposure,
     package_discovery: Option<PackageDiscoveryProjection>,
 }
@@ -1521,6 +1524,95 @@ impl ProductView {
         self
     }
 
+    /// The cursor to the next page of a references listing, when more uses remain.
+    #[must_use]
+    pub fn reference_cursor(&self) -> Option<&CursorProjection> {
+        self.owner_cursor
+            .as_ref()
+            .filter(|_| self.reference_page.is_some())
+    }
+
+    /// Where this answer sits in a complete references listing, when it is a page of one.
+    #[must_use]
+    pub const fn reference_page(&self) -> Option<&ReferencePageInfo> {
+        self.reference_page.as_ref()
+    }
+
+    /// Identifies the complete listing, so a cursor cannot resume a different one.
+    fn reference_digest(&self) -> [u8; 32] {
+        let mut hasher = blake3::Hasher::new();
+        for record in self.records.iter() {
+            for part in [record.title.as_bytes(), record.operand.as_deref().unwrap_or("").as_bytes()] {
+                hasher.update(&(part.len() as u64).to_le_bytes());
+                hasher.update(part);
+            }
+            if let Some(details) = record.reference_details.as_ref().and_then(|d| serde_json::to_vec(d).ok()) {
+                hasher.update(&details);
+            }
+        }
+        *hasher.finalize().as_bytes()
+    }
+
+    /// Up to `limit` uses of a complete references listing, from `cursor` onward.
+    ///
+    /// The owner answers every use at once, so the page is a window over that reply. The note
+    /// says how many uses remain; the cursor, when any do, names the next and the exact listing.
+    ///
+    /// # Errors
+    ///
+    /// Returns a usage fault for a cursor that is not a references cursor, and a stale-cursor
+    /// fault when the listing changed since the cursor was issued.
+    pub fn reference_window(
+        &self,
+        cursor: Option<&str>,
+        limit: usize,
+        target: CursorTarget,
+    ) -> Result<Self, Fault> {
+        let total = self.records.len();
+        let digest = self.reference_digest();
+        let offset = match cursor {
+            None => 0,
+            Some(token) => {
+                let cursor = ReferenceCursor::parse(token)
+                    .filter(|cursor| cursor.offset <= total)
+                    .ok_or_else(|| Fault::usage("cursor", "not a cursor returned by a references page"))?;
+                if cursor.digest != digest {
+                    return Err(Fault::from_client_error(
+                        &backend_client::ClientError::StaleCursor,
+                        Operand::Argument("cursor".to_owned()),
+                    ));
+                }
+                cursor.offset
+            }
+        };
+        let end = offset.saturating_add(limit.max(1)).min(total);
+        let remaining = total - end;
+        let mut view = Self::rows(&self.heading, self.records[offset..end].to_vec()).with_references_result();
+        let coverage = self.note.as_deref().unwrap_or_default();
+        view.note = if offset == 0 && remaining == 0 {
+            self.note.clone()
+        } else {
+            let place = format!("Uses {}-{} of {total}", offset + 1, end);
+            Some(if remaining == 0 {
+                format!("{coverage}. {place}; this is the last page.")
+            } else {
+                format!("{coverage}. {place}; {remaining} more remain. Pass the returned cursor to read the next page.")
+            })
+        };
+        if offset > 0 || remaining > 0 {
+            view.reference_page = Some(ReferencePageInfo { offset, returned: end - offset, total, remaining });
+        }
+        if remaining > 0 {
+            let token = ReferenceCursor { offset: end, digest }.encode();
+            view.owner_cursor = Some(CursorProjection::projected(
+                ContinuationCursor::ReferencePage(token.clone()),
+                token,
+                target,
+            ));
+        }
+        Ok(view)
+    }
+
     /// Records one product answer a surface assembled itself.
     ///
     /// An accepted intent is not a [`SurfaceReply`], but it is the same shape
@@ -1547,6 +1639,7 @@ impl ProductView {
             package_graph_request_authority: None,
             semantic_data: None,
             references_result: false,
+            reference_page: None,
             package_discovery: None,
             mcp_exposure: crate::McpExposure::Direct,
         }
@@ -1575,6 +1668,7 @@ impl ProductView {
             package_graph_request_authority: None,
             semantic_data: None,
             references_result: false,
+            reference_page: None,
             package_discovery: None,
             mcp_exposure: crate::McpExposure::Direct,
         }
@@ -1601,6 +1695,7 @@ impl ProductView {
             package_graph_request_authority: None,
             semantic_data: None,
             references_result: false,
+            reference_page: None,
             package_discovery: None,
             mcp_exposure: crate::McpExposure::Direct,
         }
@@ -1627,6 +1722,7 @@ impl ProductView {
             package_graph_request_authority: None,
             semantic_data: None,
             references_result: false,
+            reference_page: None,
             package_discovery: None,
             mcp_exposure: crate::McpExposure::Direct,
         }
@@ -1653,6 +1749,7 @@ impl ProductView {
             package_graph_request_authority: None,
             semantic_data: None,
             references_result: false,
+            reference_page: None,
             package_discovery: None,
             mcp_exposure: crate::McpExposure::Direct,
         }

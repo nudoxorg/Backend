@@ -57,6 +57,8 @@ pub enum ContinuationCursor {
     IndexSearch(IndexSearchCursor),
     /// Root-bound native compiler-generation discovery cursor.
     SemanticVersions(backend_library::SemanticVersionsCursor),
+    /// A window over a complete references reply, bound to that exact listing.
+    ReferencePage(String),
 }
 
 /// Rows fetched for one page's members and relations.
@@ -491,7 +493,9 @@ fn search_view(list: RecordList, declarations_only: bool) -> RecordList {
 /// Explains an empty search without implying the project has no such text.
 ///
 /// An empty answer is only about the published index: files edited on disk after the last
-/// index are not searchable, and a phrase is matched as one piece of text, not as words.
+/// index are not searchable, dependencies are indexed only when added, and a phrase is
+/// matched as one piece of text, not as words. The note about a file type is given only
+/// when the query itself names that type, so a project without it never reads about it.
 #[must_use]
 pub fn empty_search_reason(published_names_only: bool, text: &str) -> String {
     let mut reason = if published_names_only {
@@ -508,10 +512,6 @@ pub fn empty_search_reason(published_names_only: bool, text: &str) -> String {
     reason.push_str(
         "; the index reflects files as of the last index, so code edited or added on disk since then is not searchable until it is re-indexed (nudox add, backend.index). Dependencies (node_modules, registry packages) are not indexed unless added: acquire one release with `nudox add <pinned purl>` (backend.index with the pinned purl as path), and find its purl with `index-search <name>` (backend.index_search)",
     );
-    reason
-}
-
-/// Projects an already admitted native search/name/outline reply without another read.
     let lowered = text.to_ascii_lowercase();
     if text.starts_with(['.', '#']) || text.starts_with("--") || lowered.contains(".css") {
         reason.push_str(
@@ -528,6 +528,10 @@ pub fn empty_search_reason(published_names_only: bool, text: &str) -> String {
             ". Inline script blocks in .vue single-file components have partial native syntax coverage; template, style, external script and complete Vue framework semantics are unavailable (`status` counts hosts with unavailable inline scripts)",
         );
     }
+    reason
+}
+
+/// Projects an already admitted native search/name/outline reply without another read.
 /// Surfaces can retain typed response-ceiling errors before this projection.
 ///
 /// # Errors
@@ -2660,10 +2664,6 @@ mod empty_search_reason_controls {
     }
 
     #[test]
-    fn a_multiword_empty_search_explains_phrase_matching() {
-        let reason = empty_search_reason(false, "where is the balance validated");
-        assert!(reason.contains("several words"), "{reason}");
-    #[test]
     fn an_empty_search_says_dependencies_are_not_indexed_and_how_to_add_one() {
         let reason = empty_search_reason(false, "computeLayoutParams");
         assert!(reason.contains("node_modules"), "{reason}");
@@ -2689,6 +2689,10 @@ mod empty_search_reason_controls {
         );
     }
 
+    #[test]
+    fn a_multiword_empty_search_explains_phrase_matching() {
+        let reason = empty_search_reason(false, "where is the balance validated");
+        assert!(reason.contains("several words"), "{reason}");
         assert!(reason.contains("semantic_search"), "{reason}");
     }
 }

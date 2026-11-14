@@ -128,6 +128,56 @@ pub fn oversized_fault(error: BudgetExceeded) -> Fault {
     )
 }
 
+/// Which of a tool's own arguments could make a refused response fit.
+///
+/// The generic refusal cannot know what the tool accepts, so the caller that
+/// does know names only those arguments.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OversizeAdvice {
+    limit: bool,
+    summary: bool,
+}
+
+impl OversizeAdvice {
+    /// The advice that applies to `tool` when it answered at `detail`.
+    #[must_use]
+    pub fn for_tool(tool: &str, detail: Detail) -> Self {
+        Self {
+            limit: crate::grammar_for_tool(tool)
+                .is_some_and(|grammar| grammar.options().iter().any(|option| option.name() == "limit")),
+            summary: detail != Detail::Summary,
+        }
+    }
+
+    const fn sentence(self) -> &'static str {
+        match (self.limit, self.summary) {
+            (true, true) => "; lower `limit` or request detail=summary",
+            (true, false) => "; lower `limit`",
+            (false, true) => "; request detail=summary",
+            (false, false) => "",
+        }
+    }
+}
+
+/// Like [`oversized_fault`], advising only arguments the tool has.
+#[must_use]
+pub fn oversized_fault_advising(error: BudgetExceeded, advice: OversizeAdvice) -> Fault {
+    Fault::new(
+        FaultSlug::Transport,
+        Operand::Argument("response".to_owned()),
+        Cause::new(
+            CauseSlug::Oversized,
+            format!(
+                "response is {} bytes, above the {} byte budget{}",
+                error.bytes,
+                error.budget,
+                advice.sentence()
+            ),
+        ),
+        Affordance::None,
+    )
+}
+
 /// Estimates tokens from bytes using the fixed repository ratio.
 #[must_use]
 pub const fn estimate_tokens(bytes: usize) -> usize {
@@ -366,6 +416,7 @@ pub fn encode_answer_with_call(
                         semantic_data: product.semantic_data,
                         semantic_versions_summary: product.semantic_versions_summary,
                         package_discovery: product.package_discovery,
+                        references_page: product.references_page,
                     },
                     budget,
                     continuation_call,
@@ -890,6 +941,8 @@ struct SummaryProductDto {
     package_discovery: Option<crate::product::PackageDiscoveryProjection>,
     #[serde(skip_serializing_if = "Option::is_none")]
     package_graph_page: Option<backend_library::PackageGraphPage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    references_page: Option<crate::ReferencePageInfo>,
 }
 
 /// Native graph rows have only readable identities; all canonical fields
