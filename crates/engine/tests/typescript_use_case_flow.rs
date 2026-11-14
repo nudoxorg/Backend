@@ -172,7 +172,7 @@ fn mentions_box<'a>(
     fact: &DecodedTypeFact<'a>,
     box_owner: u32,
 ) -> bool {
-    if fact.record.text == Some(b"Box") {
+    if fact.record.text == Some(&b"Box"[..]) {
         return true;
     }
     if fact.record.nominal == Some(NominalRef::Local(EntityId::new(box_owner))) {

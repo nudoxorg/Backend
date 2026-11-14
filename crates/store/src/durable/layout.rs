@@ -9,7 +9,7 @@ use std::{
     fs::{File, OpenOptions, TryLockError},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -29,6 +29,20 @@ static ACTIVE_GC_PINS: AtomicUsize = AtomicUsize::new(0);
 #[derive(Clone, Debug)]
 pub struct StorePublicationAuthority {
     inner: Arc<PublicationAuthorityInner>,
+}
+
+/// Non-owning observation of a publication lease. It cannot itself publish.
+#[derive(Clone, Debug)]
+pub struct WeakPublicationAuthority {
+    inner: Weak<PublicationAuthorityInner>,
+}
+
+impl WeakPublicationAuthority {
+    /// Runs an operation while the original kernel lease is still held.
+    pub fn with_live<T>(&self, operation: impl FnOnce() -> T) -> Option<T> {
+        let _held = self.inner.upgrade()?;
+        Some(operation())
+    }
 }
 
 /// Failure to acquire a store's kernel-held publication authority.
@@ -58,6 +72,12 @@ struct PublicationAuthorityInner {
 }
 
 impl StorePublicationAuthority {
+    /// Create a witness that does not keep the kernel lease alive.
+    #[must_use]
+    pub fn downgrade(&self) -> WeakPublicationAuthority {
+        WeakPublicationAuthority { inner: Arc::downgrade(&self.inner) }
+    }
+
     /// Acquires the kernel lease at `lock_path`.
     ///
     /// The path must be the canonical `OWNER.lock` path associated with the
@@ -501,6 +521,7 @@ impl SelectedHead {
 #[derive(Clone, Debug)]
 pub struct FileStore {
     pub(super) root: PathBuf,
+    pub(super) root_directory: backend_platform::OwnedWorkspaceDirectory,
     pub(super) gc_identity: Hash,
     pub(super) max_pack_bytes: usize,
     pub(super) lock: Arc<Mutex<()>>,
@@ -534,6 +555,42 @@ impl FileStore {
             root_identity: self.gc_identity,
             acquired_at: Instant::now(),
         })
+    }
+
+    /// Acquires the same shared GC lease using fixed stack locators and
+    /// checkpointed nonblocking lock attempts. The caller supplies a finite
+    /// work budget via `checkpoint`; exhausted work must return an error.
+    /// Non-Unix platforms fail closed on this bounded path.
+    pub fn pin_garbage_collection_bounded<C>(&self, budget: &mut usize, mut checkpoint: C) -> Result<GcPinGuard, super::StoreError>
+    where C: FnMut(&mut usize) -> Result<(), super::StoreError> {
+        if cfg!(not(unix)) { return Err(super::StoreError::Bounds); }
+        *budget = budget.checked_sub(4096).ok_or(super::StoreError::Bounds)?;
+        #[cfg(unix)] {
+            use std::os::unix::ffi::OsStrExt;
+            use rustix::fs::{open, openat, Mode, OFlags};
+            let path = self.root.as_os_str().as_bytes();
+            let mut root_buf = [0u8;4096];
+            if path.len() >= root_buf.len() || path.contains(&0) { return Err(super::StoreError::Bounds); }
+            root_buf[..path.len()].copy_from_slice(path);
+            let path = std::ffi::CStr::from_bytes_with_nul(&root_buf[..=path.len()]).map_err(|_| super::StoreError::Corrupt)?;
+            checkpoint(budget)?;
+            let root = File::from(open(path, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map_err(|e| super::io_error(&std::io::Error::from(e)))?);
+            if !self.root_directory.matches_open_directory(&root).map_err(|e| super::io_error(&e))? { return Err(super::StoreError::UnsafePath); }
+            let name = std::ffi::CStr::from_bytes_with_nul(b"GC-PINS.lock\0").map_err(|_| super::StoreError::Corrupt)?;
+            checkpoint(budget)?;
+            let file = File::from(openat(&root, name, OFlags::CREATE | OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::from_bits_truncate(0o600)).map_err(|e| super::io_error(&std::io::Error::from(e)))?);
+            loop {
+                checkpoint(budget)?;
+                match file.try_lock_shared() {
+                    Ok(()) => break,
+                    Err(TryLockError::WouldBlock) => std::thread::yield_now(),
+                    Err(TryLockError::Error(error)) => return Err(super::io_error(&error)),
+                }
+            }
+            ACTIVE_GC_PINS.fetch_add(1, Ordering::Relaxed);
+            Ok(GcPinGuard { _lease: GcPinLease { file }, root_identity: self.gc_identity, acquired_at: Instant::now() })
+        }
+        #[cfg(not(unix))] { let _ = checkpoint; Err(super::StoreError::Bounds) }
     }
 
     /// Runs a product metadata operation while holding the exclusive garbage

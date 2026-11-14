@@ -138,7 +138,14 @@ impl DisplayCapture {
                     }
                     (DisplaySource::Indexed, rows.finish())
                 }
-                BrowseValue::CargoSourceInventory(_) => return None,
+                // An analysis of the project's files is never saved at rest: a
+                // later launch would show it without asking whether the files
+                // changed, and the owner answers it again in a moment.
+                BrowseValue::CargoSourceInventory(_)
+                | BrowseValue::FindNative(_)
+                | BrowseValue::Sql(_)
+                | BrowseValue::Css(_)
+                | BrowseValue::Impact(_) => return None,
             },
             CaptureValue::World(orbit) => {
                 let mut rows = Rows::new("World")?;

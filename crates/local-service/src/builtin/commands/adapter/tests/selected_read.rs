@@ -33,9 +33,43 @@ fn read_through_wire(
     let decoded = backend_library::decode_reply_body(&bytes).expect("strict reply decode");
     backend_library::admit_reply(request, &decoded).expect("exact read request/reply admission");
     assert_eq!(decoded.request_id, request.request_id);
-    let CommandReply::Surface(SurfaceReply::Read(records)) = decoded.reply else {
-        panic!("typed batch read reply");
+    match decoded.reply {
+        CommandReply::Surface(SurfaceReply::Read(records)) => records,
+        other => panic!("typed batch read reply, got {other:?}"),
+    }
+}
+
+// Synthetic rows below have no admitted source facts. Verify their immutable
+// selected-view behavior, then require the public wire read to refuse freshness.
+fn selected_view_with_unverified_source_refused(
+    adapter: &mut CommandAdapter,
+    daemon: &mut ProductDaemon,
+    id: u64,
+    labels: &[&str],
+) -> Box<[backend_library::DeclarationRecord]> {
+    let locators = labels
+        .iter()
+        .map(|label| ProductText::new(*label).expect("locator"))
+        .collect::<Vec<_>>();
+    let SurfaceReply::Read(records) =
+        super::super::super::super::product_state::read_from_selected_view(
+            daemon.engine().daemon().library().view(),
+            &locators,
+        )
+        .expect("immutable view")
+    else {
+        panic!("selected view read")
     };
+    let request = read_request(id, labels);
+    let body = backend_library::encode_command_body(&request).expect("request");
+    let bytes = adapter.execute(daemon, &body).expect("dispatch");
+    let reply = backend_library::decode_reply_body(&bytes).expect("reply");
+    backend_library::admit_reply(&request, &reply).expect("correlated reply");
+    assert!(
+        matches!(reply.reply, CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(ref detail))
+        if detail.contains("freshness could not be verified")),
+        "{reply:?}"
+    );
     records
 }
 
@@ -51,15 +85,131 @@ fn align_fixture_sql(adapter: &mut CommandAdapter, daemon: &ProductDaemon) {
 }
 
 #[test]
+fn graph_without_publication_keeps_containment_without_typed_relations() {
+    let mut fixture = AdapterFixture::new();
+    let symbol = backend_library::symbol_key("no-semantic-graph");
+    let package = fixture.package;
+    let basis = fixture
+        .daemon
+        .as_ref()
+        .unwrap()
+        .engine()
+        .daemon()
+        .library()
+        .view()
+        .basis();
+    fixture.publish_rows(vec![Row::in_package(
+        RowId::Symbol(symbol),
+        basis,
+        package,
+        format!("{}::missing", fixture.label),
+    )]);
+    let (adapter, daemon) = fixture.parts();
+    let query = backend_library::GraphNeighborhoodQuery::selected(
+        symbol,
+        daemon.engine().daemon().library().revision_root(),
+    );
+    let capability = daemon
+        .engine()
+        .daemon()
+        .library()
+        .view()
+        .capability()
+        .expect("same-owner admitted producer coverage");
+    let revision_request = CommandDto::new(899, Command::Revision);
+    let revision_bytes = backend_library::encode_command_body(&revision_request).unwrap();
+    let response = adapter.execute(daemon, &revision_bytes).unwrap();
+    let revision =
+        backend_library::ReplyDto::decode_with_certificate(&response, Some(capability.clone()))
+            .unwrap();
+    backend_library::admit_reply_with_capability(
+        &revision_request,
+        &revision,
+        Some(capability.clone()),
+    )
+    .unwrap();
+    let certificate = revision
+        .certificate()
+        .expect("actual view revision certificate")
+        .clone()
+        .with_claim_once(backend_library::WireClaim::KeyCommitment {
+            schema: backend_library::WireSchema::Symbol,
+            id: backend_library::encode_id(symbol.as_bytes()),
+        });
+    for incoming in [false, true] {
+        let command = if incoming {
+            Command::Related(query)
+        } else {
+            Command::Graph(query)
+        };
+        let request = CommandDto::new(if incoming { 901 } else { 900 }, command)
+            .with_certificate(certificate.clone());
+        let body = backend_library::encode_command_body(&request).unwrap();
+        let response = adapter.execute(daemon, &body).unwrap();
+        let reply =
+            backend_library::ReplyDto::decode_with_certificate(&response, Some(capability.clone()))
+                .unwrap();
+        backend_library::admit_reply_with_capability(&request, &reply, Some(capability.clone()))
+            .unwrap();
+        let CommandReply::Graph(snapshot) = reply.reply else {
+            panic!("expected graph reply")
+        };
+        assert!(
+            snapshot.graph_relations.is_none(),
+            "containment must not become semantic evidence"
+        );
+        assert!(snapshot.rich_graph.is_none());
+        assert!(snapshot.root.row_ref(RowId::Symbol(symbol)).is_some());
+    }
+}
+
+#[test]
+fn signature_without_source_location_refuses_unknown_freshness() {
+    let mut fixture = AdapterFixture::new();
+    let basis = fixture
+        .daemon
+        .as_ref()
+        .expect("owner")
+        .engine()
+        .daemon()
+        .library()
+        .view()
+        .basis();
+    let id = backend_library::symbol_key("signature-without-source");
+    fixture.publish_rows(vec![
+        Row::new(RowId::Symbol(id), basis, "signature-without-source")
+            .with_signature("const indexed_value = 1")
+            .with_excerpt(SourceExcerpt::NotHydrated),
+    ]);
+    let request = read_request(1199, &["signature-without-source"]);
+    let (adapter, daemon) = fixture.parts();
+    let bytes = adapter
+        .execute(
+            daemon,
+            &backend_library::encode_command_body(&request).expect("request"),
+        )
+        .expect("dispatch");
+    let reply = backend_library::decode_reply_body(&bytes).expect("reply");
+    backend_library::admit_reply(&request, &reply).expect("correlated reply");
+    assert!(
+        matches!(reply.reply, CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(ref detail))
+        if detail.contains("freshness could not be verified")),
+        "{reply:?}"
+    );
+}
+
+#[test]
 fn local_owner_explicitly_answers_outline_witness_route_probe_with_revision() {
     let mut fixture = AdapterFixture::new();
     let request = CommandDto::new(u64::MAX - 1, Command::OutlineOwnerWitnessCapability);
     let (adapter, daemon) = fixture.parts();
+    let capability = daemon.engine().daemon().library().view().capability();
     let body = backend_library::encode_command_body(&request).expect("probe request encoding");
     let bytes = adapter
         .execute(daemon, &body)
         .expect("local product owner answers capability probe");
-    let reply = backend_library::decode_reply_body(&bytes).expect("actual owner reply decode");
+    let reply = backend_library::ReplyDto::decode_with_certificate(&bytes, capability)
+        .expect("actual owner reply decode with selected producer coverage");
     backend_library::admit_reply(&request, &reply).expect("correlated owner capability reply");
     assert!(matches!(reply.reply, CommandReply::Revision(_)));
 }
@@ -92,23 +242,42 @@ fn local_adapter_rehydrates_pc5_outline_witness_before_library_dispatch() {
     let mut expected = rows.iter().map(|row| row.id).collect::<Vec<_>>();
     expected.sort_unstable();
     fixture.publish_rows(rows);
+    let package_label = fixture.label.clone();
 
     let (first, page_certificate, revision_certificate, owner_root, owner_cursor, limit) = {
         let (adapter, daemon) = fixture.parts();
         let root = daemon.engine().daemon().library().revision_root();
         let limit = backend_library::QueryLimit::new(4).expect("small test page");
+        let library = daemon.engine().daemon().library();
+        let capability = library.view().capability();
+        let certificate = crate::builtin::projection::certificate_for_snapshot_page(
+            library.view(),
+            library.cursor(),
+            None,
+            &[],
+            None,
+        )
+        .expect("selected owner certificate")
+        .with_claim(backend_library::WireClaim::Key {
+            schema: backend_library::WireSchema::Package,
+            id: backend_library::encode_id(package.as_bytes()),
+            value: package_label,
+        });
         let request = CommandDto::new(
             1201,
             Command::OutlinePage {
                 package,
                 page: backend_library::PageRequest::new(root, limit),
             },
-        );
+        )
+        .with_certificate(certificate);
         let bytes = backend_library::encode_command_body(&request).expect("first page request");
         let response = adapter
             .execute(daemon, &bytes)
             .expect("first page from adapter");
-        let decoded = backend_library::decode_reply_body(&response).expect("first page reply");
+        let decoded =
+            backend_library::ReplyDto::decode_with_certificate(&response, capability.clone())
+                .expect("first page reply with selected producer coverage");
         backend_library::admit_reply(&request, &decoded).expect("first page correlation");
         let page_certificate = decoded.certificate().expect("page proof").clone();
         let CommandReply::ProjectionPage(page) = decoded.reply else {
@@ -124,7 +293,8 @@ fn local_adapter_rehydrates_pc5_outline_witness_before_library_dispatch() {
             .execute(daemon, &revision_bytes)
             .expect("revision from same local owner");
         let revision =
-            backend_library::decode_reply_body(&revision_response).expect("revision reply");
+            backend_library::ReplyDto::decode_with_certificate(&revision_response, capability)
+                .expect("revision reply with selected producer coverage");
         backend_library::admit_reply(&revision_request, &revision).expect("revision correlation");
         let revision_certificate = revision.certificate().expect("revision proof").clone();
         let CommandReply::Revision(receipt) = revision.reply else {
@@ -250,10 +420,10 @@ fn local_adapter_rehydrates_pc5_outline_witness_before_library_dispatch() {
     let portable_token_body =
         backend_library::encode_binary_certificate_command(&portable_token_request)
             .expect("page-only PC5 portable token body");
-    assert!(
-        backend_library::decode_command_body_for_owner(&portable_token_body, owner_cursor).is_ok(),
-        "PC5 token import accepts exactly its page cursor before fresh owner proof is added"
-    );
+    let expanded_token = backend_library::expand_binary_certificate_command(&portable_token_body)
+        .expect("expand PC5 binary frame without admitting claims");
+    backend_library::decode_command_body_for_owner(&expanded_token, owner_cursor)
+        .expect("PC5 token import accepts exactly its page cursor before fresh owner proof is added");
     let mut tampered_claims = request_certificate.claims.to_vec();
     let owner_claim = tampered_claims
         .iter_mut()
@@ -312,7 +482,9 @@ fn local_adapter_rehydrates_pc5_outline_witness_before_library_dispatch() {
     let Executed::Reply(bytes) = executed else {
         panic!("outline continuation is a read and must reply immediately");
     };
-    let decoded = backend_library::decode_reply_body(&bytes).expect("continued page reply");
+    let capability = daemon.engine().daemon().library().view().capability();
+    let decoded = backend_library::ReplyDto::decode_with_certificate(&bytes, capability)
+        .expect("continued page reply with selected producer coverage");
     backend_library::admit_reply(&request, &decoded).expect("continued page admission");
     let second_page_certificate = decoded.certificate().expect("second page proof").clone();
     let CommandReply::ProjectionPage(second) = decoded.reply else {
@@ -429,7 +601,9 @@ fn local_adapter_rehydrates_pc5_outline_witness_before_library_dispatch() {
     let Executed::Reply(third_bytes) = third_executed else {
         panic!("third outline page is an immediate read");
     };
-    let third_reply = backend_library::decode_reply_body(&third_bytes).expect("third page reply");
+    let capability = daemon.engine().daemon().library().view().capability();
+    let third_reply = backend_library::ReplyDto::decode_with_certificate(&third_bytes, capability)
+        .expect("third page reply with selected producer coverage");
     backend_library::admit_reply(&third_request, &third_reply).expect("third page correlation");
     let CommandReply::ProjectionPage(third) = third_reply.reply else {
         panic!("third outline page");
@@ -502,20 +676,18 @@ fn local_batch_read_ignores_invalid_unrelated_manifest_and_unconfigured_catalog(
         super::super::super::super::local_manifest::local_dependency_facts(&project)
             .expect_err("malformed local dependency authority must fail");
     assert!(dependency_error.contains("module path"));
-    let records = read_through_wire(
+    let records = selected_view_with_unverified_source_refused(
         adapter,
         daemon,
-        &read_request(
-            1101,
-            &[
-                "Router",
-                "router",
-                "signature-only",
-                "ROUTER",
-                "missing",
-                "Router",
-            ],
-        ),
+        1101,
+        &[
+            "Router",
+            "router",
+            "signature-only",
+            "ROUTER",
+            "missing",
+            "Router",
+        ],
     );
     assert_eq!(records.len(), 6);
     assert_eq!(records[0].stable_id, Some(router.to_bytes()));
@@ -662,7 +834,8 @@ fn batch_read_preserves_legacy_ambiguous_label_selection_without_claiming_unique
         "second-signature"
     };
     let before = owner_cursor(daemon);
-    let records = read_through_wire(adapter, daemon, &read_request(1121, &["duplicate"]));
+    let records =
+        selected_view_with_unverified_source_refused(adapter, daemon, 1121, &["duplicate"]);
     assert_eq!(records[0].stable_id, Some(expected.to_bytes()));
     assert_eq!(
         records[0].signature.as_ref().map(ProductText::as_str),
@@ -741,4 +914,25 @@ fn local_read_still_refuses_oversized_and_unknown_wire_claims_before_dispatch() 
     assert!(error.0.starts_with("decode command DTO:"));
     assert_eq!(owner_cursor(daemon), before);
     assert!(adapter.dependencies.is_none());
+}
+
+#[test]
+fn legacy_empty_project_metadata_read_stays_unqualified() {
+    let mut fixture = AdapterFixture::new();
+    let label = fixture.label.clone();
+    let package = fixture.package;
+    let (adapter, daemon) = fixture.parts();
+    let records = read_through_wire(adapter, daemon, &read_request(1751, &[&label]));
+    let [record] = records.as_ref() else {
+        panic!("one project metadata record")
+    };
+    assert_eq!(record.stable_id, Some(package.to_bytes()));
+    assert!(
+        record.source_policy.is_unknown(),
+        "empty legacy Project has no selected native source claim"
+    );
+    assert!(
+        record.extent.is_none(),
+        "project metadata must not claim a captured declaration source extent"
+    );
 }

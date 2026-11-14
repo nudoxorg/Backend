@@ -11,6 +11,7 @@ mod schema;
 mod schema_preflight;
 mod snapshot;
 mod types;
+mod unit_store;
 mod versioned;
 
 #[cfg(test)]
@@ -31,18 +32,26 @@ mod snapshot_tests;
 
 use envelope::FileStoreCompilerPublicationVerifier;
 pub use envelope::{
+    COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA, COMPILER_CSHARP_EVIDENCE_SCHEMA,
+    COMPILER_NATIVE_LINES_METADATA_SCHEMA, COMPILER_NATIVE_LINES_SCHEMA, CompilerNativeLinesMember, VerifiedNativeLinesWitness, reopen_selected_native_lines_budgeted,
+    COMPILER_NATIVE_HEADERS_METADATA_SCHEMA, COMPILER_NATIVE_HEADERS_SCHEMA, MAX_COMPILER_NATIVE_HEADERS_BYTES,
+    CompilerNativeHeadersMember, VerifiedNativeHeadersWitness, compiler_native_headers_object, reopen_selected_native_headers,
+    SelectedNativeHeaderBudget, reopen_selected_native_headers_budgeted,
+    SelectedPublicationWire, visit_selected_publication_wire,
+    VerifiedNativeHeadersView, reopen_selected_native_headers_in_scratch,
     COMPILER_PUBLICATION_ENVELOPE_SCHEMA, COMPILER_PUBLICATION_METADATA_SCHEMA,
     COMPILER_SEMANTIC_IMAGE_SCHEMA, COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA,
     COMPILER_TYPESCRIPT_SNAPSHOT_WITNESS_SCHEMA, CompilerEnvelopeError, CompilerImageMember,
-    CompilerProgramSourceMember, CompilerPublicationEnvelope, CompilerPublicationMetadata,
+    CompilerCSharpEvidenceMember, CompilerProgramSourceMember, CompilerPublicationEnvelope, CompilerPublicationMetadata,
     CompilerSourceCoverageMember, CompilerTypeScriptSnapshotMember,
     MAX_COMPILER_PUBLICATION_MEMBER_IDS, ReopenedCompilerImage, ReopenedCompilerMetadata,
     ReopenedCompilerPublication, VerifiedTypeScriptSnapshotWitness, reopen_native_program_sources,
-    reopen_selected_compiler_metadata, reopen_selected_compiler_publication,
+    reopen_selected_compiler_metadata, reopen_selected_compiler_publication, reopen_selected_csharp_evidence,
     reopen_selected_typescript_snapshot_witness, reopen_source_coverage,
     reopen_typescript_snapshot_witness, verify_typescript_snapshot_witness_member,
 };
 pub use error::AuthorityError;
+pub use schema_preflight::UnitFenceClaim;
 pub use snapshot::{
     AuthoritySnapshotBudget, AuthoritySnapshotError, AuthoritySnapshotFailure,
     AuthoritySnapshotOperation, AuthoritySnapshotReceipt, IncompleteAuthoritySnapshot,
@@ -57,6 +66,7 @@ pub use types::{
     SelectedFrontier, SelectedGeneration, SelectionOrigin, SourceObservation,
     SourceObservationReceipt, SourceObservationValue, SupersededAttemptProof,
 };
+pub use unit_store::UntrustedCSharpUnitStore;
 pub use versioned::{
     VERSIONED_PLANE_MANIFEST_SCHEMA, VERSIONED_PLANE_SEGMENT_SCHEMA,
     VersionedPlaneArtifactMetadata, VersionedPlaneError, VersionedPlaneManifestSchema,
@@ -65,7 +75,7 @@ pub use versioned::{
 };
 
 use crate::connection::BUSY_TIMEOUT;
-use crate::sharing::SharedWalBackend;
+use crate::sharing::{SharedWalBackend, open_gate};
 use backend_store::{ArtifactBudget, FileStore};
 use schema::{AUTHORITY_SCHEMA, AUTHORITY_SCHEMA_VERSION};
 use std::{fmt, path::Path};
@@ -91,6 +101,42 @@ impl fmt::Debug for TursoAuthority {
 }
 
 impl TursoAuthority {
+    /// Explicit lower-level v6-to-v7 main-domain migration and open.
+    ///
+    /// This API does not authenticate the workspace, identities, path, or
+    /// owner lease. The caller must hold its workspace's actual exclusive
+    /// owner/namespace interlock throughout preflight and this handle's use.
+    /// It never opens a C# unit-domain database or grants unit authority.
+    ///
+    /// # Errors
+    /// Refuses malformed, foreign, mismatched, or non-v6/v7-main catalogues.
+    pub async fn migrate_and_open_main_v7_untrusted(
+        path: impl AsRef<Path>, workspace: [u8; 32], domain: [u8; 32],
+    ) -> Result<Self, AuthorityError> {
+        let path = path.as_ref();
+        let text = path.to_str().ok_or_else(|| AuthorityError::NonUtf8Path(path.to_path_buf()))?;
+        if workspace == [0; 32] || domain == [0; 32] { return Err(AuthorityError::SchemaIntegrity); }
+        if !path.try_exists().map_err(AuthorityError::PathIo)? { return Err(AuthorityError::SchemaIntegrity); }
+        let backend = SharedWalBackend::detect()?;
+        let gate = open_gate().await;
+        {
+            let database = backend.open_database(backend.builder(text).read_only(true).experimental_index_method(true)).await?;
+            let connection = database.connect()?;
+            connection.busy_timeout(BUSY_TIMEOUT)?;
+            match schema_preflight::classify(&connection).await {
+                Ok(schema_preflight::DatabaseState::Current) => {},
+                Err(AuthorityError::Schema { found: 7 }) => schema_preflight::attest_v7_main(&connection, &workspace, &domain).await?,
+                _ => return Err(AuthorityError::SchemaIntegrity),
+            }
+        }
+        let database = backend.open_database(backend.builder(text).experimental_index_method(true)).await?;
+        drop(gate);
+        let mut connection = database.connect()?;
+        connection.busy_timeout(BUSY_TIMEOUT)?;
+        schema_preflight::migrate_v6_main_to_v7(&mut connection, &workspace, &domain).await?;
+        Ok(Self { _database: database, connection })
+    }
+
     /// Opens a current authority file or initializes an empty file at `path`.
     ///
     /// Keep this file separate from [`crate::TursoProjection`]: the latter is
@@ -112,6 +158,9 @@ impl TursoAuthority {
         // writer handle. Windows needs IOCP for both: the platform-default
         // backend cannot safely join this database's shared multiprocess WAL.
         let backend = SharedWalBackend::detect()?;
+        // No read-only handle of this file may be live in this process while
+        // the writable one is opened; see `open_gate`.
+        let gate = open_gate().await;
         let initial_state = if path.try_exists().map_err(AuthorityError::PathIo)? {
             let database = backend
                 .open_database(
@@ -140,6 +189,7 @@ impl TursoAuthority {
         let database = backend
             .open_database(backend.builder(text).experimental_index_method(true))
             .await?;
+        drop(gate);
         let mut connection = database.connect()?;
         connection.busy_timeout(BUSY_TIMEOUT)?;
         let tx = connection
@@ -1475,6 +1525,17 @@ impl TursoAuthority {
         self.verify_closure(candidate, &verifier)
     }
 
+    /// Verifies a compiler candidate while observing its live operation stop.
+    pub fn verify_compiler_publication_with_stop(
+        &self, candidate: &CandidateGeneration, admitted_attempt: &CandidateAttempt,
+        store: &FileStore, budget: ArtifactBudget, envelope: &CompilerPublicationEnvelope,
+        metadata: &CompilerPublicationMetadata, stopped: &dyn Fn() -> bool,
+    ) -> Result<ClosureReceipt, AuthorityError> {
+        if candidate.attempt() != admitted_attempt { return Err(AuthorityError::AdmittedInputMismatch); }
+        let verifier = FileStoreCompilerPublicationVerifier::new(store, budget, envelope, metadata).with_stop(stopped);
+        self.verify_closure(candidate, &verifier)
+    }
+
     /// Atomically selects a fully verified candidate against its exact attempt,
     /// input digest, source observation, and base frontier.
     ///
@@ -2104,6 +2165,47 @@ impl TursoAuthority {
         let generation = u64_to_i64(generation)?;
         let tx = self.connection.unchecked_transaction().await?;
         let selected = read_selected_generation(&tx, namespace, generation).await?;
+        tx.rollback().await?;
+        Ok(selected)
+    }
+
+    /// Reopens one retained generation for an exact logical binding and input.
+    /// The caller must still validate the compiler closure and publication claim.
+    pub async fn selected_generation_for_binding(
+        &self,
+        namespace: &AuthorityNamespace,
+        target_root: &AuthorityHash,
+        input_digest: &AuthorityHash,
+    ) -> Result<Option<SelectedGeneration>, AuthorityError> {
+        let tx = self.connection.unchecked_transaction().await?;
+        let mut rows = tx
+            .query(
+                "SELECT generation FROM backend_index_authority_generation_history \
+             WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
+               AND plane_kind=?5 AND profile=?6 AND target_root=?7 AND input_digest=?8 \
+             ORDER BY generation DESC LIMIT 1",
+                turso::params![
+                    namespace.package.as_ref(),
+                    namespace.source.as_ref(),
+                    namespace.branch.as_ref(),
+                    namespace.environment.as_ref(),
+                    namespace.plane.sql_parts().0,
+                    namespace.plane.sql_parts().1,
+                    target_root.as_slice(),
+                    input_digest.as_slice()
+                ],
+            )
+            .await?;
+        let generation = match rows.next().await? {
+            Some(row) => Some(row.get::<i64>(0)?),
+            None => None,
+        };
+        drop(rows);
+        let selected = if let Some(generation) = generation {
+            read_selected_generation(&tx, namespace, generation).await?
+        } else {
+            None
+        };
         tx.rollback().await?;
         Ok(selected)
     }

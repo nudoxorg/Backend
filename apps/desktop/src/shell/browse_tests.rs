@@ -462,6 +462,11 @@ fn find_invalid_input_is_distinct_from_blank_and_missing_package_is_unavailable(
 }
 
 fn find_fixture(query: &str, includes_answer: bool) -> BrowseValue {
+    find_fixture_covering(query, includes_answer, Known::Known(()))
+}
+
+/// A Find reading whose registry search ended as `package_coverage` says.
+fn find_fixture_covering(query: &str, includes_answer: bool, package_coverage: Known<()>) -> BrowseValue {
     let coordinate = "/fixture/present::glyph.rs:138::RelationLabel";
     let rows = if includes_answer {
         vec![SearchRow {
@@ -482,7 +487,6 @@ fn find_fixture(query: &str, includes_answer: bool) -> BrowseValue {
         coverage: backend_present::CoverageLine::new(&[], Some(u64::from(includes_answer))),
         next: None,
     });
-    let package_coverage = Known::Known(());
     let prepared = Arc::new(crate::runtime::browse_views::prepare_find(query, &answers, &[], &package_coverage));
     BrowseValue::Find(Arc::new(FindModel { answers, packages: Arc::from([]), package_coverage, prepared }))
 }
@@ -1181,19 +1185,28 @@ fn mounted_compare_native_choices_survive_back_forward_without_reusing_visit_act
     let ReadingPresentation::Compare { comparison, .. } = &before.presentation else { panic!("Compare visit") };
     assert_eq!(comparison.scope, Some(facet::browse::compare::Scope::Shared));
     assert!(comparison.facts, "actual native facts toggle changes visit intent");
-    assert!(rig.said().iter().any(|words| words == "License as declared"),
-        "expanded facts paint an actual field supplied by the typed package record");
+    // Compare is drawn by facet, so its words are in the paint ledger rather
+    // than in the Reader's own `said` list; look in both after a full repaint.
+    let words = |rig: &mut crate::shell::tests::Rig| {
+        rig.repaint();
+        let said = rig.said();
+        let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
+        said.into_iter().chain(ledger.texts.into_iter().map(|text| text.content)).collect::<Vec<_>>()
+    };
+    let seen = words(&mut rig);
+    assert!(seen.iter().any(|words| words == "License as declared"),
+        "expanded facts paint an actual field supplied by the typed package record: {seen:#?}");
     rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Home)));
     rig.keys("secondary-[");
     assert_eq!(rig.route(), route);
     let restored = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
     assert_eq!(restored.id, before.id);
     assert_eq!(restored.presentation, before.presentation);
-    assert!(rig.said().iter().any(|words| words == "Hide package facts"), "Back remounts expanded native facts panel");
+    assert!(words(&mut rig).iter().any(|words| words == "Hide package facts"), "Back remounts expanded native facts panel");
     rig.keys("secondary-]");
     assert_eq!(rig.route(), Route::Orbit(OrbitRoute::Home));
     rig.keys("secondary-[");
-    assert!(rig.said().iter().any(|words| words == "Hide package facts"));
+    assert!(words(&mut rig).iter().any(|words| words == "Hide package facts"));
 }
 
 #[gpui::test]
@@ -1387,4 +1400,72 @@ fn compare_follows_a_selected_name_across_the_page_boundary_without_overriding_e
     assert!(first_page.texts.iter().any(|text| text.key.contains("page-reading") && text.content == "1–18 of 20 recorded names"));
     assert!(!first_page.texts.iter().any(|text| text.key.contains("focused-name") && text.content == "advance_signal"),
         "explicit pagination must not be undone by the previous selection");
+}
+
+fn painted_words(rig: &mut crate::shell::tests::Rig) -> Vec<String> {
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    crate::shell::anatomy_tests::painted(rig).texts.into_iter().map(|text| text.content).collect()
+}
+
+/// Find is the front door of the add-a-package journey. Each way it can end
+/// is said in its own words: what was searched, what was not, and how to ask
+/// for one exact release. A word the person reads never claims a search that
+/// did not happen.
+#[gpui::test]
+fn find_says_what_it_searched_and_what_it_could_not(cx: &mut TestAppContext) {
+    let browse = BrowseRoute::Find(SearchQuery::new("itoa", SearchQuery::DEFAULT_LIMIT).expect("query"));
+    let route = Route::Orbit(OrbitRoute::Browse(browse.clone()));
+    let mut rig = rig(cx, Some(route), 1200.0, 800.0);
+    let key = BrowseKey::from(&browse);
+    let land = |rig: &mut crate::shell::tests::Rig, value: BrowseValue| {
+        rig.graph.store.update(rig.cx, |store, cx| store.test_land_browse(key.clone(), value, cx));
+        rig.settle();
+    };
+    let said = |words: &[String], part: &str| words.iter().any(|word| word.contains(part));
+
+    // The declarations were searched completely, but there is no Cargo
+    // registry on this machine: the empty answer cannot read as "there is no
+    // such package".
+    let searched = |query: &str, package_coverage: Known<()>| {
+        let page = crate::runtime::page_mapping::search_rows(query, &[], &[backend_library::Coverage::Complete], None, 0);
+        let answers = Known::Known(page);
+        let prepared = Arc::new(crate::runtime::browse_views::prepare_find(query, &answers, &[], &package_coverage));
+        BrowseValue::Find(Arc::new(FindModel { answers, packages: Arc::from([]), package_coverage, prepared }))
+    };
+    land(&mut rig, searched(
+        "itoa",
+        Known::Unknown(Gap::new(GapReason::Unconfigured, "registry releases were not searched because no local Cargo registry was found")),
+    ));
+    let words = painted_words(&mut rig);
+    assert!(said(&words, "registry releases were not searched"), "{words:?}");
+    assert!(said(&words, "Searched the declarations in the local index"), "the part that was searched is said too: {words:?}");
+
+    // A registry that was searched makes no such disclaimer.
+    land(&mut rig, searched("itoa", Known::Known(())));
+    let words = painted_words(&mut rig);
+    assert!(!said(&words, "were not searched"), "{words:?}");
+    assert!(said(&words, "Searched the declarations in the local index"), "{words:?}");
+
+    // An incomplete declaration search says it is partial, not empty.
+    land(&mut rig, find_fixture("itoa", false));
+    let words = painted_words(&mut rig);
+    assert!(said(&words, "Declaration search has partial coverage"), "{words:?}");
+    assert!(!said(&words, "Searched the declarations in the local index"), "{words:?}");
+
+    // A search the index could not finish says so, in its own words.
+    land(&mut rig, {
+        let BrowseValue::Find(find) = find_fixture("itoa", false) else { unreachable!() };
+        let mut find = (*find).clone();
+        find.answers = Known::Unknown(Gap::new(GapReason::ReadFailed, "the index did not answer"));
+        find.prepared = Arc::new(crate::runtime::browse_views::prepare_find("itoa", &find.answers, &[], &find.package_coverage));
+        BrowseValue::Find(Arc::new(find))
+    });
+    let words = painted_words(&mut rig);
+    assert!(said(&words, "The read failed"), "{words:?}");
+    assert!(!said(&words, "Searched the declarations"), "a failed read claims no search: {words:?}");
+
+    // A declaration hit reads as the library's own and offers no download.
+    land(&mut rig, find_fixture("itoa", true));
+    let words = painted_words(&mut rig);
+    assert!(said(&words, "RelationLabel"), "{words:?}");
 }

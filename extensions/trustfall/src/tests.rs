@@ -6,11 +6,6 @@
 )]
 
 use super::*;
-use backend_version::{
-    AuthorityScopeClaim, Coverage, CoverageWitness, ProducerObservationClaims,
-    ProducerObservationVerifier, RelationState, ScopeRoot, UntrustedProducerObservation,
-    WorkspaceManifest, WorkspaceRoot, admit_complete_scope, admit_producer_observation,
-};
 use backend_semantic::ir::{
     DeclarationFamilyId, DeclarationIdentity, ExternalFragmentId, ExternalTarget,
     ExternalTargetIdentity, IrBuilder, SemanticCoreReader as _, SourceIdentity, StableRef,
@@ -19,9 +14,17 @@ use backend_semantic::ir::{
 use backend_semantic::vocabulary::{
     CompileRecipeFact, LanguageProfile, NativeTool, PackageUrl, RustEdition, Stage,
 };
-use futures_util::StreamExt as _;
+use backend_version::{
+    admit_complete_scope, admit_producer_observation, AuthorityScopeClaim, Coverage,
+    CoverageWitness, ProducerObservationClaims, ProducerObservationVerifier, RelationState,
+    ScopeRoot, UntrustedProducerObservation, WorkspaceManifest, WorkspaceRoot,
+};
 use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
+use futures_util::StreamExt as _;
 use std::collections::BTreeMap;
+
+#[path = "corpus_admission_tests.rs"]
+mod corpus_admission_tests;
 
 struct FixtureCoverageVerifier {
     producer: [u8; 32],
@@ -155,23 +158,82 @@ fn compiler_external_corpus(
     image: [u8; 32],
     external_image: [u8; 32],
 ) -> Result<SemanticQueryCorpus, SemanticQueryError> {
+    compiler_external_corpus_with_authority(package, image, external_image, false, false)
+}
+
+fn compiler_external_corpus_with_authority(
+    package: backend_library::PackageKey,
+    image: [u8; 32],
+    external_image: [u8; 32],
+    source_observed: bool,
+    external_observed: bool,
+) -> Result<SemanticQueryCorpus, SemanticQueryError> {
+    SemanticQueryCorpus::admit(workspace(), compiler_external_facts(package, image, external_image, source_observed, external_observed))
+}
+
+#[test]
+fn budgeted_corpus_reserves_qualification_error_allocation() {
+    let package = backend_library::package_key("qualification-budget");
+    let facts = compiler_external_facts(package, [7; 32], [7; 32], false, true);
+    let limits = Limits::default();
+    let retained = measure_semantic_query_facts_with_quota_controlled(&facts, facts.capacity(), limits, 64, &|| false).unwrap();
+    let overhead = semantic_query_corpus_admission_overhead(facts.len(), 64).unwrap();
+    let root = workspace();
+    let mut result = None;
+    let measured = allocation_counter::measure(|| {
+        result = Some(SemanticQueryCorpus::admit_with_budget_controlled(
+            root, facts, limits,
+            SemanticQueryAdmissionBudget { maximum_requested_bytes: retained + overhead, allocation_quota_per_allocation: 64 },
+            &|| false,
+        ));
+    });
+    assert!(matches!(result, Some(Err(SemanticQueryError::Evidence(ref message))) if message.contains("qualification")));
+    assert!(measured.bytes_max <= overhead as u64, "error-path peak exceeded reserved overhead");
+}
+
+fn compiler_external_facts(
+    package: backend_library::PackageKey,
+    image: [u8; 32],
+    external_image: [u8; 32],
+    source_observed: bool,
+    external_observed: bool,
+) -> Vec<SemanticQueryFact> {
     let (coordinate, profile, declaration, target, facts) = compiler_external_fixture();
     let project_id = backend_library::RowId::Package(package).stable_key();
-    let external = CompilerExternalTargetEvidence::new(
-        package,
-        coordinate.clone(),
-        profile,
-        target,
-        external_image,
-        facts,
-    );
+    let external = if external_observed {
+        CompilerExternalTargetEvidence::new_observed(
+            package,
+            coordinate.clone(),
+            profile,
+            target,
+            external_image,
+            facts,
+        )
+    } else {
+        CompilerExternalTargetEvidence::new(
+            package,
+            coordinate.clone(),
+            profile,
+            target,
+            external_image,
+            facts,
+        )
+    };
     let external_id = external.row_id();
-    let source =
-        CompilerSemanticEvidence::new(package, coordinate, profile, declaration, image, facts);
+    let source = if source_observed {
+        CompilerSemanticEvidence::new_observed(
+            package,
+            coordinate,
+            profile,
+            declaration,
+            image,
+            facts,
+        )
+    } else {
+        CompilerSemanticEvidence::new(package, coordinate, profile, declaration, image, facts)
+    };
     let source_id = source.row_id();
-    SemanticQueryCorpus::admit(
-        workspace(),
-        vec![
+    vec![
             SemanticQueryFact::new(
                 SemanticQueryEvidence::Package(PackageScopeEvidence::new(package)),
                 SemanticQueryPresentation {
@@ -217,8 +279,7 @@ fn compiler_external_corpus(
                     related: Box::new([]),
                 },
             ),
-        ],
-    )
+        ]
 }
 
 #[test]
@@ -254,18 +315,16 @@ fn exact_cargo_alias_observations_change_the_typed_corpus_digest() {
         vec![CargoPackageAliasV1::CargoTargetName(
             CargoTargetNameV1::new("cargo_alias_fixture").expect("target alias"),
         )],
-        vec![
-            CargoPackageAliasObservationV1::from_wire_parts(
-                profile,
-                [1; 32],
-                Some(CargoPackageAliasCargoFactsV1::from_wire_parts(
-                    [2; 32], [3; 32], [4; 32],
-                )),
-                vec![0],
-                CargoPackageAliasCoverageV1::Complete,
-            )
-            .expect("profile observation"),
-        ],
+        vec![CargoPackageAliasObservationV1::from_wire_parts(
+            profile,
+            [1; 32],
+            Some(CargoPackageAliasCargoFactsV1::from_wire_parts(
+                [2; 32], [3; 32], [4; 32],
+            )),
+            vec![0],
+            CargoPackageAliasCoverageV1::Complete,
+        )
+        .expect("profile observation")],
     )
     .expect("Cargo alias evidence");
     let with_aliases = SemanticQueryCorpus::admit(
@@ -354,6 +413,38 @@ fn compiler_external_edge_is_typed_scoped_and_queryable() {
         compiler_external_fixture().4,
     );
     assert_ne!(first.row_id(), second.row_id());
+}
+
+#[test]
+fn observed_compiler_authority_changes_state_and_digest() {
+    let package = backend_library::package_key("observed-demo");
+    let current = compiler_external_corpus_with_authority(package, [7; 32], [7; 32], false, false)
+        .expect("current corpus");
+    let observed = compiler_external_corpus_with_authority(package, [7; 32], [7; 32], true, true)
+        .expect("observed corpus");
+    assert_ne!(
+        current.evidence_digest(),
+        observed.evidence_digest(),
+        "observed qualification is part of corpus authority"
+    );
+    assert_eq!(current.facts()[1].evidence().state(), "compiler_semantic");
+    assert_eq!(observed.facts()[1].evidence().state(), "compiler_observed");
+    assert_eq!(
+        observed.facts()[2].evidence().state(),
+        "compiler_external_observed"
+    );
+}
+
+#[test]
+fn observed_and_current_external_edges_cannot_mix() {
+    let package = backend_library::package_key("mixed-authority-demo");
+    let error = compiler_external_corpus_with_authority(package, [7; 32], [7; 32], false, true)
+        .expect_err("cross-qualified graph edge must be refused");
+    assert!(matches!(
+        error,
+        SemanticQueryError::Evidence(message)
+            if message.contains("qualification")
+    ));
 }
 
 #[test]
@@ -1140,4 +1231,70 @@ fn graph_arrangement_rejects_stale_plan_and_bounds_rebuild() {
         )
         .expect("plan");
     assert!(matches!(outcome, RefreshOutcome::RebuildRequired(_)));
+}
+
+#[test]
+fn sql_native_evidence_binds_projection_and_host_basis() {
+    let package = backend_library::package_key("sql-project");
+    let project = backend_library::RowId::Package(package).stable_key();
+    let coordinate = "sql-project::db/schema.sql::books";
+    let package_fact = SemanticQueryFact::new(
+        SemanticQueryEvidence::Package(PackageScopeEvidence::new(package)),
+        SemanticQueryPresentation {
+            id: project.clone(),
+            kind: "project".into(),
+            coordinate: "sql-project".into(),
+            name: "sql-project".into(),
+            signature: None,
+            documentation: String::new(),
+            score: None,
+            project: None,
+            parent: None,
+            related: Box::new([]),
+        },
+    );
+    let fact = |basis: [[u8; 32]; 8], ordinal: u32, shown: &str| {
+        let preimage = format!("{coordinate}\0sql:{ordinal}");
+        SemanticQueryFact::new(
+            SemanticQueryEvidence::SqlNative(SqlNativeQueryEvidence::new(
+                package,
+                basis[0], basis[1], basis[2], basis[3], basis[4], basis[5], basis[6], basis[7],
+                ordinal,
+                preimage.clone(),
+            )),
+            SemanticQueryPresentation {
+                id: backend_library::RowId::Symbol(backend_library::symbol_key(&preimage))
+                    .stable_key(),
+                kind: "unknown".into(),
+                coordinate: shown.into(),
+                name: "books".into(),
+                signature: Some("SQL table books".into()),
+                documentation: String::new(),
+                score: None,
+                project: Some(project.clone()),
+                parent: None,
+                related: Box::new([]),
+            },
+        )
+    };
+    let basis = [[1; 32], [2; 32], [3; 32], [4; 32], [5; 32], [6; 32], [8; 32], [9; 32]];
+    let first = SemanticQueryCorpus::admit(
+        workspace(),
+        vec![package_fact.clone(), fact(basis, 4, coordinate)],
+    )
+    .expect("SQL evidence admitted");
+    for index in 0..basis.len() {
+        let mut changed = basis;
+        changed[index] = [7; 32];
+        let other = SemanticQueryCorpus::admit(
+            workspace(), vec![package_fact.clone(), fact(changed, 4, coordinate)],
+        ).expect("changed host basis admitted");
+        assert_ne!(first.evidence_digest(), other.evidence_digest(), "basis field {index}");
+    }
+    let other = SemanticQueryCorpus::admit(
+        workspace(), vec![package_fact.clone(), fact(basis, 5, coordinate)],
+    ).expect("different ordinal admitted");
+    assert_ne!(first.evidence_digest(), other.evidence_digest());
+    let forged = fact(basis, 4, "forged-coordinate");
+    assert!(SemanticQueryCorpus::admit(workspace(), vec![package_fact, forged]).is_err());
 }

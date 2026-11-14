@@ -316,7 +316,6 @@ let
   guiRuntime =
     if workspaceAvailable then
       stableRustPlatform.buildRustPackage {
-        preBuild = boundedProductCargoPreBuild;
         pname = "nudox-gui-runtime";
         version = "0.1.0";
         src = workspaceSource;
@@ -332,6 +331,12 @@ let
           lockFile = workspaceRoot + "/Cargo.lock";
           outputHashes = gpuiOutputHashes;
         };
+        # Bound the cargo job count like the other product derivations, and keep
+        # the ephemeral Nix build and vendored Cargo paths out of the shipped
+        # runtime's Rust source locations, including panic messages.
+        preBuild = boundedProductCargoPreBuild + ''
+          export RUSTFLAGS="''${RUSTFLAGS:+$RUSTFLAGS }--remap-path-prefix=$NIX_BUILD_TOP=/build/nudox --remap-path-prefix=$CARGO_HOME=/cargo"
+        '';
         doCheck = false;
         installPhase = ''
                     # Match the pinned cargoInstallHook's target subdirectory.
@@ -789,6 +794,7 @@ let
           type == "directory"
           || builtins.elem (baseNameOf (toString path)) [
             "AuthorityImage.cs"
+            "CapturedProjectGraph.cs"
             "DocComments.cs"
             "Extractor.cs"
             "Program.cs"

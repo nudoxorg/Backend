@@ -292,17 +292,45 @@ fn from_view_rejects_relation_endpoint_outside_root() {
     assert!(result.is_err());
 }
 
+#[test]
+fn view_rows_without_node_provenance_do_not_acquire_compiler_evidence() {
+    let basis = crate::Basis::new(view_state_root(&[]), crate::object_version(b"source"));
+    let center = RowId::Symbol(symbol_key("pkg::unproven"));
+    let target = RowId::Symbol(symbol_key("pkg::target"));
+    let root = ViewRoot::new_incomplete(
+        crate::view_key(b"unproven-node"),
+        basis,
+        crate::Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+        vec![
+            crate::Row::new(center, basis, "pkg::unproven"),
+            crate::Row::new(target, basis, "pkg::target"),
+        ],
+        vec![],
+    )
+    .expect("checked fixture view");
+    let revision = RichGraphRevision::new(
+        root.root().to_bytes(),
+        SemanticGenerationId::new([1; 32]),
+        [2; 32],
+    );
+    let relation = GraphRelation::new(center, target, SemanticLinkKind::Calls)
+        .with_confidence(SemanticConfidence::Syntactic);
+    let graph = RichGraphSnapshot::from_view(&root, center, &[relation], revision).expect("graph");
+    assert!(
+        graph.nodes.iter().all(|node| node.provenance.is_none()),
+        "a view row alone does not prove node provenance"
+    );
+    assert_eq!(
+        graph.edges[0].provenance.confidence,
+        Some(SemanticConfidence::Syntactic)
+    );
+}
+
 fn snapshot_from_cloned_rows(
     rows: &[crate::Row],
     center: RowId,
     revision: RichGraphRevision,
 ) -> RichGraphSnapshot {
-    let provenance = GraphProvenance::semantic(
-        revision.semantic_generation,
-        revision.semantic_root,
-        revision.semantic_root,
-        SemanticConfidence::Compiler,
-    );
     let mut builder = RichGraphBuilder::new(revision, GraphNodeId::for_row(center));
     for row in rows {
         let availability = match row.state {
@@ -321,7 +349,7 @@ fn snapshot_from_cloned_rows(
                     Some(label),
                     row.kind.map(|kind| format!("{kind:?}")),
                     availability,
-                    Some(provenance),
+                    None,
                 )
                 .expect("node"),
             )

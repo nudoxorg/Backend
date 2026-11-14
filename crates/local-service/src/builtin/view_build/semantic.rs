@@ -104,6 +104,7 @@ pub(crate) fn rows_for_indexed_sources(
     let semantics = semantic_rows(
         snapshot,
         compiler,
+        sources,
         &sources.projects,
         &current_paths,
         &current_identities,
@@ -146,12 +147,1407 @@ pub(crate) fn rows_for_indexed_sources(
     let mut ledger = semantics.ledger;
     ledger.extend(projection.take_ledger());
     let mut rows = projection.finish(semantics.rows)?;
+    super::sql::append(snapshot, initial, sources, &mut rows)?;
     super::super::coverage::qualify_package_rows(snapshot, &mut rows, generations)?;
     Ok(ProjectedRows {
         rows,
         activated: semantics.activated,
         ledger,
     })
+}
+
+/// Finds the exact selected native declaration owner for raw byte paging.
+pub(in crate::builtin) fn admitted_native_source_extent(
+    sources: &IndexedSources,
+    snapshot: &WorkspaceSnapshot,
+    compiler: &LocalCompilerClient,
+    package: backend_engine::PackageKey,
+    selected: RowId,
+    generations: &mut super::super::generation_residence::SemanticGenerationResidence,
+) -> Result<
+    Option<(
+        String,
+        backend_version::ContentId<backend_version::SourceFactDomain>,
+        (u32, u32),
+    )>,
+    BuiltinModelError,
+> {
+    Ok(admitted_native_source(
+        sources,
+        snapshot,
+        compiler,
+        package,
+        selected,
+        generations,
+        true,
+    )?
+    .and_then(|(path, identity, extent)| extent.map(|extent| (path, identity, extent))))
+}
+
+/// Admits the selected native declaration's file for freshness, without
+/// requiring that the producer supplied a nonempty pageable owner extent.
+pub(in crate::builtin) fn admitted_native_source_file(
+    sources: &IndexedSources,
+    snapshot: &WorkspaceSnapshot,
+    compiler: &LocalCompilerClient,
+    package: backend_engine::PackageKey,
+    selected: RowId,
+    generations: &mut super::super::generation_residence::SemanticGenerationResidence,
+) -> Result<
+    Option<(
+        String,
+        backend_version::ContentId<backend_version::SourceFactDomain>,
+    )>,
+    BuiltinModelError,
+> {
+    Ok(admitted_native_source(
+        sources,
+        snapshot,
+        compiler,
+        package,
+        selected,
+        generations,
+        false,
+    )?
+    .map(|(path, identity, _)| (path, identity)))
+}
+
+/// Verifies one current publication and native identity; callers choose
+/// whether a captured, nonempty owner span is additionally required.
+fn admitted_native_source(
+    sources: &IndexedSources,
+    snapshot: &WorkspaceSnapshot,
+    compiler: &LocalCompilerClient,
+    package: backend_engine::PackageKey,
+    selected: RowId,
+    generations: &mut super::super::generation_residence::SemanticGenerationResidence,
+    require_extent: bool,
+) -> Result<
+    Option<(
+        String,
+        backend_version::ContentId<backend_version::SourceFactDomain>,
+        Option<(u32, u32)>,
+    )>,
+    BuiltinModelError,
+> {
+    let Some(project) = sources.projects.get(&package.to_bytes()) else {
+        return Ok(None);
+    };
+    let reference = backend_engine::PackageReference::parse(project.label.clone())
+        .map_err(|error| BuiltinModelError(format!("native source package: {error}")))?;
+    if backend_engine::package_key(reference.as_str()) != package {
+        return Ok(None);
+    }
+    let relation = snapshot
+        .relation::<BuiltinSemanticRelation>()
+        .map_err(|error| BuiltinModelError(format!("open native source publication: {error}")))?;
+    let captures = semantic_capture_relation(snapshot)
+        .map_err(|error| BuiltinModelError(format!("open native source capture: {error}")))?;
+    let Some(captures) = captures else {
+        return Ok(None);
+    };
+    let start =
+        backend_engine::ProductSemanticPublicationKey::package_lower_bound(reference.clone());
+    let mut after = None;
+    let mut first = true;
+    let mut found = None;
+    let mut publication_rows = 0usize;
+    let mut remaining_bytes = MAX_REBUILD_BYTES;
+    loop {
+        let page = if first {
+            first = false;
+            relation.page_from(&start, backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+        } else {
+            relation.page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+        }
+        .map_err(|error| BuiltinModelError(format!("read native source publication: {error}")))?;
+        for (key, record) in page.entries() {
+            publication_rows = publication_rows.checked_add(1).ok_or_else(|| {
+                BuiltinModelError("native source publication limit exceeded".to_owned())
+            })?;
+            if publication_rows > MAX_REBUILD_PACKAGES {
+                return Err(BuiltinModelError(
+                    "native source publication limit exceeded".to_owned(),
+                ));
+            }
+            if key.package() != &reference {
+                return Ok(found);
+            }
+            if !key.is_selected()
+                || (require_extent
+                    && !matches!(
+                        key.profile(),
+                        backend_semantic::vocabulary::LanguageProfile::TypeScript(_)
+                            | backend_semantic::vocabulary::LanguageProfile::Go(_)
+                            | backend_semantic::vocabulary::LanguageProfile::Rust(_)
+                            // Roslyn records each declaration's full extent in the image it
+                            // publishes. The same gates apply: a selected, published
+                            // generation matching the current capture, the image's compiled
+                            // source identity equal to the indexed file's, and bytes
+                            // verified against that identity when they are read.
+                            | backend_semantic::vocabulary::LanguageProfile::CSharp(_)
+                    ))
+            {
+                continue;
+            }
+            let language = key.profile().language();
+            let ProductSemanticPublicationRecord::Published { coverage, claim } = record else {
+                continue;
+            };
+            let Some(capture) = captures.lookup(key).map_err(|error| {
+                BuiltinModelError(format!("read native source capture: {error}"))
+            })?
+            else {
+                continue;
+            };
+            if !capture_admits_selected(snapshot, key, &capture, *coverage, *claim, generations)? {
+                continue;
+            }
+            let activated =
+                super::super::load_semantic_publication(compiler, key, *claim, generations)?;
+            for image in activated.images() {
+                remaining_bytes = remaining_bytes
+                    .checked_sub(image.as_ref().len())
+                    .ok_or_else(|| {
+                        BuiltinModelError("native source image budget exceeded".to_owned())
+                    })?;
+            }
+            if !native_program_is_current(sources, package, &activated)? {
+                continue;
+            }
+            for image in activated.images() {
+                let image = image.reopen().map_err(|error| {
+                    BuiltinModelError(format!("reopen native source image: {error}"))
+                })?;
+                key.admit_image(&image).map_err(|error| {
+                    BuiltinModelError(format!("admit native source image: {error}"))
+                })?;
+                let backend_semantic::ir::ImageProvenance::Captured { recipe, .. } =
+                    image.image_facts().provenance
+                else {
+                    continue;
+                };
+                if recipe.tool != language.native_tool() {
+                    continue;
+                }
+                let (image_path, image_source) = compiled_source(&image)?;
+                if let Some(extent) =
+                    native_file_in_image(&image, package, &image_path, selected, require_extent)?
+                {
+                    // The selected native entity supplies the path, never a
+                    // syntax-projected row location. Admit it against the
+                    // current package frontier before using its bytes.
+                    if native_frontier_identity(
+                        sources,
+                        package,
+                        &image_path,
+                        Some(language),
+                        Some(key.profile()),
+                    )? != Some(image_source)
+                    {
+                        return Ok(None);
+                    }
+                    if found.replace((image_path, image_source, extent)).is_some() {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+        let Some(next) = page.next().cloned() else {
+            break;
+        };
+        after = Some(next);
+    }
+    Ok(found)
+}
+
+/// File evidence admitted from one immutable selected snapshot. Holding this
+/// value does not verify current disk bytes or provide declaration inventory.
+pub(in crate::builtin) struct AdmittedNativeEvidence<'a> {
+    claim: backend_engine::builtin::NativeSourceEvidence,
+    image_source: backend_semantic::ir::SourceIdentity,
+    primary_extent: Option<(u32, u32)>,
+    selected_row: RowId,
+    entity_id: backend_semantic::ir::EntityId,
+    declaration_identity: DeclarationIdentity,
+    publication_key: backend_engine::builtin::ProductSemanticPublicationKey,
+    publication_claim: backend_engine::builtin::SemanticPublicationClaim,
+    image_authority: backend_library::interface::SemanticImageAuthority,
+    program_identity: [u8; 32],
+    source_basis: super::super::native_ts_admission::NativeTsSourceBasis,
+    _snapshot: &'a WorkspaceSnapshot,
+}
+impl AdmittedNativeEvidence<'_> {
+    pub(in crate::builtin) fn selected_row(&self) -> RowId {
+        self.selected_row
+    }
+    pub(in crate::builtin) fn entity_id(&self) -> backend_semantic::ir::EntityId {
+        self.entity_id
+    }
+    pub(in crate::builtin) fn declaration_identity(&self) -> DeclarationIdentity {
+        self.declaration_identity
+    }
+    pub(in crate::builtin) fn publication_key(
+        &self,
+    ) -> &backend_engine::builtin::ProductSemanticPublicationKey {
+        &self.publication_key
+    }
+    pub(in crate::builtin) fn publication_claim(
+        &self,
+    ) -> backend_engine::builtin::SemanticPublicationClaim {
+        self.publication_claim
+    }
+    pub(in crate::builtin) fn image_authority(
+        &self,
+    ) -> backend_library::interface::SemanticImageAuthority {
+        self.image_authority
+    }
+    pub(in crate::builtin) fn program_identity(&self) -> [u8; 32] {
+        self.program_identity
+    }
+    pub(in crate::builtin) fn snapshot(&self) -> &WorkspaceSnapshot {
+        self._snapshot
+    }
+    pub(in crate::builtin) fn source_basis(&self) -> super::super::native_ts_admission::NativeTsSourceBasis {
+        self.source_basis
+    }
+    pub(in crate::builtin) fn claim(&self) -> &backend_engine::builtin::NativeSourceEvidence {
+        &self.claim
+    }
+    pub(in crate::builtin) fn image_source(&self) -> backend_semantic::ir::SourceIdentity {
+        self.image_source
+    }
+    pub(in crate::builtin) fn primary_extent(&self) -> Option<(u32, u32)> {
+        self.primary_extent
+    }
+}
+
+/// A bounded routing hint only. Selected TypeScript publication presence does
+/// not itself grant source authority or prove current capture state.
+pub(in crate::builtin) fn has_selected_typescript_publication(
+    snapshot: &WorkspaceSnapshot,
+    project_label: &str,
+) -> Result<bool, BuiltinModelError> {
+    use backend_engine::builtin::ProductSemanticPublicationKey;
+    use backend_semantic::vocabulary::LanguageProfile;
+    let reference = backend_engine::PackageReference::parse(project_label.to_owned())
+        .map_err(|error| BuiltinModelError(format!("native routing package: {error}")))?;
+    let publications = snapshot.relation::<BuiltinSemanticRelation>()
+        .map_err(|error| BuiltinModelError(format!("open native routing publication: {error}")))?;
+    let start = ProductSemanticPublicationKey::package_lower_bound(reference.clone());
+    let mut after = None;
+    let mut first = true;
+    let mut count = 0usize;
+    loop {
+        let page = if first {
+            first = false;
+            publications.page_from(&start, backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+        } else {
+            publications.page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+        }.map_err(|error| BuiltinModelError(format!("read native routing publication: {error}")))?;
+        for (key, _) in page.entries() {
+            count = count.checked_add(1).ok_or_else(|| BuiltinModelError("native routing limit".into()))?;
+            if count > MAX_REBUILD_PACKAGES { return Err(BuiltinModelError("native routing limit".into())); }
+            if key.package() != &reference { return Ok(false); }
+            if key.is_selected() && matches!(key.profile(), LanguageProfile::TypeScript(_)) { return Ok(true); }
+        }
+        let Some(next) = page.next().cloned() else { return Ok(false) };
+        after = Some(next);
+    }
+}
+
+/// Admits selected native-only TS file evidence; the caller must first bind the
+/// view to this snapshot and admit the local canonical project root. Registry
+/// staging roots and absent Program/image ownership are deliberately refused.
+pub(in crate::builtin) fn admitted_native_evidence<'a>(
+    sources: &IndexedSources,
+    snapshot: &'a WorkspaceSnapshot,
+    compiler: &LocalCompilerClient,
+    package: backend_engine::PackageKey,
+    selected: RowId,
+    generations: &mut super::super::generation_residence::SemanticGenerationResidence,
+) -> Result<Option<AdmittedNativeEvidence<'a>>, BuiltinModelError> {
+    use backend_engine::builtin::{
+        ProductSemanticCaptureOutcome, ProductSemanticPublicationRecord,
+        native_source_evidence_relation_budgeted, product_native_frontier_relation,
+    };
+    use backend_semantic::vocabulary::LanguageProfile;
+    let Some(project) = sources.projects.get(&package.to_bytes()) else {
+        return Ok(None);
+    };
+    if project.label.starts_with("pkg:")
+        || backend_engine::PackageKey::from_value(&project.label) != package
+    {
+        return Ok(None);
+    }
+    let mut image_budget = MAX_REBUILD_BYTES;
+    super::super::profile::native_evidence_basis_for_snapshot_budgeted(snapshot, &mut image_budget)?;
+    let Some(evidence) = native_source_evidence_relation_budgeted(snapshot, &mut image_budget)
+        .map_err(|error| BuiltinModelError(format!("open selected native evidence: {error}")))?
+    else {
+        return Ok(None);
+    };
+    let frontiers = product_native_frontier_relation(snapshot)
+        .map_err(|error| BuiltinModelError(format!("open native frontier: {error}")))?;
+    let reference = backend_engine::PackageReference::parse(project.label.clone())
+        .map_err(|error| BuiltinModelError(format!("native evidence package: {error}")))?;
+    let publications = snapshot
+        .relation::<BuiltinSemanticRelation>()
+        .map_err(|error| BuiltinModelError(format!("open native publication: {error}")))?;
+    let Some(captures) = semantic_capture_relation(snapshot)
+        .map_err(|error| BuiltinModelError(format!("open native capture: {error}")))?
+    else {
+        return Ok(None);
+    };
+    let structural_files = selected_typescript_structural_files(sources, package)?;
+    let start =
+        backend_engine::ProductSemanticPublicationKey::package_lower_bound(reference.clone());
+    let mut after = None;
+    let mut first = true;
+    let mut found = None;
+    let mut count = 0usize;
+    let mut program_path_work = 0usize;
+    loop {
+        let page = if first {
+            first = false;
+            publications.page_from(&start, backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+        } else {
+            publications.page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+        }
+        .map_err(|error| BuiltinModelError(format!("read native publication: {error}")))?;
+        for (key, record) in page.entries() {
+            count = count
+                .checked_add(1)
+                .ok_or_else(|| BuiltinModelError("native publication limit".into()))?;
+            if count > MAX_REBUILD_PACKAGES {
+                return Err(BuiltinModelError("native publication limit".into()));
+            }
+            if key.package() != &reference {
+                return Ok(found);
+            }
+            if !key.is_selected() || !matches!(key.profile(), LanguageProfile::TypeScript(_)) {
+                continue;
+            }
+            let ProductSemanticPublicationRecord::Published { coverage, claim } = record else {
+                continue;
+            };
+            let Some(capture) = captures
+                .lookup(key)
+                .map_err(|error| BuiltinModelError(format!("read native capture: {error}")))?
+            else {
+                continue;
+            };
+            if !capture_admits_selected(snapshot, key, &capture, *coverage, *claim, generations)? {
+                continue;
+            }
+            let activated =
+                super::super::load_semantic_publication(compiler, key, *claim, generations)?;
+            let Some(positive) = selected_nse_program_files(
+                snapshot,
+                sources,
+                key,
+                &activated,
+                generations,
+                &evidence,
+                frontiers.as_ref(),
+                &structural_files,
+                &mut program_path_work,
+                &mut image_budget,
+            )?
+            else {
+                continue;
+            };
+            for image in activated.images() {
+                let view = image
+                    .reopen()
+                    .map_err(|error| BuiltinModelError(format!("reopen native image: {error}")))?;
+                let backend_semantic::ir::ImageProvenance::Captured { source, scope, .. } =
+                    view.image_facts().provenance
+                else {
+                    return Ok(None);
+                };
+                let Some(path) = view
+                    .atom(scope.path)
+                    .and_then(|value| std::str::from_utf8(value).ok())
+                else {
+                    return Ok(None);
+                };
+                let Some((row, expected_source)) = positive.positive.get(path) else {
+                    continue;
+                };
+                if source != *expected_source {
+                    return Ok(None);
+                }
+                let Some(owned) = native_owned_file_in_image(&view, package, path, selected)?
+                else {
+                    continue;
+                };
+                if let Some(reference) = &row.headers {
+                    let identity = *backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(image.as_ref()).as_ref();
+                    if reference.image_identity != identity || reference.image_byte_len != image.as_ref().len() as u64 {
+                        return Err(BuiltinModelError("native header reference differs from selected image".into()));
+                    }
+                }
+                if found
+                    .replace(AdmittedNativeEvidence {
+                        claim: row.clone(),
+                        image_source: source,
+                        primary_extent: owned.extent,
+                        selected_row: selected,
+                        entity_id: owned.entity_id,
+                        declaration_identity: owned.declaration_identity,
+                        publication_key: key.clone(),
+                        publication_claim: *claim,
+                        image_authority: image.authority,
+                        program_identity: positive.program.membership_identity(),
+                        source_basis: positive.source_basis(),
+                        _snapshot: snapshot,
+                    })
+                    .is_some()
+                {
+                    return Ok(None);
+                }
+            }
+        }
+        let Some(next) = page.next().cloned() else {
+            break;
+        };
+        after = Some(next);
+    }
+    Ok(found)
+}
+
+/// Bounded selected-root scan used only to decide whether a TS project has
+/// native evidence. It does not claim a complete source inventory.
+pub(in crate::builtin) fn selected_nse_typescript_owners(
+    relation: &backend_engine::workspace::WorkspaceRelationHandle<backend_engine::builtin::NativeSourceEvidenceRelation>,
+    budget: &mut usize,
+) -> Result<BTreeSet<[u8; 32]>, BuiltinModelError> {
+    let mut owners = BTreeSet::new();
+    let mut projects = BTreeMap::<[u8; 32], usize>::new();
+    let mut count = 0usize;
+    let mut bytes = 0usize;
+    let mut previous = None;
+    let mut after = None;
+    loop {
+        let page = backend_engine::builtin::native_source_evidence_page_budgeted(relation, after.as_ref(), budget)
+            .map_err(|error| BuiltinModelError(format!("scan native evidence: {error}")))?;
+        for (key, row) in page.entries() {
+            count = count.checked_add(1).ok_or_else(|| BuiltinModelError("native evidence row overflow".into()))?;
+            if count > backend_engine::builtin::MAX_NATIVE_EVIDENCE_ROWS
+                || previous.is_some_and(|prior| prior >= *key) || row.key().ok() != Some(*key) {
+                return Err(BuiltinModelError("invalid selected native evidence key or row budget".into()));
+            }
+            previous = Some(*key);
+            bytes = bytes.checked_add(40).and_then(|work| work.checked_add(row.checked_encoded_len()?))
+                .ok_or_else(|| BuiltinModelError("native evidence scan overflow".into()))?;
+            if bytes > backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES {
+                return Err(BuiltinModelError("native evidence byte budget exceeded".into()));
+            }
+            if !projects.contains_key(&row.project) {
+                *budget = budget.checked_sub(256).ok_or_else(|| BuiltinModelError("native evidence project cache budget exceeded".into()))?;
+            }
+            let project_count = projects.entry(row.project).or_default();
+            *project_count = project_count.checked_add(1).ok_or_else(|| BuiltinModelError("native evidence project count overflow".into()))?;
+            if *project_count > backend_engine::builtin::MAX_NATIVE_EVIDENCE_PROJECT_ROWS {
+                return Err(BuiltinModelError("native evidence project budget exceeded".into()));
+            }
+            if matches!(row.profile, backend_semantic::vocabulary::LanguageProfile::TypeScript(_)) {
+                if !owners.contains(&row.project) {
+                    *budget = budget.checked_sub(256).ok_or_else(|| BuiltinModelError("native evidence owner cache budget exceeded".into()))?;
+                    owners.insert(row.project);
+                }
+            }
+        }
+        match page.next().copied() { Some(next) => after = Some(next), None => break }
+    }
+    Ok(owners)
+}
+
+/// Index exact admitted structural file rows once, rather than rescanning the
+/// entire project for each native Program source.
+/// Process-local evidence tied to the exact selected activation. It is never
+/// serialized and cannot establish discovery or structural completeness.
+pub(in crate::builtin) struct NseProgramProof {
+    workspace_root: backend_version::WorkspaceRoot,
+    sequence: u64,
+    commit: [u8; 32],
+    owner_epoch: u64,
+    closure: backend_store::ClosureId,
+    selected: backend_engine::builtin::ProductSemanticPublicationKey,
+    claim: backend_engine::builtin::SemanticPublicationClaim,
+    coverage: backend_engine::builtin::SemanticPublicationCoverage,
+    images: std::sync::Arc<[backend_library::interface::SemanticImageSnapshot]>,
+    program: std::sync::Arc<backend_semantic::ir::NativeProgramSources>,
+    projection_safe: bool,
+    source_basis: super::super::native_ts_admission::NativeTsSourceBasis,
+    positive: BTreeMap<
+        String,
+        (
+            backend_engine::builtin::NativeSourceEvidence,
+            backend_semantic::ir::SourceIdentity,
+        ),
+    >,
+}
+impl NseProgramProof {
+    pub(super) fn projection_safe(&self) -> bool {
+        self.projection_safe
+    }
+    pub(in crate::builtin) fn source_basis(&self) -> super::super::native_ts_admission::NativeTsSourceBasis {
+        self.source_basis
+    }
+    pub(in crate::builtin) fn admits(
+        &self,
+        snapshot: &WorkspaceSnapshot,
+        key: &backend_engine::builtin::ProductSemanticPublicationKey,
+        claim: backend_engine::builtin::SemanticPublicationClaim,
+        coverage: backend_engine::builtin::SemanticPublicationCoverage,
+        activated: &super::super::ActivatedProductSemantics,
+    ) -> bool {
+        self.projection_safe
+            && self.workspace_root == snapshot.root()
+            && self.sequence == snapshot.sequence()
+            && self.commit == *snapshot.commit().id().as_bytes()
+            && self.owner_epoch == snapshot.owner_epoch()
+            && self.closure == snapshot.closure().binding().closure()
+            && self.selected == *key
+            && self.claim == claim
+            && self.coverage == coverage
+            && std::sync::Arc::ptr_eq(&self.images, activated.image_set())
+            && activated
+                .native_program_sources
+                .as_ref()
+                .is_some_and(|program| std::sync::Arc::ptr_eq(&self.program, program))
+    }
+    pub(in crate::builtin) fn claim(&self) -> backend_engine::builtin::SemanticPublicationClaim {
+        self.claim
+    }
+    pub(in crate::builtin) fn coverage(
+        &self,
+    ) -> backend_engine::builtin::SemanticPublicationCoverage {
+        self.coverage
+    }
+    pub(in crate::builtin) fn contains(
+        &self,
+        path: &str,
+        identity: backend_version::ContentId<backend_version::SourceFactDomain>,
+    ) -> bool {
+        self.positive
+            .get(path)
+            .is_some_and(|(_, source)| source.identity == identity)
+    }
+}
+
+/// Accept a retained generation only with the source and selected-input proofs.
+fn capture_admits_selected(
+    snapshot: &WorkspaceSnapshot,
+    key: &backend_engine::builtin::ProductSemanticPublicationKey,
+    capture: &backend_engine::builtin::ProductSemanticCaptureRecord,
+    coverage: backend_engine::builtin::SemanticPublicationCoverage,
+    claim: backend_engine::builtin::SemanticPublicationClaim,
+    generations: &super::super::generation_residence::SemanticGenerationResidence,
+) -> Result<bool, BuiltinModelError> {
+    if matches!(capture.outcome(), ProductSemanticCaptureOutcome::Published { coverage: c, claim: p } if c == coverage && p == claim) {
+        return Ok(true);
+    }
+    let source = snapshot
+        .relation::<super::super::BuiltinWorkspaceRelation>()
+        .map_err(|error| BuiltinModelError(format!("open retained source project: {error}")))?;
+    let selected = ProductSemanticPublicationRecord::Published { coverage, claim };
+    super::super::coverage::retained_selection_is_current(
+        &source, key, Some(&selected), capture, generations,
+    )
+}
+
+/// Strictly validates the selected Program and every admitted image, then
+/// returns only positive per-file NSE claims. No inventory completeness follows.
+pub(super) fn selected_nse_program_files(
+    snapshot: &WorkspaceSnapshot,
+    sources: &IndexedSources,
+    key: &backend_engine::builtin::ProductSemanticPublicationKey,
+    activated: &super::super::ActivatedProductSemantics,
+    generations: &super::super::generation_residence::SemanticGenerationResidence,
+    evidence: &backend_engine::workspace::WorkspaceRelationHandle<
+        backend_engine::builtin::NativeSourceEvidenceRelation,
+    >,
+    frontiers: Option<
+        &backend_engine::workspace::WorkspaceRelationHandle<
+            backend_engine::builtin::ProductNativeFrontierRelation,
+        >,
+    >,
+    structural_files: &BTreeMap<
+        String,
+        (
+            backend_version::ContentId<backend_version::SourceFactDomain>,
+            [u8; 32],
+        ),
+    >,
+    program_path_work: &mut usize,
+    image_budget: &mut usize,
+) -> Result<Option<NseProgramProof>, BuiltinModelError> {
+    use backend_engine::builtin::{
+        NativePathDisposition, ProductNativeFrontierRecord, ProductSemanticCaptureOutcome,
+        ProductSemanticPublicationRecord, admit_native_frontier,
+        product_native_frontier_profile_key,
+    };
+    use backend_semantic::vocabulary::LanguageProfile;
+    if !key.is_selected() || !matches!(key.profile(), LanguageProfile::TypeScript(_)) {
+        return Ok(None);
+    }
+    let package = key.package_key();
+    let Some(project) = sources.projects.get(&package.to_bytes()) else {
+        return Ok(None);
+    };
+    if project.label.starts_with("pkg:")
+        || backend_engine::PackageKey::from_value(&project.label) != package
+    {
+        return Ok(None);
+    }
+    let publications = snapshot
+        .relation::<BuiltinSemanticRelation>()
+        .map_err(|error| BuiltinModelError(format!("open native publication: {error}")))?;
+    let Some(ProductSemanticPublicationRecord::Published { coverage, claim }) = publications
+        .lookup(key)
+        .map_err(|error| BuiltinModelError(format!("read native publication: {error}")))?
+    else {
+        return Ok(None);
+    };
+    let Some(captures) = semantic_capture_relation(snapshot)
+        .map_err(|error| BuiltinModelError(format!("open native capture: {error}")))?
+    else {
+        return Ok(None);
+    };
+    let Some(capture) = captures
+        .lookup(key)
+        .map_err(|error| BuiltinModelError(format!("read native capture: {error}")))?
+    else {
+        return Ok(None);
+    };
+    if !capture_admits_selected(snapshot, key, &capture, coverage, claim, generations)? {
+        return Ok(None);
+    }
+    let source = snapshot.relation::<super::super::BuiltinWorkspaceRelation>()
+        .map_err(|error| BuiltinModelError(format!("open native source project: {error}")))?;
+    let Some(current_project) = source.lookup(&package.to_bytes())
+        .map_err(|error| BuiltinModelError(format!("read native source project: {error}")))? else { return Ok(None) };
+    let Some(current_fields) = current_project.project_fields() else { return Ok(None) };
+    if current_fields.label != project.label
+        || &current_fields.source_version != capture.capture().source_version()
+        || generations.selected_input_digest(key, claim)? != Some(*capture.capture().input_digest())
+    {
+        return Ok(None);
+    }
+    let Some(program) = activated.native_program_sources.as_ref() else {
+        return Ok(None);
+    };
+    let mut mappings = BTreeMap::new();
+    let mut mapping_inputs = BTreeMap::new();
+    let mut profiles = BTreeMap::<LanguageProfile, BTreeSet<String>>::new();
+    let mut rejected = false;
+    for row in program.sources() {
+        let Some(path) = row.package_path else {
+            continue;
+        };
+        let Some(profile) = super::super::ingest::admitted_file_profile(
+            backend_compile::SourceLanguage::TypeScript,
+            path,
+        ) else {
+            rejected = true;
+            break;
+        };
+        *program_path_work = program_path_work
+            .checked_add(path.len())
+            .and_then(|work| work.checked_add(128))
+            .ok_or_else(|| BuiltinModelError("native program source work overflow".into()))?;
+        if mappings.len() >= backend_library::MAX_SELECTED_PROJECT_FRONTIER_FILES
+            || *program_path_work > MAX_REBUILD_BYTES
+        {
+            return Err(BuiltinModelError(
+                "native program source budget exceeded".into(),
+            ));
+        }
+        if mappings.insert(path, row.source).is_some() {
+            rejected = true;
+            break;
+        }
+        profiles.entry(profile).or_default().insert(path.to_owned());
+        let structural_input = structural_files
+            .get(path)
+            .and_then(|(identity, input)| (*identity == row.source.identity).then_some(*input));
+        let evidence_row = lookup_native_evidence(evidence, package, profile, path, row.source, image_budget)?;
+        let evidence_input = evidence_row.as_ref().map(|value| value.input_digest);
+        let input = match (structural_input, evidence_input) {
+            (Some(a), Some(b)) if a == b => a,
+            (Some(a), None) => a,
+            (None, Some(b)) => b,
+            _ => {
+                rejected = true;
+                break;
+            }
+        };
+        mapping_inputs.insert(path, input);
+    }
+    if rejected {
+        return Ok(None);
+    }
+    if let Some(frontiers) = frontiers {
+        for (profile, paths) in &profiles {
+            let record = frontiers
+                .lookup(&product_native_frontier_profile_key(
+                    package.to_bytes(),
+                    *profile,
+                ))
+                .map_err(|error| {
+                    BuiltinModelError(format!("read native frontier profile: {error}"))
+                })?;
+            let Some(record) = record else {
+                // An orphan path (including a refusal) is never promoted
+                // merely because its profile manifest is absent.
+                for path in paths {
+                    let path_key = backend_engine::builtin::product_native_frontier_path_key(
+                        package.to_bytes(),
+                        *profile,
+                        path,
+                    )
+                    .map_err(BuiltinModelError)?;
+                    if frontiers
+                        .lookup(&path_key)
+                        .map_err(|error| {
+                            BuiltinModelError(format!("read native frontier path: {error}"))
+                        })?
+                        .is_some()
+                    {
+                        rejected = true;
+                        break;
+                    }
+                }
+                if rejected {
+                    break;
+                }
+                continue;
+            };
+            let ProductNativeFrontierRecord::Profile {
+                package_target: Some(target),
+                ..
+            } = record
+            else {
+                rejected = true;
+                break;
+            };
+            if &target != key.coordinate() {
+                rejected = true;
+                break;
+            }
+            // TypeScript profiles have no malformed-native candidate
+            // lane. Refuse those rows before the frontier verifier can
+            // reconstruct their potentially large retained chunks.
+            for path in paths {
+                let path_key = backend_engine::builtin::product_native_frontier_path_key(
+                    package.to_bytes(),
+                    *profile,
+                    path,
+                )
+                .map_err(BuiltinModelError)?;
+                let path_row = frontiers.lookup(&path_key).map_err(|error| {
+                    BuiltinModelError(format!("read native frontier path: {error}"))
+                })?;
+                let Some(source) = mappings.get(path.as_str()) else {
+                    rejected = true;
+                    break;
+                };
+                let Some(input) = mapping_inputs.get(path.as_str()) else {
+                    rejected = true;
+                    break;
+                };
+                if !matches!(path_row,
+                            Some(ProductNativeFrontierRecord::Path {
+                                project, profile: row_profile, path: ref row_path,
+                                disposition: NativePathDisposition::Structural { content, source_identity },
+                            }) if project == package.to_bytes() && row_profile == *profile && row_path == path
+                                && content == *input && source_identity == source.identity)
+                {
+                    rejected = true;
+                    break;
+                }
+            }
+            if rejected {
+                break;
+            }
+            if admit_native_frontier(frontiers, package.to_bytes(), *profile, paths).is_err() {
+                rejected = true;
+                break;
+            }
+            if rejected {
+                break;
+            }
+        }
+    }
+    if rejected {
+        return Ok(None);
+    }
+    let mut positive = BTreeMap::new();
+    let mut projection_safe = true;
+    for image in activated.images() {
+        *image_budget = image_budget
+            .checked_sub(image.as_ref().len())
+            .ok_or_else(|| BuiltinModelError("native image budget".into()))?;
+        let view = image
+            .reopen()
+            .map_err(|error| BuiltinModelError(format!("reopen native image: {error}")))?;
+        key.admit_image(&view)
+            .map_err(|error| BuiltinModelError(format!("admit native image: {error}")))?;
+        let backend_semantic::ir::ImageProvenance::Captured {
+            source,
+            recipe,
+            scope,
+            ..
+        } = view.image_facts().provenance
+        else {
+            return Ok(None);
+        };
+        let Some(path) = view
+            .atom(scope.path)
+            .and_then(|value| std::str::from_utf8(value).ok())
+        else {
+            return Ok(None);
+        };
+        if recipe.tool != key.profile().language().native_tool()
+            || recipe.toolchain != program.toolchain()
+            || mappings.get(path) != Some(&source)
+            || !program.image_matches(
+                path,
+                backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(image.as_ref())
+                    .as_ref(),
+            )
+        {
+            return Ok(None);
+        }
+        let Some(profile) = super::super::ingest::admitted_file_profile(
+            backend_compile::SourceLanguage::TypeScript,
+            path,
+        ) else {
+            return Ok(None);
+        };
+        if recipe.profile != profile {
+            return Ok(None);
+        }
+        if let Some(row) = lookup_native_evidence(evidence, package, profile, path, source, image_budget)?
+            && row.admits_image()
+        {
+            // Image-level projection must not make legacy Unavailable entities
+            // current merely because one file claim matches. Entity-specific
+            // source lookup can independently accept a PrimaryOwned entity.
+            for entity in DocumentationSession::new(&view).publication_entities() {
+                let entity = entity.map_err(|error| {
+                    BuiltinModelError(format!("read native ownership: {error}"))
+                })?;
+                if entity.entity.authority.publication
+                    != backend_semantic::ir::DeclarationPublicationRole::PrimaryOwned
+                {
+                    projection_safe = false;
+                }
+            }
+            match positive.entry(path.to_owned()) {
+                std::collections::btree_map::Entry::Vacant(entry) => { entry.insert((row, source)); }
+                std::collections::btree_map::Entry::Occupied(entry) => {
+                    if entry.get() != &(row, source) { return Ok(None); }
+                }
+            }
+        }
+    }
+    if positive.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(NseProgramProof {
+        workspace_root: snapshot.root(),
+        sequence: snapshot.sequence(),
+        commit: *snapshot.commit().id().as_bytes(),
+        owner_epoch: snapshot.owner_epoch(),
+        closure: snapshot.closure().binding().closure(),
+        selected: key.clone(),
+        claim,
+        coverage,
+        images: std::sync::Arc::clone(activated.image_set()),
+        program: std::sync::Arc::clone(program),
+        projection_safe,
+        source_basis: super::super::native_ts_admission::NativeTsSourceBasis::CapturedObserved {
+            policy_stability: super::super::native_ts_admission::NativePolicyStability::Unknown,
+        },
+        positive,
+    }))
+}
+
+/// Closed NSE applicability result. Unavailable must never trigger a legacy
+/// fallback; structural authority is considered separately.
+pub(in crate::builtin) enum NseProgramAdmission {
+    /// This language does not use the NSE TypeScript route.
+    NotApplicable,
+    /// Required selected evidence could not be admitted.
+    Unavailable,
+    /// Exact selected activation and its process-local, snapshot-bound proof.
+    Admitted {
+        activation: super::super::ActivatedProductSemantics,
+        proof: NseProgramProof,
+    },
+}
+
+/// Loads the exact selected publication and builds a process-local NSE program
+/// proof. A raw caller-provided activation cannot construct this capability.
+pub(in crate::builtin) fn load_selected_nse_program(
+    snapshot: &WorkspaceSnapshot,
+    sources: &IndexedSources,
+    compiler: &LocalCompilerClient,
+    key: &backend_engine::builtin::ProductSemanticPublicationKey,
+    generations: &mut super::super::generation_residence::SemanticGenerationResidence,
+) -> Result<NseProgramAdmission, BuiltinModelError> {
+    if !matches!(
+        key.profile(),
+        backend_semantic::vocabulary::LanguageProfile::TypeScript(_)
+    ) {
+        return Ok(NseProgramAdmission::NotApplicable);
+    }
+    if !key.is_selected() {
+        return Ok(NseProgramAdmission::Unavailable);
+    }
+    let relation = snapshot
+        .relation::<BuiltinSemanticRelation>()
+        .map_err(|error| BuiltinModelError(format!("open selected native publication: {error}")))?;
+    let Some(ProductSemanticPublicationRecord::Published { coverage, claim }) = relation
+        .lookup(key)
+        .map_err(|error| BuiltinModelError(format!("read selected native publication: {error}")))?
+    else {
+        return Ok(NseProgramAdmission::Unavailable);
+    };
+    let Some(captures) = semantic_capture_relation(snapshot)
+        .map_err(|error| BuiltinModelError(format!("open selected native capture: {error}")))?
+    else {
+        return Ok(NseProgramAdmission::Unavailable);
+    };
+    let Some(capture) = captures
+        .lookup(key)
+        .map_err(|error| BuiltinModelError(format!("read selected native capture: {error}")))?
+    else {
+        return Ok(NseProgramAdmission::Unavailable);
+    };
+    if !capture_admits_selected(snapshot, key, &capture, coverage, claim, generations)? {
+        return Ok(NseProgramAdmission::Unavailable);
+    }
+    let mut image_budget = MAX_REBUILD_BYTES;
+    super::super::profile::native_evidence_basis_for_snapshot_budgeted(snapshot, &mut image_budget)?;
+    let Some(evidence) = backend_engine::builtin::native_source_evidence_relation_budgeted(snapshot, &mut image_budget)
+        .map_err(|error| BuiltinModelError(format!("open selected native evidence: {error}")))?
+    else {
+        return Ok(NseProgramAdmission::Unavailable);
+    };
+    let frontiers = backend_engine::builtin::product_native_frontier_relation(snapshot)
+        .map_err(|error| BuiltinModelError(format!("open native frontier: {error}")))?;
+    let files = selected_typescript_structural_files(sources, key.package_key())?;
+    let activated = super::super::load_semantic_publication(compiler, key, claim, generations)?;
+    let mut path_work = 0;
+    let Some(proof) = selected_nse_program_files(
+        snapshot,
+        sources,
+        key,
+        &activated,
+        generations,
+        &evidence,
+        frontiers.as_ref(),
+        &files,
+        &mut path_work,
+        &mut image_budget,
+    )?
+    else {
+        return Ok(NseProgramAdmission::Unavailable);
+    };
+    if !proof.projection_safe {
+        return Ok(NseProgramAdmission::Unavailable);
+    }
+    Ok(NseProgramAdmission::Admitted {
+        activation: activated,
+        proof,
+    })
+}
+
+/// Require explicit compiler ownership for the new native-only route, even
+/// when a legacy image carries a span. The old structural path is unchanged.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeOwnedEntity {
+    entity_id: backend_semantic::ir::EntityId,
+    declaration_identity: DeclarationIdentity,
+    extent: Option<(u32, u32)>,
+}
+
+fn native_owned_file_in_image(
+    image: &SemanticImageView<'_>,
+    package: backend_engine::PackageKey,
+    path: &str,
+    selected: RowId,
+) -> Result<Option<NativeOwnedEntity>, BuiltinModelError> {
+    let session = DocumentationSession::new(image);
+    let mut found = None;
+    for item in session.publication_entities() {
+        let item =
+            item.map_err(|error| BuiltinModelError(format!("read native ownership: {error}")))?;
+        if RowId::Symbol(semantic_symbol(package, item.entity.version.identity())) != selected {
+            continue;
+        }
+        if found.is_some()
+            || item.entity.authority.publication
+                != backend_semantic::ir::DeclarationPublicationRole::PrimaryOwned
+        {
+            return Ok(None);
+        }
+        found = Some((item.entity.id, item.entity.version.identity()));
+    }
+    let Some((entity_id, declaration_identity)) = found else {
+        return Ok(None);
+    };
+    let Some(extent) = native_file_in_image(image, package, path, selected, false)? else {
+        return Ok(None);
+    };
+    Ok(Some(NativeOwnedEntity {
+        entity_id,
+        declaration_identity,
+        extent,
+    }))
+}
+
+pub(super) fn selected_typescript_structural_files(
+    sources: &IndexedSources,
+    package: backend_engine::PackageKey,
+) -> Result<
+    BTreeMap<
+        String,
+        (
+            backend_version::ContentId<backend_version::SourceFactDomain>,
+            [u8; 32],
+        ),
+    >,
+    BuiltinModelError,
+> {
+    let mut paths = BTreeSet::new();
+    let mut project_count = 0usize;
+    let mut result = BTreeMap::new();
+    let mut path_work = 0usize;
+    for (key, record) in &sources.files {
+        let fields = record
+            .file_fields()
+            .ok_or_else(|| BuiltinModelError("native frontier contains non-file row".into()))?;
+        if fields.project != package.to_bytes() {
+            continue;
+        }
+        project_count = project_count
+            .checked_add(1)
+            .ok_or_else(|| BuiltinModelError("native structural file count overflow".into()))?;
+        if project_count > backend_library::MAX_SELECTED_PROJECT_FRONTIER_FILES {
+            return Err(BuiltinModelError(
+                "native structural file budget exceeded".into(),
+            ));
+        }
+        let owner = sources
+            .projects
+            .get(&fields.project)
+            .ok_or_else(|| BuiltinModelError("native frontier missing project".into()))?;
+        if *key != product_source_file_key(fields.project, fields.path)
+            || owner.files.binary_search(key).is_err()
+            || !paths.insert((fields.project, fields.path))
+        {
+            return Err(BuiltinModelError(
+                "invalid native frontier file membership".into(),
+            ));
+        }
+        if fields.project != package.to_bytes()
+            || fields.language != backend_compile::SourceLanguage::TypeScript
+        {
+            continue;
+        }
+        if fields
+            .admitted_unavailable_reason()
+            .map_err(BuiltinModelError)?
+            .is_some()
+            || fields.content_version == [0; 32]
+        {
+            continue;
+        }
+        if let Some(identity) = fields.source_identity {
+            path_work = path_work
+                .checked_add(fields.path.len())
+                .and_then(|work| work.checked_add(128))
+                .ok_or_else(|| BuiltinModelError("native structural path work overflow".into()))?;
+            if path_work > MAX_REBUILD_BYTES {
+                return Err(BuiltinModelError(
+                    "native structural path budget exceeded".into(),
+                ));
+            }
+            result.insert(fields.path.to_owned(), (identity, fields.content_version));
+        }
+    }
+    Ok(result)
+}
+
+fn lookup_native_evidence(
+    relation: &backend_engine::workspace::WorkspaceRelationHandle<
+        backend_engine::builtin::NativeSourceEvidenceRelation,
+    >,
+    package: backend_engine::PackageKey,
+    profile: backend_semantic::vocabulary::LanguageProfile,
+    path: &str,
+    image_source: backend_semantic::ir::SourceIdentity,
+    budget: &mut usize,
+) -> Result<Option<backend_engine::builtin::NativeSourceEvidence>, BuiltinModelError> {
+    let key =
+        backend_engine::builtin::native_source_evidence_key(package.to_bytes(), profile, path)
+            .map_err(|error| BuiltinModelError(error.into()))?;
+    let Some(row) = backend_engine::builtin::native_source_evidence_lookup_budgeted(relation, &key, budget)
+        .map_err(|error| BuiltinModelError(format!("read native evidence: {error}")))? else { return Ok(None) };
+    if row.key().ok() != Some(key)
+        || row.project != package.to_bytes()
+        || row.profile != profile
+        || row.path != path
+        || row.byte_length != image_source.byte_len
+        || row.source_digest.as_slice() != image_source.identity.as_ref()
+    {
+        return Err(BuiltinModelError("selected native evidence does not match its key or image".into()));
+    }
+    Ok(Some(row))
+}
+
+/// Reads a single canonical package frontier entry without initializing a
+/// syntax frontend. The identity is only a physical source locator here.
+fn native_frontier_identity(
+    sources: &IndexedSources,
+    package: backend_engine::PackageKey,
+    path: &str,
+    language: Option<backend_compile::SourceLanguage>,
+    profile: Option<backend_semantic::vocabulary::LanguageProfile>,
+) -> Result<Option<backend_version::ContentId<backend_version::SourceFactDomain>>, BuiltinModelError>
+{
+    if !sources.projects.contains_key(&package.to_bytes()) {
+        return Ok(None);
+    }
+    let mut found = None;
+    let mut paths = BTreeSet::new();
+    for (file_key, record) in &sources.files {
+        let Some(file) = record.file_fields() else {
+            return Err(BuiltinModelError(
+                "native frontier contains a non-file row".to_owned(),
+            ));
+        };
+        let Some(owner) = sources.projects.get(&file.project) else {
+            return Err(BuiltinModelError(
+                "native frontier references a missing project".to_owned(),
+            ));
+        };
+        if *file_key != product_source_file_key(file.project, file.path)
+            || owner.files.binary_search(file_key).is_err()
+            || !paths.insert((file.project, file.path))
+        {
+            return Err(BuiltinModelError(
+                "native frontier contains a noncanonical or duplicate path".to_owned(),
+            ));
+        }
+        if file.project != package.to_bytes() || file.path != path {
+            continue;
+        }
+        if language.is_some_and(|expected| file.language != expected)
+            || profile.is_some_and(|expected| {
+                native_file_profile(file).map(super::super::ingest::lane_profile)
+                    != Some(super::super::ingest::lane_profile(expected))
+            })
+        {
+            return Ok(None);
+        }
+        let Some(identity) = file.source_identity else {
+            return Ok(None);
+        };
+        found = Some(identity);
+    }
+    Ok(found)
+}
+
+/// Resolves the stored native lane using admitted language and dialect metadata.
+/// This chooses no semantic entity and does not initialize a syntax frontend.
+fn native_file_profile(
+    file: backend_engine::builtin::ProductFileRef<'_>,
+) -> Option<backend_semantic::vocabulary::LanguageProfile> {
+    use backend_semantic::vocabulary::{GoVersion, LanguageProfile, PythonVersion};
+    match file.language {
+        backend_compile::SourceLanguage::Go => Some(LanguageProfile::Go(
+            file.go_version.unwrap_or(GoVersion::Go125),
+        )),
+        backend_compile::SourceLanguage::Python => Some(LanguageProfile::Python(
+            file.python_version.unwrap_or(PythonVersion::Python314),
+        )),
+        language => {
+            let extension = std::path::Path::new(file.path)
+                .extension()?
+                .to_str()?
+                .to_ascii_lowercase();
+            let known = match language {
+                backend_compile::SourceLanguage::Rust => extension == "rs",
+                backend_compile::SourceLanguage::TypeScript => matches!(
+                    extension.as_str(),
+                    "ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs"
+                ),
+                backend_compile::SourceLanguage::Java => extension == "java",
+                backend_compile::SourceLanguage::CSharp => extension == "cs",
+                backend_compile::SourceLanguage::Clang => true,
+                _ => false,
+            };
+            known
+                .then(|| super::super::ingest::dialect(language, &extension))
+                .flatten()
+        }
+    }
+}
+
+/// If a publication has a native program manifest, preserve its full source,
+/// toolchain and image membership checks without using profile discovery.
+fn native_program_is_current(
+    sources: &IndexedSources,
+    package: backend_engine::PackageKey,
+    activated: &super::super::ActivatedProductSemantics,
+) -> Result<bool, BuiltinModelError> {
+    let Some(program) = activated.native_program_sources.as_ref() else {
+        return Ok(true);
+    };
+    let mut mappings = BTreeMap::new();
+    for row in program.sources() {
+        let Some(path) = row.package_path else {
+            continue;
+        };
+        if native_frontier_identity(
+            sources,
+            package,
+            path,
+            Some(backend_compile::SourceLanguage::TypeScript),
+            None,
+        )? != Some(row.source.identity)
+            || mappings.insert(path, row.source).is_some()
+        {
+            return Ok(false);
+        }
+    }
+    for image in activated.images() {
+        let view = image
+            .reopen()
+            .map_err(|error| BuiltinModelError(format!("reopen native program image: {error}")))?;
+        let backend_semantic::ir::ImageProvenance::Captured {
+            source,
+            recipe,
+            scope,
+            ..
+        } = view.image_facts().provenance
+        else {
+            return Ok(false);
+        };
+        let Some(path) = view
+            .atom(scope.path)
+            .and_then(|value| std::str::from_utf8(value).ok())
+        else {
+            return Ok(false);
+        };
+        if recipe.toolchain != program.toolchain()
+            || mappings.get(path) != Some(&source)
+            || !program.image_matches(
+                path,
+                backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(image.as_ref())
+                    .as_ref(),
+            )
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// A compiler identity is authoritative only when its own captured source
+/// span is unique, nonempty and names this exact admitted image path.
+pub(super) fn native_extent_in_image(
+    image: &SemanticImageView<'_>,
+    package: backend_engine::PackageKey,
+    path: &str,
+    selected: RowId,
+) -> Result<Option<(u32, u32)>, BuiltinModelError> {
+    Ok(native_file_in_image(image, package, path, selected, true)?.flatten())
+}
+
+fn native_file_in_image(
+    image: &SemanticImageView<'_>,
+    package: backend_engine::PackageKey,
+    path: &str,
+    selected: RowId,
+    require_extent: bool,
+) -> Result<Option<Option<(u32, u32)>>, BuiltinModelError> {
+    let session = DocumentationSession::new(image);
+    let mut found = None;
+    for item in session.publication_entities() {
+        let item =
+            item.map_err(|error| BuiltinModelError(format!("read native declaration: {error}")))?;
+        if RowId::Symbol(semantic_symbol(package, item.entity.version.identity())) != selected {
+            continue;
+        }
+        let extent = match item.entity.source {
+            Some(span) => {
+                if item.entity.authority.source_file
+                    != backend_semantic::ir::FactAvailability::Captured
+                {
+                    return Err(BuiltinModelError(
+                        "selected native source is not captured".to_owned(),
+                    ));
+                }
+                if image.atom(span.file()) != Some(path.as_bytes()) {
+                    return Err(BuiltinModelError(
+                        "selected native source path differs".to_owned(),
+                    ));
+                }
+                if item.entity.authority.source == backend_semantic::ir::FactAvailability::Captured
+                    && !span.is_empty()
+                {
+                    Some((span.start(), span.end()))
+                } else {
+                    None
+                }
+            }
+            None => {
+                // PrimaryOwned is a producer-authenticated per-entity statement
+                // about the captured image's primary file, not an inferred span.
+                // Legacy and reference-only rows cannot provide this witness.
+                let backend_semantic::ir::ImageProvenance::Captured { scope, .. } =
+                    image.image_facts().provenance
+                else {
+                    return Err(BuiltinModelError(
+                        "selected native source provenance is unavailable".to_owned(),
+                    ));
+                };
+                if require_extent
+                    || item.entity.authority.publication
+                        != backend_semantic::ir::DeclarationPublicationRole::PrimaryOwned
+                    || item.entity.authority.source
+                        != backend_semantic::ir::FactAvailability::Unavailable
+                    || item.entity.authority.source_file
+                        != backend_semantic::ir::FactAvailability::Unavailable
+                    || image.atom(scope.path) != Some(path.as_bytes())
+                {
+                    return Err(BuiltinModelError(
+                        "selected native file identity is unavailable".to_owned(),
+                    ));
+                }
+                None
+            }
+        };
+        if require_extent && extent.is_none() {
+            return Err(BuiltinModelError(
+                "selected native extent is unavailable".to_owned(),
+            ));
+        }
+        if found.replace(extent).is_some() {
+            return Err(BuiltinModelError(
+                "selected native identity is ambiguous".to_owned(),
+            ));
+        }
+    }
+    Ok(found)
 }
 
 pub(super) struct SourceRowProjection<'a> {
@@ -583,6 +1979,7 @@ fn publication_seek_bounds(
 fn semantic_rows(
     snapshot: &WorkspaceSnapshot,
     compiler: &LocalCompilerClient,
+    sources: &IndexedSources,
     projects: &BTreeMap<[u8; 32], IndexedProject>,
     current_paths: &ProfileSourcePaths,
     current_identities: &ProfileSourceIdentities,
@@ -604,6 +2001,24 @@ fn semantic_rows(
     // publication rows; malformed capture state must still refuse the view.
     let capture_relation = semantic_capture_relation(snapshot)
         .map_err(|error| BuiltinModelError(format!("open semantic capture relation: {error}")))?;
+    let mut nse_image_budget = MAX_REBUILD_BYTES;
+    let mut nse_line_work = MAX_REBUILD_BYTES as u64;
+    let line_deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
+    let line_stopped = || std::time::Instant::now() >= line_deadline;
+    let nse_evidence = backend_engine::builtin::native_source_evidence_relation_budgeted(snapshot, &mut nse_image_budget)
+        .map_err(|error| BuiltinModelError(format!("open selected native evidence: {error}")))?;
+    if nse_evidence.is_some() {
+        super::super::profile::native_evidence_basis_for_snapshot_budgeted(snapshot, &mut nse_image_budget)?;
+    }
+    let nse_owners = nse_evidence.as_ref().map(|r| selected_nse_typescript_owners(r, &mut nse_image_budget)).transpose()?.unwrap_or_default();
+    let nse_frontiers = if nse_evidence.is_some() {
+        backend_engine::builtin::product_native_frontier_relation(snapshot)
+            .map_err(|error| BuiltinModelError(format!("open native frontier: {error}")))?
+    } else { None };
+    let mut nse_structural_cache = BTreeMap::new();
+    let mut nse_structural_work = 0usize;
+    let mut nse_program_work = 0usize;
+    let mut nse_context_scan_work = 0usize;
     let mut rows = Vec::new();
     let mut exact_sites = super::exact_sites::ExactDeclarationSites::default();
     let mut complete = BTreeSet::new();
@@ -710,7 +2125,88 @@ fn semantic_rows(
             })?;
             let activated =
                 super::super::load_semantic_publication(compiler, key, *claim, generations)?;
-            let activated = available.select(key, *coverage, activated, residence)?;
+            let mut nse_program_needs = false;
+            if matches!(key.profile(), backend_semantic::vocabulary::LanguageProfile::TypeScript(_)) {
+                if let Some(program) = activated.native_program_sources.as_ref() {
+                    let mut mapped = 0usize;
+                    for row in program.sources() {
+                        let Some(path) = row.package_path else { continue };
+                        mapped = mapped.checked_add(1).ok_or_else(|| BuiltinModelError("native program source count overflow".into()))?;
+                        nse_context_scan_work = nse_context_scan_work.checked_add(path.len()).and_then(|work| work.checked_add(128))
+                            .ok_or_else(|| BuiltinModelError("native program context work overflow".into()))?;
+                        if mapped > backend_library::MAX_SELECTED_PROJECT_FRONTIER_FILES || nse_context_scan_work > MAX_REBUILD_BYTES {
+                            return Err(BuiltinModelError("native program context budget exceeded".into()));
+                        }
+                        if !available.typescript_source_current(key.package_key(), path, row.source.identity) {
+                            nse_program_needs = true;
+                        }
+                    }
+                    if mapped == 0 { nse_program_needs = true; }
+                }
+            }
+            let nse_positive = if let Some(evidence) = nse_evidence.as_ref()
+                && key.is_selected()
+                && matches!(key.profile(), backend_semantic::vocabulary::LanguageProfile::TypeScript(_))
+                && !project.label.starts_with("pkg:")
+            {
+                let owner = key.package_key().to_bytes();
+                if !nse_structural_cache.contains_key(&owner) {
+                    // Repeated multi-project scans must have a single bounded work budget.
+                    let scan_work = sources.files.len().checked_mul(128)
+                        .ok_or_else(|| BuiltinModelError("native structural scan work overflow".into()))?;
+                    nse_structural_work = nse_structural_work.checked_add(scan_work)
+                        .ok_or_else(|| BuiltinModelError("native structural scan work overflow".into()))?;
+                    if nse_structural_work > MAX_REBUILD_BYTES {
+                        return Err(BuiltinModelError("native structural scan budget exceeded".into()));
+                    }
+                    let files = selected_typescript_structural_files(sources, key.package_key())?;
+                    let retained = files.keys().try_fold(0usize, |total, path| total.checked_add(path.len() + 128))
+                        .ok_or_else(|| BuiltinModelError("native structural index overflow".into()))?;
+                    nse_structural_work = nse_structural_work.checked_add(retained)
+                        .ok_or_else(|| BuiltinModelError("native structural index overflow".into()))?;
+                    if nse_structural_work > MAX_REBUILD_BYTES {
+                        return Err(BuiltinModelError("native structural index budget exceeded".into()));
+                    }
+                    nse_structural_cache.insert(owner, files);
+                }
+                selected_nse_program_files(snapshot, sources, key, &activated, generations, evidence,
+                    nse_frontiers.as_ref(), nse_structural_cache.get(&owner).expect("inserted index"),
+                    &mut nse_program_work, &mut nse_image_budget)?.filter(|proof| proof.projection_safe)
+            } else { None };
+            let mut line_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(nse_image_budget, nse_line_work);
+            let mut needs_lines = false;
+            if let Some(proof) = nse_positive.as_ref() {
+                for (claim, _) in proof.positive.values() {
+                    line_budget.checkpoint(1, &line_stopped).map_err(|e| BuiltinModelError(format!("native line inventory stopped: {e:?}")))?;
+                    if claim.admits_image() && claim.line_starts.is_none() { needs_lines = true; }
+                }
+            }
+            let line_witness = if needs_lines {
+                generations.selected_native_lines(key, *claim, &mut line_budget, &line_stopped)?
+            } else { None };
+            let line_view = line_witness.as_ref().map(|witness| {
+                backend_semantic::native_source_lines::NativeSourceLineAggregateView::parse(witness.as_bytes(), &mut |_| line_budget.checkpoint(1, &line_stopped))
+                    .map_err(|e| BuiltinModelError(format!("selected native line map: {e:?}")))
+            }).transpose()?;
+            let line_index = if let Some(view) = line_view.as_ref() {
+                let bytes = view.len().checked_mul(std::mem::size_of::<u32>()).ok_or_else(|| BuiltinModelError("native line index size overflow".into()))?;
+                line_budget.reserve_retained(bytes).map_err(|e| BuiltinModelError(format!("native line index budget: {e:?}")))?;
+                let mut credit = bytes;
+                let slots = backend_store::try_allocate_exact_zeroed_u32_budgeted(view.len(), &mut credit).map_err(|e| BuiltinModelError(format!("native line index allocation: {e:?}")))?;
+                Some(slots)
+            } else { None };
+            let mut line_index = line_index;
+            let indexed_lines = if let (Some(view), Some(slots)) = (line_view.as_ref(), line_index.as_mut()) {
+                Some(view.index_files(slots, &mut |_| line_budget.checkpoint(1, &line_stopped)).map_err(|e| BuiltinModelError(format!("native line index stopped: {e:?}")))?)
+            } else { None };
+            // Observed policy is a separate capability: it never becomes an
+            // unqualified current program or a complete source inventory.
+            let (selected, observed) = match nse_positive.as_ref() {
+                Some(proof) => (None, Some(available.select_observed_with_nse(
+                    snapshot, key, *claim, *coverage, activated, residence, proof,
+                )?)),
+                None => (Some(available.select(key, *coverage, activated, residence)?), None),
+            };
             // An image already admitted for this publication key keeps its
             // path and source identity. Row projection is reused when the
             // freshness overlay is already resident.
@@ -724,7 +2220,13 @@ fn semantic_rows(
                 key.coordinate().as_str(),
             );
             let mut opened = Vec::new();
-            for image in activated.images() {
+            let images: Box<dyn Iterator<Item = &backend_library::interface::SemanticImageSnapshot> + '_> =
+                match (&selected, &observed) {
+                    (Some(selected), None) => Box::new(selected.images()),
+                    (None, Some(observed)) => Box::new(observed.images()),
+                    _ => return Err(BuiltinModelError("invalid selected semantic artifacts".into())),
+                };
+            for image in images {
                 match super::image_rows::open_compiled_snapshot(image, admission, residence)? {
                     super::image_rows::CompiledImage::Opened {
                         path,
@@ -757,6 +2259,13 @@ fn semantic_rows(
                 };
                 compiled_sources.insert(path.clone(), *identity);
             }
+            let nse_required = matches!(key.profile(), backend_semantic::vocabulary::LanguageProfile::TypeScript(_))
+                && (nse_program_needs
+                    || nse_owners.contains(key.package_key().as_bytes())
+                    || (compiled_sources.is_empty() && current_paths.get(&target).is_none_or(BTreeSet::is_empty))
+                    || compiled_sources.iter().any(|(path, identity)| {
+                        !available.typescript_source_current(key.package_key(), path, *identity)
+                    }));
             let empty = BTreeSet::new();
             let mut decision = freshness_decision(
                 &compiled_sources,
@@ -771,13 +2280,15 @@ fn semantic_rows(
                     BuiltinModelError(format!("read selected semantic capture: {error}"))
                 })?
                 .flatten();
-            if capture.as_ref().is_some_and(|capture| {
-                matches!(
-                    capture.outcome(),
-                    ProductSemanticCaptureOutcome::Pending { .. }
-                        | ProductSemanticCaptureOutcome::Failed { .. }
-                )
-            }) {
+            if nse_required && nse_positive.is_none() {
+                // Missing or rejected native evidence is unknown, never a
+                // structural complete result or a legacy fallback.
+                decision.invalidate_selected_context();
+            }
+            if let Some(capture) = capture.as_ref()
+                && matches!(capture.outcome(), ProductSemanticCaptureOutcome::Pending { .. } | ProductSemanticCaptureOutcome::Failed { .. })
+                && !capture_admits_selected(snapshot, key, capture, *coverage, *claim, generations)?
+            {
                 // Source bytes alone cannot make the prior generation current:
                 // the latest capture has not published its result. This also
                 // covers an unselected request replacing an explicit target.
@@ -886,7 +2397,8 @@ fn semantic_rows(
                 None
             };
             let mut image_groups = Vec::<(String, Vec<usize>)>::new();
-            let mut ownership_complete = true;
+            // NSE proves individual selected files, never a complete inventory.
+            let mut ownership_complete = !nse_required && nse_positive.as_ref().is_none_or(|proof| proof.positive.is_empty());
             let mut group_by_path = BTreeMap::<String, usize>::new();
             for (index, image) in opened.iter().enumerate() {
                 let path = match image {
@@ -905,11 +2417,19 @@ fn semantic_rows(
                 image_groups[group].1.push(index);
             }
             for (path, image_indices) in image_groups {
+                let first_group_row = rows.len();
                 // Staleness is per image: this image is stale exactly when the
                 // current file compiled from its path no longer hashes to an
                 // image's own source identity. A legacy scan without persisted
                 // identities falls back to the coarse path-set comparison.
-                let stale = matches!(
+                let nse_current = !decision.selected_context_stale && nse_positive.as_ref()
+                    .and_then(|proof| proof.positive.get(&path))
+                    .is_some_and(|(_, source)| decision.compiled.get(&path) == Some(&source.identity));
+                if nse_current {
+                    decision.stale_paths.remove(&path);
+                    targets.partial_artifacts.insert((target.0, target.1, path.clone()));
+                }
+                let stale = !nse_current && matches!(
                     coverage,
                     backend_engine::builtin::SemanticPublicationCoverage::Complete
                 ) && match decision.compiled.get(&path) {
@@ -1005,6 +2525,19 @@ fn semantic_rows(
                         None
                     }
                 };
+                let native_ts_lines = if nse_current {
+                    if let (Some(index), Some((claim, source))) = (indexed_lines.as_ref(), nse_positive.as_ref().and_then(|proof| proof.positive.get(&path))) {
+                        if claim.admits_image() && claim.line_starts.is_none() {
+                            let file = index.find_file(&path, &mut |_| line_budget.checkpoint(1, &line_stopped))
+                                .map_err(|e| BuiltinModelError(format!("native line lookup stopped: {e:?}")))?;
+                            if let Some(file) = file {
+                                if super::super::ingest::native_line_map_matches_host(std::path::Path::new(&project.label), claim, *source, file, &mut line_budget, &line_stopped).map_err(BuiltinModelError)? {
+                                    Some(NativeTsLineProjection { file, budget: &line_budget, stopped: &line_stopped })
+                                } else { None }
+                            } else { None }
+                        } else { None }
+                    } else { None }
+                } else { None };
                 for image_index in image_indices {
                     let image = &opened[image_index];
                     let mut sink = SemanticRowSink {
@@ -1019,6 +2552,10 @@ fn semantic_rows(
                         path: &path,
                         site_declarations: &site_declarations,
                         native_source: native_source.as_ref(),
+                        native_ts_evidence: nse_current.then(|| nse_positive.as_ref()
+                            .and_then(|proof| proof.positive.get(&path))
+                            .map(|(claim, _)| claim).filter(|claim| claim.admits_image())).flatten(),
+                        native_ts_lines,
                     };
                     match image {
                         super::image_rows::CompiledImage::Opened { view, .. } => {
@@ -1057,7 +2594,21 @@ fn semantic_rows(
                         }
                     }
                 }
+                if observed.is_some() {
+                    const NOTE: &str = " Source was observed at capture; discovery policy stability is unknown.";
+                    for row in &mut rows[first_group_row..] {
+                        let cost = NOTE.len().checked_add(std::mem::size_of::<Fragment>())
+                            .ok_or_else(|| BuiltinModelError("native policy note size overflow".into()))?;
+                        remaining_bytes = remaining_bytes.checked_sub(cost)
+                            .ok_or_else(|| BuiltinModelError("native policy notes exceed rebuild budget".into()))?;
+                        let mut fragments = std::mem::take(&mut row.document).into_vec();
+                        fragments.push(Fragment::Text(NOTE.to_owned()));
+                        row.document = fragments.into_boxed_slice();
+                    }
+                }
             }
+            nse_image_budget = line_budget.remaining_memory();
+            nse_line_work = line_budget.remaining_work();
             if matches!(
                 coverage,
                 backend_engine::builtin::SemanticPublicationCoverage::Complete
@@ -1095,7 +2646,9 @@ fn semantic_rows(
             // Match the query/graph package's entire selected image scope,
             // including a TS import whose local target is in the TSX profile.
             drop(opened);
-            native_selections.retain(key, activated)?;
+            if let Some(selected) = selected {
+                native_selections.retain(key, selected)?;
+            }
         }
         if package_ended || (bounds.is_some() && page.next().is_none()) {
             // Explicit seeks use project-map order (hashed keys), not global
@@ -1274,6 +2827,26 @@ pub(crate) fn compiled_source_path(
     compiled_source(image).map(|(path, _)| path)
 }
 
+/// A selected compiler line map independently matched to exact confined host bytes.
+#[derive(Clone, Copy)]
+pub(super) struct NativeTsLineProjection<'a> {
+    pub(super) file: backend_semantic::native_source_lines::NativeSourceLineFileView<'a>,
+    pub(super) budget: &'a backend_extension_turso::SelectedNativeHeaderBudget,
+    pub(super) stopped: &'a dyn Fn() -> bool,
+}
+impl NativeTsLineProjection<'_> {
+    fn line_at(&self, offset: u32) -> Result<Option<u32>, BuiltinModelError> {
+        if offset > self.file.source.byte_len { return Ok(None); }
+        let mut low = 0usize; let mut high = self.file.line_count();
+        while low < high {
+            self.budget.checkpoint(1, self.stopped).map_err(|e| BuiltinModelError(format!("native line lookup stopped: {e:?}")))?;
+            let mid = low + (high - low) / 2;
+            if self.file.line_start(mid).ok_or_else(|| BuiltinModelError("native line offset missing".into()))? <= offset { low = mid + 1; } else { high = mid; }
+        }
+        Ok(u32::try_from(low).ok())
+    }
+}
+
 pub(super) struct SemanticRowSink<'a> {
     pub(super) ownership_complete: &'a mut bool,
     pub(super) exact_sites: &'a mut super::exact_sites::ExactDeclarationSites,
@@ -1293,6 +2866,9 @@ pub(super) struct SemanticRowSink<'a> {
     pub(super) site_declarations: &'a [&'a backend_compile::SourceDeclaration],
     /// Authenticated bytes from the same selected native-only frontier.
     pub(super) native_source: Option<&'a backend_engine::builtin::VerifiedNativeSource>,
+    /// Selected image's capture-time, source-bound line offsets.
+    pub(super) native_ts_evidence: Option<&'a backend_engine::builtin::NativeSourceEvidence>,
+    pub(super) native_ts_lines: Option<NativeTsLineProjection<'a>>,
 }
 
 impl SemanticRowSink<'_> {
@@ -1671,6 +3247,24 @@ pub(super) fn project_image_rows(
     native: Option<super::native_sites::NativeProjection<'_>>,
     native_csharp: Option<super::csharp_native_sites::NativeCSharpProjection<'_>>,
 ) -> Result<ProjectedImage, BuiltinModelError> {
+    project_image_rows_with_native_ts(image, image_identity, project, profile, basis, stale,
+        path, site_declarations, native, native_csharp, None, None)
+}
+
+pub(super) fn project_image_rows_with_native_ts(
+    image: &SemanticImageView<'_>,
+    image_identity: [u8; 32],
+    project: &IndexedProject,
+    profile: backend_semantic::vocabulary::LanguageProfile,
+    basis: backend_engine::Basis,
+    stale: bool,
+    path: &str,
+    site_declarations: &[&backend_compile::SourceDeclaration],
+    native: Option<super::native_sites::NativeProjection<'_>>,
+    native_csharp: Option<super::csharp_native_sites::NativeCSharpProjection<'_>>,
+    native_ts: Option<&backend_engine::builtin::NativeSourceEvidence>,
+    native_ts_lines: Option<NativeTsLineProjection<'_>>,
+) -> Result<ProjectedImage, BuiltinModelError> {
     let session = DocumentationSession::new(image);
     let kinds = entity_kinds(profile, image, &session, site_declarations)?;
     let sites = &kinds.sites;
@@ -1841,6 +3435,23 @@ pub(super) fn project_image_rows(
                     BuiltinModelError(format!("native C# semantic declaration source site: {error}"))
                 })?;
             row = row.with_source(location).with_excerpt(excerpt);
+        } else if let Some(location) = (|| -> Result<Option<backend_compile::SourceLocation>, BuiltinModelError> {
+            use backend_semantic::ir::{DeclarationPublicationRole, FactAvailability};
+            let Some(claim) = native_ts.filter(|_| !stale) else { return Ok(None) };
+            let Some(span) = entity.entity.source else { return Ok(None) };
+            if !claim.admits_image() || claim.path != path
+                || entity.entity.authority.publication != DeclarationPublicationRole::PrimaryOwned
+                || entity.entity.authority.source != FactAvailability::Captured
+                || entity.entity.authority.source_file != FactAvailability::Captured
+                || span.is_empty() || span.end() > claim.byte_length
+                || image.atom(span.file()) != Some(path.as_bytes())
+            { return Ok(None); }
+            let line = if claim.line_starts.is_some() { claim.line_at(span.start()) }
+                else if let Some(lines) = native_ts_lines { lines.line_at(span.start())? }
+                else { None };
+            Ok(line.and_then(|line| backend_compile::SourceLocation::new(path, line).ok()))
+        })()? {
+            row = row.with_source(location);
         } else if let Some(site) = sites.get(&identity) {
             charges.push(Charge::Sub(site.source_excerpt().text().map_or(0, str::len)));
             let location =
@@ -2242,6 +3853,585 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
+    fn native_frontier_requires_canonical_membership_without_syntax_facts() -> Result<(), String> {
+        use backend_compile::{SourceDeclaration, SourceLanguage};
+        use backend_engine::{PackageKey, ProductSourceRecord, product_source_file_key};
+        use backend_version::{ContentId, SourceFactDomain};
+
+        let package = PackageKey::from_value("/native-fixture");
+        let path = "same.ts";
+        let key = product_source_file_key(package.to_bytes(), path);
+        let identity = ContentId::<SourceFactDomain>::from_canonical_bytes(b"source bytes");
+        let file = ProductSourceRecord::file(
+            package.to_bytes(),
+            path,
+            SourceLanguage::TypeScript,
+            [1; 32],
+            [2; 32],
+            Vec::<SourceDeclaration>::new(),
+        )?
+        .with_source_identity(identity)?;
+        let project = super::super::super::IndexedProject {
+            package,
+            label: "/native-fixture".to_owned(),
+            files: Arc::from([key]),
+        };
+        let mut sources = super::super::super::IndexedSources {
+            projects: [(package.to_bytes(), project)].into_iter().collect(),
+            files: vec![(key, file.clone())],
+            cargo_aliases: BTreeMap::new(),
+            source_snapshot: None,
+        };
+        assert_eq!(
+            super::native_frontier_identity(
+                &sources,
+                package,
+                path,
+                Some(SourceLanguage::TypeScript),
+                None,
+            )
+            .map_err(|e| e.0)?,
+            Some(identity)
+        );
+        assert_eq!(
+            super::native_frontier_identity(
+                &sources,
+                package,
+                path,
+                Some(SourceLanguage::Go),
+                None
+            )
+            .map_err(|e| e.0)?,
+            None
+        );
+        assert_eq!(
+            super::native_frontier_identity(
+                &sources,
+                package,
+                path,
+                Some(SourceLanguage::TypeScript),
+                Some(backend_semantic::vocabulary::LanguageProfile::TypeScript(
+                    backend_semantic::vocabulary::TypeScriptSource::Tsx,
+                )),
+            )
+            .map_err(|e| e.0)?,
+            None,
+            "a TS file cannot borrow a selected TSX publication",
+        );
+        let rust_path = "native.rs";
+        let rust_key = product_source_file_key(package.to_bytes(), rust_path);
+        let rust_file = ProductSourceRecord::file(
+            package.to_bytes(),
+            rust_path,
+            SourceLanguage::Rust,
+            [3; 32],
+            [4; 32],
+            Vec::<SourceDeclaration>::new(),
+        )?
+        .with_source_identity(identity)?;
+        let project = sources
+            .projects
+            .get_mut(&package.to_bytes())
+            .ok_or("missing project")?;
+        let mut members = vec![key, rust_key];
+        members.sort_unstable();
+        project.files = Arc::from(members);
+        sources.files.push((rust_key, rust_file));
+        assert_eq!(
+            super::native_frontier_identity(
+                &sources,
+                package,
+                rust_path,
+                Some(SourceLanguage::Rust),
+                Some(backend_semantic::vocabulary::LanguageProfile::Rust(
+                    backend_semantic::vocabulary::RustEdition::Rust2021,
+                )),
+            )
+            .map_err(|e| e.0)?,
+            Some(identity),
+            "Rust profile lanes retain admitted file identity without syntax facts",
+        );
+        let structural = super::selected_typescript_structural_files(&sources, package).map_err(|e| e.0)?;
+        assert_eq!(structural.get(path), Some(&(identity, [1; 32])));
+        assert!(!structural.contains_key(rust_path));
+        sources.files.push((key, file));
+        assert!(super::selected_typescript_structural_files(&sources, package).is_err());
+        assert!(super::native_frontier_identity(&sources, package, path, None, None).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn native_ir_owner_extents_bind_selected_identity_without_syntax() -> Result<(), String> {
+        use backend_semantic::ir::{
+            BorrowedTree, CorePayloadHash, DeclarationFamilyId, DeclarationIdentity,
+            EntityAuthorityFacts, EntityVersion, FactAvailability, IrBuilder, ItemKind,
+            SemanticImageView, SemanticReader as _, SourceSpan, TreeItemInput, VariantFingerprint,
+            Visibility,
+            encode_full_semantic_image, full_semantic_image_len,
+        };
+        let path = "native.rs";
+        let host = "x".repeat(100);
+        let source_identity =
+            backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
+                host.as_bytes(),
+            );
+        let profile = backend_semantic::vocabulary::LanguageProfile::Rust(
+            backend_semantic::vocabulary::RustEdition::Rust2024,
+        );
+        let coordinate = backend_semantic::vocabulary::PackageUrl::parse(
+            "pkg:cargo/native-fixture@1.0.0".to_owned(),
+        )
+        .map_err(|e| e.to_string())?;
+        let recipe = backend_semantic::vocabulary::CompileRecipeFact::derive(
+            profile,
+            backend_semantic::vocabulary::Stage::LowerIr,
+            backend_semantic::vocabulary::NativeTool::Rustc,
+            source_identity,
+            backend_version::ContentId::<backend_version::ToolchainDomain>::from_canonical_bytes(
+                b"fixture compiler",
+            ),
+        );
+        let mut builder = IrBuilder::new();
+        builder
+            .set_image_provenance_for_package(
+                backend_semantic::ir::SourceIdentity {
+                    identity: source_identity,
+                    byte_len: u32::try_from(host.len()).map_err(|e| e.to_string())?,
+                },
+                recipe,
+                &coordinate,
+                path,
+            )
+            .map_err(|e| e.to_string())?;
+        let file = builder
+            .intern_atom(path.as_bytes())
+            .map_err(|e| e.to_string())?;
+        let ids = [1_u8, 2, 3, 4, 5, 6].map(|byte| DeclarationIdentity {
+            family: DeclarationFamilyId::from_raw([byte; 16]),
+            variant: VariantFingerprint::from_raw([byte; 16]),
+        });
+        let versions = ids.map(|id| EntityVersion {
+            family: id.family,
+            variant: id.variant,
+            core_payload: CorePayloadHash::from_raw([9; 16]),
+        });
+        let authority = EntityAuthorityFacts {
+            source: FactAvailability::Captured,
+            source_file: FactAvailability::Captured,
+            visibility: FactAvailability::Captured,
+            ..EntityAuthorityFacts::default()
+        };
+        let items = [
+            TreeItemInput {
+                name: b"alpha",
+                anonymous_callable_anchor: None,
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority,
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: SourceSpan::new(file, 10, 30),
+                extension: None,
+            },
+            TreeItemInput {
+                name: b"bravo",
+                anonymous_callable_anchor: None,
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority,
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: SourceSpan::new(file, 40, 60),
+                extension: None,
+            },
+            TreeItemInput {
+                name: b"charlie",
+                anonymous_callable_anchor: None,
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority,
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: SourceSpan::new(file, 80, 80),
+                extension: None,
+            },
+            TreeItemInput {
+                name: b"unknown",
+                anonymous_callable_anchor: None,
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority: EntityAuthorityFacts {
+                    visibility: FactAvailability::Captured,
+                    ..EntityAuthorityFacts::default()
+                },
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+            TreeItemInput {
+                name: b"spanless_owned",
+                anonymous_callable_anchor: None,
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority: EntityAuthorityFacts {
+                    publication: backend_semantic::ir::DeclarationPublicationRole::PrimaryOwned,
+                    visibility: FactAvailability::Captured,
+                    ..EntityAuthorityFacts::default()
+                },
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+            TreeItemInput {
+                name: b"spanless_reference",
+                anonymous_callable_anchor: None,
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority: EntityAuthorityFacts {
+                    publication: backend_semantic::ir::DeclarationPublicationRole::ReferenceOnly,
+                    visibility: FactAvailability::Captured,
+                    ..EntityAuthorityFacts::default()
+                },
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+        ];
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &versions,
+                items: &items,
+                links: &[],
+            })
+            .map_err(|e| e.to_string())?;
+        let ir = builder.finish().map_err(|e| e.to_string())?;
+        let mut bytes = vec![0; full_semantic_image_len(&ir).map_err(|e| e.to_string())?];
+        encode_full_semantic_image(&ir, &mut bytes).map_err(|e| e.to_string())?;
+        let image = SemanticImageView::reopen(&bytes).map_err(|e| e.to_string())?;
+        let key = backend_engine::builtin::ProductSemanticPublicationKey::new(
+            backend_engine::PackageReference::parse("/fixture".to_owned())
+                .map_err(|e| e.to_string())?,
+            coordinate,
+            profile,
+        )
+        .map_err(|e| e.to_string())?;
+        key.admit_image(&image).map_err(|e| e.to_string())?;
+        let package = key.package_key();
+        assert_eq!(
+            super::compiled_source(&image).map_err(|e| e.0)?,
+            (path.to_owned(), source_identity)
+        );
+        let first = backend_engine::RowId::Symbol(super::semantic_symbol(package, ids[0]));
+        let second = backend_engine::RowId::Symbol(super::semantic_symbol(package, ids[1]));
+        assert_eq!(
+            super::native_extent_in_image(&image, package, path, first).map_err(|e| e.0)?,
+            Some((10, 30))
+        );
+        assert_eq!(
+            super::native_extent_in_image(&image, package, path, second).map_err(|e| e.0)?,
+            Some((40, 60))
+        );
+        let raw_input =
+            backend_compile::typed_of::<backend_compile::InputContentSchema>(host.as_bytes())
+                .to_bytes();
+        backend_compile::VerifiedSourceText::admit_stored(
+            host.as_bytes(),
+            raw_input,
+            source_identity,
+        )
+        .map_err(|e| e.to_string())?;
+        let changed = format!("y{}", &host[1..]);
+        assert!(
+            backend_compile::VerifiedSourceText::admit_stored(
+                changed.as_bytes(),
+                raw_input,
+                source_identity
+            )
+            .is_err()
+        );
+        let wrong_input =
+            backend_compile::typed_of::<backend_compile::InputContentSchema>(changed.as_bytes())
+                .to_bytes();
+        assert_eq!(
+            backend_compile::VerifiedSourceText::admit_stored(
+                host.as_bytes(),
+                wrong_input,
+                source_identity
+            )
+            .unwrap_err(),
+            backend_compile::SourceVerificationError::InputRevisionMismatch
+        );
+        let wrong_source =
+            backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
+                changed.as_bytes(),
+            );
+        assert_eq!(
+            backend_compile::VerifiedSourceText::admit_stored(
+                host.as_bytes(),
+                raw_input,
+                wrong_source
+            )
+            .unwrap_err(),
+            backend_compile::SourceVerificationError::SourceIdentityMismatch
+        );
+        let file_only = backend_engine::RowId::Symbol(super::semantic_symbol(package, ids[2]));
+        assert_eq!(
+            super::native_file_in_image(&image, package, path, file_only, false).map_err(|e| e.0)?,
+            Some(None),
+            "a captured file with an empty primary span can still establish file freshness"
+        );
+        assert!(super::native_extent_in_image(&image, package, path, file_only).is_err());
+        // A span on a legacy Unavailable publication is insufficient for the
+        // new native-only capability, while the existing extent path remains intact.
+        assert_eq!(
+            super::native_owned_file_in_image(&image, package, path, first).map_err(|e| e.0)?,
+            None
+        );
+        let owned = backend_engine::RowId::Symbol(super::semantic_symbol(package, ids[4]));
+        let owned_entry = super::native_owned_file_in_image(&image, package, path, owned)
+            .map_err(|e| e.0)?
+            .ok_or("owned entity missing")?;
+        assert_eq!((owned_entry.declaration_identity, owned_entry.extent), (ids[4], None));
+        assert_eq!(
+            image.entity(owned_entry.entity_id).map(|entity| entity.version.identity()),
+            Some(ids[4])
+        );
+        assert_eq!(
+            super::native_file_in_image(&image, package, path, owned, false).map_err(|e| e.0)?,
+            Some(None)
+        );
+        assert!(super::native_extent_in_image(&image, package, path, owned).is_err());
+        assert!(super::native_file_in_image(&image, package, "other.rs", owned, false).is_err());
+        let reference = backend_engine::RowId::Symbol(super::semantic_symbol(package, ids[5]));
+        assert_ne!(
+            super::native_file_in_image(&image, package, path, reference, false)
+                .ok()
+                .flatten(),
+            Some(None)
+        );
+        let mut unproven = IrBuilder::new();
+        unproven
+            .add_borrowed_tree(BorrowedTree {
+                versions: &versions[4..5],
+                items: &items[4..5],
+                links: &[],
+            })
+            .map_err(|e| e.to_string())?;
+        let unproven = unproven.finish().map_err(|e| e.to_string())?;
+        let mut unproven_bytes =
+            vec![0; full_semantic_image_len(&unproven).map_err(|e| e.to_string())?];
+        encode_full_semantic_image(&unproven, &mut unproven_bytes).map_err(|e| e.to_string())?;
+        let unproven_image =
+            SemanticImageView::reopen(&unproven_bytes).map_err(|e| e.to_string())?;
+        assert!(super::native_file_in_image(&unproven_image, package, path, owned, false).is_err());
+        let unknown = backend_engine::RowId::Symbol(super::semantic_symbol(package, ids[3]));
+        assert!(super::native_file_in_image(&image, package, path, unknown, false).is_err());
+        assert!(super::native_extent_in_image(&image, package, "other.rs", first).is_err());
+        assert_eq!(
+            super::native_extent_in_image(
+                &image,
+                backend_engine::PackageKey::from_value("/other"),
+                path,
+                first
+            )
+            .map_err(|e| e.0)?,
+            None
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires an explicitly selected installed Go compiler"]
+    fn actual_go_embedded_field_has_file_evidence_without_a_span() {
+        use backend_engine::driver::{
+            CompileControl, CompileOutput, CompileRequest, CompileScratch, DeclarationScope,
+            ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile_semantic,
+        };
+        use backend_frontend_go::legacy::GoOracle;
+        use backend_frontend_go::legacy::oracle::{
+            GoOracleChildEnvironment, GoOracleConfiguration,
+        };
+        use backend_semantic::ir::{
+            DeclarationPublicationRole, ItemKind, SemanticImageView, encode_full_semantic_image,
+            full_semantic_image_len,
+        };
+        use backend_semantic::vocabulary::{
+            GoVersion, LanguageProfile, NativeTool, PackageUrl, Stage,
+        };
+        use std::sync::atomic::AtomicBool;
+        use std::time::{Duration, Instant};
+
+        let go = std::path::PathBuf::from(
+            std::env::var_os("COMPILER_GO_COMPILER").expect("selected Go compiler"),
+        )
+        .canonicalize()
+        .expect("canonical Go compiler");
+        let discovery = std::process::Command::new(&go)
+            .args(["env", "-json", "GOROOT"])
+            .env("GOENV", "off")
+            .env("GOTOOLCHAIN", "local")
+            .output()
+            .expect("Go discovery");
+        assert!(discovery.status.success());
+        let discovery: serde_json::Value =
+            serde_json::from_slice(&discovery.stdout).expect("Go discovery JSON");
+        let goroot = std::path::PathBuf::from(discovery["GOROOT"].as_str().expect("GOROOT"))
+            .canonicalize()
+            .expect("canonical GOROOT");
+        let root = tempfile::tempdir().expect("fixture root");
+        let project = root.path().join("project");
+        std::fs::create_dir(&project).expect("fixture project");
+        let project = project.canonicalize().expect("canonical project");
+        std::fs::write(
+            project.join("go.mod"),
+            "module example.com/fixture\n\ngo 1.23\n",
+        )
+        .expect("offline module");
+        let path = "fixture.go";
+        let primary = project.join(path);
+        let source = b"package fixture\ntype Embedded struct{}\ntype Outer struct { Embedded }\n";
+        std::fs::write(&primary, source).expect("primary source");
+        let modules = root.path().join("modules");
+        std::fs::create_dir(&modules).expect("offline module cache");
+        let environment = GoOracleChildEnvironment::new(
+            go.clone(),
+            goroot,
+            modules,
+            root.path()
+                .canonicalize()
+                .expect("root")
+                .join("build-cache"),
+        )
+        .expect("Go environment");
+        let toolchain_identity = environment.toolchain_identity();
+        let oracle = GoOracle::default()
+            .with_configuration(
+                GoOracleConfiguration::go_toolchain(go.clone()).expect("Go command"),
+            )
+            .with_child_environment(environment)
+            .expect("closed Go environment");
+        let witness = oracle
+            .package_authority_witness_cancellable(&project, None)
+            .expect("package witness");
+        assert!(witness.is_complete());
+        let native = oracle
+            .authority_image_for_package_with_authority_witness_cancellable(
+                &primary, &project, &witness, None,
+            )
+            .expect("native package image");
+        let profile = LanguageProfile::Go(GoVersion::Go125);
+        let coordinate = PackageUrl::parse("pkg:golang/example.com/fixture@1.0.0".to_owned())
+            .expect("coordinate");
+        let resolved =
+            ResolvedToolchain::from_version(NativeTool::GoCompiler, &go, &toolchain_identity)
+                .expect("toolchain identity");
+        let cancelled = AtomicBool::new(false);
+        let mut diagnostics = [];
+        let mut output = vec![0; 1024 * 1024];
+        let compiled = compile_semantic(
+            CompileRequest {
+                profile,
+                stage: Stage::LowerIr,
+                source,
+                declaration_scope: DeclarationScope::for_package(&coordinate, path).expect("scope"),
+                toolchain: ToolchainSelection::ResolvedNative(resolved),
+                authority: SemanticAuthorityInput::Go { image: &native },
+                control: CompileControl {
+                    deadline: Instant::now() + Duration::from_secs(60),
+                    cancelled: &cancelled,
+                },
+            },
+            CompileScratch {
+                diagnostic_output: &mut diagnostics,
+                native_work: root.path(),
+            },
+            CompileOutput {
+                fragment_output: &mut output,
+            },
+        )
+        .expect("actual native Go projection");
+        let original_session = super::DocumentationSession::new(&compiled.ir);
+        let original_fields: Vec<_> = original_session
+            .publication_entities()
+            .map(|item| item.expect("original entity"))
+            .filter(|item| {
+                item.entity.kind == ItemKind::Field
+                    && item.name.named_bytes() == Some(b"Embedded".as_slice())
+            })
+            .collect();
+        assert_eq!(original_fields.len(), 1);
+        assert_eq!(original_fields[0].entity.source, None);
+        assert_eq!(
+            original_fields[0].entity.authority.publication,
+            DeclarationPublicationRole::PrimaryOwned
+        );
+        let original_identity = original_fields[0].entity.version.identity();
+        let mut bytes = vec![0; full_semantic_image_len(&compiled.ir).expect("image size")];
+        encode_full_semantic_image(&compiled.ir, &mut bytes).expect("encode image");
+        let image = SemanticImageView::reopen(&bytes).expect("reopen image");
+        let key = backend_engine::builtin::ProductSemanticPublicationKey::new(
+            backend_engine::PackageReference::parse("/fixture".to_owned()).expect("package"),
+            coordinate,
+            profile,
+        )
+        .expect("publication key");
+        key.admit_image(&image).expect("admitted image");
+        let session = super::DocumentationSession::new(&image);
+        let fields: Vec<_> = session
+            .publication_entities()
+            .map(|item| item.expect("entity"))
+            .filter(|item| {
+                item.entity.kind == ItemKind::Field && item.name.named_bytes() == Some(b"Embedded".as_slice())
+            })
+            .collect();
+        assert_eq!(fields.len(), 1, "select the actual embedded field");
+        let field = &fields[0].entity;
+        assert_eq!(field.version.identity(), original_identity);
+        assert_eq!(field.source, None, "native producer omitted the field span");
+        assert_eq!(
+            field.authority.publication,
+            DeclarationPublicationRole::PrimaryOwned
+        );
+        let package = key.package_key();
+        let selected = backend_engine::RowId::Symbol(super::semantic_symbol(
+            package,
+            field.version.identity(),
+        ));
+        assert_eq!(
+            super::native_file_in_image(&image, package, path, selected, false)
+                .expect("file evidence"),
+            Some(None)
+        );
+        assert!(super::native_extent_in_image(&image, package, path, selected).is_err());
+        let (_, source_identity) = super::compiled_source(&image).expect("captured source");
+        let input =
+            backend_compile::typed_of::<backend_compile::InputContentSchema>(source).to_bytes();
+        backend_compile::VerifiedSourceText::admit_stored(source, input, source_identity)
+            .expect("actual bytes match both domains");
+    }
+
+    #[test]
     fn java_qualified_semantic_type_pairs_to_its_authored_simple_name() -> Result<(), String> {
         use super::semantic_source_name;
         use backend_compile::{DeclarationKind, SourceDeclaration};
@@ -2633,4 +4823,65 @@ mod search_cancellation_tests {
         assert_eq!(resumed.sites, baseline.sites);
         Ok(())
     }
+}
+
+/// Exercises the unmodified selected-relation lookup with a real reopened
+/// relation. This wrapper only observes admission; it mints no source proof.
+#[cfg(test)]
+pub(in crate::builtin) fn native_evidence_lookup_budget_control(
+    relation: &backend_engine::workspace::WorkspaceRelationHandle<backend_engine::builtin::NativeSourceEvidenceRelation>,
+    package: backend_engine::PackageKey,
+    profile: backend_semantic::vocabulary::LanguageProfile,
+    items: &[(&str, backend_semantic::ir::SourceIdentity)],
+) -> Result<(), BuiltinModelError> {
+    let mut measured = usize::MAX;
+    for (path, source) in items {
+        if lookup_native_evidence(relation, package, profile, path, *source, &mut measured)?.is_none() {
+            return Err(BuiltinModelError("fixture evidence absent".into()));
+        }
+    }
+    let charge = usize::MAX - measured;
+    if charge == 0 { return Err(BuiltinModelError("fixture evidence has zero retained allocation".into())); }
+    let scratch = backend_engine::builtin::NATIVE_EVIDENCE_READ_SCRATCH;
+    let mut exact = scratch.checked_add(charge).ok_or_else(|| BuiltinModelError("fixture lookup budget overflow".into()))?;
+    for (path, source) in items {
+        lookup_native_evidence(relation, package, profile, path, *source, &mut exact)?
+            .ok_or_else(|| BuiltinModelError("fixture evidence absent".into()))?;
+    }
+    if exact != scratch { return Err(BuiltinModelError("lookup allocation charge changed".into())); }
+    // The final row's retained allocation is charged after its scratch is
+    // released. The peak is scratch plus the preceding rows' retained bytes,
+    // rather than scratch plus all rows' retained bytes.
+    let (last_path, last_source) = items.last().ok_or_else(|| BuiltinModelError("fixture has no lookup rows".into()))?;
+    let mut last_budget = usize::MAX;
+    lookup_native_evidence(relation, package, profile, last_path, *last_source, &mut last_budget)?
+        .ok_or_else(|| BuiltinModelError("fixture evidence absent".into()))?;
+    let last_charge = usize::MAX - last_budget;
+    let before_last = charge.checked_sub(last_charge).ok_or_else(|| BuiltinModelError("fixture lookup charge changed".into()))?;
+    if before_last == 0 { return Err(BuiltinModelError("fixture needs multiple retained rows".into())); }
+    let mut peak = scratch.checked_add(before_last).ok_or_else(|| BuiltinModelError("fixture lookup budget overflow".into()))?;
+    for (path, source) in items {
+        lookup_native_evidence(relation, package, profile, path, *source, &mut peak)?
+            .ok_or_else(|| BuiltinModelError("fixture evidence absent".into()))?;
+    }
+    let mut short = scratch.checked_add(before_last - 1).ok_or_else(|| BuiltinModelError("fixture lookup budget overflow".into()))?;
+    let mut refused = false;
+    for (path, source) in items {
+        match lookup_native_evidence(relation, package, profile, path, *source, &mut short) {
+            Ok(Some(_)) => {}
+            Err(error) if error.0 == "read native evidence: workspace relation store error: Bounds" => { refused = true; break; }
+            Ok(None) => return Err(BuiltinModelError("fixture evidence absent".into())),
+            Err(error) => return Err(error),
+        }
+    }
+    if !refused { return Err(BuiltinModelError("aggregate lookup budget did not refuse".into())); }
+    for (path, source) in items {
+        let mut changed = *source;
+        changed.identity = backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(b"tampered native source");
+        let mut budget = usize::MAX;
+        let error = lookup_native_evidence(relation, package, profile, path, changed, &mut budget)
+            .err().ok_or_else(|| BuiltinModelError("tampered lookup admitted".into()))?;
+        if error.0 != "selected native evidence does not match its key or image" { return Err(error); }
+    }
+    Ok(())
 }

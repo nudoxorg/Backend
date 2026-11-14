@@ -37,6 +37,43 @@ use backend_library::{
 use crate::identity::KeyTag;
 use serde::{Deserialize, Serialize};
 
+/// Render an untrusted claim using its own selected coordinate, never the row label.
+pub(crate) fn source_policy_note(
+    policy: &backend_library::SourcePolicyQualification,
+) -> Option<String> {
+    if policy.is_unknown() {
+        return None;
+    }
+    // The current library keeps the statement fields private. Read its public
+    // serialized representation without interpreting the seal as authority.
+    let coordinate = serde_json::to_value(policy).ok().and_then(|value| {
+        value
+            .get("data")?
+            .get("statement")?
+            .get("selection_coordinate")?
+            .as_str()
+            .map(str::to_owned)
+    });
+    Some(match coordinate {
+        Some(coordinate) => format!(
+            "Unverified captured-source claim for {coordinate}; effective ignore-policy stability unknown."
+        ),
+        None => "Unverified captured-source claim; selected coordinate unavailable; effective ignore-policy stability unknown."
+            .to_owned(),
+    })
+}
+
+/// Typed per-occurrence relation evidence, preserved without inferring source identity.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ReferenceDetails {
+    /// The endpoint supplied for this occurrence.
+    pub target: backend_library::SemanticLinkTarget,
+    /// The occurrence relation.
+    pub relation: backend_library::SemanticLinkKind,
+    /// Source span and confidence supplied for this occurrence.
+    pub evidence: backend_library::SemanticLinkEvidence,
+}
+
 /// One product record: a title, an operand to pass back, and its tags.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProductRecord {
@@ -53,6 +90,9 @@ pub struct ProductRecord {
     history_status: Option<ProductSemanticHistoryStatus>,
     compiler_profile: Option<SemanticLanguageProfile>,
     extent: Option<backend_library::DeclarationReadExtent>,
+    source_policy: backend_library::SourcePolicyQualification,
+    site_symbol: Option<[u8; 32]>,
+    reference_details: Option<ReferenceDetails>,
 }
 
 impl ProductRecord {
@@ -73,7 +113,38 @@ impl ProductRecord {
             history_status: None,
             compiler_profile: None,
             extent: None,
+            source_policy: backend_library::SourcePolicyQualification::Unknown,
+            site_symbol: None,
+            reference_details: None,
         }
+    }
+
+    /// Retains this record's owner-reported policy claim without creating authority.
+    #[must_use]
+    pub fn with_source_policy(
+        mut self,
+        policy: backend_library::SourcePolicyQualification,
+    ) -> Self {
+        self.source_policy = policy;
+        self
+    }
+
+    /// Returns this record's owner-reported source-policy claim.
+    #[must_use]
+    pub const fn source_policy(&self) -> &backend_library::SourcePolicyQualification {
+        &self.source_policy
+    }
+
+    /// Returns the owner-reported occurrence-site identity, if supplied.
+    #[must_use]
+    pub const fn site_symbol(&self) -> Option<[u8; 32]> {
+        self.site_symbol
+    }
+
+    /// Returns the typed per-occurrence relation evidence, when present.
+    #[must_use]
+    pub const fn reference_details(&self) -> Option<&ReferenceDetails> {
+        self.reference_details.as_ref()
     }
 
     /// Retains the source completeness reported by the batch read authority.
@@ -372,8 +443,278 @@ pub enum ProductSemanticData {
     VersionsPage(backend_library::SemanticVersionsPage),
     /// Exact native byte range of one complete captured semantic source.
     Source(backend_library::SemanticSourceChunk),
+    /// Full typed native CSS query result.
+    StyloQuery(backend_library::stylo_query::StyloQueryPage),
+    /// Compact CSS paging state and one executable source-site action.
+    StyloQuerySummary(StyloQuerySummary),
+    /// Retained comparison capture with owner-bound lease.
+    ImpactCapture(backend_library::impact_comparison::ImpactCaptureReply),
+    /// Candidate comparison with owner-bound continuation.
+    ImpactCompare(backend_library::impact_comparison::ImpactCompareReply),
+    /// Compact comparison state and continuation for agent summaries.
+    ImpactCompareSummary(ImpactCompareSummary),
+    /// Exact retained fact/image differences and candidate paths.
+    ImpactDiff(backend_library::impact_comparison::ImpactDiffReply),
+    /// Compact retained diff state and continuation.
+    ImpactDiffSummary(ImpactDiffSummary),
+    /// Historical source-site result.
+    ImpactReadSource(backend_library::impact_comparison::ImpactSourceReply),
+    /// Candidate impact results and authenticated continuation.
+    StyloImpact(backend_library::stylo_impact::StyloImpactPage),
+    /// Compact candidate impact paging and provenance.
+    StyloImpactSummary(StyloImpactSummary),
+    /// Cross-language change impact with coverage and freshness.
+    Impact(backend_library::impact::ImpactReport),
+    /// Full typed verified CSS source-site result.
+    StyloReadSite(backend_library::stylo_query::StyloSourceRead),
     /// Existing shape wire egress after certificate-bearing direct admission.
     Shapes(backend_library::SemanticShapeExport),
+    /// Full native SQL page scoped to project-proposed context.
+    SqlQuery(backend_library::sql_query::SqlQueryPage),
+    /// Compact native SQL page with one executable source action.
+    SqlQuerySummary(SqlQuerySummary),
+    /// Verified SQL diagnostic source result.
+    SqlReadSource(backend_library::sql_query::SqlSourceRead),
+}
+
+/// Shared basis and one source action for a compact SQL page.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SqlQuerySummary {
+    pub basis: backend_library::sql_query::SqlQueryBasis,
+    pub terminal: backend_library::sql_query::SqlQueryTerminal,
+    pub first_source: Option<backend_library::sql_query::SqlSourceReference>,
+    pub returned: usize,
+}
+
+/// One compact paragraph which keeps the seed, totals, gaps, freshness and next step together.
+fn impact_note(report: &backend_library::impact::ImpactReport) -> String {
+    use backend_library::impact::{
+        ImpactDomainState, ImpactFreshness, ImpactSeedState, ImpactTerminal,
+    };
+    let mut parts = Vec::new();
+    let seeds = report
+        .seeds
+        .iter()
+        .take(4)
+        .map(|seed| match (&seed.path, seed.line) {
+            (Some(path), Some(line)) => format!("{} {} ({path}:{line})", seed.kind, seed.name),
+            _ => format!("{} {}", seed.kind, seed.name),
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    match &report.seed_state {
+        ImpactSeedState::Resolved => parts.push(format!(
+            "seed: {seeds}{}",
+            if report.seeds.len() > 4 { format!(" and {} more", report.seeds.len() - 4) } else { String::new() }
+        )),
+        ImpactSeedState::Ambiguous => parts.push(format!(
+            "seed is ambiguous, nothing followed; candidates: {seeds}. Repeat with --in PATH or --handle"
+        )),
+        ImpactSeedState::NotFound { why } => parts.push(format!("seed not found: {why}")),
+        ImpactSeedState::Unavailable { why } => parts.push(format!("unavailable: {why}")),
+    }
+    if matches!(report.seed_state, ImpactSeedState::Resolved) {
+        parts.push(format!(
+            "affected: {} exact, {} possible in {} files ({} shown)",
+            report.totals.exact,
+            report.totals.candidate,
+            report.totals.files,
+            report.rows.len()
+        ));
+    }
+    for domain in &report.domains {
+        match &domain.state {
+            ImpactDomainState::Analyzed => {}
+            ImpactDomainState::Partial { reasons } => parts.push(format!(
+                "{} partial: {}",
+                domain.domain.as_str(),
+                reasons.join(", ")
+            )),
+            ImpactDomainState::Unavailable { reason } => {
+                parts.push(format!("{} unavailable: {reason}", domain.domain.as_str()));
+            }
+            ImpactDomainState::NotInstalled => {
+                parts.push(format!("{} impact not installed in this build", domain.domain.as_str()));
+            }
+        }
+    }
+    if !report.gaps.is_empty() {
+        let gaps = report
+            .gaps
+            .iter()
+            .take(6)
+            .map(|gap| match gap.count {
+                Some(count) => format!("{} ({count}): {}", gap.facet, gap.note),
+                None => format!("{}: {}", gap.facet, gap.note),
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        parts.push(format!("cannot see: {gaps}"));
+    }
+    parts.push(match &report.freshness {
+        ImpactFreshness::Current { checked } => format!("fresh: {checked} files match the index"),
+        ImpactFreshness::Stale { changed, action, .. } => {
+            format!("STALE: changed since indexing: {}; {action}", changed.join(", "))
+        }
+        ImpactFreshness::Unknown { why } => format!("freshness unknown: {why}"),
+    });
+    match &report.terminal {
+        ImpactTerminal::Complete => {}
+        ImpactTerminal::More { cursor } => parts.push(format!("more: --cursor {}", cursor.as_str())),
+        ImpactTerminal::BudgetLimited { budget } => {
+            parts.push(format!("stopped at the {budget} budget; the list is a lower bound"));
+        }
+    }
+    if !report.proves_no_impact() && report.totals.exact + report.totals.candidate == 0 {
+        parts.push("zero rows is not proof of no impact".to_owned());
+    }
+    parts.extend(report.next.iter().cloned());
+    parts.join(" | ")
+}
+
+fn impact_attempt_label(attempt: &backend_library::impact_comparison::ImpactAttemptAtCapture) -> &'static str {
+    use backend_library::impact_comparison::ImpactAttemptAtCapture as Attempt;
+    match attempt {
+        Attempt::LatestObserved => "latest indexed attempt observed",
+        Attempt::RetainedAfterUnavailable { .. } => "prior analysis retained after unavailable attempt",
+        Attempt::UnknownLegacy => "no attempt was recorded",
+        Attempt::Unknown => "attempt status not established",
+    }
+}
+
+/// Shared retained-diff provenance and paging without duplicate rows.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImpactDiffSummary {
+    pub base: backend_library::impact_comparison::ImpactLease,
+    pub target: backend_library::impact_comparison::ImpactLease,
+    pub domain: backend_library::impact_comparison::ImpactDiffDomain,
+    pub base_capture_complete: bool, pub target_capture_complete: bool,
+    pub semantic_gapped: bool, pub provider_unknown: bool, pub walk_limited: bool,
+    pub context_gapped: bool, pub missing_owner: bool,
+    pub comparisons: Option<u32>, pub compared_bytes: Option<u32>,
+    pub counters: Option<backend_library::impact_comparison::ImpactDiffCounters>,
+    pub terminal: backend_library::impact_comparison::ImpactDiffTerminal,
+    pub returned: usize,
+}
+
+/// Shared provenance and paging state, without duplicating displayed rows.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImpactCompareSummary {
+    pub base: backend_library::impact_comparison::ImpactLease,
+    pub target: backend_library::impact_comparison::ImpactLease,
+    pub side: backend_library::impact_comparison::ImpactSide,
+    pub relation_gapped: bool,
+    pub source_gapped: bool,
+    pub base_attempt_at_capture: backend_library::impact_comparison::ImpactAttemptAtCapture,
+    pub target_attempt_at_capture: backend_library::impact_comparison::ImpactAttemptAtCapture,
+    pub base_worker_at_capture: backend_library::stylo_query::StyloWorkerCapability,
+    pub target_worker_at_capture: backend_library::stylo_query::StyloWorkerCapability,
+    pub provider_unknown: bool,
+    pub missing_owner: bool,
+    pub counters: backend_library::impact_comparison::ImpactCounters,
+    pub terminal: backend_library::impact_comparison::ImpactTerminal,
+    pub returned: usize,
+}
+
+/// Compact candidate-impact state for the default agent response.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StyloImpactSummary {
+    /// Selected roots and all declared capability gaps.
+    pub basis: backend_library::stylo_query::StyloQueryBasis,
+    /// Exact seed source handle.
+    pub seed: backend_library::stylo_query::StyloSourceReference,
+    /// Completion and authenticated continuation.
+    pub terminal: backend_library::stylo_impact::StyloImpactTerminal,
+    /// Candidate rows in this page.
+    pub returned: usize,
+}
+
+/// Compact native CSS state for the default agent-facing response.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StyloQuerySummary {
+    /// Shared selected roots, freshness, producer and capability gaps.
+    pub basis: backend_library::stylo_query::StyloQueryBasis,
+    /// Exact owner-issued continuation or terminal.
+    pub terminal: backend_library::stylo_query::StyloQueryTerminal,
+    /// First available source-site reference, when present.
+    pub first_site: Option<backend_library::stylo_query::StyloSourceReference>,
+    /// Number of evidence rows in this page.
+    pub returned: usize,
+}
+
+fn published_profile_count(profiles: &[backend_library::IndexOperationSourceProfile]) -> usize {
+    profiles
+        .iter()
+        .filter(|profile| {
+            matches!(
+                profile.state,
+                backend_library::IndexOperationSemanticProfileState::Published { .. }
+            )
+        })
+        .count()
+}
+
+fn bounded_publication_detail(detail: &str) -> String {
+    const MAX_BYTES: usize = 1024;
+    if detail.len() <= MAX_BYTES {
+        return detail.to_owned();
+    }
+    let mut end = MAX_BYTES;
+    while !detail.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}… additional profile details are retained in the typed publication outcome",
+        &detail[..end]
+    )
+}
+
+/// Qualified success for a publication with incomplete semantic coverage.
+/// Exact profile outcomes remain in the associated typed job or operation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PartialPublicationWarning {
+    /// Human-readable explanation of published and unavailable profiles.
+    pub detail: String,
+    /// Package whose retained compiler outcomes explain the coverage gap.
+    pub package: backend_library::PackageReference,
+    /// Exact committed publication receipt.
+    pub receipt: backend_library::IndexOperationPublicationReceipt,
+    /// Executable read-only diagnostic follow-up, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<serde_json::Value>,
+    /// CLI spelling of the diagnostic follow-up, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
+    /// Number of published profiles, or `None` when source capture is unavailable.
+    pub published_profiles: Option<usize>,
+    /// Number of explicitly refused or unavailable profiles.
+    pub refused_profiles: usize,
+}
+
+/// One exact source byte page and its revision-bound continuation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeclarationSourceRange {
+    /// Full selected immutable view root, encoded as lowercase hexadecimal.
+    pub revision: String,
+    /// Exact selected native or structural symbol, encoded as lowercase hexadecimal.
+    pub selected_symbol: String,
+    /// Selected declaration coordinate, when retained by the owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinate: Option<String>,
+    /// The owner checked the current host against both indexed source identities.
+    pub verified_at_read: bool,
+    /// Exact source bytes and their owner-relative offsets.
+    pub source: backend_library::SourceRangePage,
+    /// Authenticated continuation; absent at the exact end of the owner extent.
+    #[serde(rename = "nextCursor", default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 /// One rendered product answer.
@@ -383,6 +724,8 @@ pub struct ProductView {
     records: Box<[ProductRecord]>,
     note: Option<String>,
     fault: Option<Fault>,
+    partial_publication_warning: Option<PartialPublicationWarning>,
+    declaration_source_range: Option<DeclarationSourceRange>,
     index_search_page: Option<IndexSearchPageInfo>,
     owner_cursor: Option<CursorProjection>,
     index_job: Option<IndexJobProjection>,
@@ -407,6 +750,9 @@ pub struct PackageDiscoveryProjection {
     pub package: backend_library::PackageCoordinate,
     /// Source-only positive, negative, or unavailable evidence.
     pub observation: backend_library::RegistryPackageDiscoveryObservation,
+    /// Current advisory authority, independent of source discovery facts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advisory: Option<AdvisoryPackageDto>,
 }
 
 /// Exact owner-issued indexing state retained alongside its readable projection.
@@ -584,6 +930,13 @@ impl ProductView {
             .fault
             .take()
             .map(|fault| fault.with_mcp_exposure(exposure));
+        if let Some(warning) = &mut self.partial_publication_warning {
+            let advice = exposure.advice(crate::Affordance::ReadCompilerOutcomes {
+                package: warning.package.clone(),
+            });
+            warning.call = advice.tool_call();
+            warning.shell = advice.shell();
+        }
     }
 
     /// Returns the heading naming what was asked.
@@ -620,6 +973,25 @@ impl ProductView {
     #[must_use]
     pub const fn fault(&self) -> Option<&Fault> {
         self.fault.as_ref()
+    }
+
+    /// Returns the qualified publication warning, if useful work committed.
+    #[must_use]
+    pub const fn partial_publication_warning(&self) -> Option<&PartialPublicationWarning> {
+        self.partial_publication_warning.as_ref()
+    }
+
+    /// Returns a verified, exact declaration source range, when requested.
+    #[must_use]
+    pub const fn declaration_source_range(&self) -> Option<&DeclarationSourceRange> {
+        self.declaration_source_range.as_ref()
+    }
+
+    /// Attaches one admitted source range to a product response.
+    #[must_use]
+    pub fn with_declaration_source_range(mut self, range: DeclarationSourceRange) -> Self {
+        self.declaration_source_range = Some(range);
+        self
     }
 
     /// Returns page metadata when this answer came from index search.
@@ -1012,7 +1384,19 @@ impl ProductView {
             let operand = Operand::Text(index_ticket_json(&terminal.ticket));
             self.fault = match &terminal.outcome {
                 IndexJobOutcome::PartiallyPublished(partial) => {
-                    Some(Fault::partial_publication(partial, operand))
+                    let fault = Fault::partial_publication(partial, operand);
+                    self.partial_publication_warning = Some(PartialPublicationWarning {
+                        detail: bounded_publication_detail(fault.cause().sentence()),
+                        package: partial.package.clone(),
+                        receipt: partial.receipt.clone(),
+                        call: fault.affordance().tool_call(),
+                        shell: fault.affordance().shell(),
+                        published_profiles: Some(published_profile_count(
+                            &partial.source_capture.profiles,
+                        )),
+                        refused_profiles: partial.refused_profiles.len(),
+                    });
+                    None
                 }
                 IndexJobOutcome::RefusedWithCompilerFailure { failure, .. } => {
                     Some(Fault::compiler_refusal(failure, operand))
@@ -1050,16 +1434,29 @@ impl ProductView {
                     receipt,
                     refused_profiles,
                 } => {
-                    self.fault = Some(Fault::partial_publication_facts(
+                    let profiles = status
+                        .source_capture
+                        .as_ref()
+                        .map_or(&[][..], |capture| capture.profiles());
+                    let warning = Fault::partial_publication_facts(
                         &status.package,
                         receipt,
-                        status
-                            .source_capture
-                            .as_ref()
-                            .map_or(&[], |capture| capture.profiles()),
+                        profiles,
                         refused_profiles,
                         Operand::Text(status.operation_key.to_hex()),
-                    ));
+                    );
+                    self.partial_publication_warning = Some(PartialPublicationWarning {
+                        detail: bounded_publication_detail(warning.cause().sentence()),
+                        package: status.package.clone(),
+                        receipt: receipt.clone(),
+                        call: warning.affordance().tool_call(),
+                        shell: warning.affordance().shell(),
+                        published_profiles: status
+                            .source_capture
+                            .as_ref()
+                            .map(|_| published_profile_count(profiles)),
+                        refused_profiles: refused_profiles.len(),
+                    });
                 }
                 backend_library::IndexOperationState::Failed {
                     reason,
@@ -1135,6 +1532,8 @@ impl ProductView {
             records: records.into_boxed_slice(),
             note: None,
             fault: None,
+            partial_publication_warning: None,
+            declaration_source_range: None,
             index_search_page: None,
             owner_cursor: None,
             index_job: None,
@@ -1161,6 +1560,8 @@ impl ProductView {
             records: Box::new([]),
             note: Some(note.into()),
             fault: None,
+            partial_publication_warning: None,
+            declaration_source_range: None,
             index_search_page: None,
             owner_cursor: None,
             index_job: None,
@@ -1185,6 +1586,8 @@ impl ProductView {
             records: records.into_boxed_slice(),
             note: None,
             fault: None,
+            partial_publication_warning: None,
+            declaration_source_range: None,
             index_search_page: None,
             owner_cursor: None,
             index_job: None,
@@ -1209,6 +1612,8 @@ impl ProductView {
             records: Box::new([]),
             note: Some(note.into()),
             fault: None,
+            partial_publication_warning: None,
+            declaration_source_range: None,
             index_search_page: None,
             owner_cursor: None,
             index_job: None,
@@ -1233,6 +1638,8 @@ impl ProductView {
             records: Box::new([]),
             note: None,
             fault: Some(fault),
+            partial_publication_warning: None,
+            declaration_source_range: None,
             index_search_page: None,
             owner_cursor: None,
             index_job: None,
@@ -1269,6 +1676,58 @@ fn fresh_index_attempt_affordance(
 
 /// Lowers one durable product reply into the shared record shape.
 #[must_use]
+/// One definition claim as the migration history reads: the name as the
+/// statement wrote it, and, when later migrations renamed the object, the name
+/// it ends up with. A rename shows `old → new`; the creating statement never
+/// claims the later name.
+fn sql_definition_label(definition: &backend_library::sql_query::SqlDefinition) -> String {
+    use backend_library::sql_query::{SqlDefinitionAction, SqlObjectKind};
+    let kind_word = match definition.kind {
+        SqlObjectKind::Schema => "schema",
+        SqlObjectKind::Table => "table",
+        SqlObjectKind::View => "view",
+        SqlObjectKind::Column => "column",
+        SqlObjectKind::Index => "index",
+        SqlObjectKind::Trigger => "trigger",
+        SqlObjectKind::Function => "function",
+        SqlObjectKind::Type => "type",
+        SqlObjectKind::Sequence => "sequence",
+    };
+    let qualified = |owner: Option<&str>, name: &str| match owner {
+        Some(owner) if definition.kind == SqlObjectKind::Column => format!("{owner}.{name}"),
+        _ => name.to_owned(),
+    };
+    let written_owner = definition.parent.as_deref().or(definition.head_parent.as_deref());
+    let written = qualified(written_owner, &definition.name);
+    let head = qualified(
+        definition.head_parent.as_deref().or(definition.parent.as_deref()),
+        definition.head_name.as_deref().unwrap_or(&definition.name),
+    );
+    let detail = definition.detail.as_deref().map(|d| format!(" {d}")).unwrap_or_default();
+    let creates = matches!(
+        definition.action,
+        SqlDefinitionAction::Create | SqlDefinitionAction::AddColumn
+    );
+    let (shown, action) = match &definition.action {
+        SqlDefinitionAction::Create => (written.clone(), "created".to_owned()),
+        SqlDefinitionAction::AddColumn => (written.clone(), "added".to_owned()),
+        SqlDefinitionAction::Drop | SqlDefinitionAction::DropColumn => (written.clone(), "DROPPED".to_owned()),
+        SqlDefinitionAction::Rename { to, .. } => {
+            // The owner appears once: `members.full_name → display_name`.
+            (format!("{written} → {to}"), "renamed".to_owned())
+        }
+        SqlDefinitionAction::Alter => (written.clone(), "altered".to_owned()),
+    };
+    let mut notes = String::new();
+    if creates && head != written {
+        notes.push_str(&format!("; now named {head}"));
+    }
+    if creates && !definition.live_at_head {
+        notes.push_str("; no longer exists at the end of the migrations");
+    }
+    format!("{kind_word} {shown}{detail} ({action}{notes})")
+}
+
 pub fn product_view(reply: &SurfaceReply) -> ProductView {
     registry_view(reply)
         .or_else(|| home_view(reply))
@@ -1330,11 +1789,18 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         SurfaceReply::Read(records) => {
             ProductView::rows("read", records.iter().map(declaration_row).collect())
         }
-        SurfaceReply::References { target, references } => ProductView::rows(
-            format!("references to {}", target.as_str()).as_str(),
-            references.iter().map(reference_row).collect(),
-        )
-        .with_references_result(),
+        SurfaceReply::References { target, references, coverage } => {
+            let mut view = ProductView::rows(
+                format!("references to {}", target.as_str()).as_str(),
+                references.iter().map(reference_row).collect(),
+            ).with_references_result();
+            view.note = Some(match coverage {
+                backend_library::ReferenceCoverage::Complete => "Reference coverage: complete".to_owned(),
+                backend_library::ReferenceCoverage::Partial { reason } => format!("Reference coverage: partial. {}", reason.as_str()),
+                backend_library::ReferenceCoverage::Unknown { reason } => format!("Reference coverage: unknown. {}", reason.as_str()),
+            });
+            view
+        },
         SurfaceReply::Diff(records) => {
             ProductView::rows("diff", records.iter().map(diff_row).collect())
         }
@@ -1343,10 +1809,35 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
             "explore",
             records.iter().map(local_declaration_search_row).collect(),
         ),
+        SurfaceReply::ExploredSearchPage(page) => {
+            let mut view = ProductView::rows(
+                "explore",
+                page.hits.iter().map(registry_search_hit_row).collect(),
+            ).with_index_search_page(page);
+            if page.next_cursor.is_some() {
+                // Explore has no cursor operand; MCP also binds its token to
+                // this invocation, so it cannot be replayed as index-search.
+                view.index_search_page.as_mut().expect("page just attached").next_cursor = None;
+                view.note = Some("More matches exist. Start index-search with the same query to page through them.".to_owned());
+            }
+            view
+        },
         SurfaceReply::Package(records) => ProductView::rows("package", registry_rows(records)),
+        SurfaceReply::PackageInstalled(facts) => installed_package_view("package", facts, true),
+        SurfaceReply::DependenciesInstalled(facts) => installed_package_view("dependencies", facts, false),
+        SurfaceReply::PackageVersionsInstalled(facts) => {
+            let mut view = ProductView::rows("package-versions", facts.iter().map(|fact| ProductRecord::new(
+                fact.package.as_str(), Some(fact.package.as_str().to_owned()),
+                vec![format!("installed locally in {}", fact.project.as_str()), fact.engines.iter().map(|e| e.as_str()).collect::<Vec<_>>().join("; ")],
+            )).collect());
+            view.note = Some("Only locally installed versions are shown; registry version availability and compiler compatibility are not established.".to_owned());
+            view
+        }
+
         SurfaceReply::PackageDiscovery {
             package,
             observation,
+            advisory,
         } => {
             use backend_library::RegistryPackageDiscoveryObservation;
             let mut view = match observation {
@@ -1376,9 +1867,15 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
                     )
                 }
             };
+            if let Some(advisory) = advisory {
+                let mut records = view.records.into_vec();
+                records.extend(advisory_view(advisory).records.into_vec());
+                view.records = records.into_boxed_slice();
+            }
             view.package_discovery = Some(PackageDiscoveryProjection {
                 package: package.clone(),
                 observation: observation.clone(),
+                advisory: advisory.clone(),
             });
             view
         }
@@ -1428,6 +1925,367 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
             ));
             view.semantic_data = Some(ProductSemanticData::Source(chunk.clone()));
             view
+        }
+        SurfaceReply::StyloQuery(page) => {
+            use backend_library::stylo_query::{StyloQueryHit, StyloQueryTerminal};
+            let mut first_source = true;
+            let rows = page
+                .hits
+                .iter()
+                .map(|hit| match hit {
+                    StyloQueryHit::SourceSite {
+                        path, site, source, ..
+                    } => {
+                        // The authored role says what the written name is, and the
+                        // operand is the compact reference which reads its exact bytes.
+                        let role = match site.role {
+                            backend_library::stylo_query::StyloSourceRole::ClassName => {
+                                "class selector name"
+                            }
+                            backend_library::stylo_query::StyloSourceRole::CustomPropertyDeclarationName => {
+                                "custom-property declaration name"
+                            }
+                        };
+                        let mut tags = vec![
+                            format!("{path}:{}..{}", site.start, site.end),
+                            role.into(),
+                        ];
+                        if first_source {
+                            tags.push(format!("read: stylo-read-site {}", source.as_str()));
+                            first_source = false;
+                        }
+                        ProductRecord::new(
+                            site.decoded.clone(),
+                            Some(source.as_str().to_owned()),
+                            tags,
+                        )
+                    }
+                    StyloQueryHit::NativeSelector { path, selector, .. } => {
+                        let mut display = selector.canonical.chars().take(120).collect::<String>();
+                        if selector.canonical.chars().count() > 120 {
+                            display.push('…');
+                        }
+                        ProductRecord::new(
+                            display,
+                            None,
+                            vec![path.clone(), "native selector".into()],
+                        )
+                    }
+                    StyloQueryHit::NativeDeclaration {
+                        path, declaration, ..
+                    } => ProductRecord::new(
+                        declaration.property.clone(),
+                        None,
+                        vec![path.clone(), "retained native declaration".into()],
+                    ),
+                    StyloQueryHit::NativeDependency {
+                        path, dependency, ..
+                    } => ProductRecord::new(
+                        format!("var(--{})", dependency.name),
+                        None,
+                        vec![
+                            path.clone(),
+                            "native value dependency; source site and provider unknown".into(),
+                        ],
+                    ),
+                })
+                .collect();
+            let mut view = ProductView::rows("stylo-query", rows);
+            let next = match &page.terminal {
+                StyloQueryTerminal::Complete => "scan of retained records complete".to_owned(),
+                StyloQueryTerminal::More { continuation, work_limited } => {
+                    format!("{}continue with --cursor {}", if *work_limited { "scan work limit reached; " } else { "" }, continuation.as_str())
+                }
+                StyloQueryTerminal::OutputLimit {
+                    required_bytes,
+                    continuation,
+                } => match continuation {
+                    Some(cursor) => format!(
+                        "increase output budget to {required_bytes} bytes and continue with --cursor {}",
+                        cursor.as_str()
+                    ),
+                    None => format!("increase output budget to {required_bytes} bytes and retry"),
+                },
+                StyloQueryTerminal::Unavailable => "CSS analysis unavailable".to_owned(),
+            };
+            let freshness = match &page.basis.attempt {
+                backend_library::stylo_query::StyloAttemptState::LatestObserved => {
+                    "Latest indexed observation"
+                }
+                backend_library::stylo_query::StyloAttemptState::RetainedAfterUnavailable {
+                    ..
+                } => "Retained prior observation; latest attempt unavailable",
+                backend_library::stylo_query::StyloAttemptState::Unavailable { .. } => {
+                    "Latest attempt unavailable"
+                }
+                backend_library::stylo_query::StyloAttemptState::UnknownLegacy => {
+                    "Historical selection; latest attempt unknown"
+                }
+                backend_library::stylo_query::StyloAttemptState::NoSelectedAnalysis => {
+                    "No selected CSS analysis"
+                }
+                backend_library::stylo_query::StyloAttemptState::ProjectNotSelected => {
+                    "Project not selected"
+                }
+            };
+            let capability = if matches!(page.basis.worker_capability, backend_library::stylo_query::StyloWorkerCapability::NoPermit) {
+                "; no admitted CSS worker"
+            } else { "" };
+            use backend_library::stylo_query::{StyloAttemptState, StyloFailure};
+            let failure = match &page.basis.attempt {
+                StyloAttemptState::Unavailable { reason }
+                | StyloAttemptState::RetainedAfterUnavailable { reason } => match reason {
+                    StyloFailure::ReadUnavailable => "; source bytes unavailable",
+                    StyloFailure::SelectionUnavailable => "; selection evidence unavailable",
+                    StyloFailure::InvalidUtf8 => "; source is not valid UTF-8",
+                    StyloFailure::Limit => "; a work limit was reached",
+                    StyloFailure::ParserUnavailable => "; CSS worker unavailable",
+                    StyloFailure::UnsupportedHardLimit => "; required process limit unsupported",
+                    StyloFailure::Deadline => "; CSS worker deadline exceeded",
+                    StyloFailure::WorkerFailure => "; CSS worker or its protocol failed",
+                    StyloFailure::PreferencesChanged => "; parser preferences changed",
+                },
+                _ => "",
+            };
+            view.note = Some(format!(
+                "{freshness}{capability}{failure}; CSS scope partial and host parse health unknown; {next}. Full typed output includes all source references."
+            ));
+            view.semantic_data = Some(ProductSemanticData::StyloQuery(page.clone()));
+            view
+        }
+        SurfaceReply::ImpactCapture(page) => {
+            let mut view = ProductView::rows("impact-capture", Vec::new());
+            view.note = Some(format!("At capture: {}; source and relation coverage are gapped. Copy the lease for comparison.", impact_attempt_label(&page.attempt_at_capture)));
+            view.semantic_data = Some(ProductSemanticData::ImpactCapture(page.clone()));
+            view
+        }
+        SurfaceReply::ImpactCompare(page) => {
+            let rows = page.rows.iter().map(|row| ProductRecord::new(format!("{:02x?}", &row.dependency[..4]), None, vec![row.path.clone().unwrap_or_else(|| "source path unavailable".into()), "possible native CSS dependency".into()])).collect();
+            let mut view = ProductView::rows("impact-compare", rows);
+            view.note = Some(format!("At capture: base {}; target {}. Candidate paths only; provider, ordinary var() sites, DOM and cascade remain unknown. Base/target does not prove a change.", impact_attempt_label(&page.base_attempt_at_capture), impact_attempt_label(&page.target_attempt_at_capture)));
+            view.semantic_data = Some(ProductSemanticData::ImpactCompare(page.clone()));
+            view
+        }
+        SurfaceReply::ImpactDiff(page) => {
+            use backend_library::impact_comparison::{ImpactDiffCertainty, ImpactDiffSide};
+            let rows = page.rows.iter().map(|row| {
+                let side = match row.side { ImpactDiffSide::BaseOnly => "base row only", ImpactDiffSide::TargetOnly => "target row only", ImpactDiffSide::BothChanged => "captured bytes differ" };
+                let certainty = match row.certainty { ImpactDiffCertainty::ExactCapturedRow => "exact within captured roots", ImpactDiffCertainty::CandidateMissing => "possible; opposite capture incomplete" };
+                let mut tags = vec![side.into(), certainty.into(), format!("{} possible impacts", row.impacts.len())];
+                if let Some(path) = row.impacts.iter().find_map(|impact| impact.path.as_ref()) { tags.push(path.clone()); }
+                ProductRecord::new(format!("{:02x?}", &row.id[..4]), None, tags)
+            }).collect();
+            let mut view = ProductView::rows("impact-diff", rows);
+            view.note = Some(format!("At capture: base {}; target {}. Differences are scoped to retained rows or verified images; ordinary var() references, provider, DOM and cascade remain unknown. Use detail=full to copy captured source handles where available.", impact_attempt_label(&page.base.claims().attempt_at_capture), impact_attempt_label(&page.target.claims().attempt_at_capture)));
+            view.semantic_data = Some(ProductSemanticData::ImpactDiff(page.clone()));
+            view
+        }
+        SurfaceReply::ImpactReadSource(source) => {
+            let mut view = match source {
+                backend_library::impact_comparison::ImpactSourceReply::Available { text, start, end } => ProductView::rows("impact-read-source", vec![ProductRecord::new(text.clone(), None, vec![format!("bytes {start}..{end}"), "captured historical source".into()])]),
+                backend_library::impact_comparison::ImpactSourceReply::Unavailable => ProductView::rows("impact-read-source", Vec::new()),
+                backend_library::impact_comparison::ImpactSourceReply::Expired => ProductView::rows("impact-read-source", Vec::new()),
+            };
+            view.semantic_data = Some(ProductSemanticData::ImpactReadSource(source.clone()));
+            view
+        }
+        SurfaceReply::Impact(report) => {
+            use backend_library::impact::ImpactStrength;
+            let rows = report
+                .rows
+                .iter()
+                .map(|row| {
+                    let place = match (&row.node.path, row.node.line) {
+                        (Some(path), Some(line)) => format!("{path}:{line}"),
+                        (Some(path), None) => path.clone(),
+                        _ => String::new(),
+                    };
+                    let mut tags = vec![
+                        match row.strength {
+                            ImpactStrength::Exact => "exact".to_owned(),
+                            ImpactStrength::Candidate => "possible".to_owned(),
+                        },
+                        format!("d{}", row.depth),
+                    ];
+                    if !place.is_empty() {
+                        tags.push(place);
+                    }
+                    tags.push(row.why.clone());
+                    if let Some(within) = &row.node.within {
+                        tags.push(format!("in {within}"));
+                    }
+                    if row.via != 0 {
+                        tags.push(format!("via #{}", row.via));
+                    }
+                    if let Some(read) = &row.read {
+                        tags.push(format!("read: {read}"));
+                    }
+                    ProductRecord::new(
+                        format!("#{} {} {}", row.n, row.node.kind, row.node.name),
+                        row.node.handle.as_ref().map(|handle| handle.as_str().to_owned()),
+                        tags,
+                    )
+                })
+                .collect();
+            let mut view = ProductView::rows("impact", rows);
+            view.note = Some(impact_note(report));
+            view.semantic_data = Some(ProductSemanticData::Impact(report.clone()));
+            view
+        }
+        SurfaceReply::StyloImpact(page) => {
+            let rows = page.rows.iter().filter_map(|row| match &row.witness {
+                backend_library::stylo_query::StyloQueryHit::NativeDependency { path, dependency, .. } => Some(ProductRecord::new(
+                    format!("var(--{})", dependency.name), None,
+                    vec![path.clone(), "possible same-name consumer; native dependency".into()],
+                )),
+                _ => None,
+            }).collect();
+            let mut view = ProductView::rows("stylo-impact", rows);
+            view.note = Some(format!("Possible same-name consumers at the selected indexed basis; provider, reference sites, DOM and cascade are unknown. Read seed with stylo-read-site {}.", page.seed.as_str()));
+            view.semantic_data = Some(ProductSemanticData::StyloImpact(page.clone()));
+            view
+        }
+        SurfaceReply::StyloReadSite(source) => {
+            use backend_library::stylo_query::StyloSourceRead;
+            let mut view = match source {
+                StyloSourceRead::Available {
+                    served_root,
+                    path,
+                    line_1,
+                    text,
+                    ..
+                } => ProductView::rows(
+                    "stylo-read-site",
+                    vec![ProductRecord::new(
+                        text.clone(),
+                        None,
+                        vec![format!("{served_root}/{path}:{line_1}")],
+                    )],
+                ),
+                StyloSourceRead::SourceChanged => ProductView::scalar(
+                    "stylo-read-site",
+                    "Source changed; reindex and query again.",
+                ),
+                StyloSourceRead::BytesNotRetained => ProductView::scalar(
+                    "stylo-read-site",
+                    "Source bytes are not available at the served root.",
+                ),
+                StyloSourceRead::Expired => ProductView::scalar(
+                    "stylo-read-site",
+                    "Selection changed; query again for a current source reference.",
+                ),
+            };
+            view.semantic_data = Some(ProductSemanticData::StyloReadSite(source.clone()));
+            view
+        }
+        SurfaceReply::SqlQuery(page) => {
+            use backend_library::sql_query::SqlQueryTerminal;
+            use backend_library::sql_query::SqlFact;
+            use backend_library::sql_query::{SqlObjectKind, SqlResolution, SqlStatementSupport};
+            let kind_word = |kind: SqlObjectKind| match kind {
+                SqlObjectKind::Schema => "schema",
+                SqlObjectKind::Table => "table",
+                SqlObjectKind::View => "view",
+                SqlObjectKind::Column => "column",
+                SqlObjectKind::Index => "index",
+                SqlObjectKind::Trigger => "trigger",
+                SqlObjectKind::Function => "function",
+                SqlObjectKind::Type => "type",
+                SqlObjectKind::Sequence => "sequence",
+            };
+            let mut first_source = true;
+            let mut rows: Vec<_> = page.hits.iter().map(|hit| {
+                let label = match &hit.fact {
+                    SqlFact::SqliteRelation { name, .. } => format!("relation {name}"),
+                    SqlFact::SqliteOutputLineage { output_name, .. } => format!("output {output_name}"),
+                    SqlFact::Diagnostic { code, .. } => format!("diagnostic {code:?}"),
+                    SqlFact::Statement { class, support, .. } => match support {
+                        SqlStatementSupport::Full => format!("statement {class:?}"),
+                        SqlStatementSupport::Partial(gap) => format!("statement {class:?} PARTIAL ({gap:?}): mentions inside it may be missing"),
+                        SqlStatementSupport::Unsupported(gap) => format!("statement {class:?} NOT EXTRACTED ({gap:?})"),
+                    },
+                    SqlFact::Definition(definition) => sql_definition_label(definition),
+                    SqlFact::Reference(reference) => {
+                        let written = reference.qualifier.as_ref().map_or_else(|| reference.name.clone(), |q| format!("{q}.{}", reference.name));
+                        let by = match &reference.in_object {
+                            Some(object) => format!("in {} {}", kind_word(object.kind), object.name),
+                            None => format!("in {:?} statement", reference.statement_kind),
+                        };
+                        let binding = match &reference.resolution {
+                            SqlResolution::Resolved { target, live } => format!("-> {}#{}{}", target.path, target.ordinal, if *live { "" } else { " (DROPPED)" }),
+                            SqlResolution::Expands { targets } => format!("-> all columns of {} relation(s)", targets.len()),
+                            SqlResolution::Relation { relation, .. } => format!("-> relation {}#{} (member unknown)", relation.path, relation.ordinal),
+                            SqlResolution::Ambiguous { candidates, .. } => format!("-> ambiguous, {} candidates", candidates.len()),
+                            SqlResolution::Local => "-> statement-local name".to_owned(),
+                            SqlResolution::Unresolved { reason } => format!("-> unbound ({reason:?})"),
+                        };
+                        format!("{:?} {:?} {written} {by} {binding}", reference.role, reference.kind)
+                    }
+                    SqlFact::PostgresColumnRead { relation_oid, attribute, .. } => format!("proposed PostgreSQL column read {relation_oid}:{attribute}"),
+                };
+                let mut tags = vec![hit.path.clone(), format!("{:?}", hit.dialect)];
+                if first_source && let Some(source) = &hit.source {
+                    tags.push(format!("read: sql-read-source {}", source.as_str())); first_source = false;
+                }
+                ProductRecord::new(label, None, tags)
+            }).collect();
+            rows.extend(page.host_gaps.iter().map(|gap| {
+                let reason = match &gap.reason {
+                    backend_library::sql_query::SqlHostGapReason::NativeError => "parser rejected the file".to_owned(),
+                    backend_library::sql_query::SqlHostGapReason::Unavailable { reason } => {
+                        use backend_library::sql_query::SqlFailure;
+                        match reason {
+                            SqlFailure::EngineNotAdmitted => "no SQL worker is admitted or available".to_owned(),
+                            SqlFailure::UnsupportedDialect => "no admitted worker supports this SQL dialect".to_owned(),
+                            SqlFailure::Read => "source file could not be read".to_owned(),
+                            SqlFailure::SelectionUnavailable => "SQL file selection is unavailable".to_owned(),
+                            SqlFailure::InvalidUtf8 => "source file is not valid UTF-8".to_owned(),
+                            SqlFailure::Limit => "analysis exceeded a limit".to_owned(),
+                            SqlFailure::Deadline => "analysis timed out".to_owned(),
+                            SqlFailure::Cancelled => "analysis was cancelled".to_owned(),
+                            SqlFailure::WorkerFailure => "SQL worker failed".to_owned(),
+                            SqlFailure::Context => "SQL analysis context is unavailable".to_owned(),
+                        }
+                    },
+                };
+                ProductRecord::new(format!("SQL gap: {reason}"), None, vec![gap.path.clone(), format!("{:?}", gap.dialect)])
+            }));
+            let mut view = ProductView::rows("sql-query", rows);
+            let terminal = match &page.terminal {
+                SqlQueryTerminal::Complete => "enumeration complete".to_owned(),
+                SqlQueryTerminal::More { continuation, work_limited } => format!("{}continue with --cursor {}", if *work_limited { "scan work limit reached; " } else { "" }, continuation.as_str()),
+                SqlQueryTerminal::Unavailable => "SQL analysis unavailable".to_owned(),
+            };
+            let gaps = page.basis.gaps;
+            let gap_text = {
+                let mut parts = Vec::new();
+                if gaps.unavailable_hosts > 0 { parts.push(format!("{} file(s) not analysed", gaps.unavailable_hosts)); }
+                if gaps.native_error_hosts > 0 { parts.push(format!("{} file(s) rejected by the parser", gaps.native_error_hosts)); }
+                if gaps.partial_statements + gaps.unsupported_statements > 0 { parts.push(format!("{} statement(s) not fully extracted", gaps.partial_statements + gaps.unsupported_statements)); }
+                if !page.basis.inventory_complete { parts.push("file inventory incomplete".to_owned()); }
+                if parts.is_empty() { "no known gaps in the SQL files".to_owned() } else { parts.join(", ") }
+            };
+            let exhaustive = page.basis.inventory_complete && gaps == Default::default();
+            let empty_hint = if page.hits.is_empty() && page.host_gaps.is_empty() && matches!(page.terminal, SqlQueryTerminal::Complete) {
+                if exhaustive {
+                    "; no match in this project's SQL files (SQL inside application code is not analysed)"
+                } else {
+                    "; no match, but this is NOT proof of absence: see the gaps (query --role gap lists affected files and statements)"
+                }
+            } else { "" };
+            let selection = if page.basis.implicit_selection { "all .sql files, dialect inferred" } else { "files named by .nudox/sql.json" };
+            view.note = Some(format!("{terminal}; selection: {selection}; gaps: {gap_text}{empty_hint}. No deployed database is claimed."));
+            view.semantic_data = Some(ProductSemanticData::SqlQuery(page.clone())); view
+        }
+        SurfaceReply::SqlReadSource(source) => {
+            use backend_library::sql_query::SqlSourceRead;
+            let mut view = match source {
+                SqlSourceRead::Available { served_root, path, line_1, text, .. } => ProductView::rows("sql-read-source", vec![ProductRecord::new(text.clone(), None, vec![format!("{served_root}/{path}:{line_1}")])]),
+                SqlSourceRead::SourceChanged => ProductView::scalar("sql-read-source", "Source changed; reindex and query again."),
+                SqlSourceRead::BytesNotRetained => ProductView::scalar("sql-read-source", "Source bytes are unavailable at the served root."),
+                SqlSourceRead::Expired => ProductView::scalar("sql-read-source", "Selection changed; query again for a source reference."),
+            };
+            view.semantic_data = Some(ProductSemanticData::SqlReadSource(source.clone())); view
         }
         SurfaceReply::SemanticVersionsPage(page) => {
             let mut view = ProductView::rows(
@@ -1702,7 +2560,19 @@ fn index_operation_view(observation: &backend_library::IndexOperationObservation
                 }
                 backend_library::IndexOperationState::Published(receipt) => {
                     let _published_root = receipt.view_root();
-                    "published".to_owned()
+                    let partial = status.source_capture.as_ref().map(|capture| {
+                        capture.profiles().iter().filter_map(|profile| match profile.state {
+                            backend_library::IndexOperationSemanticProfileState::Published {
+                                coverage: backend_library::IndexOperationSemanticCoverage::Partial { completed, total }, ..
+                            } => Some(format!("{}: {completed} of {total} files", profile.profile.name().unwrap_or("unknown profile"))),
+                            _ => None,
+                        }).collect::<Vec<_>>()
+                    }).unwrap_or_default();
+                    if partial.is_empty() {
+                        "published".to_owned()
+                    } else {
+                        format!("published with partial compiler coverage ({}); inspect package-profile for compiler coverage details", partial.join("; "))
+                    }
                 }
                 backend_library::IndexOperationState::PartiallyPublished {
                     refused_profiles,
@@ -1777,7 +2647,7 @@ fn index_operation_view(observation: &backend_library::IndexOperationObservation
                             generation,
                             coverage,
                         } => format!(
-                            "published generation {} with {coverage}",
+                            "published generation {} with {coverage} of the declared compiler profile scope; source discovery completeness is not established here",
                             lower_hex(&generation)
                         ),
                     };
@@ -1831,14 +2701,6 @@ fn index_terminal_view(terminal: &IndexJobTerminal) -> ProductView {
     let mut tags = vec![format!("outcome {state}")];
     if let Some(detail) = detail {
         tags.push(detail.to_owned());
-    }
-    if let IndexJobOutcome::PartiallyPublished(partial) = &terminal.outcome {
-        tags.push(
-            Fault::partial_publication(partial, Operand::Text(index_ticket_json(&terminal.ticket)))
-                .cause()
-                .sentence()
-                .to_owned(),
-        );
     }
     if let IndexJobOutcome::RefusedWithCompilerFailure { failure, .. } = &terminal.outcome {
         let fault =
@@ -2028,16 +2890,26 @@ fn discovery_row(candidate: &RegistryDiscoveryCandidate) -> ProductRecord {
     let frontier = if candidate.caught_up {
         "source caught up"
     } else {
-        "source backfill in progress"
+        "source not caught up"
     };
     let mut tags = vec![
         "discovered · unacquired".to_owned(),
+        "README, dependency and engine metadata not included in discovery".to_owned(),
         standing.to_owned(),
         completeness.to_owned(),
         frontier.to_owned(),
         freshness.to_owned(),
         format!("source {source}"),
     ];
+    for (label, facet) in [
+        ("description", &candidate.metadata.description),
+        ("license", &candidate.metadata.license),
+        ("published", &candidate.metadata.published_at),
+    ] {
+        if let RegistryEvidenceFacet::Known(value) = facet {
+            tags.push(format!("{label}: {}", value.as_str()));
+        }
+    }
     match &candidate.metadata.downloads {
         RegistryEvidenceFacet::Known(value) => tags.push(format!("{value} downloads")),
         RegistryEvidenceFacet::Absent => tags.push("downloads not published".to_owned()),
@@ -2045,13 +2917,21 @@ fn discovery_row(candidate: &RegistryDiscoveryCandidate) -> ProductRecord {
     }
     match &candidate.metadata.advisories {
         RegistryEvidenceFacet::Known(advisories) if advisories.is_empty() => {
-            tags.push("no advisories reported".to_owned())
+            tags.push(
+                "source reports no advisory records · check advisory authority for coverage"
+                    .to_owned(),
+            )
         }
-        RegistryEvidenceFacet::Known(advisories) => {
-            tags.push(format!("{} advisory record(s)", advisories.len()))
-        }
-        RegistryEvidenceFacet::Absent => tags.push("advisories not published".to_owned()),
-        RegistryEvidenceFacet::Unknown => tags.push("advisories unknown".to_owned()),
+        RegistryEvidenceFacet::Known(advisories) => tags.push(format!(
+            "{} source advisory record(s) · check advisory authority for coverage",
+            advisories.len()
+        )),
+        RegistryEvidenceFacet::Absent => tags.push(
+            "source advisories not published · check advisory authority for coverage".to_owned(),
+        ),
+        RegistryEvidenceFacet::Unknown => tags.push(
+            "source advisories unknown · check advisory authority for coverage".to_owned(),
+        ),
     }
     ProductRecord::new(
         candidate.coordinate.as_str(),
@@ -2133,19 +3013,33 @@ fn forge_package_detail_row(detail: &ForgePackageDetailRecord) -> ProductRecord 
             "registry downloads unknown".to_owned()
         }
     };
-    let advisory = match &detail.registry.advisory.coverage {
-        backend_library::AdvisoryCoverage::Complete
+    let advisory = match (
+        detail.registry.advisory.coverage,
+        detail.registry.advisory.freshness,
+    ) {
+        (
+            backend_library::AdvisoryCoverage::Complete,
+            backend_library::FreshnessState::Fresh | backend_library::FreshnessState::NotModified,
+        )
             if detail.registry.advisory.advisories.is_empty() =>
         {
             "no registry advisories reported".to_owned()
         }
-        backend_library::AdvisoryCoverage::Complete => {
+        (
+            backend_library::AdvisoryCoverage::Complete,
+            backend_library::FreshnessState::Fresh | backend_library::FreshnessState::NotModified,
+        ) => {
             format!(
                 "{} registry advisory record(s)",
                 detail.registry.advisory.advisories.len()
             )
         }
-        _ => "registry advisories unknown".to_owned(),
+        (coverage, freshness) => format!(
+            "registry advisories: {} source record(s) · coverage: {} · freshness: {}",
+            detail.registry.advisory.advisories.len(),
+            wire_words(&coverage),
+            wire_words(&freshness)
+        ),
     };
     ProductRecord::new(
         title,
@@ -2206,7 +3100,7 @@ fn registry_search_group_row(group: &RegistryPackageSearchGroup) -> ProductRecor
         },
     ];
     if group.release_match_scope == RegistryReleaseMatchScope::LineageMetadataOnly {
-        tags.push("package metadata matched across releases".to_owned());
+        tags.push("package metadata matched across source observations".to_owned());
     }
     if group.more_releases {
         tags.push(match group.release_match_scope {
@@ -2215,6 +3109,12 @@ fn registry_search_group_row(group: &RegistryPackageSearchGroup) -> ProductRecor
         });
     }
     if let RegistrySearchGroupKind::Discovered = group.kind {
+        if group.releases.iter().any(|release| {
+            matches!(release, RegistrySearchRelease::Discovered(candidate)
+                if matches!(candidate.freshness, backend_library::RegistryDiscoveryFreshness::Historical { .. }))
+        }) {
+            tags.push("includes historical source evidence".to_owned());
+        }
         let known_yanks = group
             .releases
             .iter()
@@ -2315,7 +3215,7 @@ fn compiler_outcome_rows(
         Outcomes::Summary { source_capture, refusals, coverage, .. } => source_capture.profiles.iter().map(|profile| {
             let state = match profile.state {
                 State::Pending { .. } => "pending".to_owned(),
-                State::Published { coverage, .. } => format!("published with {coverage}"),
+                State::Published { coverage, .. } => format!("published with {coverage} of the declared compiler profile scope; source discovery completeness is not established here"),
                 State::Unavailable { reason } => format!("unavailable: {reason}"),
                 State::Failed { reason, .. } => format!("failed: {reason}; prior generation remains stale"),
             };
@@ -2879,6 +3779,21 @@ fn metadata_view(
     }
 }
 
+fn installed_package_view(heading: &str, facts: &backend_library::InstalledPackageFacts, include_files: bool) -> ProductView {
+    let mut rows = vec![ProductRecord::new(facts.package.as_str(), Some(facts.package.as_str().to_owned()), vec![format!("local installation in {}", facts.project.as_str()), "registry standing and advisories unknown".to_owned()])];
+    rows.extend(facts.engines.iter().map(|engine| ProductRecord::new("runtime constraint", None, vec![engine.as_str().to_owned()])));
+    rows.extend(facts.requirements.iter().map(|requirement| ProductRecord::new("declared dependency", None, vec![requirement.as_str().to_owned()])));
+    if include_files {
+        rows.extend(facts.files.iter().map(|file| ProductRecord::new(file.path.as_str(), None, vec![
+            format!("observed {} bytes · source window starts at byte {} · digest {} · {}", file.bytes, file.offset, file.digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>(), if file.truncated { "partial source excerpt" } else { "complete source excerpt" }),
+            file.excerpt.as_str().to_owned(),
+        ])));
+    }
+    let mut view = ProductView::rows(heading, rows);
+    view.note = Some("Current local metadata and bounded API entrypoint excerpts; files were read without executing package code. API coverage is partial; no compiler graph or registry acquisition is implied.".to_owned());
+    view
+}
+
 fn dependency_view(
     heading: &str,
     facts: &DependencyFacts<Box<[PackageDependencyRecord]>>,
@@ -3330,8 +4245,20 @@ fn advisory_view(advisory: &AdvisoryPackageDto) -> ProductView {
             format!("decision: {decision}"),
             format!("coverage: {}", wire_words(&advisory.coverage)),
             format!("freshness: {}", wire_words(&advisory.freshness)),
-            format!("yanked: {}", advisory.yanked),
-            format!("unlisted: {}", advisory.unlisted),
+            if advisory.registry_standing_observed == Some(true) {
+                format!("yanked: {}", advisory.yanked)
+            } else if advisory.yanked {
+                "yanked: reported; current standing unverified".to_owned()
+            } else {
+                "yanked: unknown".to_owned()
+            },
+            if advisory.registry_standing_observed == Some(true) {
+                format!("unlisted: {}", advisory.unlisted)
+            } else if advisory.unlisted {
+                "unlisted: reported; current standing unverified".to_owned()
+            } else {
+                "unlisted: unknown".to_owned()
+            },
         ],
     )];
     if advisory.advisories.is_empty() {
@@ -3409,7 +4336,8 @@ fn declaration_row(record: &DeclarationRecord) -> ProductRecord {
         ),
         Some(record.label.as_str().to_owned()),
         tags,
-    );
+    )
+    .with_source_policy(record.source_policy.clone());
     match record.extent {
         Some(extent) => row.with_extent(extent),
         None => row,
@@ -3449,11 +4377,39 @@ fn reference_row(record: &backend_library::ReferenceRecord) -> ProductRecord {
         )),
         None => tags.push("site not captured".to_owned()),
     }
-    ProductRecord::new(
-        record.site.as_str().to_owned(),
-        Some(record.site.as_str().to_owned()),
-        tags,
-    )
+    let title = readable_site_title(
+        record.site.as_str(),
+        record.evidence.source.as_ref().map(|span| span.file.as_str()),
+    );
+    let mut row = ProductRecord::new(title, Some(record.site.as_str().to_owned()), tags)
+        .with_source_policy(record.source_policy.clone());
+    row.site_symbol = record.site_symbol;
+    row.reference_details = Some(ReferenceDetails {
+        target: record.target.clone(),
+        relation: record.relation,
+        evidence: record.evidence.clone(),
+    });
+    row
+}
+
+/// Names the calling declaration of a reference by what it is, not by its hash.
+///
+/// A compiler-owned site coordinate is `<project>::semantic::<64 hex digits>::<name>`; as a
+/// title it is unreadable, and an anonymous caller is only a hash. The exact coordinate stays
+/// the row's operand, so nothing is lost; the title gives the name and the file that holds it.
+fn readable_site_title(site: &str, file: Option<&str>) -> String {
+    if let Some((head, name)) = site.rsplit_once("::")
+        && let Some((_, digest)) = head.rsplit_once("::semantic::")
+        && digest.len() == 64
+        && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && !name.is_empty()
+    {
+        return match file {
+            Some(file) => format!("{name} in {file}"),
+            None => name.to_owned(),
+        };
+    }
+    site.to_owned()
 }
 
 fn diff_row(record: &DiffRecord) -> ProductRecord {
@@ -3809,6 +4765,15 @@ fn operand(package: &PackageReference) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn publication_warning_detail_is_utf8_bounded_and_marks_omission() {
+        let detail = "🦀".repeat(1000);
+        let bounded = super::bounded_publication_detail(&detail);
+        assert!(bounded.len() < 1200);
+        assert!(bounded.contains("additional profile details are retained"));
+        assert!(std::str::from_utf8(bounded.as_bytes()).is_ok());
+        assert_eq!(super::bounded_publication_detail("complete"), "complete");
+    }
     use super::*;
 
     #[test]
@@ -3841,6 +4806,7 @@ mod tests {
             backend_library::DeclarationReadExtent::Truncated,
         ] {
             let reply = SurfaceReply::Read(Box::new([DeclarationRecord {
+                source_policy: backend_library::SourcePolicyQualification::Unknown,
                 label: backend_library::ProductText::new(
                     "/abs/app::src/weight.ts:1::WeightBurndownComponent",
                 )
@@ -4264,6 +5230,23 @@ mod tests {
     }
 
     #[test]
+    fn explore_partial_search_offers_a_restart_not_an_unusable_cursor() {
+        let reply = SurfaceReply::ExploredSearchPage(IndexSearchPage {
+            snapshot: [7; 32],
+            evaluated_at_millis: 11,
+            hits: Box::new([]),
+            next_cursor: Some(IndexSearchCursor::new("owner-v4-token").unwrap()),
+            result_count: IndexSearchResultCount::AtLeast(1),
+        });
+        let view = product_view(&reply);
+        assert!(view.cursor_family().is_none());
+        assert!(view.note().unwrap().contains("Start index-search"));
+        let dto = crate::dto::ProductDto::new(&view);
+        assert!(dto.index_search_page.unwrap().next_cursor.is_none());
+        assert!(!crate::markdown::product(&view).contains("owner-v4-token"));
+    }
+
+    #[test]
     fn index_search_cursor_projection_keeps_owner_family_and_projects_both_renderings() {
         let owner_cursor = IndexSearchCursor::new("owner-v4-token").expect("owner cursor");
         let reply = SurfaceReply::IndexSearchPage(IndexSearchPage {
@@ -4570,6 +5553,40 @@ mod tests {
             .into_boxed_slice(),
         })
         .with_source_capture(Some(partial_capture));
+        let captured_partial = IndexOperationSourceCaptureReceipt::from_checked_parts(
+            key, [0x67; 32], [0x68; 32], 8,
+            vec![IndexOperationSourceProfile {
+                profile: typescript_profile,
+                source_version: [0x69; 32], input_digest: [0x6a; 32],
+                observation_sequence: 14, source_count: 106,
+                state: IndexOperationSemanticProfileState::Published {
+                    generation: [0x6b; 32],
+                    coverage: IndexOperationSemanticCoverage::Partial { completed: 50, total: 106 },
+                },
+            }].into_boxed_slice(),
+        ).expect("checked partially covered capture");
+        let partial_coverage = IndexOperationObservation::Known(
+            status(IndexOperationState::Published(receipt.clone())).with_source_capture(Some(captured_partial))
+        );
+        for reply in [SurfaceReply::IndexOperationStarted(partial_coverage.clone()),
+                      SurfaceReply::IndexOperationStatus(partial_coverage.clone())] {
+            let view = product_view(&reply);
+            assert_eq!(view.index_operation(), Some(&partial_coverage));
+            let title = view.records()[0].title();
+            assert!(title.contains("published with partial compiler coverage"), "{title}");
+            assert!(title.contains("typescript: 50 of 106 files"), "{title}");
+            assert!(title.contains("package-profile for compiler coverage details"), "{title}");
+            assert!(crate::render::text::product(&view, crate::Theme::plain()).contains("50 of 106 files"));
+            assert!(crate::render::markdown::product(&view).contains("50 of 106 files"));
+            let dto = serde_json::to_value(crate::dto::ProductDto::new(&view)).unwrap();
+            assert!(dto.to_string().contains("50 of 106 files"));
+        }
+        let scoped = IndexOperationObservation::Known(partial_status.clone());
+        let scoped_view = product_view(&SurfaceReply::IndexOperationStatus(scoped.clone()));
+        assert!(scoped_view.records()[0].tags().iter().any(|tag|
+            tag.contains("complete coverage of the declared compiler profile scope")
+                && tag.contains("source discovery completeness is not established")));
+        assert_eq!(crate::dto::ProductDto::new(&scoped_view).index_operation, Some(scoped));
         let compiler_failure = backend_library::PackageCompilerFailure::from_package_terminal(
             "classes/comparator.d.ts",
             &backend_library::interface::CompilerTerminal::Toolchain {
@@ -4715,8 +5732,23 @@ mod tests {
                         IndexOperationState::PartiallyPublished {
                             refused_profiles, ..
                         } => {
-                            let fault = view.fault().expect("partial publication fault");
-                            assert_eq!(fault.affordance(), &crate::Affordance::None);
+                            assert!(view.fault().is_none());
+                            let warning = view.partial_publication_warning().expect("partial publication warning");
+                            assert_eq!(warning.published_profiles, Some(1));
+                            assert_eq!(warning.refused_profiles, 1);
+                            for detail in [crate::Detail::Summary, crate::Detail::Standard, crate::Detail::Full] {
+                                let answer = crate::Answer::Product(Box::new(view.clone()));
+                                let encoded = crate::encode_answer(&answer, detail, None, crate::DEFAULT_RESPONSE_BUDGET_BYTES).expect("bounded qualified publication");
+                                let value: serde_json::Value = serde_json::from_slice(&encoded.bytes).expect("product JSON");
+                                assert!(value.get("fault").is_none());
+                                assert_eq!(value["partial_publication_warning"]["published_profiles"], 1);
+                                assert_eq!(value["partial_publication_warning"]["refused_profiles"], 1);
+                                assert!(!value["partial_publication_warning"]["receipt"].is_null());
+                                let mut forged = value["partial_publication_warning"].clone();
+                                forged["unexpected"] = serde_json::json!(true);
+                                assert!(serde_json::from_value::<super::PartialPublicationWarning>(forged).is_err());
+                                assert!(!value["index_operation"].is_null());
+                            }
                             assert_eq!(refused_profiles.len(), 1);
                             assert_eq!(
                                 status
@@ -5307,7 +6339,7 @@ mod tests {
         assert!(tags.iter().any(|tag| tag == "1 representative version(s)"));
         assert!(
             tags.iter()
-                .any(|tag| tag == "package metadata matched across releases")
+                .any(|tag| tag == "package metadata matched across source observations")
         );
         assert!(tags.iter().any(|tag| tag == "more versions in lineage"));
         assert!(!tags.iter().any(|tag| tag == "1 matching version(s)"));
@@ -5369,6 +6401,71 @@ mod tests {
             },
         };
         detail.admit().expect("valid source-pin details");
+        // A complete frontier can still be stale. Package summaries must not
+        // turn an old empty source result into a current clean assertion.
+        let mut advisory_gaps = Vec::new();
+        let mut positive = None;
+        for freshness in [
+            backend_library::FreshnessState::Stale,
+            backend_library::FreshnessState::Unknown,
+        ] {
+            let mut stale = detail.clone();
+            stale.registry.advisory.coverage = backend_library::AdvisoryCoverage::Complete;
+            stale.registry.advisory.freshness = freshness;
+            let tags = forge_package_detail_row(&stale).tags().to_vec();
+            if tags.iter().any(|tag| tag == "no registry advisories reported")
+                || !tags.iter().any(|tag| {
+                    tag.starts_with("registry advisories:")
+                        && tag.contains(&wire_words(&freshness))
+                })
+            {
+                advisory_gaps.push(format!("{freshness:?} empty: {tags:?}"));
+            }
+            stale.registry.advisory.advisories = Box::new([backend_library::AdvisorySurfaceDto {
+                schema: 1,
+                canonical_id: "OSV-HISTORY-1".to_owned(),
+                source_ids: Box::new([]),
+                aliases: Box::new([]),
+                statuses: Box::new([backend_library::AdvisoryStatus::Vulnerable]),
+                categories: Box::new([]),
+                affected: Box::new([]),
+                fixed_ranges: Box::new([]),
+                severity: backend_library::SeverityLevel::Unknown,
+                malware: backend_advisory::MalwareCoverage::NotCovered,
+                coverage: backend_library::AdvisoryCoverage::Complete,
+                freshness,
+                withdrawn: None,
+                yanked: false,
+                unlisted: false,
+                summary: None,
+            }]);
+            positive = Some(stale.registry.advisory.advisories[0].clone());
+            let positive_tags = forge_package_detail_row(&stale).tags().to_vec();
+            if !positive_tags.iter().any(|tag| {
+                tag.starts_with("registry advisories:") && tag.contains(&wire_words(&freshness))
+            }) {
+                advisory_gaps.push(format!("{freshness:?} positive: {positive_tags:?}"));
+            }
+        }
+        let mut fresh = detail.clone();
+        fresh.registry.advisory.coverage = backend_library::AdvisoryCoverage::Complete;
+        fresh.registry.advisory.freshness = backend_library::FreshnessState::Fresh;
+        assert!(
+            forge_package_detail_row(&fresh)
+                .tags()
+                .iter()
+                .any(|tag| tag == "no registry advisories reported")
+        );
+        let mut fresh_positive = positive.expect("positive fixture");
+        fresh_positive.freshness = backend_library::FreshnessState::Fresh;
+        fresh.registry.advisory.advisories = Box::new([fresh_positive]);
+        assert!(
+            forge_package_detail_row(&fresh)
+                .tags()
+                .iter()
+                .any(|tag| tag == "1 registry advisory record(s)")
+        );
+        assert!(advisory_gaps.is_empty(), "{}", advisory_gaps.join("; "));
         let mut unsafe_path = detail.clone();
         unsafe_path.manifest.path =
             backend_library::ProductText::new("nested\n\u{1b}[31m/setup.py".to_owned())
@@ -5463,6 +6560,116 @@ mod tests {
         );
         assert!(json["records"][0]["forge_package_detail"]["package_coordinate"].is_null());
         assert_eq!(json["records"][0]["operand"], source_text);
+
+        // A complete but stale feed is not a fresh negative, and stale
+        // positive records must remain visible with their qualification.
+        let input =
+            include_bytes!("../advisory/fixtures/rustsec/crates/bincode/RUSTSEC-2025-0141.md");
+        let advisory = backend_advisory::parse_rustsec(input, 7).expect("decode RustSec fixture");
+        let feed = backend_advisory::AuthorityFeed::from_entries(
+            backend_advisory::AdvisorySource::RustSec,
+            vec![advisory],
+            7,
+            None,
+            None,
+        );
+        let mut authority = backend_advisory::AdvisoryAuthority::new(10);
+        authority.apply(feed).expect("admit complete feed");
+        let security_at = |name, version, now| {
+            let identity = backend_advisory::normalize_package("cargo", name).expect("package");
+            let observation = authority.observe(&identity, version, false, false, now, false);
+            let gate = backend_advisory::AcquisitionGate {
+                offline: backend_advisory::OfflinePolicy::Warn,
+            };
+            backend_library::AdvisoryPackageDto::from_observation(
+                &observation,
+                gate.decide(&observation),
+            )
+        };
+        let mut stale = detail.clone();
+        stale.registry.advisory = security_at("toml", "0.8.23", 100);
+        assert_eq!(
+            stale.registry.advisory.coverage,
+            backend_library::AdvisoryCoverage::Complete
+        );
+        assert_eq!(
+            stale.registry.advisory.freshness,
+            backend_library::FreshnessState::Stale
+        );
+        let mut fresh = stale.clone();
+        fresh.registry.advisory = security_at("toml", "0.8.23", 7);
+        assert!(
+            forge_package_detail_row(&fresh)
+                .tags()
+                .iter()
+                .any(|tag| tag == "no registry advisories reported")
+        );
+        let registry_record = |advisory| {
+            let metadata = RegistryNativeMetadata::unavailable(RegistryEcosystem::Cargo, "test");
+            RegistryPackageRecord {
+                coordinate: PackageReference::parse("pkg:cargo/demo@1.0.0").expect("coordinate"),
+                ecosystem: RegistryEcosystem::Cargo,
+                name: backend_library::ProductText::new("demo").expect("name"),
+                version: backend_library::ProductText::new("1.0.0").expect("version"),
+                bytes: 0,
+                standing: RegistryReleaseStanding::Available,
+                downloads: RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unknown),
+                facts_version: [0; 32],
+                authority: None,
+                native_metadata_version: metadata.identity().expect("metadata identity"),
+                native_metadata: metadata,
+                forge_sources: Box::new([]),
+                advisory,
+            }
+        };
+        let row = forge_package_detail_row(&stale);
+        assert!(row.tags().iter().any(|tag| tag.contains("freshness: stale")));
+        assert!(
+            !row.tags()
+                .iter()
+                .any(|tag| tag == "no registry advisories reported")
+        );
+        let row = registry_row(&registry_record(stale.registry.advisory.clone()));
+        assert!(
+            row.tags()
+                .iter()
+                .any(|tag| tag == "advisory: complete / stale")
+        );
+        let security = advisory_view(&stale.registry.advisory);
+        assert!(
+            security.records()[0]
+                .tags()
+                .iter()
+                .any(|tag| tag == "freshness: stale")
+        );
+        stale.registry.advisory = security_at("bincode", "1.3.3", 100);
+        assert_eq!(stale.registry.advisory.advisories.len(), 1);
+        let row = forge_package_detail_row(&stale);
+        assert!(
+            row.tags()
+                .iter()
+                .any(|tag| tag.contains("1 source record(s)"))
+        );
+        assert!(row.tags().iter().any(|tag| tag.contains("freshness: stale")));
+        let row = registry_row(&registry_record(stale.registry.advisory.clone()));
+        assert!(
+            row.tags()
+                .iter()
+                .any(|tag| tag == "advisory: complete / stale")
+        );
+        let security = advisory_view(&stale.registry.advisory);
+        assert!(
+            security
+                .records()
+                .iter()
+                .any(|record| record.title() == "RUSTSEC-2025-0141")
+        );
+        assert!(
+            security.records()[0]
+                .tags()
+                .iter()
+                .any(|tag| tag == "freshness: stale")
+        );
     }
 
     #[test]
@@ -5483,6 +6690,7 @@ mod tests {
             let reply = SurfaceReply::PackageDiscovery {
                 package: package.clone(),
                 observation: observation.clone(),
+                advisory: None,
             };
             assert_eq!(reply.id(), backend_library::CommandId::Package);
             reply
@@ -5516,6 +6724,10 @@ mod project_lockfile_tests;
 #[cfg(test)]
 #[path = "package_metadata_cause_tests.rs"]
 mod package_metadata_cause_tests;
+
+#[cfg(test)]
+#[path = "product_discovery_security_tests.rs"]
+mod product_discovery_security_tests;
 
 #[cfg(test)]
 #[expect(
@@ -5860,5 +7072,99 @@ mod compiler_progress_projection_tests {
         assert!(
             matches!(view.index_job(), Some(IndexJobProjection::Progress(IndexJobObservation::Pending(actual))) if actual == &page)
         );
+    }
+}
+
+#[cfg(test)]
+mod reference_title_tests {
+    use super::readable_site_title;
+
+    #[test]
+    fn a_hashed_semantic_site_is_titled_by_name_and_file() {
+        let site = format!("/p/refs::semantic::{}::viaAlias", "ab".repeat(32));
+        assert_eq!(readable_site_title(&site, Some("src/ui/alias.ts")), "viaAlias in src/ui/alias.ts");
+        let anonymous = format!("/p/refs::semantic::{}::<anonymous callable>", "0f".repeat(32));
+        assert_eq!(
+            readable_site_title(&anonymous, Some("src/a.ts")),
+            "<anonymous callable> in src/a.ts"
+        );
+        assert_eq!(readable_site_title(&site, None), "viaAlias");
+    }
+
+    #[test]
+    fn other_coordinates_keep_their_exact_spelling() {
+        for site in ["pkg::semantic::caller", "/p::src/lib.rs:9::Outer::inner", "/p::semantic::zz::name"] {
+            assert_eq!(readable_site_title(site, Some("f.rs")), site);
+        }
+    }
+}
+
+#[cfg(test)]
+mod sql_definition_label_tests {
+    use super::sql_definition_label;
+    use backend_library::sql_query::{SqlDefinition, SqlDefinitionAction, SqlObjectKind};
+    use backend_semantic::sql_analysis::SqlByteRange;
+
+    fn column(action: SqlDefinitionAction, name: &str, head: &str, live: bool) -> SqlDefinition {
+        SqlDefinition {
+            kind: SqlObjectKind::Column,
+            action,
+            conditional: false,
+            schema: None,
+            name: name.into(),
+            parent: Some("members".into()),
+            parent_schema: None,
+            name_extent: SqlByteRange { start: 0, end: 1 },
+            extent: SqlByteRange { start: 0, end: 1 },
+            detail: None,
+            statement: 0,
+            entity: None,
+            parent_entity: None,
+            live_at_head: live,
+            head_name: Some(head.into()),
+            head_parent: Some("members".into()),
+        }
+    }
+
+    #[test]
+    fn a_rename_keeps_the_old_name_and_creation_never_claims_the_later_one() {
+        let rename = column(
+            SqlDefinitionAction::Rename { to: "display_name".into(), to_extent: SqlByteRange { start: 0, end: 1 } },
+            "full_name",
+            "display_name",
+            true,
+        );
+        assert_eq!(sql_definition_label(&rename), "column members.full_name → display_name (renamed)");
+        let created = column(SqlDefinitionAction::Create, "full_name", "display_name", true);
+        let label = sql_definition_label(&created);
+        assert_eq!(label, "column members.full_name (created; now named members.display_name)");
+        assert!(!label.contains("members.display_name (created"));
+    }
+
+    #[test]
+    fn unrenamed_and_dropped_objects_read_as_before() {
+        let tier = column(SqlDefinitionAction::AddColumn, "tier", "tier", true);
+        assert_eq!(sql_definition_label(&tier), "column members.tier (added)");
+        let legacy = column(SqlDefinitionAction::Create, "legacy_code", "legacy_code", false);
+        assert_eq!(
+            sql_definition_label(&legacy),
+            "column members.legacy_code (created; no longer exists at the end of the migrations)"
+        );
+        let dropped = column(SqlDefinitionAction::DropColumn, "legacy_code", "legacy_code", false);
+        assert_eq!(sql_definition_label(&dropped), "column members.legacy_code (DROPPED)");
+    }
+
+    #[test]
+    fn a_renamed_table_is_shown_by_its_old_and_new_name() {
+        let mut table = column(
+            SqlDefinitionAction::Rename { to: "order_lines".into(), to_extent: SqlByteRange { start: 0, end: 1 } },
+            "order_items",
+            "order_lines",
+            true,
+        );
+        table.kind = SqlObjectKind::Table;
+        table.parent = None;
+        table.head_parent = None;
+        assert_eq!(sql_definition_label(&table), "table order_items → order_lines (renamed)");
     }
 }

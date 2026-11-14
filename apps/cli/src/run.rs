@@ -60,6 +60,16 @@ impl Engine for SessionEngine<'_> {
         }
     }
 
+    fn declaration_related_window(
+        &mut self,
+        selector: &backend_library::DeclarationSelector,
+        window: backend_library::QueryWindow,
+        continuation: Option<backend_library::RelatedPageCursor>,
+    ) -> Result<ReplyDto, ClientError> {
+        self.session
+            .related_edge_page_declaration(selector, window, continuation)
+    }
+
     fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
         self.session.revision().map(|revision| revision.root)
     }
@@ -156,6 +166,16 @@ impl Engine for SessionEngine<'_> {
         let session = &mut *self.session;
         let recovery = &mut self.recovery;
         let context = session.request_context().cloned();
+        // These reads may carry source-policy claims admitted by the
+        // authenticated Session. The journal's generic transport admission
+        // intentionally cannot accept such claims; no index acknowledgment is
+        // needed for either read.
+        if matches!(command, SurfaceCommand::Read { .. } | SurfaceCommand::References { .. }) {
+            return match recovery.as_deref_mut() {
+                Some(recovery) => recovery.surface(session, command, context.as_ref()),
+                None => session.surface(command),
+            };
+        }
         match self.paths {
             Some(paths) => {
                 backend_client::surface_with_index_journal(paths, command, |command| match recovery
@@ -316,6 +336,28 @@ pub(crate) fn execute_with_output_admission(
         paths,
         recovery,
     };
+    if let Request::RelatedPage { selector, limit, cursor } = request {
+        let original = engine.session.request_context().cloned();
+        let lifetime = original.clone().unwrap_or_default();
+        lifetime.read_deadline(backend_client::CLIENT_REQUEST_TIMEOUT)
+            .map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole))?;
+        engine.session.set_request_context(Some(lifetime.clone()))
+            .map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole))?;
+        let result = (|| {
+            let selector = match selector {
+                backend_library::DeclarationSelector::Coordinate(value) if value.starts_with("@/") => selector.clone(),
+                backend_library::DeclarationSelector::Coordinate(value) => backend_library::DeclarationSelector::Coordinate(
+                    backend_present::resolve_declaration(&mut engine, value, "related")?),
+                selected => selected.clone(),
+            };
+            related_with_output_admission(&mut engine, &selector, *limit, cursor.as_deref(),
+                || lifetime.check().map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole)),
+                |answer, token| admit(answer, token))
+        })();
+        let restored = engine.session.set_request_context(original)
+            .map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole));
+        return result.and_then(|answer| restored.map(|()| answer));
+    }
     let graph = match request {
         Request::GraphPage { selector, limit } => Some((selector, *limit, None)),
         Request::ResumeQuery { query, cursor } => match query.as_ref() {
@@ -686,7 +728,83 @@ fn outline_with_output_admission<E: Engine>(
     }
 }
 
+// A fresh page uses a conservative work budget; existing cursor scope remains valid.
+fn related_initial_delivery(issued: u16, continuation_delivery: Option<u16>) -> u16 {
+    continuation_delivery.unwrap_or(issued.min(32))
+}
+
 /// Preserves native graph credit, input frontier and source through full output admission.
+fn related_with_output_admission<E: Engine>(
+    engine: &mut E,
+    selector: &backend_library::DeclarationSelector,
+    issued: u16,
+    token: Option<&str>,
+    mut check: impl FnMut() -> Result<(), Fault>,
+    mut admit: impl FnMut(&Answer, Option<&str>) -> Result<(), Fault>,
+) -> Result<Answer, Fault> {
+    let credit = backend_library::QueryLimit::new(issued)
+        .ok_or_else(|| Fault::usage("limit", "invalid related query credit"))?;
+    let cursor = token.map(crate::related_cursor::decode).transpose()
+        .map_err(|error| Fault::usage("cursor", error))?;
+    let mut delivery = related_initial_delivery(issued, cursor.as_ref().map(|cursor| cursor.scope().delivery));
+    let mut pinned = None;
+    let mut pinned_root = None;
+    let heading = match selector {
+        backend_library::DeclarationSelector::Coordinate(value)
+        | backend_library::DeclarationSelector::SelectedAt { coordinate: value, .. } => value.clone(),
+        backend_library::DeclarationSelector::Selected(id) => backend_library::encode_id(id.bytes()),
+    };
+    let probe = Probe::Declaration { selector, read: backend_library::DeclarationRead::Related };
+    loop {
+        check()?;
+        let span = backend_library::QueryLimit::new(delivery)
+            .ok_or_else(|| Fault::usage("limit", "invalid related delivery span"))?;
+        let window = backend_library::QueryWindow::new(credit, span)
+            .ok_or_else(|| Fault::usage("limit", "related delivery exceeds original credit"))?;
+        let reply = match engine.declaration_related_window(selector, window, cursor.clone()) {
+            Err(ClientError::ResponseTooLarge { basis: Some(root) }) if delivery > 1 => {
+                if pinned_root.is_some_and(|previous| previous != root) {
+                    return Err(Fault::usage("related", "related source changed during bounded delivery; restart explicitly"));
+                }
+                pinned_root = Some(root);
+                delivery = delivery.div_ceil(2);
+                continue;
+            }
+            Err(error) => return Err(backend_present::probe_fault(&error, probe)),
+            Ok(reply) => reply,
+        };
+        check()?;
+        let backend_library::CommandReply::RelatedEdgePage(page) = reply.reply else {
+            return Err(Fault::usage("related", "related edge page changed shape"));
+        };
+        let basis = (page.snapshot.root.basis(), page.semantic_revision);
+        if pinned.is_some_and(|previous| previous != basis)
+            || pinned_root.is_some_and(|previous| previous != basis.0.root)
+        {
+            return Err(Fault::usage("related", "related source changed during bounded delivery; restart explicitly"));
+        }
+        pinned = Some(basis);
+        pinned_root = Some(basis.0.root.into());
+        let next = match &page.terminal {
+            backend_library::RelatedEdgeTerminal::Complete => None,
+            backend_library::RelatedEdgeTerminal::More(cursor) => Some(crate::related_cursor::encode(cursor)
+                .map_err(|error| Fault::usage("cursor", error))?),
+        };
+        let records = backend_present::related_edge_records(&heading, &page)?
+            .with_related_continuation(next.clone());
+        let answer = Answer::Records(Box::new(records));
+        let result = admit(&answer, next.as_deref());
+        check()?;
+        match result {
+            Ok(()) => return Ok(answer),
+            Err(fault) if delivery > 1 && fault.cause().slug() == backend_present::CauseSlug::Oversized => {
+                delivery = delivery.div_ceil(2);
+            }
+            Err(fault) => return Err(fault),
+        }
+    }
+}
+
 fn graph_with_output_admission<E: Engine>(
     engine: &mut E,
     selector: &backend_library::DeclarationSelector,
@@ -1141,5 +1259,87 @@ mod graph_admission_tests {
             "advice never creates a workspace or authority"
         );
         assert!(!paths.endpoint().exists(), "advice never starts an owner");
+    }
+}
+
+#[cfg(test)]
+mod related_delivery_tests {
+    use super::related_initial_delivery;
+
+    #[test]
+    fn fresh_delivery_is_bounded_and_existing_cursor_delivery_is_preserved() {
+        assert_eq!(related_initial_delivery(200, None), 32);
+        assert_eq!(related_initial_delivery(12, None), 12);
+        assert_eq!(related_initial_delivery(200, Some(100)), 100);
+        assert_eq!(related_initial_delivery(200, Some(7)), 7);
+    }
+}
+
+#[cfg(test)]
+mod related_driver_window_tests {
+    use super::*;
+    use backend_library::{
+        Basis, CommandReply, Cursor, DeclarationSelector, Frontier, GraphNeighborhoodQuery,
+        GraphRelation, Library, RelatedDirection, RelatedEdgeKey, RelatedEdgePage, RelatedEdgeTerminal,
+        RelatedPageCursor, RelatedPageRequest, RelatedPageScope, Row, RowId, SemanticLinkKind,
+        VerifiedRelatedPageRequest, ViewRoot, object_version, symbol_key, view_key, view_state_root,
+    };
+
+    struct Owner {
+        library: Library,
+        windows: Vec<backend_library::QueryWindow>,
+        inputs: Vec<Option<RelatedPageCursor>>,
+    }
+
+    impl Engine for Owner {
+        fn revision(&mut self) -> Result<ViewStateRoot, ClientError> { unreachable!() }
+        fn health(&mut self) -> Result<HealthReport, ClientError> { unreachable!() }
+        fn probe(&mut self, _: Probe<'_>) -> Result<ReplyDto, ClientError> { unreachable!() }
+        fn surface(&mut self, _: SurfaceCommand) -> Result<SurfaceReply, ClientError> { unreachable!() }
+
+        fn declaration_related_window(&mut self, selector: &DeclarationSelector, window: backend_library::QueryWindow, cursor: Option<RelatedPageCursor>) -> Result<ReplyDto, ClientError> {
+            self.windows.push(window);
+            self.inputs.push(cursor.clone());
+            let address = selector.address();
+            let root = self.library.revision_root();
+            let scope = RelatedPageScope { root: *root.as_bytes(), source: address.claimed_bytes(), source_selected: address.is_selected(), direction: RelatedDirection::Both, issued: window.issued().get(), delivery: window.delivery().get(), windowed: window.is_windowed() };
+            let request = RelatedPageRequest { scope, cursor };
+            let verified = VerifiedRelatedPageRequest::verify(&request, *root.as_bytes(), &[7; 32]).expect("owner authenticates unchanged cursor scope");
+            let center = address.resolve(self.library.view()).expect("center");
+            let mut edges = self.library.view().row_refs().filter(|row| row.parent == Some(center)).map(|row| GraphRelation::new(RowId::Symbol(center), row.id, SemanticLinkKind::Calls)).collect::<Vec<_>>();
+            edges.sort_by_key(|edge| RelatedEdgeKey::new(*edge));
+            edges.retain(|edge| verified.after().is_none_or(|after| RelatedEdgeKey::new(*edge) > after));
+            // The owner may return fewer edges than its delivery ceiling.
+            let more = edges.len() > 2;
+            edges.truncate(2);
+            let terminal = if more { RelatedEdgeTerminal::More(verified.issue_cursor(RelatedEdgeKey::new(*edges.last().expect("edge"))).expect("cursor")) } else { RelatedEdgeTerminal::Complete };
+            let snapshot = self.library.graph_from_semantic_relations(GraphNeighborhoodQuery::addressed(address, root), &edges).expect("graph");
+            Ok(ReplyDto::new(1, CommandReply::RelatedEdgePage(RelatedEdgePage { keys: edges.iter().copied().map(RelatedEdgeKey::new).collect(), snapshot, semantic_revision: *root.as_bytes(), terminal, withheld: true })))
+        }
+    }
+
+    #[test]
+    fn cli_driver_keeps_issued_credit_across_real_continuation() {
+        let basis = Basis::new(view_state_root(&[("related".to_owned(), "1".to_owned())]), object_version(&[1]));
+        let center = symbol_key("pkg::center");
+        let mut rows = vec![Row::new(RowId::Symbol(center), basis, "pkg::center")];
+        for i in 0..3 {
+            let label = format!("pkg::child{i}");
+            let mut row = Row::new(RowId::Symbol(symbol_key(&label)), basis, label);
+            row.parent = Some(center);
+            rows.push(row);
+        }
+        let view = ViewRoot::new_incomplete(view_key(b"cli-related-window"), basis, Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0), rows, vec![]).expect("view");
+        let library = Library::from_view(view.clone(), Cursor::for_view_root(&view)).expect("owner");
+        let mut owner = Owner { library, windows: vec![], inputs: vec![] };
+        let selector = DeclarationSelector::Coordinate("pkg::center".to_owned());
+        let mut next = None;
+        related_with_output_admission(&mut owner, &selector, 100, None, || Ok(()), |_, cursor| { next = cursor.map(str::to_owned); Ok(()) }).expect("first page");
+        let token = next.expect("first page continues");
+        related_with_output_admission(&mut owner, &selector, 100, Some(&token), || Ok(()), |_, _| Ok(())).expect("continued page");
+        assert_eq!(owner.windows.len(), 2);
+        assert!(owner.windows.iter().all(|window| window.issued().get() == 100 && window.delivery().get() == 32 && window.is_windowed()));
+        assert!(owner.inputs[0].is_none());
+        assert_eq!(owner.inputs[1], Some(crate::related_cursor::decode(&token).expect("token")));
     }
 }

@@ -40,15 +40,15 @@
 
 use backend_frontend_csharp::legacy::{
     CSharpImage, Declaration, DeclarationKind, HeaderError, ImageError, NullabilityCell, Parameter,
-    PartialRole, RefKind, ReferenceTag, ResolvedReference, Section, TypeNode, TypeNodeKind,
-    TypeRef, VarianceTag,
+    PartialRole, RefKind, ReferenceTag, ResolvedReference, Section, TOP_LEVEL_CONTEXT, TypeNode,
+    TypeNodeKind, TypeRef, VarianceTag,
 };
 use backend_semantic::ir::{
     AnnotationKind, AtomId, AtomListId, CSharpFacts, CSharpMemberEffects, CSharpNullability,
     CSharpPartialRole, CSharpReferenceKind, DocFragmentInput, DocLinkTarget, EntityId, EntityKind,
-    ForeignKey, ForeignOrigin, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget,
-    ProductChildRole, ReferenceKind, RelSpan, SemanticProductConstructor, SemanticTypeRecord,
-    SemanticTypeTag, SourceSpan, TypeParameterListId, TypeReason, TypeWidth,
+    ForeignKey, ForeignOrigin, MODULE_OWNER_NAME, NominalRef, Occurrence, OccurrenceConfidence,
+    OccurrenceTarget, ProductChildRole, ReferenceKind, RelSpan, SemanticProductConstructor,
+    SemanticTypeRecord, SemanticTypeTag, SourceSpan, TypeParameterListId, TypeReason, TypeWidth,
 };
 use backend_semantic::vocabulary::{
     CSharpImageFault, CSharpImageHeaderFault, CSharpImageSection, CSharpImageTypeKind,
@@ -677,16 +677,70 @@ pub(crate) fn collect<'source>(
             .map_err(|fault| lane_terminal_ordinal(ordinal, declared.name.bytes.len(), fault))?;
     }
 
+    // A v5 reference can name Roslyn's synthesized top-level entry point.
+    // Give its occurrences a file-spanning module context, never an authored
+    // declaration or another declaration's source span.
+    let mut module_owner = None;
+    for reference in image.references() {
+        let reference = reference
+            .map_err(ProjectionFault::Image)
+            .map_err(terminal)?;
+        if reference.owner == TOP_LEVEL_CONTEXT {
+            if reference.start >= reference.end || (reference.end as usize) > source.len() {
+                return Err(terminal(ProjectionFault::NameSpan {
+                    start: reference.start,
+                    end: reference.end,
+                }));
+            }
+            let fact = SemanticFact::new(EntityKind::Module, MODULE_OWNER_NAME, LEAF_PRODUCT)
+                .with_visibility(backend_semantic::ir::Visibility::Private)
+                .with_extension(EmissionExtension::CSharp(empty_extension()));
+            let ordinal = push(facts, fact)?;
+            let end = u32::try_from(source.len()).map_err(|_| {
+                terminal(ProjectionFault::IndexCapacity {
+                    phase: CSharpProjectionIndexPhase::Reference,
+                    observed: source.len() as u64,
+                })
+            })?;
+            let span = StagedSourceSpan::new(0, end)
+                .ok_or_else(|| terminal(ProjectionFault::NameSpan { start: 0, end }))?;
+            facts
+                .attach_source_span(ordinal, span)
+                .map_err(|fault| lane_terminal_ordinal(ordinal, MODULE_OWNER_NAME.len(), fault))?;
+            facts
+                .mark_parentage_root(ordinal)
+                .map_err(|fault| lane_terminal_ordinal(ordinal, MODULE_OWNER_NAME.len(), fault))?;
+            module_owner = Some(ordinal);
+            break;
+        }
+    }
+
     // Pass four: compiler-resolved occurrences in image order.
     for (reference_index, reference) in image.references().enumerate() {
         let reference = reference.map_err(ProjectionFault::Image)?;
+        if reference.owner == TOP_LEVEL_CONTEXT
+            && (reference.start >= reference.end || (reference.end as usize) > source.len())
+        {
+            return Err(terminal(ProjectionFault::NameSpan {
+                start: reference.start,
+                end: reference.end,
+            }));
+        }
         let reference_index = u32::try_from(reference_index).map_err(|_| {
             terminal(ProjectionFault::IndexCapacity {
                 phase: CSharpProjectionIndexPhase::Reference,
                 observed: reference_index as u64,
             })
         })?;
-        push_occurrence(facts, &image, &ordinals, reference_index, &reference).map_err(terminal)?;
+        push_occurrence(
+            facts,
+            &image,
+            &ordinals,
+            module_owner,
+            reference_index,
+            &reference,
+        )
+        .map_err(terminal)?;
     }
 
     // Pass five: XML documentation provenance and summary fragments.
@@ -2069,6 +2123,7 @@ fn push_occurrence<'source>(
     facts: &mut FactSet<'source>,
     image: &CSharpImage<'source>,
     ordinals: &Ordinals,
+    module_owner: Option<u32>,
     reference_index: u32,
     reference: &ResolvedReference<'source>,
 ) -> Result<(), ProjectionFault> {
@@ -2077,16 +2132,23 @@ fn push_occurrence<'source>(
             phase: CSharpProjectionIndexPhase::Reference,
             observed: reference.owner as u64,
         })?;
-    let owner = ordinals
-        .lookup(owner_coordinate)
-        .ok_or(ProjectionFault::IndexCapacity {
-            phase: CSharpProjectionIndexPhase::Reference,
-            observed: reference.owner as u64,
-        })?;
-    let owner_start = image
-        .declaration(reference.owner)
-        .map_err(ProjectionFault::Image)?
-        .decl_start;
+    let owner = if reference.owner == TOP_LEVEL_CONTEXT {
+        module_owner
+    } else {
+        ordinals.lookup(owner_coordinate)
+    }
+    .ok_or(ProjectionFault::IndexCapacity {
+        phase: CSharpProjectionIndexPhase::Reference,
+        observed: reference.owner as u64,
+    })?;
+    let owner_start = if reference.owner == TOP_LEVEL_CONTEXT {
+        0
+    } else {
+        image
+            .declaration(reference.owner)
+            .map_err(ProjectionFault::Image)?
+            .decl_start
+    };
     if reference.start < owner_start {
         // The reference precedes its owner's declaration start; the lane's
         // owner-relative span cannot host it and none is synthesized.
@@ -4130,7 +4192,9 @@ mod tests {
         let Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(mut tick)) =
             owned.signature_carrier_bindings(tick.id())
         else {
-            return Err(TestError::Missing("C# void method's captured empty signature"));
+            return Err(TestError::Missing(
+                "C# void method's captured empty signature",
+            ));
         };
         if tick.len() != 0 || tick.next().is_some() {
             return Err(TestError::Missing("C# void method has no carrier slots"));

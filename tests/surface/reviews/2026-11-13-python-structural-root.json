@@ -1,0 +1,41 @@
+{
+  "cases": [
+    "python-blinker",
+    "python-cachetools",
+    "python-itsdangerous",
+    "python-tomli"
+  ],
+  "evidence": {
+    "limit": "python-blinker and python-tomli show no changed row in the recorded prefix. For those two the root movement is attributed by elimination to the Python producer contract bump and to decorated declarations outside the recorded outline and search prefixes. This review did not recompute any root and did not read the pinned fixture sources, so it does not independently prove that a specific unrecorded row changed.",
+    "moved_only_where_python_changed": "The root moved in all four Python cases and did not move in any of the eight non-Python cases (go-xxhash, go-uuid, go-sync, rust-itoa, rust-ryu, rust-percent-encoding, c-rxi-map, java-jsr305), whose producers and rows this change set did not touch.",
+    "visible_row_support": "python-itsdangerous and python-cachetools have visibly shifted rows (see the decorator-start record)."
+  },
+  "performance": {
+    "action": "Reviewed performance objects retained byte-for-byte."
+  },
+  "reason": "The root content-addresses the retained view, which for these cases is built from Python structural rows. This change set alters those rows and the producer that makes them: decorated declarations now start at their decorator line (itsdangerous and cachetools show the shifted rows in the previous record), and the Python structural contract identity moved from tags-v6 to tags-v8 (module assignment source, decorated source captures). producer_version in crates/local-service/src/builtin/ingest.rs hashes that contract identity for the structural baseline. How the producer version enters the view root was not traced in this review.",
+  "required_before_merge": "Normal full T2 on the final exact head must report these roots. Any later change to Python declaration rows or to the Python structural contract identity will move them again.",
+  "reviewer": "Claude Code / Sonnet 5.5, 2026-11-13",
+  "roots": {
+    "python-blinker": {
+      "new": "d14003215d9c54383fa5a6e7e56b45def660037e96a28e483ca5415c36c8e20b",
+      "old": "28674b21f6653e215939270ffa1bec76d8b3da6b05a99f4f8f1d379d8c26d677"
+    },
+    "python-cachetools": {
+      "new": "950d4adc284a19699a2dcbd67fe534b6f9edbe74aa9656c3822931c995724d1a",
+      "old": "f3b51d188eda41ead7bbc6af5ea14e8549bfa729977ac5f9f2c70af8b6ad8979"
+    },
+    "python-itsdangerous": {
+      "new": "92c95876166fb3406b9e1a7f1e84520b3f89ad58a7cb439c8946d8e399203655",
+      "old": "4f0e9f9f035f95feab1a8da33b93ed1615711d31fcbcc74609f3b5c65f830e55"
+    },
+    "python-tomli": {
+      "new": "9e38640b2ffe0a49b00b413a6b8618c1dbdbd4c3e26a2e06e3ec4aa9ea7ee177",
+      "old": "4dba3e54a20c616f3e303a1c98c1baa365da8651c8716b9d141b2302eb30aad4"
+    }
+  },
+  "schema": 1,
+  "scope": "Answer-only update of exactly three fields per case: cli outline page.source_root, cli packages revision (its first eight hex digits) and the MCP outline structuredContent page.source_root. All three always carry the same root.",
+  "task": "Review the Python publication root movement",
+  "unchanged": "Every other answer field in these four cases other than the two classes in the earlier records is identical to the reviewed snapshots."
+}

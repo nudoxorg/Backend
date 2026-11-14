@@ -5,16 +5,24 @@
 //! (signature text, a doc sentence, member names, a relation, a byte span,
 //! a version string), never on counts alone.
 //!
-//! Two crates, because the builtin owner answers them differently:
-//! `crates/present` is a workspace member, so the owner publishes its
-//! structural projection (docs, signatures, members, source) but refuses a
-//! compiler publication; typed relations (the rose) gap for it, but
-//! references still answer, from the structural lane — same-file and
-//! import-resolved calls, tagged `SemanticConfidence::Syntactic` so a reader
-//! can tell a path match from a compiler-verified one apart.
-//! `frontends/rust/fixtures/rich_project` is a standalone crate, so the
-//! owner compiles it and serves typed relations and source-verified
-//! (`SemanticConfidence::Compiler`) references.
+//! Three projects, because the owner answers them in different lanes:
+//!
+//! * `crates/present` is compiled: the owner publishes a compiler image for
+//!   it, so its pages are compiler-addressed and its source view carries the
+//!   compiler's own declaration code. (Indexing it compiles the whole
+//!   workspace's Cargo graph, so every package that graph names, for every
+//!   platform, must be in the Cargo home the test runs against.)
+//! * `present_text` is three of the same crate's modules copied beside no
+//!   manifest. No compiler authority can open it, so the owner refuses its
+//!   compile profile, settles the project as failed, and answers from the
+//!   structural lane: signatures, docs, members and same-file or
+//!   import-resolved calls tagged `SemanticConfidence::Syntactic`, with typed
+//!   relations unknown and a source page that says no declaration code was
+//!   captured. It reads the same real content, in the lane that is not
+//!   environment dependent.
+//! * `frontends/rust/fixtures/rich_project` is a standalone crate the owner
+//!   compiles and serves with typed relations and source-verified
+//!   (`SemanticConfidence::Compiler`) references.
 
 #![allow(clippy::expect_used, clippy::panic, clippy::too_many_lines, missing_docs)]
 
@@ -34,6 +42,13 @@ use gpui::{Entity, TestAppContext};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+/// The modules of `crates/present` the structural lane is read through. The
+/// whole crate (about 38,000 lines) is more than the desktop's outline bound
+/// of 8,000 declarations, past which an outline, and every members ledger or
+/// name link built from it, is honestly partial; these three files are the
+/// ones the assertions below read, and stay far inside it.
+const TEXT_MODULES: &[&str] = &["drive.rs", "identity.rs", "page.rs"];
+
 const INDEX_DEADLINE: Duration = Duration::from_mins(15);
 const READ_DEADLINE: Duration = Duration::from_mins(2);
 
@@ -48,9 +63,33 @@ fn utf8(path: &Path) -> &str {
     path.to_str().expect("fixture paths are UTF-8")
 }
 
+/// Indexes one project and checks the owner reported exactly what the test
+/// relies on: a `structural_only` project (no manifest) is refused by its only
+/// compile profile and nothing else; every other project indexes cleanly.
+fn index(session: &mut Session, project: &Path, structural_only: bool) {
+    use backend_client::ClientError;
+    use backend_library::CommandFailure;
+    match session.index(utf8(project)) {
+        Ok(_) => assert!(!structural_only, "{} has no manifest, so its compile profile must be refused", project.display()),
+        Err(ClientError::CommandFailed(CommandFailure::CompilerRefused { failure, .. })) if structural_only => {
+            assert!(failure.relative_path().ends_with(".rs"), "{failure:?}");
+        }
+        Err(error) => panic!("index request for {}: {error:?}", project.display()),
+    }
+}
+
+/// Copies the named Rust sources of `from` to `to`, leaving the manifest behind.
+fn copy_rust_sources(from: &Path, to: &Path, names: &[&str]) {
+    std::fs::create_dir_all(to).expect("copy directory");
+    for name in names {
+        std::fs::copy(from.join(name), to.join(name)).expect("copy source");
+    }
+}
+
 /// Starts an embedded owner on a private workspace and indexes `projects`,
-/// returning once every project row is ready and the row count is stable.
-fn serve(projects: &[&Path]) -> (backend_desktop::DesktopHost, PathBuf, PathBuf) {
+/// returning once every project row has settled and the row count is stable.
+/// The projects in `structural_only` are the ones without a manifest.
+fn serve(projects: &[&Path], structural_only: &[&Path]) -> (backend_desktop::DesktopHost, PathBuf, PathBuf) {
     let nonce = format!(
         "{}-{}",
         std::process::id(),
@@ -73,29 +112,36 @@ fn serve(projects: &[&Path]) -> (backend_desktop::DesktopHost, PathBuf, PathBuf)
     let host = backend_desktop::DesktopHost::start_with_paths(paths).expect("embedded owner");
     let mut session = Session::connect(&endpoint).expect("session");
     for project in projects {
-        session.index(utf8(project)).expect("index request");
+        index(&mut session, project, structural_only.contains(project));
     }
     let started = Instant::now();
     let mut last_rows = 0;
     let mut stable = 0;
+    let mut states = Vec::new();
     loop {
+        if let Ok(CommandReply::Packages(snapshot)) = session.packages().map(|reply| reply.reply) {
+            states = snapshot.root.rows().iter().map(|row| format!("{} {:?}", row.label, row.state)).collect();
+        }
         let ready = match session.packages().map(|reply| reply.reply) {
             Ok(CommandReply::Packages(snapshot)) => projects.iter().all(|project| {
-                snapshot
-                    .root
-                    .rows()
-                    .iter()
-                    .any(|row| row.label == utf8(project) && row.state == RowState::Ready)
+                // A project without a manifest settles as failed: the compile
+                // refusal is recorded and the structural lane answers.
+                let settled = if structural_only.contains(project) { RowState::Failed } else { RowState::Ready };
+                snapshot.root.rows().iter().any(|row| row.label == utf8(project) && row.state == settled)
             }),
             _ => false,
         };
-        let rows = session.health().map_or(0, |health| health.row_count());
+        let health = session.health();
+        let rows = health.as_ref().map_or(0, |health| health.row_count());
+        if let Err(error) = &health {
+            states.push(format!("health: {error:?}"));
+        }
         stable = if ready && rows > 0 && rows == last_rows { stable + 1 } else { 0 };
         last_rows = rows;
         if stable >= 3 {
             break;
         }
-        assert!(started.elapsed() < INDEX_DEADLINE, "indexing never settled");
+        assert!(started.elapsed() < INDEX_DEADLINE, "indexing never settled: {states:?}, {last_rows} rows");
         std::thread::sleep(Duration::from_millis(300));
     }
     (host, endpoint, state)
@@ -167,7 +213,10 @@ impl Plane {
         self.until(cx, "dossier", |store| {
             let resource = store.package(&package);
             fault(&resource, "dossier");
-            resource.loaded_value().cloned()
+            // Published in stages like a symbol page: wait for the outline.
+            resource.loaded_value().filter(|dossier| {
+                dossier.outline.gap().is_none_or(|gap| gap.reason != backend_desktop::model::pages::GapReason::Stale)
+            }).cloned()
         })
     }
 
@@ -176,7 +225,16 @@ impl Plane {
         self.until(cx, symbol.as_str(), |store| {
             let resource = store.symbol(symbol);
             fault(&resource, symbol.as_str());
-            resource.loaded_value().cloned()
+            // A symbol page is published in stages (the document first, then
+            // its neighbourhood, references and outline, each reading as a
+            // `Stale` gap until it lands); only the finished page is the one a
+            // reader is left with.
+            resource.loaded_value().filter(|page| {
+                [page.members.gap(), page.references.gap(), page.rose.up.gap()]
+                    .into_iter()
+                    .flatten()
+                    .all(|gap| gap.reason != backend_desktop::model::pages::GapReason::Stale)
+            }).cloned()
         })
     }
 }
@@ -210,25 +268,48 @@ fn workspace_version(repo: &Path) -> String {
         .to_owned()
 }
 
+/// The `///` doc comment written above the line starting with `head`, read
+/// from the source itself (attributes between them are skipped).
+fn doc_comment_above(file: &Path, head: &str) -> String {
+    let source = std::fs::read_to_string(file).expect("source file");
+    let lines = source.lines().collect::<Vec<_>>();
+    let at = lines.iter().position(|line| line.starts_with(head)).unwrap_or_else(|| panic!("{head} in {}", file.display()));
+    let mut doc = Vec::new();
+    for line in lines[..at].iter().rev() {
+        let line = line.trim_start();
+        if line.starts_with("#[") {
+            continue;
+        }
+        let Some(text) = line.strip_prefix("///") else { break };
+        doc.push(text.strip_prefix(' ').unwrap_or(text));
+    }
+    doc.reverse();
+    doc.join("\n")
+}
+
 fn names<'a>(members: impl Iterator<Item = &'a backend_desktop::model::pages::Member>) -> Vec<String> {
     members.map(|member| member.decl.name.to_string()).collect()
 }
 
-#[gpui::test]
-fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppContext) {
-    cx.executor().allow_parking();
-    let repo = repo();
-    let present = repo.join("crates/present");
-    let rich = repo.join("frontends/rust/fixtures/rich_project");
-    let (host, endpoint, state) = serve(&[&present, &rich]);
+/// A running owner with the desktop's runtime path over it: the same startup
+/// as the native window (bootstrap the root, start the engine actor on the
+/// index/admin lane and the read pool on its own lane).
+struct World {
+    host: backend_desktop::DesktopHost,
+    endpoint: PathBuf,
+    state: PathBuf,
+    subscription: LocalSubscriptionTransport,
+    graph: backend_desktop::runtime::UiEntityGraph,
+    plane: Plane,
+}
 
-    // The same startup as the native window: bootstrap the root, start the
-    // engine actor on the index/admin lane and the read pool on its own lane.
+fn boot(cx: &mut TestAppContext, projects: &[&Path], structural_only: &[&Path]) -> World {
+    let (host, endpoint, state) = serve(projects, structural_only);
     let mut subscription = LocalSubscriptionTransport::connect(&endpoint).expect("subscription");
     let (view, revision) = subscription.bootstrap_root().expect("root");
     assert_eq!(view.root(), revision.root());
     let snapshot = AppSnapshot::empty(VersionedRoot::from_revision(1, revision, 0));
-    let project = LocalProjectId::from_path(&present).expect("project identity");
+    let project = LocalProjectId::from_path(projects[0]).expect("project identity");
     let actor = EngineActor::start(LocalEngineClient::new(&endpoint, project), 32).expect("actor");
     let runtime = DesktopRuntime::new(snapshot, actor);
     let reader_endpoint = endpoint.clone();
@@ -237,35 +318,83 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
     let plane = Plane {
         store: graph.store.clone(),
     };
+    World { host, endpoint, state, subscription, graph, plane }
+}
+
+impl World {
+    /// Leaves a plain-text view of every model the store holds, and cleans up.
+    fn finish(self, cx: &mut TestAppContext) {
+        let text = self
+            .plane
+            .store
+            .read_with(cx, |store, _| backend_desktop::runtime::debug_page::render_text(store));
+        let out = std::env::var("NUDOX_DEBUG_PAGE_OUT").map_or_else(
+            |_| std::env::temp_dir().join("nudox-debug-page.txt"),
+            PathBuf::from,
+        );
+        std::fs::write(&out, text).expect("debug page dump");
+        let Self { host, endpoint, state, subscription, graph, plane: _ } = self;
+        drop(graph);
+        drop(subscription);
+        drop(host);
+        let _ = std::fs::remove_dir_all(state);
+        let _ = std::fs::remove_file(endpoint);
+    }
+}
+
+#[gpui::test]
+fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let repo = repo();
+    let present = repo.join("crates/present");
+    let rich = repo.join("frontends/rust/fixtures/rich_project");
+    // The same crate's sources with no manifest beside them: the structural lane.
+    let text = PathBuf::from("/tmp").join(format!("nx-ct-text-{}", std::process::id())).join("present_text");
+    copy_rust_sources(&present, &text, TEXT_MODULES);
+    // The owner names a project by its canonical path (`/private/tmp` on macOS).
+    let text = text.canonicalize().expect("canonical structural copy");
+    let world = boot(cx, &[&text, &rich], &[&text]);
+    let plane = &world.plane;
 
     // Orbit and Health load because the root published its Home route.
     let orbit = plane.until(cx, "orbit", |store| store.orbit().loaded_value().cloned());
     let indexed = orbit.indexed.known().expect("indexed packages");
-    for (name, root) in [("present", &present), ("rich_project", &rich)] {
+    for (name, root) in [("present_text", &text), ("rich_project", &rich)] {
         let row = indexed
             .iter()
             .find(|package| package.package.as_str() == utf8(root))
             .unwrap_or_else(|| panic!("{name} is not on the shelf"));
         assert_eq!(row.name.as_ref(), name);
-        assert_eq!(row.readiness, backend_desktop::model::pages::Readiness::Ready);
+        // The compiled project is ready; the manifest-less copy is not, and
+        // does not pass for ready.
+        let ready = row.readiness == backend_desktop::model::pages::Readiness::Ready;
+        assert_eq!(ready, root != &text, "{name}: {:?}", row.readiness);
     }
     let health = plane.until(cx, "health", |store| store.health().loaded_value().cloned());
-    assert!(health.rows > 1_000, "the owner committed {} rows", health.rows);
-    assert!(health.ingest.files_indexed >= 20, "{:?}", health.ingest);
+    assert!(health.rows > 300, "the owner committed {} rows", health.rows);
+    assert!(health.ingest.files_indexed >= 4, "{:?}", health.ingest);
 
     // ── Search: ranked rows with a reason each.
     let search = plane.search(cx, "Engine");
     let engine_row = search
         .rows
         .iter()
-        .find(|row| row.decl.name.as_ref() == "Engine" && row.decl.kind == Some(DeclarationKind::Trait))
-        .expect("the Engine trait is a search result");
+        .find(|row| {
+            row.decl.name.as_ref() == "Engine"
+                && row.decl.kind == Some(DeclarationKind::Trait)
+                && row.decl.coordinate.as_str().contains(utf8(&text))
+        })
+        .expect("the Engine trait is a search result in the structural copy");
     assert_eq!(engine_row.reason, MatchReason::ExactName);
     assert_eq!(
         engine_row.snippet.as_deref(),
         Some("Whatever a surface talks to in order to read an admitted reply.")
     );
-    assert_eq!(engine_row.score.gap().map(|gap| gap.reason), Some(GapReason::NotServed));
+    assert!(
+        engine_row.score.known().is_some(),
+        "a ranked row carries its score: {:?}",
+        engine_row.score.gap()
+    );
 
     // ── A trait page (structural projection).
     let engine = engine_row.decl.coordinate.clone();
@@ -282,7 +411,10 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
         "{docs}"
     );
     assert!(docs.contains("Nothing\nin this crate knows which it is holding."), "{docs}");
-    let members = trait_page.members.known().expect("trait members");
+    let members = trait_page
+        .members
+        .known()
+        .unwrap_or_else(|| panic!("trait members: {:?} (identity semantic: {})", trait_page.members.gap(), trait_page.identity.semantic));
     let methods = names(members.all());
     for method in ["revision", "health", "probe", "probe_page", "surface"] {
         assert!(methods.contains(&method.to_owned()), "{method} missing from {methods:?}");
@@ -306,65 +438,29 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
         trait_page.rose.up.gap().map(|gap| gap.reason),
         Some(GapReason::NoSemanticPublication)
     );
-    // `Engine` is a trait: nothing "calls" it, so the structural lane finds
-    // no incoming `Calls` edge. The reply is still `Ok` — empty, not a gap.
-    let engine_references = trait_page.references.known().expect("references from the structural lane");
-    assert!(
-        engine_references.is_empty(),
-        "a trait has no structural call site: {engine_references:?}"
-    );
-    // `intent` is a free function `drive.rs` calls twice in the same file
-    // (`Request::Index` and `Request::Remove`); the structural lane finds
-    // the same-file call and tags it `Syntactic`, never `Compiler`.
-    let intent_symbol = plane.find(cx, "intent", DeclarationKind::Function, "present");
+    // References are not served from the structural lane: with no compiler
+    // publication the owner says, in words, that cross-file reference joins
+    // are not certified exhaustive and why, instead of listing call text it
+    // cannot certify. (The compiled lane's exact, `Compiler`-tagged spans are
+    // read below and for `crates/present` itself in the next test.)
+    let intent_symbol = plane.find(cx, "accepted_view", DeclarationKind::Function, utf8(&text));
     let intent_page = plane.symbol(cx, &intent_symbol);
-    let intent_references = intent_page.references.known().expect("intent references");
-    assert_eq!(intent_references.len(), 1, "{intent_references:?}");
-    let intent_site = &intent_references[0];
-    assert_eq!(intent_site.site.name.as_ref(), "answer");
-    assert_eq!(intent_site.relation, SemanticLinkKind::Calls);
-    assert_eq!(intent_site.confidence, backend_library::SemanticConfidence::Syntactic);
-    let intent_span = intent_site.span.known().expect("intent call span");
-    assert_eq!(intent_span.file.as_ref(), "drive.rs");
-    // The structural lane finds a real match (a non-zero start, not the
-    // degenerate `(0, name.len())` it falls back to when the call text
-    // cannot be located): its length still covers exactly `intent`.
-    //
-    // NB: unlike the semantic lane's spans (see `Marker`'s reference span
-    // below), this byte range is relative to the *caller's own* captured
-    // excerpt (`answer`'s declaration text), not to `drive.rs` as a whole —
-    // `structural_call_span` in
-    // crates/local-service/src/builtin/view_build/structural.rs searches
-    // `site_row.excerpt.text()`, a per-declaration excerpt, and reports the
-    // offset it finds there unchanged. A `FileSpan` naming the real file
-    // therefore means two different things depending on which lane produced
-    // it; slicing `drive.rs` itself at these bytes lands inside the file's
-    // header doc comment, not the call. That inconsistency is real and is
-    // reported separately, not asserted here as if it were correct.
-    assert!(intent_span.bytes.start > 0, "{intent_span:?}");
-    assert_eq!(
-        intent_span.bytes.end - intent_span.bytes.start,
-        "intent".len() as u32,
-        "{intent_span:?}"
-    );
+    for (name, page) in [("Engine", &trait_page), ("accepted_view", &intent_page)] {
+        let gap = page.references.gap().unwrap_or_else(|| panic!("{name}: references are a gap: {:?}", page.references.known()));
+        assert_eq!(gap.reason, GapReason::Unknown, "{name}: {gap:?}");
+        assert!(gap.detail.contains("not certified exhaustive"), "{name}: {gap:?}");
+        assert!(gap.detail.contains("has no selected semantic publication"), "{name}: {gap:?}");
+    }
     let down = trait_page.rose.down.known().expect("containment");
     assert!(down.iter().any(|relation| relation.decl.name.as_ref() == "probe"));
 
-    // ── The package dossier (a local project: manifest facts, no registry claims).
-    let dossier = plane.dossier(cx, &present);
-    let record = dossier.record.known().expect("manifest record");
-    assert_eq!(record.source, RecordSource::LocalManifest);
-    assert_eq!(record.name.as_ref(), "backend-present");
-    assert_eq!(
-        record.version.known().map(ToString::to_string),
-        Some(workspace_version(&repo)),
-        "the dossier's version string is the crate's resolved version"
-    );
-    assert_eq!(record.downloads.gap().map(|gap| gap.reason), Some(GapReason::LocalProject));
-    assert_eq!(dossier.versions.gap().map(|gap| gap.reason), Some(GapReason::LocalProject));
-    let dependencies = dossier.dependencies.known().expect("manifest dependencies");
-    assert!(dependencies.iter().any(|dependency| dependency.name.as_ref() == "backend-library"));
-    let tree = dossier.outline.known().expect("mosaic tree");
+    // ── The package dossier of the structural copy (a local project with no manifest).
+    // The mosaic of the structural copy: every module of the crate's files.
+    let text_dossier = plane.dossier(cx, &text);
+    let tree = text_dossier
+        .outline
+        .known()
+        .unwrap_or_else(|| panic!("mosaic tree: {:?}", text_dossier.outline.gap()));
     assert!(tree.complete, "every outline page was read");
     let drive = tree
         .roots
@@ -375,7 +471,7 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
         .children
         .iter()
         .any(|node| node.decl.name.as_ref() == "Engine" && node.decl.kind == Some(DeclarationKind::Trait)));
-    assert!(tree.count() > 1_000, "{} declarations", tree.count());
+    assert!(tree.count() > 100, "{} declarations", tree.count());
 
     // ── A struct page, reached through the mosaic: members ledger,
     // receivers, a by-name signature link.
@@ -385,7 +481,11 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
         struct_page.signature.known().map(|signature| signature.text.to_string()),
         Some("pub struct Page".to_owned())
     );
-    assert_eq!(DocFragment::plain_text(&struct_page.docs), "One complete declaration page.");
+    assert_eq!(
+        DocFragment::plain_text(&struct_page.docs),
+        doc_comment_above(&present.join("page.rs"), "pub struct Page {"),
+        "the page's prose is the declaration's own doc comment"
+    );
     let members = struct_page.members.known().expect("struct members");
     let fields = names(members.made_of.iter());
     for field in ["identity", "prose", "members", "relations", "source", "notes"] {
@@ -411,35 +511,19 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
         .find(|token| signature.token_text(token) == "Identity")
         .and_then(|token| token.link.as_ref())
         .expect("Identity in Page::new links by name");
-    assert!(identity_link.target.as_str().starts_with(&format!("{}::identity.rs:", utf8(&present))));
+    assert!(identity_link.target.as_str().starts_with(&format!("{}::identity.rs:", utf8(&text))));
     assert_eq!(identity_link.provenance, Provenance::ByName);
 
-    // ── The source view: the whole local file, verified against the excerpt.
+    // ── The structural lane's source page: no compiler owns the declaration, so
+    // the page says no declaration code was captured, and never presents the
+    // file's bytes as if they were the indexed declaration.
     plane.ensure(cx, PageKey::Source(engine.clone()));
-    let source = plane.until(cx, "source", |store| {
+    let structural_source = plane.until(cx, "structural source", |store| {
         let resource = store.source(&engine);
-        fault(&resource, "source");
+        fault(&resource, "structural source");
         resource.loaded_value().cloned()
     });
-    let text = source.text.known().expect("source text");
-    assert_eq!(text.origin, SourceOrigin::LocalFile);
-    let declaration = source.declaration.known().expect("declaration lines");
-    let first = text
-        .line_span(declaration.first)
-        .and_then(|span| text.text().get(span.range()))
-        .expect("declaration line");
-    assert_eq!(first, "pub trait Engine {");
-    let on_disk = std::fs::read_to_string(present.join("drive.rs")).expect("drive.rs");
-    assert_eq!(text.text(), on_disk.as_str());
-    let identifiers = source.identifiers.known().expect("identifiers");
-    assert!(
-        identifiers.iter().any(|span| {
-            text.text().get(span.span.range()) == Some("Probe")
-                && span.link.target.as_str().contains("drive.rs:")
-                && span.link.target.as_str().ends_with("::Probe")
-        }),
-        "an in-crate identifier links to its declaration"
-    );
+    assert_eq!(structural_source.text.gap().map(|gap| gap.reason), Some(GapReason::NotCaptured));
 
     // ── Semantic crate: typed relations, derived impl, exact reference spans.
     let marker = plane.find(cx, "Marker", DeclarationKind::Trait, "rich_project");
@@ -455,24 +539,70 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
         .find(|relation| relation.decl.name.as_ref() == "Boxed")
         .expect("Boxed implements Marker");
     assert_eq!(implementor.kind, RelationKind::Semantic(SemanticLinkKind::Implements));
-    assert!(matches!(
-        implementor.provenance,
-        Provenance::Derived {
-            via: Derivation::ImplBlock,
-            confidence: backend_library::SemanticConfidence::Compiler
-        }
-    ));
+    // The edge is a compiler fact whether the graph states it directly or the
+    // desktop derives it from the impl block's type references.
+    assert!(
+        matches!(
+            implementor.provenance,
+            Provenance::Semantic(backend_library::SemanticConfidence::Compiler)
+                | Provenance::Derived {
+                    via: Derivation::ImplBlock,
+                    confidence: Some(backend_library::SemanticConfidence::Compiler)
+                }
+        ),
+        "{:?}",
+        implementor.provenance
+    );
     let sites = marker_page.references.known().expect("references");
     let site = sites
         .iter()
         .find(|site| site.site.name.as_ref() == "Boxed")
         .expect("the impl block uses Marker");
-    assert_eq!(site.relation, SemanticLinkKind::TypeReference);
+    // The compiler states the impl block's use of `Marker` as the implementation it is.
+    assert_eq!(site.relation, SemanticLinkKind::Implements);
     assert_eq!(site.confidence, backend_library::SemanticConfidence::Compiler);
     let span = site.span.known().expect("reference span");
     assert_eq!(span.file.as_ref(), "src/lib.rs");
     let bytes = std::fs::read(rich.join(span.file.as_ref())).expect("fixture source");
     assert_eq!(&bytes[span.bytes.range()], b"Marker", "the span covers the use exactly");
+
+    // The compiled crate's source page: the whole file, the declaration's own
+    // line, and an in-crate name linking to its declaration.
+    plane.ensure(cx, PageKey::Source(marker.clone()));
+    let marker_source = plane.until(cx, "marker source", |store| {
+        let resource = store.source(&marker);
+        fault(&resource, "marker source");
+        resource.loaded_value().cloned()
+    });
+    let marker_text = marker_source.text.known().unwrap_or_else(|| panic!("marker source: {:?}", marker_source.text.gap()));
+    assert_eq!(marker_text.origin, SourceOrigin::LocalFile);
+    let rich_file = std::fs::read_to_string(rich.join("src/lib.rs")).expect("rich lib.rs");
+    assert_eq!(marker_text.text(), rich_file.as_str());
+    let marker_lines = marker_source.declaration.known().expect("marker lines");
+    let marker_line = rich_file.lines().nth(marker_lines.first as usize - 1);
+    assert_eq!((marker_lines.first, marker_lines.last), (marker_lines.first, marker_lines.first));
+    assert_eq!(marker_line, Some("pub trait Marker {}"));
+    // `compute` builds a `Boxed` in its body: the in-crate name links to its
+    // declaration, inside the region the compiler's extent verified.
+    let compute = plane.find(cx, "compute", DeclarationKind::Function, "rich_project");
+    plane.ensure(cx, PageKey::Source(compute.clone()));
+    let compute_source = plane.until(cx, "compute source", |store| {
+        let resource = store.source(&compute);
+        fault(&resource, "compute source");
+        resource.loaded_value().cloned()
+    });
+    let compute_text = compute_source.text.known().unwrap_or_else(|| panic!("compute source: {:?}", compute_source.text.gap()));
+    let compute_names = compute_source.identifiers.known().expect("identifiers");
+    assert!(
+        compute_names.iter().any(|span| {
+            compute_text.text().get(span.span.range()) == Some("Boxed") && span.link.target.as_str().ends_with("::Boxed")
+        }),
+        "an in-crate name links to its declaration: {:?}",
+        compute_names
+            .iter()
+            .map(|span| (compute_text.text().get(span.span.range()).map(str::to_owned), span.link.target.to_string()))
+            .collect::<Vec<_>>()
+    );
 
     let boxed = plane.find(cx, "Boxed", DeclarationKind::Struct, "rich_project");
     let boxed_page = plane.symbol(cx, &boxed);
@@ -480,7 +610,17 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
     let is_marker = up
         .iter()
         .find(|relation| relation.decl.name.as_ref() == "Marker")
-        .expect("Boxed is Marker");
+        .unwrap_or_else(|| {
+            panic!(
+                "Boxed is Marker: up = {:?}, relations gap = {:?}, implemented_by = {:?}",
+                up.iter().map(|relation| (relation.decl.name.to_string(), relation.kind)).collect::<Vec<_>>(),
+                boxed_page.rose.relations_gap,
+                (
+                    boxed_page.rose.left.known().map(|list| list.iter().map(|relation| (relation.decl.name.to_string(), relation.kind)).collect::<Vec<_>>()),
+                    boxed_page.rose.right.known().map(|list| list.iter().map(|relation| (relation.decl.name.to_string(), relation.kind)).collect::<Vec<_>>()),
+                )
+            )
+        });
     assert_eq!(is_marker.kind, RelationKind::Semantic(SemanticLinkKind::Implements));
     assert!(is_marker.via.is_some(), "derived through the impl block");
     let fields = boxed_page.members.known().map(|members| names(members.made_of.iter()));
@@ -504,19 +644,97 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
     assert!(reads.iter().any(|relation| relation.decl.name.as_ref() == "value"
         && relation.kind == RelationKind::Semantic(SemanticLinkKind::Reads)));
 
-    // Leave the lead a plain-text view of every model the store holds.
-    let text = plane
-        .store
-        .read_with(cx, |store, _| backend_desktop::runtime::debug_page::render_text(store));
-    let out = std::env::var("NUDOX_DEBUG_PAGE_OUT").map_or_else(
-        |_| std::env::temp_dir().join("nudox-debug-page.txt"),
-        PathBuf::from,
-    );
-    std::fs::write(&out, text).expect("debug page dump");
+    world.finish(cx);
+}
 
-    drop(graph);
-    drop(subscription);
-    drop(host);
-    let _ = std::fs::remove_dir_all(state);
-    let _ = std::fs::remove_file(endpoint);
+/// The compiled crate (`crates/present` itself): its manifest facts, and its
+/// source page, which carries the compiler's own declaration code.
+#[gpui::test]
+fn a_compiled_crates_dossier_and_source_page_read_through_the_desktop_runtime(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let repo = repo();
+    let present = repo.join("crates/present");
+    let world = boot(cx, &[&present], &[]);
+    let plane = &world.plane;
+
+    // ── The package dossier (a local project: manifest facts, no registry claims).
+    let dossier = plane.dossier(cx, &present);
+    let record = dossier.record.known().expect("manifest record");
+    assert_eq!(record.source, RecordSource::LocalManifest);
+    assert_eq!(record.name.as_ref(), "backend-present");
+    assert_eq!(
+        record.version.known().map(ToString::to_string),
+        Some(workspace_version(&repo)),
+        "the dossier's version string is the crate's resolved version"
+    );
+    assert_eq!(record.downloads.gap().map(|gap| gap.reason), Some(GapReason::LocalProject));
+    assert_eq!(dossier.versions.gap().map(|gap| gap.reason), Some(GapReason::LocalProject));
+    let dependencies = dossier.dependencies.known().expect("manifest dependencies");
+    assert!(dependencies.iter().any(|dependency| dependency.name.as_ref() == "backend-library"));
+    // ── The compiled crate's source page: the compiler's own declaration
+    // code, the whole local file verified against it.
+    let compiled_engine = plane.find(cx, "Engine", DeclarationKind::Trait, utf8(&present));
+    let compiled_page = plane.symbol(cx, &compiled_engine);
+    assert!(compiled_page.identity.semantic, "compiler-addressed coordinate");
+    assert_eq!(compiled_page.identity.path.as_deref(), Some("drive.rs"));
+    plane.ensure(cx, PageKey::Source(compiled_engine.clone()));
+    let source = plane.until(cx, "source", |store| {
+        let resource = store.source(&compiled_engine);
+        fault(&resource, "source");
+        resource.loaded_value().cloned()
+    });
+    let source_text = source.text.known().unwrap_or_else(|| panic!("source text: {:?}", source.text.gap()));
+    assert_eq!(source_text.origin, SourceOrigin::LocalFile);
+    let on_disk = std::fs::read_to_string(present.join("drive.rs")).expect("drive.rs");
+    assert_eq!(source_text.text(), on_disk.as_str());
+    let declaration = source.declaration.known().expect("declaration lines");
+    let declared = on_disk
+        .lines()
+        .skip(declaration.first as usize - 1)
+        .take((declaration.last - declaration.first + 1) as usize)
+        .collect::<Vec<_>>();
+    assert!(declared.contains(&"pub trait Engine {"), "the named lines hold the trait: {declared:?}");
+    // `Engine` is longer than one source page, so the page holds its head and
+    // says the excerpt is not complete; a complete excerpt ends at the brace.
+    if source_text.complete {
+        assert_eq!(declared.last(), Some(&"}"), "a complete excerpt ends at the trait's closing brace");
+    }
+    assert!(
+        declared.first().is_some_and(|line| line.starts_with("///") || line.starts_with("pub trait Engine")),
+        "the named lines start at the trait's documentation or its head: {declared:?}"
+    );
+    // A short declaration's named lines run from its head to its closing brace.
+    let intent = plane.find(cx, "accepted_view", DeclarationKind::Function, utf8(&present));
+    plane.ensure(cx, PageKey::Source(intent.clone()));
+    let intent_source = plane.until(cx, "accepted_view source", |store| {
+        let resource = store.source(&intent);
+        fault(&resource, "accepted_view source");
+        resource.loaded_value().cloned()
+    });
+    let intent_text = intent_source.text.known().unwrap_or_else(|| panic!("accepted_view source: {:?}", intent_source.text.gap()));
+    let intent_lines = intent_source.declaration.known().expect("accepted_view lines");
+    let intent_code = intent_text
+        .text()
+        .lines()
+        .skip(intent_lines.first as usize - 1)
+        .take((intent_lines.last - intent_lines.first + 1) as usize)
+        .collect::<Vec<_>>();
+    assert!(intent_code.iter().any(|line| line.contains("fn accepted_view")), "{intent_code:?}");
+    assert_eq!(intent_code.last(), Some(&"}"), "{intent_code:?}");
+
+    // Its one use is the call in `remove`, with the compiler's exact span: the
+    // bytes of `drive.rs` at that span are the callee's name.
+    let intent_page = plane.symbol(cx, &intent);
+    let sites = intent_page.references.known().unwrap_or_else(|| panic!("references: {:?}", intent_page.references.gap()));
+    let site = sites
+        .iter()
+        .find(|site| site.site.name.as_ref() == "remove")
+        .unwrap_or_else(|| panic!("the call in remove is a use of accepted_view: {sites:?}"));
+    assert_eq!(site.relation, SemanticLinkKind::Calls);
+    assert_eq!(site.confidence, backend_library::SemanticConfidence::Compiler);
+    let span = site.span.known().expect("call span");
+    assert_eq!(span.file.as_ref(), "drive.rs");
+    assert_eq!(&on_disk.as_bytes()[span.bytes.range()], b"accepted_view", "the span covers the call exactly");
+
+    world.finish(cx);
 }

@@ -149,3 +149,79 @@ fn an_offer_already_in_the_library_opens_instead(cx: &mut TestAppContext) {
     assert!(said(&texts).contains(&"anyhow 1.0.104 is in your library"), "{texts:?}");
     assert!(!said(&texts).contains(&"Add to library"));
 }
+
+/// A host whose add state the test moves, as the shell's work would.
+struct Moving {
+    offer: Offer,
+    actions: AddActions,
+}
+
+impl Render for Moving {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let measure = Measure::new(px(480.0), &cx.facet());
+        div().w(px(480.0)).child(add_control("offer", &self.offer, &self.actions, &measure, cx))
+    }
+}
+
+fn press(cx: &mut VisualTestContext, key: &str) {
+    // A live event loop has flushed the last frame's deferred effects before
+    // a person's next key arrives.
+    cx.update(|_, _| {});
+    let keystroke = gpui::Keystroke::parse(key).expect("key");
+    cx.simulate_event(gpui::KeyDownEvent { keystroke: keystroke.clone(), is_held: false, prefer_character_input: false });
+    cx.simulate_event(gpui::KeyUpEvent { keystroke });
+    redraw(cx);
+}
+
+/// Two frames, as a live window draws long before a person's next key: a new
+/// face's own state settles on its first.
+fn redraw(cx: &mut VisualTestContext) {
+    for _ in 0..2 {
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+    }
+}
+
+#[gpui::test]
+fn keyboard_focus_stays_with_the_control_as_its_state_changes(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx);
+    });
+    let state = Rc::new(RefCell::new(Adding::Idle));
+    let added = Rc::new(RefCell::new(0));
+    let opened = Rc::new(RefCell::new(0));
+    let (read, add, open) = (Rc::clone(&state), Rc::clone(&added), Rc::clone(&opened));
+    let actions = AddActions {
+        state: Rc::new(move |_, _| read.borrow().clone()),
+        add: Rc::new(move |_, _, _| *add.borrow_mut() += 1),
+        cancel: None,
+        open: Rc::new(move |_, _, _| *open.borrow_mut() += 1),
+    };
+    let (view, cx): (_, &mut VisualTestContext) = cx.add_window_view(|_, _| Moving { offer: offer(Place::Unpacked), actions });
+    redraw(cx);
+    cx.update(|window, cx| window.focus_next(cx));
+    redraw(cx);
+    let focus = cx.update(|window, cx| window.focused(cx)).expect("Add takes keyboard focus");
+    press(cx, "space");
+    assert_eq!(*added.borrow(), 1, "Space adds");
+
+    // Each change of face keeps the person's place: the work holds focus,
+    // then the outcome's button answers the same key.
+    let mut face = |next: Adding, cx: &mut VisualTestContext| {
+        *state.borrow_mut() = next;
+        cx.update(|_, cx| view.update(cx, |_, cx| cx.notify()));
+        redraw(cx);
+        assert_eq!(cx.update(|window, cx| window.focused(cx)).as_ref(), Some(&focus), "focus stays with the control");
+    };
+    face(Adding::Working(Step::Indexing), cx);
+    face(Adding::Failed("the index refused anyhow 1.0.104".into()), cx);
+    press(cx, "space");
+    assert_eq!(*added.borrow(), 2, "Space on Try again adds again, with no Tab back");
+    face(Adding::Added { open: "/cache/anyhow-1.0.104".into() }, cx);
+    press(cx, "space");
+    assert_eq!(*opened.borrow(), 1, "Space on Open opens");
+}

@@ -538,6 +538,38 @@ fn forge_read_fence_process_worker() {
 }
 
 #[test]
+fn forge_search_snapshot_waits_for_a_fence_held_by_a_slow_publication() {
+    let root = std::env::temp_dir().join(format!(
+        "nudox-forge-slow-fence-{}-{}",
+        std::process::id(),
+        now_millis()
+    ));
+    let _root_directory =
+        backend_platform::OwnedWorkspaceDirectory::open(&root).expect("create private forge root");
+    let owner = ForgeAcquisitionService::open(
+        &root,
+        ForgeAcquisitionPolicy::Offline,
+        ForgeAcquisitionLimits::default(),
+    )
+    .expect("forge owner");
+    // A holder that is slow to finish its durable writes keeps the fence far
+    // longer than the few milliseconds a reader used to be willing to wait.
+    let held = owner
+        .journal_lease_for_test()
+        .expect("take the fence")
+        .expect("the fence is free");
+    let holder = thread::spawn(move || {
+        thread::sleep(std::time::Duration::from_millis(300));
+        drop(held);
+    });
+    let snapshot = owner
+        .search_catalog_snapshot()
+        .expect("a reader waits for a briefly held fence");
+    assert!(snapshot.records.is_empty());
+    holder.join().expect("join holder");
+}
+
+#[test]
 fn forge_search_snapshot_keeps_publication_gate_until_capture_finishes() {
     let root = std::env::temp_dir().join(format!(
         "nudox-forge-read-fence-{}-{}",

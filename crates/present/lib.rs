@@ -93,6 +93,10 @@ mod shelf;
 mod shell;
 mod signature;
 mod source_membership;
+#[cfg(test)]
+mod source_scope_tests;
+#[cfg(test)]
+mod source_policy_projection_tests;
 mod startup_recovery;
 mod status;
 mod token_count;
@@ -127,7 +131,7 @@ pub use coverage::{
 };
 pub use drive::{
     Answer, ContinuationCursor, Engine, Probe, answer, answer_paged, catalog_page_answer,
-    probe_fault, resolve_declaration,
+    graph_page_records, related_edge_records, probe_fault, resolve_declaration,
 };
 pub use dto::{
     CapabilitiesDto, CompilerToolRequirementDto, CoverageDto, FaultDto, IdentityDto,
@@ -156,14 +160,15 @@ pub use page::{
     Truncation,
 };
 pub use product::{
-    CursorProjection, CursorTarget, IndexJobProjection, IndexSearchPageInfo, ProductRecord,
-    ProductSemanticData, ProductSemanticHistoryProofSummary, ProductSemanticHistoryStatus,
+    CursorProjection, CursorTarget, DeclarationSourceRange, IndexJobProjection, IndexSearchPageInfo,
+    PartialPublicationWarning, ProductRecord, ProductSemanticData, ProductSemanticHistoryProofSummary, ReferenceDetails,
+    ProductSemanticHistoryStatus,
     ProductView, index_profile_progress_text, index_stage_name, package_graph_markdown,
     product_view, product_view_for_command, product_view_for_owned_command,
 };
 pub use projection::{PageProjection, PageSection};
 pub use readiness::{PublishedFacts, ReadinessState};
-pub use record::{Record, RecordList, RecordState, Score};
+pub use record::{GraphSourcePolicy, Record, RecordList, RecordState, RelatedEdge, Score};
 pub use render::{
     Colour, ContinuationTarget, Style, Theme, Width, continuation_note, display_width, markdown,
     text,

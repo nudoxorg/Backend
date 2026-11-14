@@ -76,7 +76,7 @@ pub fn page_from_document_with_graph_relations(
     // structural and compiler-backed rows. A repeated coordinate cannot
     // replace that identity or select another row's members and graph edges.
     let centre = document.symbol;
-    let own = members.iter().find(|row| row.id == RowId::Symbol(centre));
+    let own = members.iter().chain(relations).find(|row| row.id == RowId::Symbol(centre));
     let language = page_language(&identity, members, centre);
     let source = source_from(&identity, &document.location, &document.excerpt);
     let kind = own.and_then(|row| row.kind);
@@ -97,6 +97,7 @@ pub fn page_from_document_with_graph_relations(
         .with_prose(Prose::from_fragments(&document.fragments))
         .with_members(member_groups(members, centre))
         .with_relations(relation_groups(relations, centre, graph_relations))
+        .with_source_policy(document.source_policy.clone())
         .with_notes(notes);
     match signature {
         Some(value) => page.with_signature(value),
@@ -121,6 +122,12 @@ fn source_from(
     availability: &SourceAvailability,
     excerpt: &SourceExcerpt,
 ) -> Source {
+    if matches!(availability, SourceAvailability::StaleFile { .. }) {
+        let operand = crate::fault::Operand::Coordinate(identity.coordinate().clone());
+        if let Some(fault) = Fault::source(availability, operand) {
+            return Source::Absent { fault };
+        }
+    }
     let site = site_from(identity, availability);
     match (site, excerpt) {
         (Some(site), SourceExcerpt::Captured { text, extent }) => Source::Captured {

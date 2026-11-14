@@ -1,0 +1,47 @@
+[package]
+name = "syntaqlite"
+version = "0.13.5"
+edition = "2024"
+description = "Parser, formatter, validator, and language server for SQLite SQL — built on SQLite's own grammar"
+license = "Apache-2.0"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+
+[features]
+default = ["sqlite", "fmt", "analysis"]
+fmt = ["syntaqlite-syntax/fmt"]                     # formatter (bytecode interpreter)
+analysis = ["syntaqlite-syntax/analysis"]       # schema analysis (unknown refs, fuzzy suggestions, lineage)
+experimental-embedded = ["analysis"]    # [experimental] embedded SQL extraction from host languages (Python f-strings, etc.)
+dynload = ["dep:libloading"]             # dynamic dialect loading from .so/.dylib/.dll
+lsp = ["fmt", "analysis", "sqlite", "experimental-embedded", "serde-json", "dep:glob", "dep:lsp-server", "dep:lsp-types"]  # LSP analysis host + protocol server; diagnostics carry structured data (serde-json)
+rpc = ["fmt", "analysis", "serde-json"]  # transport-agnostic JSON-RPC dispatch (CLI serve loop + C API)
+sqlite = ["syntaqlite-syntax/sqlite"]  # SQLite dialect (grammar, tokens, cflags, functions)
+serde = ["dep:serde", "syntaqlite-syntax/serde"]         # serde::Serialize/Deserialize impls for diagnostics and AST nodes
+serde-json = ["serde", "dep:serde_json", "syntaqlite-syntax/serde-json"]  # JSON convenience helpers (dump_json, from_json)
+
+# Pin version/cflags at compile time for dead-code elimination.
+# Values come from env vars, using the same names as the C defines:
+#
+#   SYNTAQLITE_SQLITE_VERSION=3035000 cargo build --features pin-version
+#
+#   SYNTAQLITE_CFLAG_SQLITE_OMIT_WINDOWFUNC=1 \
+#   SYNTAQLITE_CFLAG_SQLITE_ENABLE_FTS5=1 \
+#   cargo build --features pin-cflags
+#
+pin-version = ["sqlite", "syntaqlite-syntax/pin-version"]   # Pin SQLite version via SYNTAQLITE_SQLITE_VERSION env var
+pin-cflags = ["sqlite", "syntaqlite-syntax/pin-cflags"]    # Pin compile-time flags via SYNTAQLITE_CFLAG_* env vars
+
+[lints]
+workspace = true
+
+[dependencies]
+syntaqlite-common = { version = "0.13.5", path = "../syntaqlite-common" }
+syntaqlite-syntax = { version = "0.13.5", path = "../syntaqlite-syntax", default-features = false }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+libloading = { version = "0.8", optional = true }
+glob = { version = "0.3", optional = true }
+lsp-server = { version = "0.7", optional = true }
+lsp-types = { version = "0.97", optional = true }
+

@@ -136,3 +136,33 @@ remain skipped exactly as before. No native pass is claimed and no test is
 reenabled. The work to remove them is unchanged: a managed deep lane that
 provides these pinned inputs (CI rework T3). Without that lane, the next review
 must either delete the controls or record why they stay.
+
+
+## Renewal 2026-11-13
+
+Every emulation filter and every source ignore with an expiry of November13 or
+November14 UTC is renewed to December13 UTC, which is 30 days from this review.
+That is 154 emulation entries across the two lanes, the 72 Wine filters recorded
+in the 2026-10-15 triage, and the source ignores whose intake deadline was
+November13: the registry's other entries keep their November24 renewal.
+
+The reviewing owner is the repository owner, acting for the NuDox Backend
+maintainers. This is a renewal of the existing decisions and nothing more:
+- No filter, category, reason, owner or ignore attribute changed, and no test was
+  deleted, added or re-enabled.
+- No fresh emulated-lane, Wine or native observation was gathered for this
+  renewal. The timing and emulator-limit reasons are the 2026-10-14 and
+  2026-10-15 observations, unchanged, and still unverified on native platforms.
+- The `unclassified` entries remain unresolved coverage gaps. A renewal is not
+  a claim that any excluded test passes.
+
+The next review must run the lanes on the exact revision under review and either
+remove entries that pass or record the new observation. Do not renew these dates
+again from this note alone.
+
+The same review enrolls 30 `#[ignore]` attributes that arrived with the tier 2
+work and had no registry entry: real Stylo-worker, native React, C# SDK and SQLite
+worker journeys that need installed workers or pinned runtimes. These are
+ownership-only entries in the managed-native intake, in the format of the
+2026-10-16 entries. No Rust source changed, no test was re-enabled and none is
+claimed to pass; they run only in an explicit managed run with their prerequisites.

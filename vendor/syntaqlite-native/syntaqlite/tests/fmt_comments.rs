@@ -1,0 +1,252 @@
+#![cfg(all(feature = "fmt", feature = "sqlite"))]
+//! Regression tests for comment preservation in the formatter.
+
+use syntaqlite::Formatter;
+
+/// Helper: format with default config, unwrap result.
+fn fmt(sql: &str) -> String {
+    Formatter::new()
+        .format(sql)
+        .expect("formatting should succeed")
+}
+
+// ── Multi-statement comment sync ─────────────────────────────────────────────
+
+#[test]
+fn leading_comment_preserves_values_row_layout() {
+    let sql = "WITH t(a, b, c) AS (VALUES ('sendfile', 'main', 'args[1]'), ('sendfile', 'out', 'args[0]'), ('epoll_ctl', 'main', 'args[2]')) SELECT * FROM t;";
+    let out = fmt(&format!("-- x\n{sql}"));
+    eprintln!("=== actual ===\n{out}=== end ===");
+    assert_eq!(out, format!("-- x\n{}", fmt(sql)));
+    assert_eq!(fmt(&out), out, "formatting should be idempotent");
+}
+
+#[test]
+fn leading_comment_preserves_long_single_column_values_layout() {
+    let rows = (0..41)
+        .map(|i| format!("('name_{i}')"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!("VALUES {rows};");
+    let out = fmt(&format!("-- x\n{sql}"));
+    eprintln!("=== actual ===\n{out}=== end ===");
+    assert_eq!(out, format!("-- x\n{}", fmt(&sql)));
+    assert_eq!(fmt(&out), out, "formatting should be idempotent");
+}
+
+#[test]
+fn values_group_boundary_preserves_comment_placement() {
+    for (sql, expected) in [
+        (
+            "VALUES (1, 2), -- row one\n(3, 4);",
+            "VALUES\n  (1, 2), -- row one\n  (3, 4);\n",
+        ),
+        (
+            "VALUES (1, 2),\n-- row two\n(3, 4);",
+            "VALUES\n  (1, 2),\n  -- row two\n  (3, 4);\n",
+        ),
+        (
+            "-- x\nVALUES (1, 2), (3, 4);",
+            "-- x\nVALUES (1, 2), (3, 4);\n",
+        ),
+        (
+            "VALUES (1, 2), /* row one */ (3, 4);",
+            "VALUES\n  (1, 2),\n  /* row one */ (3, 4);\n",
+        ),
+    ] {
+        let out = fmt(sql);
+        eprintln!("=== actual ===\n{out}=== end ===");
+        assert_eq!(out, expected);
+        assert_eq!(fmt(&out), out, "formatting should be idempotent");
+    }
+}
+
+/// Regression: comments in second statement were reordered / dropped.
+///
+/// Input has three comments in statement 2:
+///   - `-- foo`      on its own line, *before* `select`   → leading comment before SELECT
+///   - `-- foo bar`  on its own line, *between* `select` and `1` → leading before `1`
+///   - `-- foo`      on its own line, *before* `from`     → leading comment before FROM
+///
+/// All three must appear in source order.
+#[test]
+fn multi_stmt_comments_preserved_in_order() {
+    let input = "SELECT 1;\n\n-- foo\nselect\n-- foo bar\n1\n-- foo\nfrom slice;";
+    let out = fmt(input);
+    eprintln!("=== actual ===\n{out}=== end ===");
+
+    // All three comment texts must be present.
+    assert!(out.contains("-- foo bar"), "'-- foo bar' missing");
+
+    // Count occurrences of '-- foo' (not part of '-- foo bar').
+    // The standalone comments are "-- foo\n" — find both.
+    let first = out.find("-- foo\n").expect("first '-- foo' not found");
+    let second = out[first + 1..]
+        .find("-- foo\n")
+        .map(|p| first + 1 + p)
+        .expect("second '-- foo' not found");
+    let bar_pos = out.find("-- foo bar").expect("'-- foo bar' missing");
+
+    // Source order: first --foo < --foo bar < second --foo
+    assert!(
+        first < bar_pos,
+        "'-- foo' (pre-SELECT) must come before '-- foo bar': first={first} bar={bar_pos}"
+    );
+    assert!(
+        bar_pos < second,
+        "'-- foo bar' must come before second '-- foo' (pre-FROM): bar={bar_pos} second={second}"
+    );
+}
+
+/// Debug helper: print comment/token offsets per statement.
+#[test]
+fn debug_comment_token_offsets() {
+    use syntaqlite::ParseOutcome;
+    use syntaqlite::parse::ParserConfig;
+    use syntaqlite::typed::{TypedParser, dialect};
+
+    let input = "SELECT 1;\n\n-- foo\nselect\n-- foo bar\n1\n-- foo\nfrom slice;";
+    let config = ParserConfig::default().with_collect_tokens(true);
+    let parser = TypedParser::with_config(dialect(), &config);
+    let mut session = parser.parse(input);
+
+    let mut stmt_num = 0;
+    loop {
+        match session.next() {
+            ParseOutcome::Done => break,
+            ParseOutcome::Ok(stmt) => {
+                eprintln!("=== Statement {stmt_num} ===");
+                let comments: Vec<_> = stmt.comments().collect();
+                let stmt_text = stmt.text();
+                eprintln!("  Comments ({}):", comments.len());
+                for c in &comments {
+                    let range =
+                        syntaqlite::source::StmtRange::from_offset_len(c.offset(), c.length());
+                    eprintln!(
+                        "    offset={} len={} text={:?}",
+                        c.offset(),
+                        c.length(),
+                        &stmt_text[range]
+                    );
+                }
+                let tokens: Vec<_> = stmt.tokens().collect();
+                eprintln!("  Tokens ({}):", tokens.len());
+                for t in &tokens {
+                    eprintln!(
+                        "    offset={} len={} text={:?}",
+                        t.offset(),
+                        t.length(),
+                        t.text()
+                    );
+                }
+                // Verify statement 0 has no lookahead contamination.
+                if stmt_num == 0 {
+                    assert_eq!(
+                        tokens.len(),
+                        3,
+                        "stmt 0 should have exactly 3 tokens (SELECT, 1, ;)"
+                    );
+                    assert_eq!(comments.len(), 0, "stmt 0 should have no comments");
+                }
+                // Verify statement 1 has all its tokens and comments.
+                if stmt_num == 1 {
+                    assert_eq!(
+                        tokens.len(),
+                        5,
+                        "stmt 1 should have 5 tokens (select, 1, from, slice, ;)"
+                    );
+                    assert_eq!(
+                        comments.len(),
+                        3,
+                        "stmt 1 should have 3 comments (--foo, --foo bar, --foo)"
+                    );
+                }
+                stmt_num += 1;
+            }
+            ParseOutcome::Err(e) => {
+                eprintln!("=== Statement {} ERROR: {} ===", stmt_num, e.message());
+                panic!(
+                    "unexpected parse error on statement {}: {}",
+                    stmt_num,
+                    e.message()
+                );
+            }
+        }
+    }
+    assert_eq!(stmt_num, 2, "expected exactly 2 statements");
+}
+
+/// Regression: a comment between JOIN and WHERE in a subquery was being
+/// moved to the outer query, eating the semicolon terminator.
+#[test]
+fn comment_between_join_and_where_in_subquery() {
+    let input = concat!(
+        "SELECT *\n",
+        "FROM (\n",
+        "  SELECT a\n",
+        "  FROM t1\n",
+        "  JOIN t2 ON (t1.id = t2.id)\n",
+        "  -- this comment belongs here\n",
+        "  WHERE x > 0\n",
+        ");\n",
+    );
+    let out = fmt(input);
+    eprintln!("=== actual ===\n{out}=== end ===");
+    // Comment must stay inside the subquery, not migrate to outer query.
+    assert!(
+        out.contains("-- this comment belongs here"),
+        "comment was dropped"
+    );
+    // Semicolon must not be swallowed by the comment.
+    let second_pass = fmt(&out);
+    assert_eq!(out, second_pass, "formatting is not idempotent");
+}
+
+/// Regression: perfetto stdlib crash on a leading comment inside an untracked
+/// parenthesized expression. Reduced shape:
+///   WHERE a AND (
+///     -- leading comment inside untracked parens
+///     (b OR c)
+///   )
+/// The outer parens of `(b OR c)` have no `ParenExpr` AST node, so tokens like
+/// `(` are skipped by `peek_keyword_tokens`. When the drain of the statement's
+/// remaining comments fires, `prev_token_end()` has advanced past the comment's
+/// offset, producing a reversed `StmtRange` and a slice panic.
+#[test]
+fn leading_comment_inside_untracked_parens() {
+    let input = concat!(
+        "SELECT 1\n",
+        "WHERE\n",
+        "  a\n",
+        "  AND (\n",
+        "    -- leading comment inside untracked parens\n",
+        "    (\n",
+        "      b AND c\n",
+        "    )\n",
+        "    -- another\n",
+        "    OR (\n",
+        "      d AND e\n",
+        "    )\n",
+        "  );\n",
+    );
+    let out = fmt(input);
+    eprintln!("=== actual ===\n{out}=== end ===");
+    assert!(out.contains("-- leading comment inside untracked parens"));
+    assert!(out.contains("-- another"));
+    let second_pass = fmt(&out);
+    assert_eq!(out, second_pass, "formatting is not idempotent");
+}
+
+/// Issue #354: the authored name is a declaration, not a repeated span on
+/// REFERENCES and DEFERRABLE. An unused name on the next column is retained.
+#[test]
+fn issue_354_named_deferred_foreign_key_between_columns() {
+    let input = "CREATE TABLE t (\n    a integer constraint c1 references r(id) deferrable,\n    -- comment\n    b text constraint c2\n);";
+    let out = fmt(input);
+    eprintln!("=== actual ===\n{out}=== end ===");
+    assert_eq!(
+        out,
+        "CREATE TABLE t(\n  a integer CONSTRAINT c1 REFERENCES r(id) DEFERRABLE,\n  -- comment\n  b text CONSTRAINT c2\n);\n"
+    );
+    assert_eq!(fmt(&out), out);
+}

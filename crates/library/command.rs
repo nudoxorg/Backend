@@ -153,6 +153,22 @@ pub enum CommandId {
     SemanticVersions,
     /// Read one bounded range of an exact captured semantic source.
     SemanticSource,
+    /// Query selected native CSS evidence.
+    StyloQuery,
+    /// Read one verified authored CSS source site.
+    StyloReadSite,
+    /// Capture current admitted comparison material.
+    ImpactCapture,
+    /// Traverse one retained comparison side.
+    ImpactCompare,
+    /// Read one source site from historical captured bytes.
+    ImpactReadSource,
+    /// Compare retained exact native facts and verified source images.
+    ImpactDiff,
+    /// Find candidate impacts of an authored custom property.
+    StyloImpact,
+    /// Find what a change to a selector, variable, component or schema object affects.
+    Impact,
     /// Read one snapshot-bound page of exact selected Project source members.
     PackageSourceMembership,
     /// Select an exact immutable compiler generation.
@@ -211,6 +227,10 @@ pub enum CommandId {
     Health,
     /// Read the constant-size current revision token.
     Revision,
+    /// Query selected native SQL evidence.
+    SqlQuery,
+    /// Read one verified native SQL diagnostic source extent.
+    SqlReadSource,
 }
 
 /// The caller's requested execution class for compiling an added package.
@@ -623,6 +643,8 @@ pub struct DocumentQuery {
     /// Complete source basis expected by the caller, when the request was
     /// produced by an authority that knows the source object and stream.
     pub(crate) source: Option<crate::Basis>,
+    /// Optional bounded source-range request.
+    pub(crate) source_range: Option<crate::SourceRangeRequest>,
 }
 
 impl DocumentQuery {
@@ -633,6 +655,7 @@ impl DocumentQuery {
             symbol: SymbolAddress::canonical(symbol),
             basis: ViewRevision(basis.to_bytes()),
             source: None,
+            source_range: None,
         }
     }
 
@@ -643,6 +666,7 @@ impl DocumentQuery {
             symbol: SymbolAddress::selected(symbol),
             basis: ViewRevision(basis.to_bytes()),
             source: None,
+            source_range: None,
         }
     }
 
@@ -653,6 +677,7 @@ impl DocumentQuery {
             symbol,
             basis: ViewRevision(basis.to_bytes()),
             source: None,
+            source_range: None,
         }
     }
 
@@ -686,6 +711,19 @@ impl DocumentQuery {
     #[must_use]
     pub const fn source_basis(&self) -> Option<crate::Basis> {
         self.source
+    }
+
+    /// Requests an exact source range from the selected owner.
+    #[must_use]
+    pub const fn with_source_range(mut self, range: crate::SourceRangeRequest) -> Self {
+        self.source_range = Some(range);
+        self
+    }
+
+    /// Returns the source range request, when present.
+    #[must_use]
+    pub const fn source_range(&self) -> Option<crate::SourceRangeRequest> {
+        self.source_range
     }
 }
 
@@ -990,6 +1028,7 @@ pub struct PageRequest {
     window: crate::QueryWindow,
     continuation: Option<PageContinuation>,
     outline_witness: Option<crate::OutlineCursorWitness>,
+    include_incoming: bool,
 }
 
 impl PageRequest {
@@ -1001,8 +1040,17 @@ impl PageRequest {
             window: crate::QueryWindow::fixed(limit),
             continuation: None,
             outline_witness: None,
+            include_incoming: false,
         }
     }
+
+    /// Requests both incoming and outgoing neighborhood relations.
+    #[must_use]
+    pub const fn with_incoming(mut self) -> Self { self.include_incoming = true; self }
+
+    /// Whether this graph page includes incoming relations.
+    #[must_use]
+    pub const fn include_incoming(self) -> bool { self.include_incoming }
 
     /// Resumes from a continuation returned by the preceding page.
     #[must_use]
@@ -1084,6 +1132,8 @@ pub struct ProjectionPage {
     pub terminal: PageTerminal,
     /// Outline-only native ordering witness; other page families leave it absent.
     pub outline_order: Option<crate::OutlinePageOrder>,
+    /// Authenticated owner document binding a graph alias to its selected center.
+    pub graph_alias_witness: Option<crate::Document>,
 }
 
 impl GraphNeighborhoodQuery {
@@ -1240,6 +1290,13 @@ pub enum Command {
         /// Shared root/query-bound paging request.
         page: PageRequest,
     },
+    /// Read a bounded page of related edge identities.
+    RelatedEdgePage {
+        /// Original center locator; raw cursor keys never establish authority.
+        symbol: SymbolAddress,
+        /// Exact query scope and optional owner-sealed continuation.
+        request: crate::RelatedPageRequest,
+    },
     /// Read the selected declaration and its immediate owned members only.
     MembersPage {
         /// Exact selected owner and complete source basis, when captured.
@@ -1281,7 +1338,7 @@ impl Command {
             Self::Resolve { .. } => CommandId::Resolve,
             Self::Search(_) | Self::SearchPublishedNames(_) => CommandId::Search,
             Self::Graph(_) | Self::GraphPage { .. } => CommandId::Graph,
-            Self::Related(_) => CommandId::Related,
+            Self::Related(_) | Self::RelatedEdgePage { .. } => CommandId::Related,
             Self::GraphQuery(_) => CommandId::GraphQuery,
             Self::SemanticShapes(_) => CommandId::SemanticShapes,
             Self::Surface(command) => command.id(),
@@ -1299,6 +1356,7 @@ impl Command {
                 symbol: SymbolAddress::canonical(*symbol),
                 basis: ViewRevision(basis.to_bytes()),
                 source: None,
+                source_range: None,
             }),
             _ => None,
         }
@@ -1322,6 +1380,8 @@ pub enum CommandReply {
     Packages(ViewSnapshot),
     /// Shared bounded package/outline/graph page.
     ProjectionPage(ProjectionPage),
+    /// One bounded page of related edges.
+    RelatedEdgePage(crate::RelatedEdgePage),
     /// Accepted add intent.
     Added(crate::IntentId),
     /// Accepted remove intent.
@@ -1526,6 +1586,7 @@ mod tests {
                 symbol: SymbolAddress::canonical(symbol),
                 basis: basis.into(),
                 source: None,
+                source_range: None,
             })
         );
         assert!(Command::Health.as_document_query(basis).is_none());

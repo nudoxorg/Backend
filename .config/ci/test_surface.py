@@ -909,6 +909,27 @@ class LiveContractAdmissionTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(RuntimeError):
                 surface.require_live_health(summary, changed, page)
 
+    def test_declared_settled_gap_certifies_health_but_a_moving_or_undeclared_lane_does_not(self):
+        root, source = "a" * 64, "b" * 64
+        lanes = [{"lane": lane, "state": "complete"} for lane in ("exact", "names", "graph")]
+        gapped = lanes + [{"lane": "semantic", "state": "partial"}]
+        summary = {"answer": "status", "detail": "summary", "availability": "available",
+                   "readiness": "partial", "publication": "populated", "rows": 25,
+                   "coverage": gapped, "capabilities": {}, "revision": root, "revision_tag": root[:8]}
+        full = dict(summary, detail="full", source=source, source_tag=source[:8])
+        surface.require_live_health(summary, full, full, root, ("semantic",))
+        # The same reply is not ready for a case that declares no gap.
+        with self.assertRaises(RuntimeError):
+            surface.require_live_health(summary, full, full, root)
+        with self.assertRaises(RuntimeError):
+            surface.require_live_health(summary, full, full, root, ("graph",))
+        moving = dict(summary, coverage=lanes + [
+            {"lane": "semantic", "state": "indexing", "completed": 1, "total": 2}])
+        with self.assertRaises(RuntimeError):
+            surface.require_live_health(moving, dict(moving, detail="full", source=source,
+                                                      source_tag=source[:8]), moving, root, ("semantic",))
+
+
     def test_ignored_bound_lost_rank_or_false_completeness_is_rejected(self):
         reference = {"answer": "records", "query": "language", "records": [{"id": 1}, {"id": 2}], "more": False}
         good = dict(reference, records=[{"id": 1}], more=True)
@@ -1104,6 +1125,61 @@ class PartialSearchReadinessTests(unittest.TestCase):
             now=lambda: now[0], sleep=lambda delay: now.__setitem__(0, now[0] + delay))
         self.assertEqual(final, self.ready(transport="mcp"))
         self.assertEqual(len(frames), 2)
+
+
+class SettledGapReadinessTests(unittest.TestCase):
+    LANES = [{"lane": lane, "state": "complete"} for lane in ("exact", "names", "graph")]
+
+    def page(self, semantic, readiness="partial", **extra):
+        row = {"identity": {"name": "Token", "path": "src/token.py"},
+               "language": "python", "state": "ready"}
+        return {"exit": 0, "json": dict(
+            {"answer": "records", "query": "Token", "readiness": readiness, "records": [row],
+             "more": False, "coverage": self.LANES + [dict(lane="semantic", **semantic)]}, **extra)}
+
+    def preparing(self):
+        row = {"identity": {"name": "Token", "path": "src/token.py"},
+               "language": "python", "state": "ready"}
+        return {"exit": 0, "json": {
+            "answer": "records", "query": "Token", "readiness": "partial", "records": [row],
+            "search_scope": "published_names_only", "full_search": "preparing", "more": False,
+            "coverage": self.LANES + [{"lane": "semantic", "state": "partial"}]}}
+
+    def resolve(self, first, retry, gap_lanes):
+        return surface.resolve_partial_authored_search(
+            first, retry, surface.time.monotonic() + 10.0, transport="cli", query="Token",
+            expected={"Token": "src/token.py"}, language="python", request=["search", "Token"],
+            gap_lanes=gap_lanes, sleep=lambda _delay: None)
+
+    def test_a_declared_bare_partial_lane_is_steady_after_preparation(self):
+        settled = self.page({"state": "partial"})
+        final, frames = self.resolve(self.preparing(), lambda _timeout: settled, ("semantic",))
+        self.assertEqual(final, settled)
+        self.assertEqual(len(frames), 2)
+        final, frames = self.resolve(settled, lambda _timeout: self.fail("steady first reply"), ("semantic",))
+        self.assertEqual(frames, [settled])
+
+    def test_undeclared_gap_moving_fraction_or_other_lane_is_not_steady(self):
+        settled = self.page({"state": "partial"})
+        for name, reply, gap_lanes in (
+            ("undeclared", settled, ()),
+            ("other lane declared", settled, ("graph",)),
+            ("moving fraction", self.page({"state": "indexing", "completed": 1, "total": 2}), ("semantic",)),
+            ("unavailable", self.page({"state": "unavailable", "reason": "incomplete"}), ("semantic",)),
+        ):
+            with self.subTest(name), self.assertRaises(RuntimeError):
+                self.resolve(self.preparing(), lambda _timeout, reply=reply: reply, gap_lanes)
+
+    def test_partial_without_a_declared_gap_lane_is_never_ready(self):
+        self.assertFalse(surface.steady_readiness({"readiness": "partial", "coverage": self.LANES}, ("semantic",)))
+        self.assertTrue(surface.steady_readiness({"readiness": "ready", "coverage": self.LANES}))
+
+    def test_case_declaration_is_closed_over_coverage_lanes(self):
+        self.assertEqual(surface.settled_gap_lanes({"name": "x"}), ())
+        self.assertEqual(surface.settled_gap_lanes({"name": "x", "settled_gap_lanes": ["semantic"]}), ("semantic",))
+        for wrong in ("semantic", ["bogus"], ["semantic", "semantic"], [1]):
+            with self.subTest(wrong=wrong), self.assertRaises(RuntimeError):
+                surface.settled_gap_lanes({"name": "x", "settled_gap_lanes": wrong})
 
 
 class SnapshotContinuationTests(unittest.TestCase):
@@ -3336,6 +3412,106 @@ finally:
                     finally:
                         for fd in owned_fds.values():os.close(fd)
                         os.close(runner_fd)
+
+
+class FailureLogTailTests(unittest.TestCase):
+    def scratch_case(self, root, name="beta"):
+        case_root = root / "scratch" / name
+        (case_root / "project").mkdir(parents=True)
+        return case_root
+
+    def test_tail_keeps_last_lines_within_the_byte_bound_and_skips_the_project(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as temporary:
+            case_root = self.scratch_case(Path(temporary))
+            (case_root / "locald.log").write_text("".join(f"line {number}\n" for number in range(500)))
+            (case_root / "helper.stderr").write_text("helper exploded\n")
+            (case_root / "project" / "corpus.log").write_text("not ours\n")
+            (case_root / "cargo-home").mkdir()
+            (case_root / "cargo-home" / "build.log").write_text("nested log\n")
+            (case_root / "outside.log").symlink_to(case_root / "helper.stderr")
+            logs = dict(surface.case_failure_logs(case_root))
+        self.assertEqual(list(logs)[0], "locald.log")
+        self.assertEqual(set(logs), {"locald.log", "helper.stderr", "cargo-home/build.log"})
+        tail = logs["locald.log"].splitlines()
+        self.assertLessEqual(len(tail), surface.FAILURE_LOG_TAIL_LINES)
+        self.assertLessEqual(len(logs["locald.log"].encode()), surface.FAILURE_LOG_TAIL_BYTES)
+        self.assertEqual(tail[-1], "line 499")
+        self.assertEqual(logs["helper.stderr"], "helper exploded")
+
+    def test_missing_or_empty_scratch_reports_no_logs_without_raising(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as temporary:
+            self.assertEqual(surface.case_failure_logs(Path(temporary) / "absent"), [])
+            case_root = self.scratch_case(Path(temporary))
+            (case_root / "locald.log").write_bytes(b"")
+            self.assertEqual(surface.case_failure_logs(case_root), [])
+
+    def invoke(self, answers):
+        import contextlib
+        import io
+        import json
+        import sys
+        import tempfile
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "snapshots").mkdir()
+            (root / "cases.json").write_text(json.dumps({"cases": [{"name": "beta"}]}))
+            (root / "snapshots" / "beta.json").write_text(json.dumps(
+                {"answers": {"case": "beta"}, "performance": {"seconds": {}}}))
+
+            def run(case, binaries):
+                case_root = self.scratch_case(root, case["name"])
+                (case_root / "locald.log").write_text("noise\nnudox: compiler authority refused: custody reason\n")
+                if answers is None:
+                    raise RuntimeError("intentional setup failure")
+                return {"answers": answers, "performance": {"seconds": {"query": 0.01}}}
+
+            stdout = io.StringIO()
+            argv = ["surface.py", "--bin-dir", str(root), "--report", str(root / "report.json")]
+            with patch.object(surface, "SURFACE", root), patch.object(surface, "SCRATCH", root / "scratch"), \
+                    patch.object(surface, "run_case", side_effect=run), patch.object(sys, "argv", argv), \
+                    contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
+                try:
+                    result = surface.main()
+                except SystemExit as error:
+                    result = error.code
+            return result, stdout.getvalue()
+
+    def test_could_not_run_case_prints_the_owner_log_tail(self):
+        result, output = self.invoke(None)
+        self.assertEqual(result, 1, output)
+        self.assertIn("case beta could not run: intentional setup failure", output)
+        self.assertIn("tail of locald.log", output)
+        self.assertIn("| nudox: compiler authority refused: custody reason", output)
+
+    def test_verdict_failure_prints_the_owner_log_tail(self):
+        result, output = self.invoke({"case": "changed"})
+        self.assertEqual(result, 1, output)
+        self.assertIn("answers changed", output)
+        self.assertIn("tail of locald.log", output)
+        self.assertIn("| nudox: compiler authority refused: custody reason", output)
+
+    def test_passing_case_prints_no_log_tail(self):
+        result, output = self.invoke({"case": "beta"})
+        self.assertEqual(result, 0, output)
+        self.assertNotIn("tail of locald.log", output)
+
+    def test_index_failure_diagnostic_prints_the_owner_log_before_the_public_reads(self):
+        import contextlib, io, json
+        from unittest.mock import patch
+        owner = surface.Owner.__new__(surface.Owner)
+        owner.tail = lambda: "x" * 9000 + "\ncustody refused\n"
+        reply = {"exit": 0, "json": {"answer": "compiler-outcome"}}
+        project = Path("/tmp/nudox-surface/example/project")
+        with patch.object(surface, "run_cli", return_value=(reply, 0.1)), contextlib.redirect_stdout(io.StringIO()) as output:
+            surface.emit_index_failure_diagnostic(owner, project)
+        packets = [json.loads(line.split(" ", 1)[1]) for line in output.getvalue().splitlines()]
+        self.assertEqual(packets[1], {"project": str(project), "reply": reply})
+        self.assertLessEqual(len(packets[0]["owner_log_tail"]), surface.FAILURE_LOG_TAIL_BYTES)
+        self.assertTrue(packets[0]["owner_log_tail"].endswith("custody refused\n"))
 
 
 class SelectedCargoTargetAdmissionTests(unittest.TestCase):

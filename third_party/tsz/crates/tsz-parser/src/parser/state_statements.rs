@@ -1100,8 +1100,9 @@ impl<'work> ParserStateCore<'work> {
                 diagnostic_codes::MODIFIER_CANNOT_BE_USED_IN_AN_AMBIENT_CONTEXT,
             );
         }
+        let async_start = self.token_pos();
         self.parse_expected(SyntaxKind::AsyncKeyword);
-        self.parse_function_declaration_with_async(true, None)
+        self.parse_function_declaration_with_async(Some(async_start), None)
     }
 
     /// Parse a block statement

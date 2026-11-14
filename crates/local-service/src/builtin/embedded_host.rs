@@ -23,14 +23,19 @@ struct RetiredLayoutEvidence {
     files: std::num::NonZeroUsize,
 }
 
+#[cfg(test)]
 fn probe_retired_layout(workspace: &std::path::Path) -> Result<RetiredLayoutEvidence, String> {
+    probe_retired_layout_with_shutdown(workspace, None)
+}
+
+fn probe_retired_layout_with_shutdown(workspace: &std::path::Path, shutdown: Option<crate::listener::ListenerShutdown>) -> Result<RetiredLayoutEvidence, String> {
     use super::profile::{BuiltinWorkspaceRelation, RetiredSourceProbe};
     use backend_engine::WorkspaceOwner;
 
     let registry = super::product_relation_registry().map_err(|error| error.to_string())?;
     let owner = WorkspaceOwner::open_with_registry(
         workspace,
-        RetiredSourceProbe::new(workspace),
+        RetiredSourceProbe::with_shutdown(workspace, shutdown),
         super::genesis().map_err(|error| error.to_string())?,
         registry,
     )
@@ -58,6 +63,14 @@ pub(super) fn owner_open_refusal(
     workspace: &std::path::Path,
     error: crate::LocaldError,
 ) -> ProcessError {
+    owner_open_refusal_with_shutdown(workspace, error, None)
+}
+
+pub(super) fn owner_open_refusal_with_shutdown(
+    workspace: &std::path::Path,
+    error: crate::LocaldError,
+    shutdown: Option<crate::listener::ListenerShutdown>,
+) -> ProcessError {
     if matches!(
         &error,
         crate::LocaldError::Workspace(backend_engine::WorkspaceError::AlreadyOwned)
@@ -66,10 +79,13 @@ pub(super) fn owner_open_refusal(
             workspace: workspace.to_path_buf(),
         };
     }
+    if shutdown.as_ref().is_some_and(crate::listener::ListenerShutdown::is_requested) {
+        return ProcessError::Profile(error.to_string());
+    }
     if matches!(
         &error,
         crate::LocaldError::Workspace(backend_engine::WorkspaceError::Model(_))
-    ) && let Ok(evidence) = probe_retired_layout(workspace)
+    ) && let Ok(evidence) = probe_retired_layout_with_shutdown(workspace, shutdown)
     {
         return ProcessError::StateFromAnotherBuild(format!(
             "{} indexed source files are keyed by the source-file key layout an earlier build wrote ({error})",
@@ -144,6 +160,14 @@ impl LocalHostEnvironment for EmbeddedCompilerEnvironment {
         self.compiler_environment.as_ref().map_or(
             backend_engine::application::LocalHostCargoHomeSelection::Strict,
             backend_engine::application::ClosedLocalHostEnvironmentSnapshot::cargo_home_selection,
+        )
+    }
+
+    fn python_checker_failure(
+        &self,
+    ) -> Option<&backend_engine::application::LocalPythonCheckerFailure> {
+        self.compiler_environment.as_ref().and_then(
+            backend_engine::application::ClosedLocalHostEnvironmentSnapshot::python_checker_failure,
         )
     }
 

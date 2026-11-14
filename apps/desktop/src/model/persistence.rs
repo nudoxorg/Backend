@@ -406,6 +406,23 @@ pub enum PersistedRoute {
         /// Exact package references.
         packages: Vec<String>,
     },
+    /// A SQL, CSS or Impact page about one named thing in a project.
+    Native {
+        /// `sql`, `css` or `impact`.
+        page: String,
+        /// Native project path, admitted again on reload.
+        project: String,
+        /// The kind's persisted spelling.
+        kind: String,
+        /// The name, in the owner's spelling.
+        name: String,
+        /// The file narrowing an ambiguous name.
+        #[serde(default)]
+        path: Option<String>,
+        /// Pages of Impact rows held.
+        #[serde(default)]
+        pages: u8,
+    },
     /// A package route with its closed lane.
     Package {
         /// Independent Cargo browse address; legacy package routes omit it.
@@ -536,6 +553,35 @@ impl From<PersistedPackageLane> for PackageLane {
 /// transient overlay is recorded separately in `settings_page`.
 pub(crate) fn display_route_claim(route: &Route) -> PersistedRoute { persist_route(route) }
 
+fn persist_native(page: &str, subject: &crate::navigation::NativeSubject, pages: u8) -> PersistedRoute {
+    PersistedRoute::Native {
+        page: page.to_owned(),
+        project: subject.project.as_str().to_owned(),
+        kind: subject.kind.wire().to_owned(),
+        name: subject.name.to_string(),
+        path: subject.path.as_ref().map(ToString::to_string),
+        pages,
+    }
+}
+
+/// Admits a persisted SQL, CSS or Impact page again; anything that no longer
+/// satisfies the subject's rules falls back to Home like any other saved route.
+fn restore_native(page: &str, project: &str, kind: &str, name: &str, path: Option<&str>, pages: u8) -> Option<BrowseRoute> {
+    use crate::navigation::{ImpactRoute, NativeKind, NativeSubject};
+    let subject = NativeSubject::new(
+        crate::core::LocalProjectId::new(project).ok()?,
+        NativeKind::parse_wire(kind)?,
+        name,
+        path,
+    ).ok()?;
+    match page {
+        "sql" if matches!(subject.kind, NativeKind::SqlTable | NativeKind::SqlView | NativeKind::SqlColumn) => Some(BrowseRoute::Sql(subject)),
+        "css" if matches!(subject.kind, NativeKind::CssClass | NativeKind::CssCustomProperty) => Some(BrowseRoute::Css(subject)),
+        "impact" => Some(BrowseRoute::Impact(ImpactRoute::new(subject).with_pages(pages))),
+        _ => None,
+    }
+}
+
 fn persist_route(route: &Route) -> PersistedRoute {
     match route {
         Route::Orbit(crate::navigation::OrbitRoute::Home) => PersistedRoute::Home,
@@ -549,6 +595,9 @@ fn persist_route(route: &Route) -> PersistedRoute {
             BrowseRoute::Compare(selection) => PersistedRoute::Compare {
                 packages: selection.packages().iter().map(|package| package.as_str().to_owned()).collect(),
             },
+            BrowseRoute::Sql(subject) => persist_native("sql", subject, 0),
+            BrowseRoute::Css(subject) => persist_native("css", subject, 0),
+            BrowseRoute::Impact(route) => persist_native("impact", &route.subject, route.pages),
         },
         Route::Package(route) => PersistedRoute::Package {
             cargo: route.cargo.as_ref().and_then(PersistedCargoBrowse::project),
@@ -1045,6 +1094,12 @@ impl PersistentState {
                 .map(crate::navigation::OrbitRoute::Browse)
                 .map(Route::Orbit)
                 .unwrap_or_else(|| Route::Orbit(crate::navigation::OrbitRoute::Home)),
+            PersistedRoute::Native { page, project, kind, name, path, pages } => {
+                restore_native(page, project, kind, name, path.as_deref(), *pages)
+                    .map(crate::navigation::OrbitRoute::Browse)
+                    .map(Route::Orbit)
+                    .unwrap_or_else(|| Route::Orbit(crate::navigation::OrbitRoute::Home))
+            }
             PersistedRoute::Project { project } => std::num::NonZeroU64::new(*project)
                 .map(|project| {
                     crate::core::ProjectId::from_backend(backend_library::ProjectId::new(project))
@@ -1958,6 +2013,37 @@ mod tests {
         }
     }
 
+    fn project_subject(kind: crate::navigation::NativeKind, name: &str, path: Option<&str>) -> crate::navigation::NativeSubject {
+        crate::navigation::NativeSubject::new(LocalProjectId::new("/tmp/nudox-shop").expect("project"), kind, name, path).expect("subject")
+    }
+
+    #[test]
+    fn a_saved_sql_css_or_impact_page_that_no_longer_admits_returns_home() {
+        let bad = |page: &str, kind: &str, name: &str, path: Option<&str>| PersistedRoute::Native {
+            page: page.to_owned(), project: "/tmp/nudox-shop".to_owned(), kind: kind.to_owned(), name: name.to_owned(),
+            path: path.map(str::to_owned), pages: 1,
+        };
+        for route in [
+            bad("sql", "css-class", "card", None),
+            bad("css", "sql-table", "orders", None),
+            bad("impact", "nonsense", "x", None),
+            bad("elsewhere", "sql-table", "orders", None),
+            bad("impact", "sql-table", "orders", Some("../escape.sql")),
+            bad("impact", "sql-table", "", None),
+        ] {
+            let state = PersistedDesktopState { route: route.clone(), ..PersistedDesktopState::default() };
+            let reopened = PersistentState::at("unused").cold_reload(&state);
+            assert_eq!(reopened.route, Route::Orbit(crate::navigation::OrbitRoute::Home), "{route:?}");
+        }
+        // Pages held are clamped, never trusted.
+        let state = PersistedDesktopState { route: PersistedRoute::Native {
+            page: "impact".into(), project: "/tmp/nudox-shop".into(), kind: "sql-table".into(), name: "orders".into(), path: None, pages: 200,
+        }, ..PersistedDesktopState::default() };
+        let reopened = PersistentState::at("unused").cold_reload(&state);
+        assert!(matches!(reopened.route, Route::Orbit(crate::navigation::OrbitRoute::Browse(BrowseRoute::Impact(ref impact)))
+            if impact.pages == crate::navigation::IMPACT_MAX_PAGES));
+    }
+
     #[test]
     fn browsing_places_and_settings_overlay_survive_a_cold_restart() {
         let snapshot = AppSnapshot::empty(crate::core::VersionedRoot::synthetic(
@@ -1972,6 +2058,9 @@ mod tests {
                 crate::model::pages::PackageRef::parse("pkg:cargo/toml@0.8.23").expect("first"),
                 crate::model::pages::PackageRef::parse("pkg:cargo/serde@1.0.0").expect("second"),
             ]).expect("compare")),
+            BrowseRoute::Sql(project_subject(crate::navigation::NativeKind::SqlColumn, "orders.total", None)),
+            BrowseRoute::Css(project_subject(crate::navigation::NativeKind::CssCustomProperty, "--brand", None)),
+            BrowseRoute::Impact(crate::navigation::ImpactRoute::new(project_subject(crate::navigation::NativeKind::CssClass, "card", Some("src/card.css"))).with_pages(3)),
         ];
         for place in browse {
             let route = Route::Orbit(crate::navigation::OrbitRoute::Browse(place));

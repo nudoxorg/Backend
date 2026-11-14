@@ -8,7 +8,7 @@
       "json": {
         "answer": "outline",
         "budget": {
-          "bytes": 7402,
+          "bytes": 7401,
           "bytesPerToken": 4,
           "estimatedTokens": 1851
         },
@@ -41,7 +41,7 @@
             },
             {
               "lane": "semantic",
-              "state": "complete"
+              "state": "partial"
             }
           ],
           "limit": 200,
@@ -50,7 +50,7 @@
           "schema": 3,
           "sequence": 2,
           "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-          "source_root": "af50fd7504c23e7bac575ff6f0df3c688e039b55238761fd03f4ccd485ac3538"
+          "source_root": "6f49969f138dbd5a3b6898b17e4abfa28ea5102f13b6725f59a5ae9a91128e8a"
         },
         "roots": [
           {
@@ -854,9 +854,9 @@
       "json": {
         "answer": "shelf",
         "budget": {
-          "bytes": 407,
+          "bytes": 438,
           "bytesPerToken": 4,
-          "estimatedTokens": 102
+          "estimatedTokens": 110
         },
         "detail": "summary",
         "projects": [
@@ -871,11 +871,14 @@
               "shape": "package",
               "trail": "project"
             },
+            "partial_lanes": [
+              "semantic"
+            ],
             "readiness": "ready"
           }
         ],
-        "readiness": "ready",
-        "revision": "af50fd75",
+        "readiness": "partial",
+        "revision": "6f49969f",
         "rows": 24
       }
     },
@@ -884,7 +887,7 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 922,
+          "bytes": 923,
           "bytesPerToken": 4,
           "estimatedTokens": 231
         },
@@ -903,13 +906,13 @@
           },
           {
             "lane": "semantic",
-            "state": "complete"
+            "state": "partial"
           }
         ],
         "detail": "summary",
         "more": false,
         "query": "Anders",
-        "readiness": "ready",
+        "readiness": "partial",
         "records": [
           {
             "identity": {
@@ -977,7 +980,7 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 917,
+          "bytes": 918,
           "bytesPerToken": 4,
           "estimatedTokens": 230
         },
@@ -996,13 +999,13 @@
           },
           {
             "lane": "semantic",
-            "state": "complete"
+            "state": "partial"
           }
         ],
         "detail": "summary",
         "more": false,
         "query": "Bjarne",
-        "readiness": "ready",
+        "readiness": "partial",
         "records": [
           {
             "identity": {
@@ -1070,7 +1073,7 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 907,
+          "bytes": 908,
           "bytesPerToken": 4,
           "estimatedTokens": 227
         },
@@ -1089,13 +1092,13 @@
           },
           {
             "lane": "semantic",
-            "state": "complete"
+            "state": "partial"
           }
         ],
         "detail": "summary",
         "more": false,
         "query": "Duke",
-        "readiness": "ready",
+        "readiness": "partial",
         "records": [
           {
             "identity": {
@@ -1163,7 +1166,7 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 953,
+          "bytes": 954,
           "bytesPerToken": 4,
           "estimatedTokens": 239
         },
@@ -1182,13 +1185,13 @@
           },
           {
             "lane": "semantic",
-            "state": "complete"
+            "state": "partial"
           }
         ],
         "detail": "summary",
         "more": false,
         "query": "Gopher",
-        "readiness": "ready",
+        "readiness": "partial",
         "records": [
           {
             "identity": {
@@ -1257,7 +1260,7 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 955,
+          "bytes": 956,
           "bytesPerToken": 4,
           "estimatedTokens": 239
         },
@@ -1276,13 +1279,13 @@
           },
           {
             "lane": "semantic",
-            "state": "complete"
+            "state": "partial"
           }
         ],
         "detail": "summary",
         "more": false,
         "query": "ferris",
-        "readiness": "ready",
+        "readiness": "partial",
         "records": [
           {
             "identity": {
@@ -1351,7 +1354,7 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 955,
+          "bytes": 956,
           "bytesPerToken": 4,
           "estimatedTokens": 239
         },
@@ -1370,13 +1373,13 @@
           },
           {
             "lane": "semantic",
-            "state": "complete"
+            "state": "partial"
           }
         ],
         "detail": "summary",
         "more": false,
         "query": "monty",
-        "readiness": "ready",
+        "readiness": "partial",
         "records": [
           {
             "identity": {
@@ -1445,7 +1448,7 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 909,
+          "bytes": 910,
           "bytesPerToken": 4,
           "estimatedTokens": 228
         },
@@ -1464,13 +1467,13 @@
           },
           {
             "lane": "semantic",
-            "state": "complete"
+            "state": "partial"
           }
         ],
         "detail": "summary",
         "more": false,
         "query": "turing",
-        "readiness": "ready",
+        "readiness": "partial",
         "records": [
           {
             "identity": {
@@ -1546,9 +1549,9 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 1748,
+                "bytes": 1756,
                 "bytesPerToken": 4,
-                "estimatedTokens": 437,
+                "estimatedTokens": 439,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
                 "scope": "complete_jsonrpc_line",
@@ -1559,7 +1562,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27131 names\u27131 graph\u27131 semantic\u27131\n\u2022 `ferris` \u00b7 function \u00b7 rust\n  `/tmp/nudox-surface/polyglot/project::semantic::ef50602bb73121801eebfb4a0bdf09fb05c9af6f8f13ef9eb04d0be5012fcabf::ferris`\n1 row(s) on this page; showing 1 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
+                "text": "~lanes exact\u27131 names\u27131 graph\u27131 semantic\u25d0 partial\n\u2022 `ferris` \u00b7 function \u00b7 rust\n  `/tmp/nudox-surface/polyglot/project::semantic::ef50602bb73121801eebfb4a0bdf09fb05c9af6f8f13ef9eb04d0be5012fcabf::ferris`\n1 row(s) on this page; showing 1 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
                 "type": "text"
               }
             ],
@@ -1567,7 +1570,7 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytes": 955,
+                "bytes": 956,
                 "bytesPerToken": 4,
                 "estimatedTokens": 239
               },
@@ -1586,13 +1589,13 @@
                 },
                 {
                   "lane": "semantic",
-                  "state": "complete"
+                  "state": "partial"
                 }
               ],
               "detail": "summary",
               "more": false,
               "query": "ferris",
-              "readiness": "ready",
+              "readiness": "partial",
               "records": [
                 {
                   "identity": {
@@ -1667,9 +1670,9 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 1744,
+                "bytes": 1752,
                 "bytesPerToken": 4,
-                "estimatedTokens": 436,
+                "estimatedTokens": 438,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
                 "scope": "complete_jsonrpc_line",
@@ -1680,7 +1683,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27131 names\u27131 graph\u27131 semantic\u27131\n\u2022 `Gopher` \u00b7 function \u00b7 go\n  `/tmp/nudox-surface/polyglot/project::semantic::6146df368b528e088137e9ac48a79827fa48dc32b53ad946b94d3ec159c74445::Gopher`\n1 row(s) on this page; showing 1 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
+                "text": "~lanes exact\u27131 names\u27131 graph\u27131 semantic\u25d0 partial\n\u2022 `Gopher` \u00b7 function \u00b7 go\n  `/tmp/nudox-surface/polyglot/project::semantic::6146df368b528e088137e9ac48a79827fa48dc32b53ad946b94d3ec159c74445::Gopher`\n1 row(s) on this page; showing 1 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
                 "type": "text"
               }
             ],
@@ -1688,7 +1691,7 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytes": 953,
+                "bytes": 954,
                 "bytesPerToken": 4,
                 "estimatedTokens": 239
               },
@@ -1707,13 +1710,13 @@
                 },
                 {
                   "lane": "semantic",
-                  "state": "complete"
+                  "state": "partial"
                 }
               ],
               "detail": "summary",
               "more": false,
               "query": "Gopher",
-              "readiness": "ready",
+              "readiness": "partial",
               "records": [
                 {
                   "identity": {
@@ -1786,9 +1789,9 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 8571,
+                "bytes": 8632,
                 "bytesPerToken": 4,
-                "estimatedTokens": 2143,
+                "estimatedTokens": 2158,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
                 "scope": "complete_jsonrpc_line",
@@ -1799,7 +1802,7 @@
             },
             "content": [
               {
-                "text": "# project\n`/tmp/nudox-surface/polyglot/project`\n\n\u25c6 Duke  `src/Duke.java:1 \u203a Duke`\n  \u0192 language  `src/Duke.java:2 \u203a language`\n    \u25ab java.lang.String  `java.lang.String`\n  \u0192 <init>  `<init>`\n\u25c6 Anders  `src/Main.cs:1 \u203a Anders`\n  \u0192 Language  `src/Main.cs:2 \u203a Language`\n    \u25ab string  `string`\n\u25a3 Bjarne  `src/main.cpp:3 \u203a Bjarne`\n  \u0192 language  `src/main.cpp:4 \u203a language`\n    \u25ab language  `language`\n\u0192 Gopher  `go/main.go:4 \u203a Gopher`\n  \u25ab _  `_`\n\u0192 ferris  `src/lib.rs:2 \u203a ferris`\n  \u25ab ferris  `ferris`\n\u0192 monty  `src/main.py:1 \u203a monty`\n  \u25ab monty  `monty`\n\u0192 turing  `src/main.ts:2 \u203a turing`\n\u25a6 string_view  `string_view`\n18 declaration(s) \u00b7 complete\n",
+                "text": "# project\n`/tmp/nudox-surface/polyglot/project`\n\n\u25c6 Duke  `src/Duke.java:1 \u203a Duke`\n  \u0192 language  `src/Duke.java:2 \u203a language`\n    \u25ab java.lang.String  `java.lang.String`\n  \u0192 <init>  `<init>`\n\u25c6 Anders  `src/Main.cs:1 \u203a Anders`\n  \u0192 Language  `src/Main.cs:2 \u203a Language`\n    \u25ab string  `string`\n\u25a3 Bjarne  `src/main.cpp:3 \u203a Bjarne`\n  \u0192 language  `src/main.cpp:4 \u203a language`\n    \u25ab language  `language`\n\u0192 Gopher  `go/main.go:4 \u203a Gopher`\n  \u25ab _  `_`\n\u0192 ferris  `src/lib.rs:2 \u203a ferris`\n  \u25ab ferris  `ferris`\n\u0192 monty  `src/main.py:1 \u203a monty`\n  \u25ab monty  `monty`\n\u0192 turing  `src/main.ts:2 \u203a turing`\n\u25a6 string_view  `string_view`\n18 declaration(s) \u00b7 complete (outline pagination only; analysis coverage is not certified)\n",
                 "type": "text"
               }
             ],
@@ -1807,7 +1810,7 @@
             "structuredContent": {
               "answer": "outline",
               "budget": {
-                "bytes": 7402,
+                "bytes": 7401,
                 "bytesPerToken": 4,
                 "estimatedTokens": 1851
               },
@@ -1840,7 +1843,7 @@
                   },
                   {
                     "lane": "semantic",
-                    "state": "complete"
+                    "state": "partial"
                   }
                 ],
                 "limit": 200,
@@ -1849,7 +1852,7 @@
                 "schema": 3,
                 "sequence": 2,
                 "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-                "source_root": "af50fd7504c23e7bac575ff6f0df3c688e039b55238761fd03f4ccd485ac3538"
+                "source_root": "6f49969f138dbd5a3b6898b17e4abfa28ea5102f13b6725f59a5ae9a91128e8a"
               },
               "roots": [
                 {
@@ -2669,6 +2672,7 @@
         "backend.resolve",
         "backend.search",
         "backend.source",
+        "backend.sql_query",
         "backend.status"
       ]
     }

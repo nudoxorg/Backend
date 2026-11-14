@@ -900,6 +900,7 @@ impl<'work> ParserStateCore<'work> {
             FunctionData {
                 modifiers: None,
                 is_async,
+                async_start: None,
                 asterisk_token: false,
                 name: NodeIndex::NONE,
                 type_parameters,

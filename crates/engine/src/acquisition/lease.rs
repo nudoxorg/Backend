@@ -9,7 +9,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use backend_execution::WorkKey;
@@ -18,8 +18,13 @@ use backend_platform::OwnedWorkspaceDirectory;
 use super::identity::{ID_BYTES, PublicationRootId, RawArchiveObjectId, now_millis};
 
 pub(super) static TOKEN_COUNTER: AtomicU64 = AtomicU64::new(1);
-const GATE_LOCK_ATTEMPTS: usize = 32;
+/// How long a caller waits for a contended stripe gate. A holder keeps the gate
+/// across its own durable writes, which can take far longer than a few
+/// milliseconds when the disk is busy; a gate still held after this long is
+/// reported as contended and the operation fails closed.
+const GATE_LOCK_PATIENCE: Duration = Duration::from_secs(2);
 const GATE_LOCK_RETRY: Duration = Duration::from_millis(1);
+const GATE_LOCK_MAX_PAUSE: Duration = Duration::from_millis(25);
 const LEASE_RECORD_MAGIC: &[u8; 8] = b"ACQLSE01";
 const LEASE_RECORD_BODY_BYTES: usize = 8 + 8 + 1 + ID_BYTES + 8;
 const LEASE_RECORD_BYTES: usize = LEASE_RECORD_BODY_BYTES + 32;
@@ -199,17 +204,19 @@ impl LeaseStore {
     }
 
     fn try_lock_bounded(file: File) -> io::Result<Option<File>> {
-        for attempt in 0..GATE_LOCK_ATTEMPTS {
+        let deadline = Instant::now() + GATE_LOCK_PATIENCE;
+        let mut pause = GATE_LOCK_RETRY;
+        loop {
             match file.try_lock() {
                 Ok(()) => return Ok(Some(file)),
-                Err(TryLockError::WouldBlock) if attempt + 1 < GATE_LOCK_ATTEMPTS => {
-                    thread::sleep(GATE_LOCK_RETRY);
+                Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    thread::sleep(pause);
+                    pause = (pause * 2).min(GATE_LOCK_MAX_PAUSE);
                 }
                 Err(TryLockError::WouldBlock) => return Ok(None),
                 Err(TryLockError::Error(error)) => return Err(error),
             }
         }
-        Ok(None)
     }
 
     fn open_gate_file(&self, key: WorkKey) -> io::Result<File> {
@@ -476,6 +483,30 @@ impl LeaseStore {
                 expires_at_millis: expires,
             },
         }))
+    }
+
+    /// Acquires like [`Self::acquire`], retrying with backoff while the key's
+    /// gate or an unreleased holder keeps it, until `patience` has passed.
+    /// A holder keeps the gate across its own durable writes, so under disk
+    /// contention a caller needs far longer than one bounded gate attempt.
+    pub fn acquire_within(
+        &self,
+        key: WorkKey,
+        ttl: Duration,
+        patience: Duration,
+    ) -> io::Result<Option<LeaseGuard>> {
+        let deadline = Instant::now() + patience;
+        let mut pause = GATE_LOCK_RETRY;
+        loop {
+            if let Some(lease) = self.acquire(key, ttl)? {
+                return Ok(Some(lease));
+            }
+            if Instant::now() >= deadline {
+                return Ok(None);
+            }
+            thread::sleep(pause);
+            pause = (pause * 2).min(GATE_LOCK_MAX_PAUSE);
+        }
     }
 
     /// Allocates a private, synced-on-close temporary name.

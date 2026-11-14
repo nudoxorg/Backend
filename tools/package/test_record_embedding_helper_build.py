@@ -94,6 +94,35 @@ class HelperReceiptFixtures(unittest.TestCase):
         self.assertEqual(admitted["sha256"], receipt["artifact"]["sha256"])
         self.assertFalse((self.args.output_dir / "candidate.json").exists())
 
+    def test_stylo_worker_uses_separate_exact_recipe_and_consumer(self):
+        manifest = self.source["path"] / "frontends/stylo/Cargo.toml"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text('[package]\nname="backend-frontend-stylo"\n[[bin]]\nname="backend-stylo-worker"\n')
+        worker = self.artifact.with_name("backend-stylo-worker")
+        self.artifact.rename(worker)
+        self.fixtures()
+        result = producer.capture(self.args, stylo=True)
+        receipt = json.loads(result.read_bytes())
+        expected = ["cargo", "build", "--release", "--locked", "-p", "backend-frontend-stylo", "--bin", "backend-stylo-worker"]
+        self.assertEqual(self.execution_calls[0][0], expected)
+        self.assertEqual(receipt["schema"], "nudox.stylo-worker-build-receipt.v2")
+        self.assertEqual(receipt["remap_schema"], "nudox.stylo-worker-remap.v2")
+        self.assertEqual(receipt["artifact"]["sha256"], self.digest(worker))
+        admitted, _ = producer.package.admit_stylo_worker(worker, result, self.source["commit"], self.source["tree"], self.source["cargo_lock_sha256"])
+        self.assertEqual(admitted["sha256"], receipt["artifact"]["sha256"])
+
+    def test_stylo_source_observation_ignores_and_restores_git_redirection(self):
+        def snapshot(path):
+            self.assertNotIn("GIT_DIR", os.environ)
+            self.assertNotIn("GIT_WORK_TREE", os.environ)
+            self.assertEqual(os.environ["GIT_CONFIG_NOSYSTEM"], "1")
+            return {"path": path}
+        with patch.dict(os.environ, {"GIT_DIR": "/foreign/git", "GIT_WORK_TREE": "/foreign/tree"}):
+            with patch.object(producer.shared, "source_snapshot", side_effect=snapshot):
+                self.assertEqual(producer.clean_source_snapshot(self.source["path"]), {"path": self.source["path"]})
+            self.assertEqual(os.environ["GIT_DIR"], "/foreign/git")
+            self.assertEqual(os.environ["GIT_WORK_TREE"], "/foreign/tree")
+
     def test_successful_cached_artifact_does_not_require_new_mtime(self):
         os.utime(self.artifact, (1, 1))
         os.link(self.artifact, self.artifact.with_name(producer.NAME + ".cargo-hardlink"))

@@ -37,6 +37,10 @@ use super::retry::{CircuitBreaker, RetryPolicy};
 use super::telemetry::{AcquisitionTelemetry, Telemetry};
 
 const ACQUISITION_LEASE_TTL: Duration = Duration::from_secs(30);
+/// How long a caller waits for a contended journal fence before reporting it
+/// busy. A holder keeps the fence across durable writes that can be slow under
+/// disk contention.
+const JOURNAL_FENCE_PATIENCE: Duration = Duration::from_secs(5);
 const TRANSFER_BUSY_PROGRESS_WINDOW: Duration = Duration::from_secs(5);
 
 /// Compile-time permission for the low-level registry owner journal writers.
@@ -134,15 +138,12 @@ fn with_registry_journal_fence<T>(
         AcquisitionPublicationCapability<'fence>,
     ) -> Result<T, AcquisitionError>,
 ) -> io::Result<Option<Result<T, AcquisitionError>>> {
-    let mut gate = None;
-    for _ in 0..32 {
-        gate = leases.acquire(registry_journal_work_key(source), ACQUISITION_LEASE_TTL)?;
-        if gate.is_some() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    let Some(mut gate) = gate else {
+    let Some(mut gate) = leases.acquire_within(
+        registry_journal_work_key(source),
+        ACQUISITION_LEASE_TTL,
+        JOURNAL_FENCE_PATIENCE,
+    )?
+    else {
         return Ok(None);
     };
     let mut owner = owner
@@ -176,15 +177,12 @@ fn with_product_registry_journal_fence<T>(
         &'fence AcquisitionLease,
     ) -> Result<T, AcquisitionError>,
 ) -> io::Result<Option<Result<T, AcquisitionError>>> {
-    let mut gate = None;
-    for _ in 0..32 {
-        gate = leases.acquire(registry_journal_work_key(source), ACQUISITION_LEASE_TTL)?;
-        if gate.is_some() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    let Some(mut gate) = gate else {
+    let Some(mut gate) = leases.acquire_within(
+        registry_journal_work_key(source),
+        ACQUISITION_LEASE_TTL,
+        JOURNAL_FENCE_PATIENCE,
+    )?
+    else {
         return Ok(None);
     };
     let mut owner = owner

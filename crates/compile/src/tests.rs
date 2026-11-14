@@ -811,7 +811,7 @@ fn process_input_and_output_limits_are_independent() -> Result<(), Box<dyn Error
     let input_heavy =
         ProcessLimits::new(1, 1, Duration::from_secs(1), 1)?.with_input_bytes_limit(64)?;
     let process = SupervisedCommand::new(
-        PathBuf::from("/usr/bin/true"),
+        required_test_tool("true"),
         Vec::new(),
         PathBuf::from("/tmp"),
         ProcessEnvironment::new(Vec::new())?,
@@ -845,9 +845,10 @@ fn native_cold_runner_keeps_output_and_coverage_separate() -> Result<(), Box<dyn
     };
     let snapshot = authority.discover()?;
     let key = session_key(&authority, &snapshot);
+    let (program, arguments) = cat_authority();
     let command = SupervisedCommand::for_authority(
-        test_coreutils_tool("cat"),
-        Vec::new(),
+        program,
+        arguments,
         ProcessEnvironment::new(Vec::new())?,
         PathBuf::from("/tmp"),
         ProcessStdin::bytes(b"raw authority bytes"),
@@ -881,9 +882,10 @@ fn native_cold_runner_keeps_output_and_coverage_separate() -> Result<(), Box<dyn
 fn native_persistent_runner_requires_advertised_protocol_and_key() -> Result<(), Box<dyn Error>> {
     let toolchain = typed_of::<ToolchainSchema>(b"tool");
     let limits = limits(128, 64, Duration::from_secs(1), 192)?;
+    let (program, arguments) = cat_authority();
     let cold = SupervisedCommand::for_authority(
-        test_coreutils_tool("cat"),
-        Vec::new(),
+        program,
+        arguments,
         ProcessEnvironment::new(Vec::new())?,
         PathBuf::from("/tmp"),
         ProcessStdin::null(),
@@ -902,9 +904,10 @@ fn native_persistent_runner_requires_advertised_protocol_and_key() -> Result<(),
         unavailable: false,
     };
     let snapshot = authority.discover()?;
+    let (program, arguments) = cat_authority();
     let command = SupervisedCommand::for_authority(
-        test_coreutils_tool("cat"),
-        Vec::new(),
+        program,
+        arguments,
         ProcessEnvironment::new(Vec::new())?,
         PathBuf::from("/tmp"),
         ProcessStdin::null(),
@@ -1096,22 +1099,68 @@ fn pool_leases_are_bounded_and_return_scratch_on_drop() -> Result<(), Box<dyn Er
     Ok(())
 }
 
-// Nix coreutils dispatches on argv[0]. The authority runner stages a tool
-// under a different name, so use the pinned per-tool wrappers when provided.
+// Resolve required host tools without invoking a shell or silently skipping tests.
 #[cfg(unix)]
-fn test_coreutils_tool(name: &str) -> PathBuf {
-    if let Some(root) = std::env::var_os("NUDOX_TEST_COREUTILS_BIN") {
+pub(super) fn required_test_tool(name: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mut directories: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|path| {
+            std::env::split_paths(&path)
+                .filter(|p| p.is_absolute())
+                .collect()
+        })
+        .unwrap_or_default();
+    directories.extend([
+        PathBuf::from("/usr/bin"),
+        PathBuf::from("/bin"),
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/opt/homebrew/bin"),
+    ]);
+    directories
+        .into_iter()
+        .map(|dir| dir.join(name))
+        .find(|path| {
+            path.metadata()
+                .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        })
+        .unwrap_or_else(|| panic!("required test tool {name} was not found on PATH"))
+}
+
+#[cfg(unix)]
+pub(super) fn required_python_path() -> String {
+    let python = required_test_tool("python3");
+    let parent = python
+        .parent()
+        .expect("Python executable has a parent directory");
+    std::env::join_paths([parent])
+        .expect("Python directory is a valid PATH")
+        .into_string()
+        .expect("Python directory must be valid UTF-8 for process environment")
+}
+
+#[cfg(unix)]
+fn cat_authority() -> (PathBuf, Vec<String>) {
+    let cat = if let Some(root) = std::env::var_os("NUDOX_TEST_COREUTILS_BIN") {
         let root = PathBuf::from(root);
         assert!(
             root.is_absolute(),
             "the test coreutils root must be absolute"
         );
-        let tool = root.join(name);
-        assert!(tool.is_file(), "the pinned test tool must exist: {tool:?}");
-        tool
+        let cat = root.join("cat");
+        assert!(cat.is_file(), "the pinned test tool must exist: {cat:?}");
+        cat
     } else {
-        PathBuf::from("/bin").join(name)
-    }
+        required_test_tool("cat")
+    };
+    // Multicall coreutils changes its dispatch name when the authority is
+    // leased. Its explicit applet option preserves the actual native binary.
+    let resolved = std::fs::canonicalize(&cat).expect("cat must resolve");
+    let arguments = if resolved.file_name().is_some_and(|name| name == "coreutils") {
+        vec!["--coreutils-prog=cat".into()]
+    } else {
+        Vec::new()
+    };
+    (cat, arguments)
 }
 
 #[cfg(unix)]
@@ -1152,7 +1201,13 @@ fn supervisor_kills_on_output_limit_and_deadline() -> Result<(), Box<dyn Error>>
     assert_eq!(output_process.run(), Err(ProcessError::OutputLimit));
 
     let deadline_limits = limits(32, 32, Duration::from_millis(20), 64)?;
-    let sleep_process = command("/bin/sleep", &["1"], deadline_limits)?;
+    let sleep_process = command(
+        required_test_tool("sleep")
+            .to_str()
+            .ok_or("sleep path is not UTF-8")?,
+        &["1"],
+        deadline_limits,
+    )?;
     assert_eq!(sleep_process.run(), Err(ProcessError::Deadline));
     Ok(())
 }
@@ -1161,7 +1216,13 @@ fn supervisor_kills_on_output_limit_and_deadline() -> Result<(), Box<dyn Error>>
 #[test]
 fn supervisor_kills_when_the_caller_cancels() -> Result<(), Box<dyn Error>> {
     let process_limits = limits(32, 32, Duration::from_secs(2), 64)?;
-    let process = command("/bin/sleep", &["1"], process_limits)?;
+    let process = command(
+        required_test_tool("sleep")
+            .to_str()
+            .ok_or("sleep path is not UTF-8")?,
+        &["1"],
+        process_limits,
+    )?;
     let (cancellation, handle) = Cancellation::new();
     let join = thread::spawn(move || process.run_with_cancellation(&cancellation));
     thread::sleep(Duration::from_millis(20));
@@ -1175,7 +1236,13 @@ fn supervisor_kills_when_the_caller_cancels() -> Result<(), Box<dyn Error>> {
 #[test]
 fn supervisor_polls_a_borrowed_atomic_cancellation_flag() -> Result<(), Box<dyn Error>> {
     let process_limits = limits(32, 32, Duration::from_secs(2), 64)?;
-    let process = command("/bin/sleep", &["1"], process_limits)?;
+    let process = command(
+        required_test_tool("sleep")
+            .to_str()
+            .ok_or("sleep path is not UTF-8")?,
+        &["1"],
+        process_limits,
+    )?;
     let cancelled = Arc::new(AtomicBool::new(false));
     let observer = Arc::clone(&cancelled);
     let join =
@@ -1191,7 +1258,13 @@ fn supervisor_polls_a_borrowed_atomic_cancellation_flag() -> Result<(), Box<dyn 
 #[test]
 fn supervisor_honors_a_borrowed_absolute_deadline() -> Result<(), Box<dyn Error>> {
     let process_limits = limits(32, 32, Duration::from_secs(2), 64)?;
-    let process = command("/bin/sleep", &["1"], process_limits)?;
+    let process = command(
+        required_test_tool("sleep")
+            .to_str()
+            .ok_or("sleep path is not UTF-8")?,
+        &["1"],
+        process_limits,
+    )?;
     let cancelled = AtomicBool::new(false);
     let deadline = std::time::Instant::now() + Duration::from_millis(20);
 
@@ -1417,9 +1490,11 @@ fn supervisor_enforces_unix_process_count_limit() -> Result<(), Box<dyn Error>> 
         limits(64, 64, Duration::from_secs(2), 128)?.with_process_count_limit(1)?;
     // A resource-wrapper failure must never satisfy the refusal assertion.
     // First prove the requested authority actually runs under the same bound.
+    let python = required_test_tool("python3");
+    let python = python.to_str().ok_or("Python path is not UTF-8")?;
     let benign = command(
-        "/bin/sh",
-        &["-c", "printf authority-reached"],
+        python,
+        &["-c", "import os; os.write(1, b'authority-reached')"],
         process_limits,
     )?
     .run()?;
@@ -1431,14 +1506,19 @@ fn supervisor_enforces_unix_process_count_limit() -> Result<(), Box<dyn Error>> 
         // and parent-isolation control below still runs for privileged callers.
         return Ok(());
     }
+    // A direct fork has a deterministic refusal: some shells retry a failed
+    // fork until the supervisor deadline, hiding the actual limit result.
     let process = command(
-        "/bin/sh",
-        &["-c", "set -e; printf authority-reached; sleep 1 & wait"],
+        python,
+        &[
+            "-c",
+            "import errno, os\nos.write(1, b'authority-reached')\ntry:\n os.fork()\nexcept OSError as error:\n os._exit(1 if error.errno == errno.EAGAIN else 2)\nos._exit(0)",
+        ],
         limits(128, 128, Duration::from_secs(2), 256)?.with_process_count_limit(1)?,
     )?;
     let receipt = process.run()?;
     assert_eq!(receipt.terminal(), ProcessTerminal::Exit);
-    assert_ne!(receipt.status(), Some(0));
+    assert_eq!(receipt.status(), Some(1));
     assert!(receipt.stdout().starts_with(b"authority-reached"));
     assert!(receipt.reaped());
     Ok(())
@@ -1693,17 +1773,7 @@ fn executable_lease_copies_macho_before_original_mutation() -> Result<(), Box<dy
 #[cfg(unix)]
 #[test]
 fn persistent_observation_separates_frame_and_validated_payload() -> Result<(), Box<dyn Error>> {
-    let python = [
-        "/usr/bin/python3",
-        "/usr/local/bin/python3",
-        "/opt/homebrew/bin/python3",
-    ]
-    .into_iter()
-    .map(PathBuf::from)
-    .find(|path| path.is_file());
-    let Some(python) = python else {
-        return Ok(());
-    };
+    let python = required_test_tool("python3");
     let authority = MockAuthority {
         revision: 1,
         unavailable: false,
@@ -1795,17 +1865,7 @@ while True:
 #[test]
 fn persistent_native_combined_output_limit_rejects_second_response_before_publication()
 -> Result<(), Box<dyn Error>> {
-    let python = [
-        "/usr/bin/python3",
-        "/usr/local/bin/python3",
-        "/opt/homebrew/bin/python3",
-    ]
-    .into_iter()
-    .map(PathBuf::from)
-    .find(|path| path.is_file());
-    let Some(python) = python else {
-        return Ok(());
-    };
+    let python = required_test_tool("python3");
     let authority = MockAuthority {
         revision: 1,
         unavailable: false,
@@ -1923,17 +1983,7 @@ while True:
 #[test]
 fn persistent_native_surplus_stdout_is_accounted_before_response_publication()
 -> Result<(), Box<dyn Error>> {
-    let python = [
-        "/usr/bin/python3",
-        "/usr/local/bin/python3",
-        "/opt/homebrew/bin/python3",
-    ]
-    .into_iter()
-    .map(PathBuf::from)
-    .find(|path| path.is_file());
-    let Some(python) = python else {
-        return Ok(());
-    };
+    let python = required_test_tool("python3");
     let authority = MockAuthority {
         revision: 1,
         unavailable: false,
@@ -2051,17 +2101,7 @@ while True:
 )]
 fn persistent_session_cache_native_fixture_reuses_one_pid_across_serial_and_concurrent_requests()
 -> Result<(), Box<dyn Error>> {
-    let python = [
-        "/usr/bin/python3",
-        "/usr/local/bin/python3",
-        "/opt/homebrew/bin/python3",
-    ]
-    .into_iter()
-    .map(PathBuf::from)
-    .find(|path| path.is_file());
-    let Some(python) = python else {
-        return Ok(());
-    };
+    let python = required_test_tool("python3");
     let authority = MockAuthority {
         revision: 1,
         unavailable: false,
@@ -2410,23 +2450,23 @@ while True:
         initial_pid, pid,
         "the changed environment must not reuse the prior process"
     );
-    let initial_alive = Command::new("/bin/kill")
-        .arg("-0")
-        .arg(initial_pid.to_string())
-        .status()
-        .is_ok_and(|status| status.success());
+    let as_pid = |raw: u32| -> Result<rustix::process::Pid, Box<dyn Error>> {
+        rustix::process::Pid::from_raw(i32::try_from(raw)?)
+            .ok_or_else(|| "fixture PID must be positive".into())
+    };
+    let is_alive = |raw: u32| -> Result<bool, Box<dyn Error>> {
+        match rustix::process::test_kill_process(as_pid(raw)?) {
+            Ok(()) => Ok(true),
+            Err(rustix::io::Errno::SRCH) => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    };
+    let initial_alive = is_alive(initial_pid)?;
     assert!(
         !initial_alive,
         "the incompatible process recipe must be retired"
     );
-    assert!(
-        Command::new("/bin/kill")
-            .arg("-9")
-            .arg(pid.to_string())
-            .status()?
-            .success(),
-        "fixture process should accept the forced failure"
-    );
+    rustix::process::kill_process(as_pid(pid)?, rustix::process::Signal::KILL)?;
     assert!(
         request(
             &cache,
@@ -2469,21 +2509,13 @@ while True:
     );
     assert!(cache.invalidate(changed_preparation_key));
     for _ in 0..100 {
-        let alive = Command::new("/bin/kill")
-            .arg("-0")
-            .arg(recovered_pid.to_string())
-            .status()
-            .is_ok_and(|status| status.success());
+        let alive = is_alive(recovered_pid)?;
         if !alive {
             break;
         }
         thread::sleep(Duration::from_millis(2));
     }
-    let alive = Command::new("/bin/kill")
-        .arg("-0")
-        .arg(recovered_pid.to_string())
-        .status()
-        .is_ok_and(|status| status.success());
+    let alive = is_alive(recovered_pid)?;
     assert!(!alive, "retired persistent authority remained alive");
     assert_eq!(cache.stats().resident, 0);
     let _ = fs::remove_dir_all(workspace);

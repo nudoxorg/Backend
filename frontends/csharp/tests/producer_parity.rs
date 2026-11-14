@@ -45,6 +45,15 @@ fn rewrite_digest(bytes: &mut [u8]) {
 }
 
 #[test]
+fn v4_rejects_the_v5_top_level_owner_sentinel() {
+    let mut bytes = IMAGE.to_vec();
+    let references = section_offset(&bytes, Section::References);
+    bytes[references..references + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+    rewrite_digest(&mut bytes);
+    assert!(CSharpImage::open(&bytes).is_err());
+}
+
+#[test]
 fn committed_fixtures_retain_deep_source_truth() -> Result<(), Box<dyn Error>> {
     let authority = image(IMAGE)?;
     let expected_source: [u8; 32] = Sha256::digest(SOURCE).into();
@@ -205,7 +214,10 @@ fn dotnet_regeneration_is_byte_exact_and_deterministic() -> Result<(), Box<dyn E
         .arg(&intermediate_arg)
         .current_dir(&helper_dir)
         .status()?;
-    assert!(restored.success(), "locked oracle restore failed: {restored}");
+    assert!(
+        restored.success(),
+        "locked oracle restore failed: {restored}"
+    );
     // `UseSharedCompilation=false`: see this file's doc comment above — the
     // isolated `obj/`/`bin/` directories rule out a file-system race, but
     // MSBuild's ambient VBCSCompiler node is shared across every concurrent

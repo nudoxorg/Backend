@@ -950,6 +950,32 @@ mod tests {
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
 
+    #[test]
+    fn generic_journal_transport_does_not_admit_claimed_read_policy() {
+        use backend_library::{Basis, DeclarationRecord, DocumentSelection, Row, RowId,
+            SemanticLanguageProfile, SourcePolicyObservation, SourcePolicyQualification};
+        let fixture = Fixture::new();
+        let label = "fixture::semantic::opaque::caller";
+        let basis = Basis::new(backend_library::view_state_root(&[]), backend_library::object_version(b"fixture"));
+        let symbol = backend_library::symbol_key(label);
+        let row = Row::new(RowId::Symbol(symbol), basis, label);
+        let selection = DocumentSelection::from_row(&row, basis).expect("selection");
+        let profile = SemanticLanguageProfile::from_name("typescript").expect("profile");
+        let claim = SourcePolicyQualification::issue_observed(&[7; 32], &selection, SourcePolicyObservation {
+            workspace_root:[1;32], evidence_root:[2;32], project:[3;32], profile,
+            publication_profile:profile, publication_coordinate:"fixture".into(), source_path:"src/a.ts".into(),
+            source_fact:[4;32], input_digest:[5;32], byte_len:12, publication_binding:[6;32],
+            image_identity:[7;32], image_byte_len:128, program_membership:[8;32], entity_index:1,
+            declaration_family:[9;16], declaration_variant:[10;16],
+        }).expect("unverified claim");
+        let text = ProductText::new(label).expect("label");
+        let command = SurfaceCommand::Read { locators: vec![text.clone()].into_boxed_slice() };
+        let reply = SurfaceReply::Read(vec![DeclarationRecord {
+            source_policy:claim, label:text, stable_id:Some(*symbol.as_bytes()), signature:None, extent:None,
+        }].into_boxed_slice());
+        assert!(surface_with_index_journal(&fixture.paths, command, |_| Ok(reply.clone())).is_err());
+    }
+
     struct Fixture {
         root: PathBuf,
         paths: WorkspacePaths,
@@ -1141,14 +1167,14 @@ mod tests {
                 .iter()
                 .map(|claim| claim.cargo_target.as_ref().expect("scoped claim").as_str())
                 .collect::<std::collections::BTreeSet<_>>(),
-            ["integration-test", "lib"].into_iter().collect(),
+            ["integration-test", "lib"].into_iter().collect::<std::collections::BTreeSet<_>>(),
         );
         assert_eq!(
             claims
                 .iter()
                 .map(|claim| claim.operation_key)
                 .collect::<std::collections::HashSet<_>>(),
-            operation_keys.into_iter().collect(),
+            operation_keys.into_iter().collect::<std::collections::HashSet<_>>(),
         );
         for claim in claims {
             let expected = backend_library::index_operation_scoped_request_digest(

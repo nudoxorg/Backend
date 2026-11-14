@@ -690,7 +690,8 @@ impl Shelf {
         }
         if self.narrow.is_empty() {
             return line
-                .child(text(ty::SMALL, measure, palette.ink3).child("Type to narrow"))
+                .child(text(ty::SMALL, measure, palette.ink3)
+                    .keyed("shelf-narrow-hint").role(gpui::Role::Label).aria_label("Type to narrow").child("Type to narrow"))
                 .into_any_element();
         }
         let mut line = line
@@ -831,13 +832,13 @@ impl Shelf {
             .child(self.name(item, ink, measure, palette));
         let row_owns_input = self.input_surface.is_some_and(|surface|
             matches!(surface, super::super::root::ShelfNativeSurface::Docked | super::super::root::ShelfNativeSurface::Drawer));
-        if row_owns_input && item.does != Do::Nothing {
+        let native_handle = if row_owns_input && item.does != Do::Nothing {
             let handle = self.targets.native_handle(&item.key, cx);
             if FocusRepresentative::for_leaf(self.targets.is_focused(&item.key), &handle, window) == FocusRepresentative::Descendant {
                 element = element.aria_active_descendant();
             }
-            element = element.track_focus(&handle);
-        }
+            Some(handle)
+        } else { None };
         if let Some(sub) = item
             .sub
             .as_ref()
@@ -891,31 +892,40 @@ impl Shelf {
             let opens = item.source.clone().filter(|_| !item.current);
             let visit = self.reading_visit;
             let guard = self.action_guard(cx);
-            element =
-                element.on_click(cx.listener(move |shelf, event: &ClickEvent, window, cx| {
-                    if !guard(cx) { return; }
-                    if shelf.links.snapshot(cx).session().reading.current.id != visit { return; }
-                    shelf.take_keyboard(window, cx);
-                    shelf.targets.focus(id.clone());
-                    // A double-click scopes into the row: browsing, not going.
-                    if event.click_count() >= 2
-                        && let Some(scope) = &hoists
-                    {
-                        shelf.hoist(scope.clone(), cx);
-                        return;
-                    }
-                    if let Some(symbol) = &opens
-                        && let Some(name) = shelf.targets.bounds_of(&name_id(&id))
-                    {
-                        facet::motion::shared::remember(
-                            facet::anatomy::page::title_key(symbol.as_str()),
-                            name,
-                            window,
-                            cx,
-                        );
-                    }
-                    shelf.perform(&does, cx);
-                }));
+            let activation_admission = guard.clone();
+            let activate = cx.listener(move |shelf, event: &ClickEvent, window, cx| {
+                if !guard(cx) { return; }
+                if shelf.links.snapshot(cx).session().reading.current.id != visit { return; }
+                shelf.take_keyboard(window, cx);
+                shelf.targets.focus(id.clone());
+                // A double-click scopes into the row: browsing, not going.
+                if event.click_count() >= 2
+                    && let Some(scope) = &hoists
+                {
+                    shelf.hoist(scope.clone(), cx);
+                    return;
+                }
+                if let Some(symbol) = &opens
+                    && let Some(name) = shelf.targets.bounds_of(&name_id(&id))
+                {
+                    facet::motion::shared::remember(
+                        facet::anatomy::page::title_key(symbol.as_str()),
+                        name,
+                        window,
+                        cx,
+                    );
+                }
+                shelf.perform(&does, cx);
+            });
+            if let Some(handle) = native_handle {
+                let button = facet::controls::button::native_button_with_event(element, &handle, activate);
+                element = facet::controls::button::capture_activation_admission(
+                    button,
+                    Rc::new(move |cx| activation_admission(cx)),
+                );
+            } else {
+                element = element.on_click(activate);
+            }
         }
         if let Some(key) = item.warm.clone() {
             element = element.on_hover(cx.listener(move |shelf, hovered: &bool, _, cx| {

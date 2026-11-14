@@ -1,0 +1,47 @@
+{
+  "budget": {
+    "limitBytes": 49152,
+    "limitTokens": 12000,
+    "new_frame_bytes": 22570,
+    "note": "The new MCP outline frame stays far below the unchanged limits."
+  },
+  "cases": [
+    "cpp-pugixml"
+  ],
+  "changes": [
+    {
+      "after": "19 tools; backend.sql_query is listed between backend.source and backend.status (sorted order)",
+      "before": "18 tools, ending backend.source, backend.status",
+      "cause": "apps/mcp/src/jsonrpc/tools.rs registers backend.sql_query in this change set; every real-project case lists it.",
+      "path": "mcp/tools"
+    },
+    {
+      "after": "50 declaration(s) · truncated (outline pagination only; analysis coverage is not certified)",
+      "before": "50 declaration(s) · truncated",
+      "cause": "crates/present/render/text.rs and markdown.rs append that clause to the outline summary line. It says the truncation is paging, not an analysis-coverage claim. Structured fields (page, coverage, continuation) did not change.",
+      "path": "mcp/calls/2/reply/content/0/text"
+    },
+    {
+      "path": "mcp/calls/2/reply/_meta/backend/wireBudget/normalizedFrameBytesExcludingCounters",
+      "rule": "22508 -> 22570: +62 bytes, exactly the length of the inserted clause (62 ASCII characters)"
+    },
+    {
+      "path": "mcp/calls/2/reply/_meta/backend/wireBudget/normalizedEstimatedTokensExcludingCounters",
+      "rule": "5627 -> 5643: equals ceil(frame bytes / 4) before and after (bytesPerToken 4)"
+    }
+  ],
+  "evidence": {
+    "completeness": "The candidate printed by the harness has the same 25228 package rows, the same revision, source_root and outline page, and identical CLI outline, CLI packages and both CLI search answers as the reviewed snapshot; the only leaf differences outside the performance object are the five listed above. The CI run walked the whole corpus: 354 CLI outline continuation pages and 293 MCP outline continuation pages, plus 16 CLI and 139 MCP search pages. The harness compares snapshots only after the case run itself returned, so those walks completed.",
+    "method": "Recomputed every changed leaf from the full candidate snapshot against the committed snapshot (the harness truncates its printed diff). The text field was compared character by character: one insertion of the 62-character clause and nothing else.",
+    "limit": "No pinned fixture sources were read. The unchanged-ness of the 25228 rows and of the outline and search answers is the harness's own comparison plus this leaf diff, not an independent source census."
+  },
+  "not_changed": "Declarations, kinds, coordinates, counts, ordering, coverage, readiness, continuation evidence, CLI answers and every other MCP answer are identical to the reviewed snapshot.",
+  "performance": {
+    "action": "Reviewed performance object retained byte-for-byte; measurements from the candidate run were not adopted as baselines."
+  },
+  "required_before_merge": "Normal full T2 on the final exact head must reproduce these answers and pass every other correctness and performance check.",
+  "reviewer": "Claude Code / Sonnet 5.5, 2026-11-13",
+  "schema": 1,
+  "scope": "Answer-only update of the MCP tool list, the MCP outline text summary line and the two wire-budget counters that follow from that longer text.",
+  "task": "Review the cpp-pugixml T2 answer changes caused by the SQL query tool and the outline pagination wording"
+}

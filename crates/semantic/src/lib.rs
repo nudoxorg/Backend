@@ -34,8 +34,18 @@ pub mod index_vocabulary;
 /// Canonical compiler IR fragments: encoding, validation, mapping, and borrowing.
 pub mod ir;
 pub mod ir_vocabulary;
+/// Bounded canonical native TypeScript header aggregate claims.
+pub mod native_ts_headers;
+/// Bounded native source-line map claims.
+pub mod native_source_lines;
 /// Static dispatch from closed language-stage requests to concrete native compiler tools.
 pub mod registry;
+/// Native SQL analysis vocabulary without a shared binder.
+pub mod sql_analysis;
+/// Native Stylo stylesheet analysis vocabulary.
+pub mod stylo_analysis;
+/// Bounded causal reachability over already admitted facts.
+pub mod impact;
 pub mod vocabulary;
 
 pub use canonical::*;

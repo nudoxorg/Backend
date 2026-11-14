@@ -5,6 +5,9 @@
 
 mod cluster_coordinator;
 mod compiler;
+mod csharp_evidence;
+mod csharp_sdk_options;
+pub use csharp_evidence::{decode_csharp_evidence, CSharpEvidenceClaim, CSharpEvidenceConfig, CSharpEvidenceSource};
 mod compiler_terminal_text;
 mod compiler_typescript_failure;
 mod compiler_typescript_observation;
@@ -20,6 +23,8 @@ mod terminal;
 mod toolchain_probe;
 mod typescript_host;
 mod typescript_program;
+mod typescript_empty;
+pub use self::typescript_empty::EmptyNativeTypeScriptProgram;
 mod typescript_program_lane;
 mod unit_authority_v2;
 
@@ -49,10 +54,10 @@ pub use self::compiler::{
     PackageSourceCoverageGapCause, PackageSourceSet, PackageSourceSetError,
     SourceCoverageGapDiagnostic,
     PublishedSemanticPackage, StagedEmbeddingStatus, StagedSemanticArtifact,
-    StagedSemanticOutputObject, StagedSemanticPackage, StagedSemanticReaderError,
+    StagedSemanticOutputObject, StagedCSharpConfigProbe, StagedCSharpInvocationEvidence, StagedSemanticPackage, StagedSemanticReaderError,
     StagedSemanticReaderMetrics, StagedTypedPlaneContentArtifact, StagedTypedPlaneContentError,
     StagedTypedPlaneContentV3, StagedVersionedPlaneArtifact, StagedVersionedPlaneError,
-    StagedVersionedPlaneSegment, StagedVersionedPlanes,
+    StagedVersionedPlaneSegment, StagedVersionedPlanes, StagedNativeTypeScriptHeaders,
 };
 pub use self::config::{
     LocalCompilerConfig, LocalCompilerControl, LocalCompilerScratch, LocalCompilerScratchError,
@@ -82,7 +87,8 @@ pub use self::host::{
     InstalledRustToolchain, InstalledToolPlace, LocalCompilerHost, LocalCompilerHostError,
     LocalCompilerHostSelection, LocalCompilerHostSelectionIssue, LocalCompilerHostSelectionSource,
     LocalHostCargoHomeSelection, LocalHostDirectory, LocalHostDiscovery, LocalHostEnvironment,
-    LocalHostPathKind, LocalHostPathRole, LocalHostVariable,
+    LocalHostPathKind, LocalHostPathRole, LocalHostVariable, LocalPythonCheckerFailure,
+    LocalPythonCheckerFailureCause, LocalPythonCheckerIoKind,
     MAX_CLOSED_LOCAL_HOST_ENVIRONMENT_BYTES, ProcessHostEnvironment,
     PythonInterpreterHostAdmission, WorkspaceCompilerEnvironment, find_installed_rust,
     installed_rust_system_locations,
@@ -106,7 +112,7 @@ pub use self::runtime::{
     LocalRuntimePackageRoot, LocalRuntimePackageRootFacts, LocalRuntimePythonCheckerAdmission,
     LocalRuntimePythonCheckerProbeFailure, LocalRuntimeRustAuthority,
     LocalRuntimeRustAuthorityFailure, LocalRuntimeRustToolchainSelection, LocalRuntimeToolchain,
-    LocalRuntimeToolchainFacts, LocalRuntimeToolchainState, OwnedPackageSource,
+    LocalRuntimeToolchainFacts, LocalRuntimeToolchainState, OwnedCSharpConfigProbe, OwnedCSharpSdkProbe, OwnedCSharpSourceClaim, OwnedCSharpUnitClaim, OwnedPackageSource,
     OwnedPackageSourceAdmission, OwnedPackageSourceSet, PackageSemanticRuntimeError,
     PyreflyToolchainIdentity, TypeScriptSnapshotReuse,
 };

@@ -1223,7 +1223,8 @@ mod tests {
         let authority = VersionedRoot::from_revision(1, first.cursor(), 0).authority();
         let ceiling = backend_local_service::FrameLimits::default().max_frames_per_connection;
         for _ in 1..ceiling {
-            assert_eq!(exhausted.revision().expect("within the service frame limit").root, root);
+            let left = exhausted.connection_frames_remaining();
+            assert_eq!(exhausted.revision().unwrap_or_else(|error| panic!("within the service frame limit (the client counted {left:?} frames left of {ceiling}): {error:?}")).root, root);
         }
         assert!(exhausted.revision().is_err(), "the actual listener closes after 256 requests");
 

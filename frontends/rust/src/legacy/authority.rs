@@ -2973,7 +2973,20 @@ impl RustWorkspace {
                 // which Rustdoc include attributes can be expanded. Skipping
                 // this preload does not grant source ownership: analyze_source
                 // continues to reject a detached file.
-                Err(RustAuthorityError::DetachedSource { .. }) => continue,
+                //
+                // A file owned by several Cargo targets with no exact target
+                // identity (a `tests/common/mod.rs` helper that two integration
+                // tests declare with `mod common;`) has no single crate cfg
+                // context either. It is skipped the same way, never chosen for:
+                // analyze_source keeps refusing it as an ambiguous owner, which
+                // the package compile reports as a coverage gap for that file
+                // alone, and the targets that own it can still be selected
+                // explicitly. One shared helper no longer refuses every other
+                // source in the package.
+                Err(
+                    RustAuthorityError::DetachedSource { .. }
+                    | RustAuthorityError::AmbiguousSourceOwner { .. },
+                ) => continue,
                 Err(error) => return Err(error),
             };
             let semantics = Semantics::new(&self.database);
@@ -6787,6 +6800,183 @@ mod read_frontier_budget_tests {
                     .as_ref()
                     .expect("same retained index after per-source queries")
             )
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A published crate carries every optional target kind: `build.rs`, a
+    /// binary, an example, a bench, and integration tests that share a helper
+    /// module. Opening the whole package must admit all of it. Each target's
+    /// root is analysed under its own target, the helper two tests declare is
+    /// refused as an ambiguous owner without refusing its siblings (and is
+    /// admitted under either owner when that owner is named), and a file no
+    /// target owns stays detached.
+    #[test]
+    fn a_package_with_every_optional_target_kind_opens_and_binds_each_source_honestly() {
+        use super::{
+            RustAnalysisControl, RustAuthorityError, RustCargoMetadataPolicy, RustCargoTarget,
+            RustFeatureControl, RustToolchain, RustWorkspaceFile, RustWorkspaceSessionKey,
+            RustWorkspaceSessionLane, SourceByteLimit, Stage,
+        };
+        use backend_semantic::vocabulary::RustEdition;
+        use std::path::{Path, PathBuf};
+        use std::sync::atomic::AtomicBool;
+        use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after the epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "backend-rust-every-target-kind-{}-{nonce}",
+            std::process::id()
+        ));
+        for directory in [
+            "src/bin",
+            "examples",
+            "benches",
+            "tests/common",
+        ] {
+            std::fs::create_dir_all(root.join(directory)).expect("fixture directory");
+        }
+        std::fs::write(
+            root.join("Cargo.toml"),
+            concat!(
+                "[package]\n",
+                "name = \"every_target_kind\"\n",
+                "version = \"0.1.0\"\n",
+                "edition = \"2021\"\n",
+                "build = \"build.rs\"\n",
+                "[workspace]\n",
+                "[[bench]]\n",
+                "name = \"speed\"\n",
+                "harness = false\n",
+            ),
+        )
+        .expect("fixture manifest");
+        let sources: [(&str, &[u8]); 9] = [
+            ("build.rs", b"fn main() {}\n"),
+            ("src/lib.rs", b"pub fn library() -> u8 { 1 }\n"),
+            ("src/bin/tool.rs", b"fn main() { every_target_kind::library(); }\n"),
+            (
+                "examples/demo.rs",
+                b"fn main() { every_target_kind::library(); }\n",
+            ),
+            ("benches/speed.rs", b"fn main() { every_target_kind::library(); }\n"),
+            (
+                "tests/first.rs",
+                b"mod common;\n#[test] fn first() { common::helper(); }\n",
+            ),
+            (
+                "tests/second.rs",
+                b"mod common;\n#[test] fn second() { common::helper(); }\n",
+            ),
+            ("tests/common/mod.rs", b"pub fn helper() {}\n"),
+            // Referenced by no target: nothing owns it.
+            ("src/orphan.rs", b"pub fn orphan() {}\n"),
+        ];
+        for (relative, bytes) in sources {
+            std::fs::write(root.join(relative), bytes).expect("fixture source");
+        }
+        let tool = std::env::var_os("RUSTC")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("rustc"));
+        let toolchain = RustToolchain::discover(tool).expect("selected Rust toolchain");
+        let cancelled = AtomicBool::new(false);
+        let control = || RustAnalysisControl {
+            cancelled: &cancelled,
+            maximum_source_bytes: SourceByteLimit::from(1024 * 1024),
+            deadline: Instant::now() + std::time::Duration::from_secs(120),
+        };
+        // The captured frontier is a sorted set of package-relative paths.
+        let mut sources = sources;
+        sources.sort_by_key(|(relative, _)| *relative);
+        let paths = sources.map(|(relative, _)| PathBuf::from(relative));
+        let files = sources.map(|(relative, bytes)| RustWorkspaceFile {
+            relative_path: Path::new(relative),
+            source: std::str::from_utf8(bytes).expect("UTF-8 fixture"),
+        });
+        let key = RustWorkspaceSessionKey::new(
+            &root,
+            &toolchain,
+            RustEdition::Rust2021,
+            Stage::LowerIr,
+            RustFeatureControl::default(),
+            RustCargoMetadataPolicy::Offline,
+            None,
+            None,
+            None,
+            [0x6b; 32],
+            &paths,
+        )
+        .expect("complete captured source frontier");
+        let mut lane = RustWorkspaceSessionLane::default();
+        // The whole package, shared helper and orphan included, opens: one
+        // file several targets own must not refuse every other source.
+        let lease = lane
+            .begin(key, &files, control())
+            .expect("a package with every optional target kind opens");
+        let workspace = lease.workspace();
+        for (relative, bytes) in sources {
+            let outcome = workspace.analyze_source_with_cargo_target_fallback(
+                root.join(relative),
+                bytes,
+                control(),
+                |_| Ok(()),
+            );
+            match relative {
+                "tests/common/mod.rs" => assert!(
+                    matches!(
+                        outcome,
+                        Err(RustAuthorityError::AmbiguousSourceOwner {
+                            definition_count: 2,
+                            ..
+                        })
+                    ),
+                    "a helper two tests declare is an ambiguous owner, got {outcome:?}"
+                ),
+                "src/orphan.rs" => assert!(
+                    matches!(outcome, Err(RustAuthorityError::DetachedSource { .. })),
+                    "a file no target owns is detached, got {outcome:?}"
+                ),
+                _ => assert!(
+                    outcome.is_ok(),
+                    "{relative} is owned by exactly one target and must analyse, got {outcome:?}"
+                ),
+            }
+        }
+        // Naming an owner binds the shared helper separately under each one.
+        for name in ["first", "second"] {
+            let target = workspace
+                .cargo_target_for_name(name)
+                .expect("each integration test is a Cargo target");
+            assert_eq!(target.root, Path::new(&format!("tests/{name}.rs")));
+            workspace
+                .analyze_source_for_target(
+                    root.join("tests/common/mod.rs"),
+                    b"pub fn helper() {}\n",
+                    target,
+                    control(),
+                    |_| Ok(()),
+                )
+                .unwrap_or_else(|error| {
+                    panic!("the helper is admitted under its owner {name}: {error:?}")
+                });
+        }
+        // A target the helper does not belong to still refuses it.
+        let library = RustCargoTarget {
+            name: "every_target_kind",
+            root: Path::new("src/lib.rs"),
+        };
+        assert!(matches!(
+            workspace.analyze_source_for_target(
+                root.join("tests/common/mod.rs"),
+                b"pub fn helper() {}\n",
+                library,
+                control(),
+                |_| Ok(()),
+            ),
+            Err(RustAuthorityError::DetachedSource { .. })
         ));
         let _ = std::fs::remove_dir_all(&root);
     }

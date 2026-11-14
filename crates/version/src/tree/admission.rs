@@ -77,9 +77,7 @@ fn decode_key<R: CanonicalRelation>(bytes: &[u8]) -> Result<R::Key, NodeError> {
 
 fn decode_value<R: CanonicalRelation>(bytes: &[u8]) -> Result<R::Value, NodeError> {
     let value = R::decode_value(bytes).map_err(NodeError::RelationDecode)?;
-    let mut encoded = Vec::new();
-    R::encode_value(&value, &mut encoded);
-    if encoded == bytes {
+    if R::canonical_value_matches(&value, bytes) {
         Ok(value)
     } else {
         Err(NodeError::NonCanonicalEncoding)
@@ -209,7 +207,10 @@ pub fn admit_canonical_root<R: CanonicalRelation>(
         _ => return Err(NodeError::MalformedEncoding),
     };
 
-    let node = node_from_bytes::<R>(bytes.to_vec(), first_key, level, row_count);
+    // A boxed slice requests storage for exactly the wire length; converting
+    // it into Vec does not perform incremental capacity growth. Allocator
+    // bookkeeping/usable-size overhead is separate from the requested layout.
+    let node = node_from_bytes::<R>(Vec::from(Box::<[u8]>::from(bytes)), first_key, level, row_count);
     Ok(CheckedCanonicalRoot::from_parts(node.commitment(), node))
 }
 
@@ -243,6 +244,25 @@ pub fn admit_canonical_root_claim<R: CanonicalRelation>(
 }
 
 impl<R: CanonicalRelation> CheckedCanonicalRoot<R> {
+    /// Iterates typed entries from an already admitted leaf one at a time.
+    /// The complete node was canonical-checked at admission; iteration does
+    /// not retain an owned vector of sibling values.
+    pub fn leaf_iter(&self) -> Result<CanonicalLeafIter<'_, R>, NodeError> {
+        if self.node().level() != 0 { return Err(NodeError::InvalidBranch); }
+        let mut reader = NodeReader::new(self.bytes());
+        if reader.take(NODE_MAGIC.len())? != NODE_MAGIC
+            || reader.byte()? != CANONICAL_TREE_ABI
+            || reader.byte()? != CANONICAL_CUT_POLICY_VERSION
+            || reader.byte()? != 0x01
+        { return Err(NodeError::SchemaMismatch); }
+        let _version = reader.byte()?;
+        let _domain = reader.byte()?;
+        let _type = reader.u16()?;
+        if reader.u16()? != 0 { return Err(NodeError::LevelMismatch); }
+        let body = reader.field()?;
+        reader.finish()?;
+        Ok(CanonicalLeafIter { reader: NodeReader::new(body), marker: PhantomData })
+    }
     /// Returns a borrowed iterator over authenticated branch child summaries.
     ///
     /// The iterator retains the canonical node bytes by reference and decodes
@@ -331,7 +351,10 @@ impl<R: CanonicalRelation> CheckedCanonicalRoot<R> {
         let body = reader.field()?;
         reader.finish()?;
         let mut body_reader = NodeReader::new(body);
-        let mut entries = Vec::new();
+        // Row count was authenticated with the node; reserve its exact number
+        // of inline slots before decoding any value.
+        let count = usize::try_from(self.row_count()).map_err(|_| NodeError::OversizedNode)?;
+        let mut entries = Vec::with_capacity(count);
         while !body_reader.remaining.is_empty() {
             let key = decode_key::<R>(body_reader.field()?)?;
             let value = decode_value::<R>(body_reader.field()?)?;
@@ -373,8 +396,16 @@ impl<R: CanonicalRelation> CheckedCanonicalRoot<R> {
         let body = reader.field()?;
         reader.finish()?;
         let child_level = level.checked_sub(1).ok_or(NodeError::LevelMismatch)?;
+        let mut count_reader = NodeReader::new(body);
+        let mut count = 0usize;
+        while !count_reader.remaining.is_empty() {
+            count_reader.field()?;
+            count_reader.field()?;
+            count_reader.take(8)?;
+            count = count.checked_add(1).ok_or(NodeError::OversizedNode)?;
+        }
         let mut body_reader = NodeReader::new(body);
-        let mut children = Vec::new();
+        let mut children = Vec::with_capacity(count);
         while !body_reader.remaining.is_empty() {
             let first_key = decode_key::<R>(body_reader.field()?)?;
             let bytes = body_reader.field()?;
@@ -398,6 +429,24 @@ impl<R: CanonicalRelation> CheckedCanonicalRoot<R> {
         }
         body_reader.finish()?;
         Ok(children)
+    }
+}
+
+/// One-at-a-time typed traversal of an already admitted canonical leaf.
+pub struct CanonicalLeafIter<'a, R: CanonicalRelation> {
+    reader: NodeReader<'a>,
+    marker: PhantomData<R>,
+}
+
+impl<R: CanonicalRelation> Iterator for CanonicalLeafIter<'_, R> {
+    type Item = Result<(R::Key, R::Value), NodeError>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.reader.remaining.is_empty() { return None; }
+        Some((|| {
+            let key = decode_key::<R>(self.reader.field()?)?;
+            let value = decode_value::<R>(self.reader.field()?)?;
+            Ok((key, value))
+        })())
     }
 }
 

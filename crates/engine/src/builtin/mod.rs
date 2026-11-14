@@ -6,15 +6,29 @@
 //! engine while each capability boundary has a focused implementation module.
 
 mod authority;
+mod sql_receipt_index;
+pub use sql_receipt_index::*;
+mod sql_decode;
+mod sql_relation;
+pub use sql_relation::*;
 mod file_facts_relation;
 mod manifest;
 mod native_frontier_relation;
+mod native_source_evidence;
 mod output;
 mod profile;
 mod relation;
 mod semantic_capture_relation;
 mod semantic_relation;
+mod stylo_identity;
+mod stylo_projection;
+mod stylo_relation;
+mod csharp_receipt;
+pub use csharp_receipt::{admit_csharp_receipt_members, admit_csharp_receipt_relation, admit_csharp_receipt_relation_cancellable, admit_csharp_receipt_row, csharp_receipt_key, csharp_receipt_matches_source, csharp_receipt_members_digest, csharp_receipt_publication, csharp_receipt_relation, csharp_receipt_root_object, csharp_receipt_root_pointer_key, CSharpInputCoverage, CSharpInputObservation, CSharpMemberOutcome, CSharpReceiptImage, CSharpReceiptRecord, CSharpReceiptRelation, CSharpReceiptRootSchema, CSharpReceiptUnit, MAX_CSHARP_RECEIPT_MEMBERS, MAX_CSHARP_RECEIPT_ROW_BYTES};
 
+pub use stylo_relation::{admit_stylo_relation, admit_stylo_selection, stylo_analysis_relation, stylo_analysis_root_object, stylo_analysis_root_pointer_key, stylo_attempt_key, stylo_selection_key, stylo_host_key, stylo_rows_digest, StyloInventoryWitness, StyloAnalysisProfile, StyloAnalysisRecord, StyloAttemptArtifact, StyloAttemptOutcome, StyloAnalysisRelation, StyloAnalysisRootSchema, StyloInventory, StyloTerminal, StyloUnavailable, MAX_STYLO_RELATION_ROW_BYTES};
+pub use stylo_projection::{project_stylo_facts, stylo_parser_configuration_id, StyloProjectedFact, StyloProjectedRow, StyloProjectionBasis, StyloWorkerPolicy, MAX_STYLO_PROJECTED_ROW_BYTES, MAX_STYLO_PROJECTED_BYTES};
+pub use stylo_identity::{stylo_record_key, stylo_source_occurrence_key, StyloRecordKind, MAX_STYLO_RULE_DEPTH};
 pub use authority::WorkspaceViewProducerAdmission;
 pub use authority::coverage_from_admitted_authority;
 pub(crate) use authority::{authorized_coverage, complete_coverage};
@@ -36,6 +50,14 @@ pub use manifest::{
     product_dependency_manifest, product_read_manifest, semantic_execution_input_basis,
     semantic_execution_input_basis_from_snapshot, semantic_execution_input_manifest,
     semantic_execution_input_manifest_from_snapshot,
+};
+pub use native_source_evidence::{
+    NativeHeaderEntry, NativeHeaderEvidence, MAX_NATIVE_HEADER_ENTRIES, NativeSourceEvidence, NativeSourceEvidenceKind, NativeSourceEvidenceRelation, NativeSourceEvidenceRootSchema,
+    MAX_NATIVE_EVIDENCE_BYTES, MAX_NATIVE_EVIDENCE_PATH, MAX_NATIVE_EVIDENCE_PROJECT_ROWS,
+    MAX_NATIVE_EVIDENCE_ROWS, MAX_NATIVE_EVIDENCE_SOURCE, MAX_NATIVE_EVIDENCE_VALUE, MAX_NATIVE_EVIDENCE_STORED_VALUE,
+    native_source_evidence_key, native_source_evidence_relation, native_source_evidence_relation_budgeted,
+    native_source_evidence_lookup_budgeted, native_source_evidence_page_budgeted, NATIVE_EVIDENCE_READ_SCRATCH, native_source_evidence_root_object, native_source_evidence_root_object_budgeted,
+    native_source_evidence_root_pointer_key, validate_native_source_evidence_rows,
 };
 pub use native_frontier_relation::{
     CheckedNativeFrontier, MAX_NATIVE_SOURCE_BYTES, NATIVE_SOURCE_CHUNK_BYTES,
@@ -78,7 +100,7 @@ pub use semantic_capture_relation::{
     semantic_capture_root_object, semantic_capture_root_pointer_key,
 };
 pub use semantic_relation::{
-    ActivatedSemanticPublication, PartialSemanticCoverage, ProductSemanticPublicationKey,
+    ActivatedSemanticPublication, CheckpointedSemanticTargetError, PartialSemanticCoverage, ProductSemanticPublicationKey,
     ProductSemanticPublicationRecord, ProductSemanticPublicationRelation,
     ProductSemanticPublicationSnapshot, SemanticActivationError, SemanticPublicationClaim,
     SemanticPublicationCoverage, SemanticPublicationInput, SemanticPublicationRetentionFacts,
@@ -125,3 +147,6 @@ pub fn semantic_publication_fixture_with_authority(
 ) -> Result<backend_version::RelationState<ProductSemanticPublicationRelation>, String> {
     semantic_relation::semantic_publication_fixture_with_authority(expanded, authority)
 }
+
+mod vue_inventory;
+pub use vue_inventory::{validate_vue_inventory_rows, vue_inventory_relation, vue_inventory_root_object, vue_inventory_root_pointer_key};

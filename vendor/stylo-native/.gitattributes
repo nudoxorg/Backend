@@ -1,0 +1,2 @@
+# Preserve the exact upstream source whitespace in this vendored tree.
+* -whitespace

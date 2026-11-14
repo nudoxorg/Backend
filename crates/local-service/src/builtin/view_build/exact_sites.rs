@@ -39,6 +39,30 @@ impl ExactDeclarationSites {
             .or_insert(Some(id));
     }
 
+    /// Reverse only a singular, conflict-free binding in this selected projection.
+    /// A poisoned binding in the file prevents an unverifiable reverse claim.
+    pub(super) fn binding_for_row(
+        &self,
+        project: [u8; 32],
+        path: &str,
+        row: RowId,
+    ) -> Option<SourceBinding> {
+        let mut result = None;
+        for ((candidate_project, candidate_path, binding), candidate) in &self.sites {
+            if *candidate_project != project || candidate_path != path {
+                continue;
+            }
+            let candidate = (*candidate)?;
+            if candidate == row {
+                if result.is_some() {
+                    return None;
+                }
+                result = Some(*binding);
+            }
+        }
+        result
+    }
+
     pub(super) fn get(
         &self,
         project: [u8; 32],
@@ -143,6 +167,32 @@ mod tests {
             family: DeclarationFamilyId::from_raw([byte; 16]),
             variant: VariantFingerprint::from_raw([byte; 16]),
         }
+    }
+
+    #[test]
+    fn reverse_binding_requires_a_single_unpoisoned_package_path_assignment() {
+        let package = backend_engine::PackageKey::from_value("/fixture");
+        let first = SourceBinding::new(5, 9).expect("first");
+        let second = SourceBinding::new(30, 34).expect("second");
+        let row = RowId::Symbol(backend_engine::symbol_key("compiler-first"));
+        let other = RowId::Symbol(backend_engine::symbol_key("compiler-other"));
+        let mut sites = ExactDeclarationSites::default();
+        sites.record(package, "a.ts", first, row);
+        assert_eq!(
+            sites.binding_for_row(package.to_bytes(), "a.ts", row),
+            Some(first)
+        );
+        assert_eq!(sites.binding_for_row(package.to_bytes(), "b.ts", row), None);
+        sites.record(package, "a.ts", second, row);
+        assert_eq!(sites.binding_for_row(package.to_bytes(), "a.ts", row), None);
+        let mut poisoned = ExactDeclarationSites::default();
+        poisoned.record(package, "a.ts", first, row);
+        poisoned.record(package, "a.ts", second, other);
+        poisoned.record(package, "a.ts", second, row);
+        assert_eq!(
+            poisoned.binding_for_row(package.to_bytes(), "a.ts", row),
+            None
+        );
     }
 
     #[test]
@@ -430,6 +480,8 @@ mod tests {
                 path,
                 site_declarations: &current,
                 native_source: None,
+            native_ts_evidence: None,
+            native_ts_lines: None,
                 exact_sites: &mut exact,
             },
         )
@@ -796,6 +848,8 @@ mod tests {
                 site_declarations: &current,
                 exact_sites: &mut exact,
                 native_source: None,
+            native_ts_evidence: None,
+            native_ts_lines: None,
             },
         )
         .map_err(|error| error.to_string())?;

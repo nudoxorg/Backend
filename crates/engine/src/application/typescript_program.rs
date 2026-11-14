@@ -2432,7 +2432,7 @@ fn replay_observations(
                 if name.is_empty()
                     || name_path.is_absolute()
                     || name_path.components().count() != 1
-                    || name_path.file_name().and_then(|value| value.to_str()) != Some(name)
+                    || name_path.file_name().and_then(|value| value.to_str()) != Some(name.as_str())
                 {
                     return Err(closure_mismatch(
                         "TypeScript directory view contains a non-basename entry",
@@ -3057,6 +3057,12 @@ impl ProgramWorkShape {
     const DECLARATION_UNITS_PER_BYTE: u64 = 8;
     const APPLICATION_UNITS_PER_BYTE: u64 = 1_000;
     const APPLICATION_FILE_UNITS: u64 = 20_000_000;
+    // The linked checker on a real Angular program charged up to 27.9M per
+    // checked application member; a completed projection charged 4.48M per
+    // authored file. These separate aggregate terms give the checker 32M and
+    // projection 5M per member, without widening any individual file slice.
+    const CHECKER_HEADROOM_PER_FILE: u64 = 12_000_000;
+    const PROJECTION_HEADROOM_PER_FILE: u64 = 5_000_000;
     const CLOSURE_REPLAY_UNITS: u64 = 256;
     /// A single file may spend at most this share of its program's allowance...
     const FILE_SHARE_DENOMINATOR: u64 = 8;
@@ -3066,7 +3072,9 @@ impl ProgramWorkShape {
 
     /// Allowances for this shape, never above the global project cap.
     pub(crate) fn allowance(self) -> ProgramWorkAllowance {
-        let program = Self::BASE_UNITS
+        // Retain the previous slice basis so adding aggregate headroom does
+        // not allow a single runaway file to consume more work.
+        let slice_basis = Self::BASE_UNITS
             .saturating_add(
                 self.declaration_bytes
                     .saturating_mul(Self::DECLARATION_UNITS_PER_BYTE),
@@ -3084,9 +3092,13 @@ impl ProgramWorkShape {
                     .saturating_mul(Self::CLOSURE_REPLAY_UNITS),
             )
             .min(MAX_PROJECT_WORK_UNITS);
-        let per_file = (program / Self::FILE_SHARE_DENOMINATOR)
+        let aggregate_headroom = self.application_files.saturating_mul(
+            Self::CHECKER_HEADROOM_PER_FILE.saturating_add(Self::PROJECTION_HEADROOM_PER_FILE),
+        );
+        let program = slice_basis.saturating_add(aggregate_headroom).min(MAX_PROJECT_WORK_UNITS);
+        let per_file = (slice_basis / Self::FILE_SHARE_DENOMINATOR)
             .max(Self::MIN_FILE_UNITS)
-            .min(program);
+            .min(slice_basis);
         ProgramWorkAllowance { program, per_file }
     }
 }
@@ -4293,6 +4305,83 @@ mod work_allowance_tests {
             large.per_file < large.program,
             "one hot file can never consume the whole program"
         );
+    }
+
+    #[test]
+    fn measured_angular_headroom_does_not_widen_the_file_slice() {
+        // The captured program had 82 non-declaration members (including
+        // imported JavaScript); the remaining bytes and replay terms together
+        // charged the original allowance 720,017,576 units.
+        let shape = ProgramWorkShape {
+            application_files: 82,
+            application_bytes: 570_017,
+            declaration_bytes: 2,
+            closure_replay_work: 0,
+        };
+        let allowance = shape.allowance();
+        let previous = ProgramWorkShape::BASE_UNITS
+            + shape.application_files * ProgramWorkShape::APPLICATION_FILE_UNITS
+            + shape.application_bytes * ProgramWorkShape::APPLICATION_UNITS_PER_BYTE
+            + shape.declaration_bytes * ProgramWorkShape::DECLARATION_UNITS_PER_BYTE;
+        assert_eq!(previous, 2_360_017_016);
+        assert_eq!(allowance.program, previous + 82 * 17_000_000);
+        assert_eq!(allowance.per_file, previous / ProgramWorkShape::FILE_SHARE_DENOMINATOR);
+        assert!(allowance.program > 2_287_794_842 + 358_192_661);
+    }
+
+    #[test]
+    fn measured_angular_headroom_exceeds_the_observed_schedule_variance() {
+        // Runs of one unchanged Angular program charged the checker between
+        // 2.21B and 2.29B units, with a completed projection another 0.36B: the
+        // concurrent checkers duplicate each other's lazily computed work in a
+        // schedule-dependent amount. The allowance must exceed the worst
+        // observed total by a margin well beyond that spread, or the shared
+        // counter runs dry at a different file on every run.
+        let shape = ProgramWorkShape {
+            application_files: 82,
+            application_bytes: 570_017,
+            declaration_bytes: 2,
+            closure_replay_work: 0,
+        };
+        let worst_observed: u64 = 2_287_794_842 + 358_192_661;
+        let program = shape.allowance().program;
+        assert!(program >= worst_observed + worst_observed / 4, "{program}");
+    }
+
+    #[test]
+    fn allowance_is_a_pure_function_of_the_admitted_shape() {
+        // No term reads a clock, a thread count or an arrival order: equal
+        // shapes always receive equal allowances, and no allowance shrinks when
+        // an application file is admitted.
+        let mut previous = ProgramWorkShape::default().allowance();
+        for files in 1..=200u64 {
+            let shape = ProgramWorkShape {
+                application_files: files,
+                application_bytes: files * 7_000,
+                declaration_bytes: 40 * 1024 * 1024,
+                closure_replay_work: 3_000,
+            };
+            let allowance = shape.allowance();
+            assert_eq!(allowance, shape.allowance());
+            assert!(allowance.program >= previous.program);
+            assert!(allowance.program <= MAX_PROJECT_WORK_UNITS);
+            previous = allowance;
+        }
+    }
+
+    #[test]
+    fn aggregate_saturation_does_not_increase_the_legacy_file_slice() {
+        let shape = ProgramWorkShape {
+            application_files: 430,
+            ..ProgramWorkShape::default()
+        };
+        let old_program = ProgramWorkShape::BASE_UNITS
+            + shape.application_files * ProgramWorkShape::APPLICATION_FILE_UNITS;
+        let allowance = shape.allowance();
+        assert!(old_program < MAX_PROJECT_WORK_UNITS);
+        assert_eq!(allowance.program, MAX_PROJECT_WORK_UNITS);
+        assert_eq!(allowance.per_file, old_program / ProgramWorkShape::FILE_SHARE_DENOMINATOR);
+        assert!(allowance.per_file < MAX_PROJECT_WORK_UNITS / ProgramWorkShape::FILE_SHARE_DENOMINATOR);
     }
 
     #[test]

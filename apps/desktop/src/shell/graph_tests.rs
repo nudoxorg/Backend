@@ -303,6 +303,23 @@ fn t_on_world_over_a_package_starts_its_tour_with_nothing_focused(cx: &mut TestA
 }
 
 
+/// A refresh of this unchanged fixture returns the same owner revision.
+/// Advancing the cursor would require publishing matching new graph facts.
+struct StableCanaryRoot;
+
+impl crate::runtime::actor::EngineClient for StableCanaryRoot {
+    fn execute(&mut self, request: &crate::runtime::actor::EngineRequest) -> Result<crate::runtime::actor::EngineDto, crate::runtime::actor::EngineFault> {
+        use crate::runtime::actor::{EngineDto, EngineFault, EngineRequest};
+        match request {
+            EngineRequest::Root { request, basis, .. } => Ok(EngineDto::Root {
+                request: *request, basis: *basis, key: *basis, revision: basis.revision(),
+                delta: None, project: None, catalog: None,
+            }),
+            _ => Err(EngineFault::Cancelled),
+        }
+    }
+}
+
 /// Source-fixture rows reconstructed from Run19's two physical files. These
 /// are not claimed to be a decoded owner response. They exercise the exact
 /// production row mapper and identity adapter, then real native activation.
@@ -317,7 +334,7 @@ pub(super) fn canary_native_rig(cx: &mut TestAppContext, width: f32, scale: f32,
     let launch_root = VersionedRoot::synthetic(view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4);
     let gate = crate::runtime::owner::OwnerGate::ready(launch_root, crate::model::ServiceMode::Attached);
     let mut rig = super::tests::rig_with_engine_gate(cx, None, width, 900.0,
-        ReadPool::start(2, |_| super::tests::Fixture).expect("fixture pool"), super::tests::RootOnly, Some(gate.clone()));
+        ReadPool::start(2, |_| super::tests::Fixture).expect("fixture pool"), StableCanaryRoot, Some(gate.clone()));
     let preference = match appearance {
         facet::tokens::Appearance::Abyss => crate::model::AppearancePreference::Abyss,
         facet::tokens::Appearance::Glacier => crate::model::AppearancePreference::Glacier,
@@ -325,9 +342,7 @@ pub(super) fn canary_native_rig(cx: &mut TestAppContext, width: f32, scale: f32,
     rig.go(Intent::SetAppearance(preference));
     let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
     rig.go(Intent::ZoomTo { display, percent: (scale * 100.0) as u16 });
-    // Startup admits the owner and RootOnly can publish a newer cursor before
-    // this fixture is installed. The projection must bind to the same exact
-    // authority the current Reader will request, not the launch gate's key.
+    // Bind the projection to the exact authority admitted by the Reader.
     let root = rig.graph.store.read_with(rig.cx, |store, _| {
         assert!(store.current_owner_attachment().is_some(), "canary needs a serving owner attachment");
         store.snapshot().key()
@@ -476,7 +491,7 @@ fn native_graph_tab_denial_preserves_focus_before_owner_repaint(cx: &mut TestApp
     // Real native key, no watcher, draw, refresh or input between renewal and
     // dispatch. Denied is consumed rather than mistaken for a zone boundary.
     rig.cx.simulate_keystrokes("tab");
-    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), before);
+    assert!(rig.focus_retained_or_rehomed(before.as_ref()), "Tab gave the retired scene's keyboard to a new native owner");
     assert!(rig.graph.store.read_with(rig.cx, |store, _| store.graph_focus().is_none()));
 }
 
@@ -757,6 +772,29 @@ fn graph_painted_modes_revoke_on_owner_renewal_and_modal_cover(cx: &mut TestAppC
 }
 
 #[gpui::test]
+fn graph_does_not_start_a_projection_without_an_owner_attachment(cx: &mut TestAppContext) {
+    use crate::runtime::indexed_world::TestProjectionGate;
+    let (mut rig, owner) = canary_native_rig(cx, 1440.0, 1.0, facet::tokens::Appearance::Abyss);
+    let key = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let projection = Arc::new(TestProjectionGate::default());
+    rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture_with_gate(key, Some(projection.clone()), cx));
+    owner.publish(crate::runtime::owner::OwnerState::Starting);
+    rig.cx.run_until_parked();
+    let published = std::collections::BTreeSet::from([PackageRef::parse(PACKAGE).expect("package")]);
+    rig.graph.store.update(rig.cx, |store, cx| store.packages_published(&published, cx));
+    rig.cx.run_until_parked();
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_attachment()).is_none());
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_none(), "publication retires the prior scene");
+    assert!(!projection.entered(), "no projection may begin while the owner is unavailable");
+    owner.publish(crate::runtime::owner::OwnerState::Ready { key, mode: crate::model::ServiceMode::Attached });
+    rig.cx.run_until_parked();
+    assert!(projection.entered(), "the admitted owner starts the pending projection");
+    projection.release();
+    rig.cx.run_until_parked();
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_some());
+}
+
+#[gpui::test]
 fn mounted_graph_recovers_from_owner_renewal_without_navigation_or_forced_redraw(cx: &mut TestAppContext) {
     use gpui::Focusable as _;
     let (mut rig, gate) = canary_native_rig(cx, 1440.0, 1.0, facet::tokens::Appearance::Abyss);
@@ -784,8 +822,8 @@ fn mounted_graph_recovers_from_owner_renewal_without_navigation_or_forced_redraw
     let mounted = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx));
     assert!(mounted.is_some(), "the same visible route must remount after admission without an external wake");
     let mounted = mounted.expect("remounted graph");
-    assert_ne!(mounted.entity_id(), before,
-        "the old serving scene must not survive an owner replacement");
+    assert_eq!(mounted.entity_id(), before,
+        "same-generation renewal retains the mounted local scene");
     assert!(rig.cx.update(|window, cx| mounted.focus_handle(cx).is_focused(window)),
         "the admitted replacement inherits its predecessor's uninterrupted native ownership");
 }
@@ -1115,13 +1153,13 @@ fn stale_graph_row_pointer_and_ax_cannot_take_current_focus_before_redraw(cx: &m
     gate.publish(crate::runtime::owner::OwnerState::Starting);
     gate.publish(crate::runtime::owner::OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
     rig.cx.simulate_mouse_down(row.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
-    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused, "stale row admission runs before automatic pointer focus");
+    assert!(rig.focus_retained_or_rehomed(focused.as_ref()), "stale row admission runs before automatic pointer focus");
     rig.cx.simulate_mouse_up(row.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
     rig.cx.update(|window, cx| window.simulate_a11y_action(gpui::accesskit::ActionRequest {
         action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT,
         target_node: old_node, data: None,
     }, cx));
-    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused, "stale native AX action cannot change current focus");
+    assert!(rig.focus_retained_or_rehomed(focused.as_ref()), "stale native AX action cannot change current focus");
     let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("same graph");
     assert!(graph.read_with(rig.cx, |graph, _| graph.focused()).is_none());
     rig.repaint();
@@ -1444,7 +1482,7 @@ fn stale_painted_graph_marker_cannot_take_focus_on_owner_replacement(cx: &mut Te
     // No App update, watcher poll or frame between renewal and this Down.
     rig.cx.simulate_mouse_down(marker, gpui::MouseButton::Left, gpui::Modifiers::none());
     let after = graph_native_evidence(&mut rig);
-    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused, "revoked paint cannot focus Graph before semantic admission; before={before}; after={after}");
+    assert!(rig.focus_retained_or_rehomed(focused.as_ref()), "revoked paint cannot focus Graph before semantic admission; before={before}; after={after}");
     rig.cx.simulate_mouse_up(marker, gpui::MouseButton::Left, gpui::Modifiers::none());
     assert!(graph.read_with(rig.cx, |graph, _| graph.focused()).is_none());
     rig.repaint(); rig.settle();

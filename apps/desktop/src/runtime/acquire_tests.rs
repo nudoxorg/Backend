@@ -165,6 +165,55 @@ fn a_release_the_owner_indexed_is_the_librarys_and_not_offered_again() {
     );
 }
 
+/// `Shelf`, with anyhow's earlier releases listed by its registry index.
+struct Versions;
+
+impl RegistrySource for Versions {
+    fn releases(&self, name: &CrateName) -> Vec<Published> {
+        if name.as_str() != "anyhow" { return Vec::new(); }
+        ["1.0.98", "1.0.104"].into_iter().map(|version| {
+            let release = release("anyhow", version);
+            Published {
+                availability: self.availability(&release),
+                release,
+                date: crate::model::release::RegistryFact::Missing,
+                yanked: crate::model::release::RegistryFact::Known(false),
+            }
+        }).collect()
+    }
+    fn offline(&self, query: &str, limit: usize) -> Vec<Release> { Shelf.offline(query, limit) }
+    fn availability(&self, release: &Release) -> Availability {
+        if release.version.as_str() == "1.0.98" {
+            Availability::Archive(PathBuf::from("/cache/anyhow-1.0.98.crate"))
+        } else {
+            Shelf.availability(release)
+        }
+    }
+    fn release_of(&self, root: &Path) -> Option<Release> { Shelf.release_of(root) }
+    fn resolve(&self, release: &Release) -> Result<SourceTree, SourceError> { Shelf.resolve(release) }
+}
+
+/// GUI-08: Find offers an exact older release when it is asked for by
+/// `name@version`, ahead of the newest one; an unlisted version offers none.
+#[test]
+fn name_at_version_offers_that_exact_release_first() {
+    let found = super::browse_reads::find_packages("anyhow@1.0.98", &[], &[], Some(&Versions));
+    let offers = found.iter()
+        .map(|package| (package.package.as_str(), package.offer.as_ref().map(|offer| offer.release.clone())))
+        .collect::<Vec<_>>();
+    assert_eq!(offers.first(), Some(&("pkg:cargo/anyhow@1.0.98", Some(release("anyhow", "1.0.98")))),
+        "the asked release leads: {offers:?}");
+    assert_eq!(found[0].offer.as_ref().map(|offer| &offer.availability),
+        Some(&Availability::Archive(PathBuf::from("/cache/anyhow-1.0.98.crate"))), "with where its source is");
+    assert!(found.iter().all(|package| package.name.as_ref() == "anyhow"), "only its name matches: {offers:?}");
+    let unlisted = super::browse_reads::find_packages("anyhow@9.9.9", &[], &[], Some(&Versions));
+    assert!(unlisted.iter().all(|package| package.offer.as_ref().is_none_or(|offer| offer.release.version.as_str() != "9.9.9")),
+        "an unlisted version is never invented: {unlisted:?}");
+    let plain = super::browse_reads::find_packages("anyhow", &[], &[], Some(&Versions));
+    assert_eq!(plain.iter().filter_map(|package| package.offer.as_ref()).map(|offer| offer.release.clone()).collect::<Vec<_>>(),
+        [release("anyhow", "1.0.104")], "a bare name still offers the newest here");
+}
+
 #[test]
 fn without_a_source_nothing_is_offered() {
     let found = super::browse_reads::find_packages("anyhow", &[], &[], None);
@@ -249,4 +298,44 @@ fn an_owner_that_does_not_answer_is_a_failure_with_its_words_and_can_be_tried_ag
         Some(Stage::Queued)
     );
     assert!(matches!(settled(&wanted, cx), Some(Stage::Failed(_))));
+}
+
+/// A press on Add or Remove while no owner is serving the library (the owner
+/// is starting, replaced, or its freshness is unconfirmed) is said, never
+/// dropped: the release reports why nothing was sent, and the ordinary "Try
+/// again" is offered.
+#[gpui::test]
+fn an_add_or_removal_pressed_while_no_owner_serves_says_why_it_was_not_sent(cx: &mut TestAppContext) {
+    use crate::navigation::Intent;
+    use crate::runtime::acquire::Removal;
+    use crate::runtime::owner::OwnerGate;
+    let wanted = release("anyhash", "0.1.0");
+    let page = PackageRef::parse("/cache/anyhash-0.1.0").expect("page");
+    let pool = crate::runtime::reads::ReadPool::start(1, |_| crate::shell::tests::Fixture).expect("pool");
+    // The owner is still starting: no serving attachment, no mutation lease.
+    let mut rig = crate::shell::tests::rig_with_engine_gate(
+        cx, None, 1200.0, 800.0, pool, crate::shell::tests::RootOnly, Some(OwnerGate::starting()),
+    );
+    // A registry producer exists, so the only thing missing is the owner.
+    let composition = rig.cx.update(|_, cx| acquire::test_install_producer(Composition {
+        endpoint: PathBuf::from("/nonexistent/owner.sock"),
+        source: Arc::new(Shelf),
+        authority: Arc::from("shelf"),
+        generation: crate::host::registry::CompositionGeneration::default(),
+        refusals: None,
+    }, cx));
+    let _ = composition;
+    assert_eq!(rig.cx.update(|_, cx| acquire::stage(&wanted, Asker::Everyone, cx)), None, "nothing was asked yet");
+
+    rig.go(Intent::AddRelease(wanted.clone()));
+    let Some(Stage::Failed(words)) = rig.cx.update(|_, cx| acquire::stage(&wanted, Asker::Everyone, cx)) else {
+        panic!("an Add with no serving owner must say it was not sent")
+    };
+    assert!(words.contains("index is not open yet") && words.contains("Try again"), "{words}");
+
+    rig.go(Intent::RemoveRelease { release: wanted.clone(), page });
+    let Some(Removal::Failed(words)) = rig.cx.update(|_, cx| acquire::removal(&wanted, Asker::Everyone, cx)) else {
+        panic!("a Remove with no serving owner must say it was not sent")
+    };
+    assert!(words.contains("index is not open yet"), "{words}");
 }

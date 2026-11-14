@@ -30,7 +30,7 @@
 
 use crate::{
     InputContentSchema, InputContentVersion, SourceBinding, SourceBindingCapture,
-    SourceBindingIdentity, SyntaxProducerId, SyntaxProducerSchema, typed_of,
+    SourceBindingIdentity, SyntaxProducerId, SyntaxProducerSchema, VerifiedSourceText, typed_of,
 };
 pub use backend_semantic::vocabulary::Language as SourceLanguage;
 use std::{
@@ -797,11 +797,29 @@ impl SyntaxFrontend {
         };
         let captured =
             captured_in_trees(self.language, variant, &trees, &mut cursor, source, text)?;
+        let declarations = self.declarations_of(path, &trees, &captured, text)?;
+        // The grammar's offsets become host extents only after validation.
+        let content = if declarations.iter().any(|declaration| {
+            matches!(declaration.binding_identity(), SourceBindingIdentity::Exact(_))
+        }) {
+            let verified = VerifiedSourceText::capture(source)
+                .map_err(|error| SyntaxError::Declaration(error.to_string()))?;
+            for declaration in declarations.iter() {
+                if let SourceBindingIdentity::Exact(binding) = declaration.binding_identity() {
+                    verified
+                        .binding(binding)
+                        .map_err(|error| SyntaxError::Declaration(error.to_string()))?;
+                }
+            }
+            verified.content()
+        } else {
+            typed_of::<InputContentSchema>(source)
+        };
         Ok(SourceAnalysis {
             language: self.language,
-            content: typed_of::<InputContentSchema>(source),
+            content,
             producer: self.producer,
-            declarations: self.declarations_of(path, &trees, &captured, text)?,
+            declarations,
         })
     }
 
@@ -815,6 +833,43 @@ impl SyntaxFrontend {
             .iter()
             .find(|variant| variant.supports(&extension))
             .ok_or_else(|| SyntaxError::UnsupportedPath(path.to_path_buf()))
+    }
+
+    /// Extracts simple component tag names and excerpt-relative byte ranges
+    /// from a complete TypeScript JSX callable. Nested callables are excluded:
+    /// their own lexical bindings must be resolved independently.
+    ///
+    /// # Errors
+    /// Returns parser or selected grammar setup failures.
+    pub fn jsx_component_uses(&self, path: &Path, source: &str) -> Result<Option<Vec<(String, usize, usize)>>, SyntaxError> {
+        if self.language != SourceLanguage::TypeScript || source.len() > SourceExcerpt::MAX_BYTES
+            || !matches!(path.extension().and_then(|ext| ext.to_str()), Some("tsx" | "jsx")) {
+            return Ok(None);
+        }
+        let variant = self.variant_for(path)?;
+        let mut parser = Parser::new();
+        parser.set_language(&variant.language).map_err(|error| SyntaxError::Parser(error.to_string()))?;
+        let Some(tree) = parser.parse(source.as_bytes(), None) else { return Ok(None) };
+        if tree.root_node().has_error() { return Ok(None); }
+        fn walk(node: Node<'_>, source: &str, callable_seen: bool, uses: &mut Vec<(String, usize, usize)>) {
+            let callable = matches!(node.kind(), "function_declaration" | "function_expression" | "generator_function_declaration" | "generator_function" | "arrow_function" | "method_definition");
+            if callable && callable_seen { return; }
+            if matches!(node.kind(), "jsx_opening_element" | "jsx_self_closing_element") {
+                if let Some(name) = node.child_by_field_name("name").filter(|name| name.kind() == "identifier") {
+                    let written = node_text(name, source);
+                    if written.chars().next().is_some_and(char::is_uppercase) {
+                        uses.push((written.to_owned(), name.start_byte(), name.end_byte()));
+                    }
+                }
+            }
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                walk(child, source, callable_seen || callable, uses);
+            }
+        }
+        let mut uses = Vec::new();
+        walk(tree.root_node(), source, false, &mut uses);
+        Ok(Some(uses))
     }
 
     /// Reads only the outer callable's grammar-owned parameter bindings from
@@ -899,7 +954,8 @@ impl SyntaxFrontend {
         declarations.push(module_declaration(path, self.language)?);
         let mut excerpt_bytes = 0usize;
         for definition in resolved {
-            let declaration_source = node_text(excerpt_node(definition.node), text);
+            let excerpt = excerpt_node(definition.node);
+            let declaration_source = node_text(excerpt, text);
             excerpt_bytes = excerpt_bytes
                 .checked_add(bounded_excerpt_end(declaration_source))
                 .ok_or(SyntaxError::TooManySourceBytes)?;
@@ -912,7 +968,15 @@ impl SyntaxFrontend {
                     path.display().to_string(),
                     definition.name,
                     definition.kind,
-                    definition.line.get(),
+                    // A Python decorator is part of the declaration's authored
+                    // extent, so its source location starts at the decorator.
+                    // This keeps line numbering and excerpt geometry aligned.
+                    if self.language == SourceLanguage::Python {
+                        u32::try_from(excerpt.start_position().row.saturating_add(1))
+                            .unwrap_or(u32::MAX)
+                    } else {
+                        definition.line.get()
+                    },
                     declaration_signature(self.language, definition.node, text),
                     documentation,
                 )?
@@ -1049,12 +1113,23 @@ fn captured_definitions<'a>(
         };
         let owner_node = captured_owner_node(language, node, name);
         let name_node = name;
-        let binding_identity = if matches!(language, SourceLanguage::TypeScript | SourceLanguage::Go) {
+        let binding_identity = if matches!(
+            language,
+            SourceLanguage::TypeScript
+                | SourceLanguage::Go
+                | SourceLanguage::Python
+                | SourceLanguage::CSharp
+        ) {
             let (start, end) = if language == SourceLanguage::Go {
                 let extent = go_declaration_extent(node, name_node);
                 (extent.start_byte(), extent.end_byte())
             } else {
-                typescript_declaration_extent(owner_node)
+                let extent_owner = python_decorated_owner(language, owner_node);
+                if language == SourceLanguage::TypeScript {
+                    typescript_declaration_extent(extent_owner)
+                } else {
+                    (extent_owner.start_byte(), extent_owner.end_byte())
+                }
             };
             SourceBindingIdentity::Exact(
                 SourceBindingCapture::new(
@@ -1163,6 +1238,22 @@ fn captured_owner_node<'a>(
         }
     }
     definition
+}
+
+/// Returns the complete authored owner for binding authentication. Python's
+/// grammar places decorators in a sibling wrapper around the function/class;
+/// include that wrapper so exact source reads authenticate the same bytes that
+/// structural excerpts display.
+fn python_decorated_owner<'a>(language: SourceLanguage, node: Node<'a>) -> Node<'a> {
+    if language != SourceLanguage::Python {
+        return node;
+    }
+    node.parent()
+        .filter(|parent| {
+            parent.kind() == "decorated_definition"
+                && matches!(node.kind(), "function_definition" | "class_definition")
+        })
+        .unwrap_or(node)
 }
 
 /// TypeScript's native declaration range includes field terminators and
@@ -1552,20 +1643,28 @@ fn signature_node(language: SourceLanguage, mut node: Node<'_>) -> Node<'_> {
 /// function captures `beacon_entry(unsigned long level)` while the reader
 /// wrote `unsigned long beacon_entry(unsigned long level) { ... }`, and an
 /// exported TypeScript function captures the function without `export`.
-/// The excerpt climbs to the enclosing definition, but only while it starts
-/// on the same line, because the excerpt is numbered from the declaration's
-/// own line: a decorator or `template<...>` line above it would shift every
-/// number shown.
+/// The excerpt climbs to the enclosing definition. Python decorators are part
+/// of the authored declaration, so the location is adjusted to this node's
+/// start line at the call site.
 fn excerpt_node(mut node: Node<'_>) -> Node<'_> {
     for _ in 0..2 {
         let Some(parent) = node.parent() else {
             break;
         };
+        let same_line = parent.start_position().row == node.start_position().row;
+        let python_decorator = parent.kind() == "decorated_definition"
+            && matches!(node.kind(), "function_definition" | "class_definition");
+        if !same_line && !python_decorator {
+            break;
+        }
         if !matches!(
             parent.kind(),
-            "function_definition" | "declaration" | "export_statement" | "template_declaration"
-        ) || parent.start_position().row != node.start_position().row
-        {
+            "function_definition"
+                | "declaration"
+                | "export_statement"
+                | "template_declaration"
+                | "decorated_definition"
+        ) {
             break;
         }
         node = parent;
@@ -2206,9 +2305,35 @@ fn walk_typescript_imports(node: Node<'_>, text: &str, imports: &mut Vec<Extract
         push_typescript_import(node, text, imports);
         return;
     }
+    if node.kind() == "export_statement" && node.child_by_field_name("source").is_some() {
+        push_typescript_reexports(node, text, imports);
+        return;
+    }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         walk_typescript_imports(child, text, imports);
+    }
+}
+
+fn push_typescript_reexports(node: Node<'_>, text: &str, exports: &mut Vec<ExtractedImport>) {
+    if typescript_import_specifier_is_type_only(node) { return; }
+    let Some(source) = node.child_by_field_name("source") else { return };
+    let specifier = string_literal_value(node_text(source, text));
+    if specifier.is_empty() { return; }
+    let mut cursor = node.walk();
+    for clause in node.children(&mut cursor).filter(|child| child.kind() == "export_clause") {
+        let mut clause_cursor = clause.walk();
+        for item in clause.children(&mut clause_cursor).filter(|child| child.kind() == "export_specifier") {
+            if typescript_import_specifier_is_type_only(item) { continue; }
+            let Some(original) = item.child_by_field_name("name") else { continue };
+            let public = item.child_by_field_name("alias").unwrap_or(original);
+            let imported = node_text(original, text);
+            let exported = node_text(public, text);
+            if imported.is_empty() || exported.is_empty() { continue; }
+            let mut declaration = value_import(exported, node_line(node), &specifier, imported, node_text(node, text)).with_binding(node, public);
+            declaration.signature = format!("reexport\n{specifier}\n{imported}");
+            exports.push(declaration);
+        }
     }
 }
 

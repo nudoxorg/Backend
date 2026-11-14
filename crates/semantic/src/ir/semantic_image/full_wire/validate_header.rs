@@ -326,12 +326,14 @@ pub(super) fn image_layout(
 pub(super) fn validate_atoms(
     bytes: &[u8],
     layout: FullImageLayout,
+    meter: &dyn super::SemanticImageAdmissionMeter,
 ) -> Result<(), FullSemanticImageFault> {
     let rows = layout.entry(FullDirectoryKind::Atoms);
     let values = layout.entry(FullDirectoryKind::AtomBytes);
     let mut next = 0_usize;
     let mut previous: Option<&[u8]> = None;
     for row in 0..rows.count {
+        super::work(meter, 1)?;
         let offset = rows.offset
             + usize::try_from(row).map_err(|_| FullSemanticImageFault::LengthOverflow {
                 field: FullSemanticImageField::Atoms,
@@ -373,7 +375,7 @@ pub(super) fn validate_atoms(
                 field: FullSemanticImageField::Atoms,
                 offset: values.offset + start,
             })?;
-        if previous.is_some_and(|value| value >= current) {
+        if let Some(value) = previous && super::compare_bytes(meter, value, current)? != core::cmp::Ordering::Less {
             return Err(FullSemanticImageFault::CanonicalOrder {
                 field: FullSemanticImageField::Atoms,
                 previous: row - 1,

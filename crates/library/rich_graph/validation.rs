@@ -82,6 +82,23 @@ impl RichGraphSnapshot {
         if !self.nodes.iter().any(|node| node.id == self.center) {
             return Err(RichGraphError::CenterMissing);
         }
+        let captured = self.nodes.iter().any(|node| !node.source_policy.is_unknown())
+            || self.edges.iter().any(|edge| !edge.source_policy.is_unknown());
+        if captured && !matches!(&self.availability, super::GraphAvailability::Unavailable(_)) {
+            return Err(RichGraphError::EdgeShape);
+        }
+        for node in self.nodes.iter() {
+            if !node.source_policy.is_unknown()
+                && (node.coordinate.is_none() || !node.source_policy.matches_graph_shape(
+                    node.id.as_bytes(),
+                    node.coordinate.as_ref().map(|value| value.as_str()),
+                )) { return Err(RichGraphError::EdgeShape); }
+        }
+        for edge in self.edges.iter() {
+            if !edge.source_policy.is_unknown()
+                && !edge.source_policy.matches_graph_shape(edge.from.as_bytes(), None)
+            { return Err(RichGraphError::EdgeShape); }
+        }
         let node_ids = self
             .nodes
             .iter()

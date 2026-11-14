@@ -8,7 +8,7 @@
       "json": {
         "answer": "outline",
         "budget": {
-          "bytesExcludingCursor": 18504,
+          "bytesExcludingCursor": 18503,
           "bytesPerToken": 4,
           "estimatedTokensExcludingCursor": 4626
         },
@@ -42,7 +42,7 @@
             },
             {
               "lane": "semantic",
-              "state": "complete"
+              "state": "partial"
             }
           ],
           "limit": 200,
@@ -51,7 +51,7 @@
           "schema": 3,
           "sequence": 2,
           "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-          "source_root": "bfa2bd8910799c2f7fe8a42a316433874cecebef60ac93d704f622285c3a4202"
+          "source_root": "9946f7d56d8c137ef4497824b61af5c45f9e954951e7019b04158cbc05bd4f31"
         },
         "roots": [
           {
@@ -2249,9 +2249,9 @@
       "json": {
         "answer": "shelf",
         "budget": {
-          "bytes": 417,
+          "bytes": 448,
           "bytesPerToken": 4,
-          "estimatedTokens": 105
+          "estimatedTokens": 112
         },
         "detail": "summary",
         "projects": [
@@ -2266,11 +2266,14 @@
               "shape": "package",
               "trail": "project"
             },
+            "partial_lanes": [
+              "semantic"
+            ],
             "readiness": "ready"
           }
         ],
-        "readiness": "ready",
-        "revision": "bfa2bd89",
+        "readiness": "partial",
+        "revision": "9946f7d5",
         "rows": 1090
       }
     },
@@ -2279,9 +2282,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytesExcludingCursor": 13192,
+          "bytesExcludingCursor": 13193,
           "bytesPerToken": 4,
-          "estimatedTokensExcludingCursor": 3298
+          "estimatedTokensExcludingCursor": 3299
         },
         "coverage": [
           {
@@ -2298,14 +2301,14 @@
           },
           {
             "lane": "semantic",
-            "state": "complete"
+            "state": "partial"
           }
         ],
         "detail": "summary",
         "more": true,
         "nextCursor": "pc4-<live-validated>",
         "query": "TinyIoCContainer",
-        "readiness": "ready",
+        "readiness": "partial",
         "records": [
           {
             "identity": {
@@ -3638,7 +3641,7 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 2169,
+          "bytes": 2170,
           "bytesPerToken": 4,
           "estimatedTokens": 543
         },
@@ -3657,13 +3660,13 @@
           },
           {
             "lane": "semantic",
-            "state": "complete"
+            "state": "partial"
           }
         ],
         "detail": "summary",
         "more": false,
         "query": "TinyIoCResolutionException",
-        "readiness": "ready",
+        "readiness": "partial",
         "records": [
           {
             "identity": {
@@ -3850,8 +3853,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 846,
-                "normalizedFrameBytesExcludingCounters": 3381,
+                "normalizedEstimatedTokensExcludingCounters": 848,
+                "normalizedFrameBytesExcludingCounters": 3389,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -3860,7 +3863,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u27133\n\u2022 `TinyIoCContainer` \u00b7 class \u00b7 csharp\n  `/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:864::TinyIoCContainer`\n\u2022 `TinyIoCContainer` \u00b7 constructor \u00b7 csharp\n  `/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:3143::TinyIoCContainer`\n\u2022 `TinyIoCContainer` \u00b7 constructor \u00b7 csharp\n  `/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:3151::TinyIoCContainer`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u25d0 partial\n\u2022 `TinyIoCContainer` \u00b7 class \u00b7 csharp\n  `/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:864::TinyIoCContainer`\n\u2022 `TinyIoCContainer` \u00b7 constructor \u00b7 csharp\n  `/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:3143::TinyIoCContainer`\n\u2022 `TinyIoCContainer` \u00b7 constructor \u00b7 csharp\n  `/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:3151::TinyIoCContainer`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
                 "type": "text"
               }
             ],
@@ -3868,7 +3871,7 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytesExcludingCursor": 2142,
+                "bytesExcludingCursor": 2143,
                 "bytesPerToken": 4,
                 "estimatedTokensExcludingCursor": 536
               },
@@ -3895,13 +3898,13 @@
                 },
                 {
                   "lane": "semantic",
-                  "state": "complete"
+                  "state": "partial"
                 }
               ],
               "detail": "summary",
               "more": true,
               "query": "TinyIoCContainer",
-              "readiness": "ready",
+              "readiness": "partial",
               "records": [
                 {
                   "identity": {
@@ -4084,9 +4087,9 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 3271,
+                "bytes": 3279,
                 "bytesPerToken": 4,
-                "estimatedTokens": 818,
+                "estimatedTokens": 820,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
                 "scope": "complete_jsonrpc_line",
@@ -4097,7 +4100,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u27133\n\u2022 `TinyIoCResolutionException` \u00b7 class \u00b7 csharp\n  `/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:552::TinyIoCResolutionException`\n\u2022 `TinyIoCResolutionException` \u00b7 constructor \u00b7 csharp\n  `/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:558::TinyIoCResolutionException`\n\u2022 `TinyIoCResolutionException` \u00b7 constructor \u00b7 csharp\n  `/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:563::TinyIoCResolutionException`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
+                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u25d0 partial\n\u2022 `TinyIoCResolutionException` \u00b7 class \u00b7 csharp\n  `/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:552::TinyIoCResolutionException`\n\u2022 `TinyIoCResolutionException` \u00b7 constructor \u00b7 csharp\n  `/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:558::TinyIoCResolutionException`\n\u2022 `TinyIoCResolutionException` \u00b7 constructor \u00b7 csharp\n  `/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:563::TinyIoCResolutionException`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
                 "type": "text"
               }
             ],
@@ -4105,7 +4108,7 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytes": 2169,
+                "bytes": 2170,
                 "bytesPerToken": 4,
                 "estimatedTokens": 543
               },
@@ -4124,13 +4127,13 @@
                 },
                 {
                   "lane": "semantic",
-                  "state": "complete"
+                  "state": "partial"
                 }
               ],
               "detail": "summary",
               "more": false,
               "query": "TinyIoCResolutionException",
-              "readiness": "ready",
+              "readiness": "partial",
               "records": [
                 {
                   "identity": {
@@ -4313,8 +4316,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 5525,
-                "normalizedFrameBytesExcludingCounters": 22099,
+                "normalizedEstimatedTokensExcludingCounters": 5540,
+                "normalizedFrameBytesExcludingCounters": 22160,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -4323,7 +4326,7 @@
             },
             "content": [
               {
-                "text": "# project\n`/tmp/nudox-surface/csharp-tinyioc/project`\n\n\u25c6 ReverseTypeExtender  `Content/TinyIoC.cs:3950 \u203a ReverseTypeExtender`\n  \u0192 IsGenericType  `Content/TinyIoC.cs:3979 \u203a IsGenericType`\n    \u25ab type  `type`\n    \u25ab bool  `bool`\n  \u0192 BaseType  `Content/TinyIoC.cs:3994 \u203a BaseType`\n    \u25ab type  `type`\n    \u25ab System.Type  `System.Type`\n  \u0192 IsPrimitive  `Content/TinyIoC.cs:3969 \u203a IsPrimitive`\n    \u25ab bool  `bool`\n    \u25ab type  `type`\n  \u0192 IsGenericTypeDefinition  `Content/TinyIoC.cs:3989 \u203a IsGenericTypeDefinition`\n    \u25ab type  `type`\n    \u25ab bool  `bool`\n  \u0192 IsGenericParameter  `Content/TinyIoC.cs:3984 \u203a IsGenericParameter`\n    \u25ab bool  `bool`\n    \u25ab type  `type`\n  \u0192 IsInterface  `Content/TinyIoC.cs:3964 \u203a IsInterface`\n    \u25ab type  `type`\n    \u25ab bool  `bool`\n  \u0192 IsClass  `Content/TinyIoC.cs:3954 \u203a IsClass`\n    \u25ab bool  `bool`\n    \u25ab type  `type`\n  \u0192 Assembly  `Content/TinyIoC.cs:3999 \u203a Assembly`\n    \u25ab type  `type`\n    \u25ab System.Reflection.Assembly  `System.Reflection.Assembly`\n  \u0192 IsAbstract  `Content/TinyIoC.cs:3959 \u203a IsAbstract`\n    \u25ab bool  `bool`\n    \u25ab type  `type`\n  \u0192 IsValueType  `Content/TinyIoC.cs:3974 \u203a IsValueType`\n    \u25ab type  `type`\n    \u25ab bool  `bool`\n\u25a6 System.Reflection  `Content/TinyIoC.cs:3945 \u203a System.Reflection`\n\u25a6 TinyIoC  `Content/TinyIoC.cs:68 \u203a TinyIoC`\n  \u25c6 NamedParameterOverloads  `Content/TinyIoC.cs:706 \u203a NamedParameterOverloads`\n    \u2726 NamedParameterOverloads  `Content/TinyIoC.cs:719 \u203a NamedParameterOverloads`\n      \u25ab data  `data`\n    \u2726 NamedParameterOverloads  `Content/TinyIoC.cs:715 \u203a NamedParameterOverloads`\n    \u0192 FromIDictionary  `Content/TinyIoC.cs:710 \u203a FromIDictionary`\n      \u25ab data  `data`\n      \u25ab TinyIoC.NamedParameterOverloads  `TinyIoC.NamedParameterOverloads`\n    \u00b7 Default  `Content/TinyIoC.cs:726 \u203a Default`\n    \u00b7 _Default  `Content/TinyIoC.cs:724 \u203a _Default`\n  \u229e UnregisteredResolutionActions  `Content/TinyIoC.cs:738 \u203a UnregisteredResolutionActions`\n    \u25e6 Fail  `Content/TinyIoC.cs:752 \u203a Fail`\n    \u25e6 AttemptResolve  `Content/TinyIoC.cs:747 \u203a AttemptResolve`\n    \u25e6 GenericsOnly  `Content/TinyIoC.cs:760 \u203a GenericsOnly`\n  \u25c6 TinyIoCConstructorResolutionException  `Content/TinyIoC.cs:643 \u203a TinyIoCConstructorResolutionException`\n    \u2726 TinyIoCConstructorResolutionException  `Content/TinyIoC.cs:664 \u203a TinyIoCConstructorResolutionException`\n      \u25ab message  `message`\n    \u2726 TinyIoCConstructorResolutionException  `Content/TinyIoC.cs:659 \u203a TinyIoCConstructorResolutionException`\n50 declaration(s) \u00b7 truncated\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 50 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/csharp-tinyioc/project\",\"limit\":50,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
+                "text": "# project\n`/tmp/nudox-surface/csharp-tinyioc/project`\n\n\u25c6 ReverseTypeExtender  `Content/TinyIoC.cs:3950 \u203a ReverseTypeExtender`\n  \u0192 IsGenericType  `Content/TinyIoC.cs:3979 \u203a IsGenericType`\n    \u25ab type  `type`\n    \u25ab bool  `bool`\n  \u0192 BaseType  `Content/TinyIoC.cs:3994 \u203a BaseType`\n    \u25ab type  `type`\n    \u25ab System.Type  `System.Type`\n  \u0192 IsPrimitive  `Content/TinyIoC.cs:3969 \u203a IsPrimitive`\n    \u25ab bool  `bool`\n    \u25ab type  `type`\n  \u0192 IsGenericTypeDefinition  `Content/TinyIoC.cs:3989 \u203a IsGenericTypeDefinition`\n    \u25ab type  `type`\n    \u25ab bool  `bool`\n  \u0192 IsGenericParameter  `Content/TinyIoC.cs:3984 \u203a IsGenericParameter`\n    \u25ab bool  `bool`\n    \u25ab type  `type`\n  \u0192 IsInterface  `Content/TinyIoC.cs:3964 \u203a IsInterface`\n    \u25ab type  `type`\n    \u25ab bool  `bool`\n  \u0192 IsClass  `Content/TinyIoC.cs:3954 \u203a IsClass`\n    \u25ab bool  `bool`\n    \u25ab type  `type`\n  \u0192 Assembly  `Content/TinyIoC.cs:3999 \u203a Assembly`\n    \u25ab type  `type`\n    \u25ab System.Reflection.Assembly  `System.Reflection.Assembly`\n  \u0192 IsAbstract  `Content/TinyIoC.cs:3959 \u203a IsAbstract`\n    \u25ab bool  `bool`\n    \u25ab type  `type`\n  \u0192 IsValueType  `Content/TinyIoC.cs:3974 \u203a IsValueType`\n    \u25ab type  `type`\n    \u25ab bool  `bool`\n\u25a6 System.Reflection  `Content/TinyIoC.cs:3945 \u203a System.Reflection`\n\u25a6 TinyIoC  `Content/TinyIoC.cs:68 \u203a TinyIoC`\n  \u25c6 NamedParameterOverloads  `Content/TinyIoC.cs:706 \u203a NamedParameterOverloads`\n    \u2726 NamedParameterOverloads  `Content/TinyIoC.cs:719 \u203a NamedParameterOverloads`\n      \u25ab data  `data`\n    \u2726 NamedParameterOverloads  `Content/TinyIoC.cs:715 \u203a NamedParameterOverloads`\n    \u0192 FromIDictionary  `Content/TinyIoC.cs:710 \u203a FromIDictionary`\n      \u25ab data  `data`\n      \u25ab TinyIoC.NamedParameterOverloads  `TinyIoC.NamedParameterOverloads`\n    \u00b7 Default  `Content/TinyIoC.cs:726 \u203a Default`\n    \u00b7 _Default  `Content/TinyIoC.cs:724 \u203a _Default`\n  \u229e UnregisteredResolutionActions  `Content/TinyIoC.cs:738 \u203a UnregisteredResolutionActions`\n    \u25e6 Fail  `Content/TinyIoC.cs:752 \u203a Fail`\n    \u25e6 AttemptResolve  `Content/TinyIoC.cs:747 \u203a AttemptResolve`\n    \u25e6 GenericsOnly  `Content/TinyIoC.cs:760 \u203a GenericsOnly`\n  \u25c6 TinyIoCConstructorResolutionException  `Content/TinyIoC.cs:643 \u203a TinyIoCConstructorResolutionException`\n    \u2726 TinyIoCConstructorResolutionException  `Content/TinyIoC.cs:664 \u203a TinyIoCConstructorResolutionException`\n      \u25ab message  `message`\n    \u2726 TinyIoCConstructorResolutionException  `Content/TinyIoC.cs:659 \u203a TinyIoCConstructorResolutionException`\n50 declaration(s) \u00b7 truncated (outline pagination only; analysis coverage is not certified)\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 50 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/csharp-tinyioc/project\",\"limit\":50,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
                 "type": "text"
               }
             ],
@@ -4331,7 +4334,7 @@
             "structuredContent": {
               "answer": "outline",
               "budget": {
-                "bytesExcludingCursor": 18503,
+                "bytesExcludingCursor": 18502,
                 "bytesPerToken": 4,
                 "estimatedTokensExcludingCursor": 4626
               },
@@ -4365,7 +4368,7 @@
                   },
                   {
                     "lane": "semantic",
-                    "state": "complete"
+                    "state": "partial"
                   }
                 ],
                 "limit": 50,
@@ -4374,7 +4377,7 @@
                 "schema": 3,
                 "sequence": 2,
                 "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-                "source_root": "bfa2bd8910799c2f7fe8a42a316433874cecebef60ac93d704f622285c3a4202"
+                "source_root": "9946f7d56d8c137ef4497824b61af5c45f9e954951e7019b04158cbc05bd4f31"
               },
               "roots": [
                 {
@@ -6588,6 +6591,7 @@
         "backend.resolve",
         "backend.search",
         "backend.source",
+        "backend.sql_query",
         "backend.status"
       ]
     }

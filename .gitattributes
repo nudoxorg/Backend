@@ -1,0 +1,7 @@
+# Scripts execute inside Unix hosts, including WSL checkouts made by Windows Git.
+# Their shebangs and shell syntax must stay LF even with core.autocrlf=true.
+*.sh text eol=lf
+*.py text eol=lf
+.config/direnv/entrypoint text eol=lf
+.config/scripts/fleet-census-recovery text eol=lf
+tests/fuzz/libfuzzer-rustc text eol=lf

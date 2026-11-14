@@ -8,7 +8,9 @@ use crate::model::pages::{
     DeclRef, Known, PackageDossier, PackageRecord, PackageRef, SearchPage, SearchQuery,
     SignatureText,
 };
+use crate::model::native::{CssModel, ImpactModel, NativeFind, SqlModel};
 use crate::navigation::BrowseRoute;
+use crate::navigation::{ImpactRoute, NativeSubject};
 use crate::navigation::CargoSourcePath;
 use crate::navigation::CompareSet;
 use std::collections::BTreeSet;
@@ -37,6 +39,14 @@ pub enum BrowseKey {
     Find(SearchQuery),
     /// Bounded comparison selection.
     Compare(CompareSet),
+    /// The projects' SQL and CSS things named like one Find query.
+    FindNative(SearchQuery),
+    /// One SQL table or view.
+    Sql(NativeSubject),
+    /// One CSS class or custom property.
+    Css(NativeSubject),
+    /// What changing one thing affects, over the pages held.
+    Impact(ImpactRoute),
 }
 
 impl From<&BrowseRoute> for BrowseKey {
@@ -46,6 +56,9 @@ impl From<&BrowseRoute> for BrowseKey {
             BrowseRoute::FindHome => Self::FindHome,
             BrowseRoute::Find(query) => Self::Find(query.clone()),
             BrowseRoute::Compare(selection) => Self::Compare(selection.clone()),
+            BrowseRoute::Sql(subject) => Self::Sql(subject.clone()),
+            BrowseRoute::Css(subject) => Self::Css(subject.clone()),
+            BrowseRoute::Impact(route) => Self::Impact(route.clone()),
         }
     }
 }
@@ -64,6 +77,10 @@ impl fmt::Display for BrowseKey {
             Self::FindHome => formatter.write_str("find"),
             Self::Find(query) => write!(formatter, "find {:?}", query.text),
             Self::Compare(selection) => write!(formatter, "compare {:?}", selection.packages()),
+            Self::FindNative(query) => write!(formatter, "find in projects {:?}", query.text),
+            Self::Sql(subject) => write!(formatter, "sql {}", subject.written()),
+            Self::Css(subject) => write!(formatter, "css {}", subject.written()),
+            Self::Impact(route) => write!(formatter, "impact {} x{}", route.subject.written(), route.pages),
         }
     }
 }
@@ -81,6 +98,14 @@ pub enum BrowseValue {
     Find(Arc<FindModel>),
     /// Package dossiers read for this comparison.
     Compare(Arc<CompareModel>),
+    /// SQL and CSS things the projects hold under a Find query's name.
+    FindNative(Arc<NativeFind>),
+    /// A SQL table or view, read.
+    Sql(Arc<SqlModel>),
+    /// A CSS class or custom property, read.
+    Css(Arc<CssModel>),
+    /// What a change affects, read.
+    Impact(Arc<ImpactModel>),
 }
 
 impl BrowseValue {
@@ -89,7 +114,14 @@ impl BrowseValue {
     pub fn tree(&self) -> Option<&TreeModel> {
         match self {
             Self::Tree(tree) => Some(tree),
-            Self::CargoSourceInventory(_) | Self::CargoReadme(_) | Self::Find(_) | Self::Compare(_) => None,
+            Self::CargoSourceInventory(_)
+            | Self::CargoReadme(_)
+            | Self::Find(_)
+            | Self::Compare(_)
+            | Self::FindNative(_)
+            | Self::Sql(_)
+            | Self::Css(_)
+            | Self::Impact(_) => None,
         }
     }
 }

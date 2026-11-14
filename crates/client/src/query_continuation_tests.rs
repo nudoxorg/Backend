@@ -4852,3 +4852,99 @@ fn portable_outline_windows_reopen_legacy_and_variable_spans_without_losing_exac
     }
     assert_eq!(ids, expected);
 }
+
+// Exercise the client correlation after an authenticated transport has
+// admitted a selected document and a separately returned edge page. This
+// transport injects independently well-formed source-basis changes; it does
+// not claim to test wire certificate admission.
+struct AliasRelatedBasisTransport {
+    inner: Transport,
+    alias: &'static str,
+    document_coordinate: &'static str,
+    page_source: Basis,
+    symbol: SymbolKey,
+}
+impl CommandTransport for AliasRelatedBasisTransport {
+    fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
+        match &request.command {
+            Command::Document(query) => {
+                assert_eq!(query.symbol(), SymbolAddress::canonical(symbol_key(self.alias)));
+                self.inner.requests.lock().expect("requests").push(request.command.clone());
+                let library = self.inner.owner.lock().expect("owner");
+                let source = Basis { root: library.revision_root(), ..library.view().basis() };
+                let mut row = library.view().row(RowId::Symbol(self.symbol)).expect("selected row");
+                row.label = self.document_coordinate.to_owned();
+                let selection = backend_library::DocumentSelection::from_row(&row, source).expect("selected alias");
+                let document = backend_library::Document::new(self.symbol, source.root, vec![])
+                    .with_source_basis(source)
+                    .with_selection(selection)
+                    .expect("document and selection share a source");
+                Ok(ReplyDto::new(request.request_id, CommandReply::Document(document)))
+            }
+            Command::RelatedEdgePage { symbol, request: page } => {
+                assert_eq!(*symbol, SymbolAddress::selected(self.symbol));
+                assert_eq!(page.scope.source, self.symbol.to_bytes());
+                assert!(page.scope.source_selected);
+                self.inner.requests.lock().expect("requests").push(request.command.clone());
+                let library = self.inner.owner.lock().expect("owner");
+                let mut snapshot = library.graph_from_semantic_relations(
+                    backend_library::GraphNeighborhoodQuery::selected(self.symbol, library.revision_root()), &[],
+                ).expect("center page");
+                let mut rows = snapshot.root.rows().to_vec();
+                for row in &mut rows { row.basis = self.page_source; }
+                let frontier = Frontier::new(self.page_source.branch, self.page_source.log,
+                    self.page_source.schema, self.page_source.root, snapshot.root.frontier().sequence);
+                snapshot.root = ViewRoot::new_incomplete(snapshot.root.recipe(), self.page_source, frontier, rows, vec![])
+                    .expect("well-formed injected source basis");
+                Ok(ReplyDto::new(request.request_id, CommandReply::RelatedEdgePage(backend_library::RelatedEdgePage {
+                    snapshot, keys: Box::new([]), semantic_revision: [7; 32],
+                    terminal: backend_library::RelatedEdgeTerminal::Complete, withheld: true,
+                })))
+            }
+            _ => self.inner.request(request),
+        }
+    }
+}
+
+#[test]
+fn related_alias_requires_exact_selected_coordinate_and_page_source_basis() {
+    let alias = "pkg::src/a.ts:7::selected";
+    let owner = Arc::new(Mutex::new(owner_with_labels(1, 1, 0, &["different native row label"])));
+    let symbol = symbol_key("pkg::Thing000");
+    let source = {
+        let library = owner.lock().expect("owner");
+        Basis { root: library.revision_root(), ..library.view().basis() }
+    };
+    let mut foreign_object = source;
+    foreign_object.object = object_version(b"related page foreign object");
+    let mut foreign_branch = source;
+    foreign_branch.branch = backend_library::branch_key("related page foreign branch");
+    for (coordinate, page_source, expected_ok) in [
+        (alias, source, true),
+        (alias, foreign_object, false),
+        (alias, foreign_branch, false),
+        ("pkg::src/a.ts:8::different", source, false),
+    ] {
+        assert_eq!(page_source.root, source.root, "the root alone cannot distinguish source changes");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let mut client = Session::from_transport("/private/test-owner.sock", AliasRelatedBasisTransport {
+            inner: Transport { owner: owner.clone(), requests: requests.clone(), graph_ids: None },
+            alias, document_coordinate: coordinate, page_source, symbol,
+        });
+        let result = client.related_edge_page_declaration(
+            &DeclarationSelector::Coordinate(alias.to_owned()),
+            backend_library::QueryWindow::new(QueryLimit::new(2).expect("credit"), QueryLimit::new(2).expect("delivery")).expect("window"),
+            None,
+        );
+        if expected_ok {
+            assert!(matches!(result.expect("exact alias and source accepted").reply, CommandReply::RelatedEdgePage(_)));
+        } else if coordinate != alias {
+            assert!(matches!(result, Err(ClientError::Protocol(_))), "foreign alias must be rejected");
+        } else {
+            assert!(matches!(result, Err(ClientError::StaleCursor)), "foreign page source must be rejected");
+        }
+        let commands = requests.lock().expect("requests");
+        let page_count = commands.iter().filter(|command| matches!(command, Command::RelatedEdgePage { .. })).count();
+        assert_eq!(page_count, usize::from(coordinate == alias), "mismatched alias refuses before page request");
+    }
+}

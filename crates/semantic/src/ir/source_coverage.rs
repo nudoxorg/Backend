@@ -150,6 +150,7 @@ impl SourceCoverageRow {
             self,
             Self::Gap {
                 cause: SourceCoverageGapCause::RustSourceOutsideActiveCargoTarget
+                    | SourceCoverageGapCause::RustSourceSharedByCargoTargets
                     | SourceCoverageGapCause::PythonSourceSyntaxUnavailable
                     | SourceCoverageGapCause::PythonSourceEncodingUnavailable
                     | SourceCoverageGapCause::PythonSourceDependencyUnavailable,
@@ -797,6 +798,10 @@ pub enum SourceCoverageGapCause {
     SourceNotRepresentable,
     /// The package's compile deadline passed before this source finished or could start.
     CompileDeadlineExceeded,
+    /// Several active Cargo targets own this Rust source (a helper module two integration
+    /// tests both declare), so no single target scope applies and it was not analysed under
+    /// any of them. It is inside the package's targets, unlike an unowned source.
+    RustSourceSharedByCargoTargets,
 }
 
 impl std::fmt::Display for SourceCoverageGapCause {
@@ -818,6 +823,9 @@ impl std::fmt::Display for SourceCoverageGapCause {
             Self::SourceRejectedByNativeCompiler => "the native compiler rejected it",
             Self::SourceNotRepresentable => "lowering cannot represent it",
             Self::CompileDeadlineExceeded => "the compile deadline passed before it finished",
+            Self::RustSourceSharedByCargoTargets => {
+                "several Cargo targets share it, so no single target scope applies"
+            }
         })
     }
 }
@@ -828,6 +836,7 @@ impl SourceCoverageGapCause {
         !matches!(
             self,
             Self::RustSourceOutsideActiveCargoTarget
+                | Self::RustSourceSharedByCargoTargets
                 | Self::PythonSourceSyntaxUnavailable
                 | Self::PythonSourceEncodingUnavailable
                 | Self::PythonSourceDependencyUnavailable
@@ -845,6 +854,7 @@ impl SourceCoverageGapCause {
             Self::SourceRejectedByNativeCompiler => 8,
             Self::SourceNotRepresentable => 9,
             Self::CompileDeadlineExceeded => 10,
+            Self::RustSourceSharedByCargoTargets => 11,
         }
     }
     fn from_tag(tag: u8) -> Result<Self, &'static str> {
@@ -859,6 +869,7 @@ impl SourceCoverageGapCause {
             8 => Self::SourceRejectedByNativeCompiler,
             9 => Self::SourceNotRepresentable,
             10 => Self::CompileDeadlineExceeded,
+            11 => Self::RustSourceSharedByCargoTargets,
             _ => return Err("invalid coverage cause"),
         })
     }
@@ -1093,6 +1104,7 @@ mod tests {
     fn typescript_catalog_rejects_foreign_language_causes_at_construction_and_decode() {
         for cause in [
             SourceCoverageGapCause::RustSourceOutsideActiveCargoTarget,
+            SourceCoverageGapCause::RustSourceSharedByCargoTargets,
             SourceCoverageGapCause::PythonSourceSyntaxUnavailable,
             SourceCoverageGapCause::PythonSourceEncodingUnavailable,
             SourceCoverageGapCause::PythonSourceDependencyUnavailable,

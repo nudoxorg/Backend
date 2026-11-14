@@ -960,8 +960,8 @@ impl Fault {
                 Affordance::None,
             ),
             SourceAvailability::StaleFile { .. } => (
-                CauseSlug::NotCaptured,
-                "the compiled line is no longer that file's line",
+                CauseSlug::Moved,
+                "the indexed source location is stale or does not match the current file; reindex before relying on it",
                 Affordance::None,
             ),
         };
@@ -1102,6 +1102,20 @@ impl Fault {
                     tool.executable(),
                 )
             }
+        } else if failure.relative_path().ends_with(".cs") && failure.detail().contains("authority fault") {
+            // The producer's own diagnostics stay local, so say what a reader can do about
+            // a refused C# compilation without guessing beyond that.
+            if failure.phase() == PackageCompilerFailurePhase::Setup {
+                format!(
+                    "{}; the C# compiler stage could not be set up: set NUDOX_ROSLYN_HELPER to the Roslyn helper assembly (oracle.dll) and NUDOX_DOTNET to the dotnet executable, then retry",
+                    failure.detail()
+                )
+            } else {
+                format!(
+                    "{}; the C# compiler refused this project's inputs: confirm dotnet and the Roslyn helper are available (NUDOX_DOTNET, NUDOX_ROSLYN_HELPER) and that every project, framework and package reference resolves, as unresolved references are refused rather than indexed partially",
+                    failure.detail()
+                )
+            }
         } else {
             failure.detail().to_owned()
         };
@@ -1221,9 +1235,7 @@ impl Fault {
             ClientError::MutationOutcomeUnknown(kind) => (
                 FaultSlug::Endpoint,
                 CauseSlug::Unreachable,
-                format!(
-                    "the endpoint closed while a mutation was in flight ({kind}); its outcome is unknown. Inspect owner state before deciding whether to submit it again"
-                ),
+                mutation_outcome_unknown_detail(*kind),
                 Affordance::None,
             ),
             ClientError::Io(detail) => (
@@ -1528,5 +1540,43 @@ mod owner_image_update_tests {
         );
         assert!(wire.cause().sentence().contains("version 38 → 39"));
         assert_eq!(wire.affordance(), &Affordance::Retry);
+    }
+}
+
+/// Words for a change whose reply never arrived. A deadline that expired and a connection
+/// that was torn down are different facts for the reader: after the first the owner is
+/// still there and may well finish the work, after the second the owner may have exited.
+fn mutation_outcome_unknown_detail(kind: std::io::ErrorKind) -> String {
+    use std::io::ErrorKind;
+    match kind {
+        ErrorKind::WouldBlock | ErrorKind::TimedOut => format!(
+            "the owner did not acknowledge this change before the client deadline ({kind}); it may still be applying the change, so its outcome is unknown. Check `nudox health` or the index operation's progress before submitting it again; an identical active index request is observed rather than duplicated"
+        ),
+        _ => format!(
+            "the connection to the owner was lost while a change was in flight ({kind}); its outcome is unknown. Inspect owner state (`nudox health` shows whether the same owner is still running) before deciding whether to submit it again"
+        ),
+    }
+}
+
+#[cfg(test)]
+mod mutation_outcome_wording_tests {
+    use super::mutation_outcome_unknown_detail;
+    use std::io::ErrorKind;
+
+    #[test]
+    fn a_deadline_is_not_described_as_a_closed_endpoint() {
+        for kind in [ErrorKind::WouldBlock, ErrorKind::TimedOut] {
+            let text = mutation_outcome_unknown_detail(kind);
+            assert!(text.contains("did not acknowledge"), "{text}");
+            assert!(!text.contains("closed"), "{text}");
+            assert!(text.contains("outcome is unknown"), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_lost_connection_points_at_the_owner_state() {
+        let text = mutation_outcome_unknown_detail(ErrorKind::BrokenPipe);
+        assert!(text.contains("connection to the owner was lost"), "{text}");
+        assert!(text.contains("nudox health"), "{text}");
     }
 }

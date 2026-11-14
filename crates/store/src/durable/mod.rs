@@ -39,6 +39,7 @@ mod objects;
 mod publication;
 mod publication_api;
 mod recovery;
+pub use recovery::WorkspaceHistoryError;
 mod store_api;
 mod streaming_closure;
 
@@ -55,7 +56,7 @@ pub use closure_composer::{
 pub use gc::{GcLimits, GcReport, GcRoot, GcRootResolver, GcRoots};
 pub use layout::{
     FileStore, GcPinGuard, PublicationAuthorityError, PublicationBase, PublicationDescriptor,
-    SelectedHead, StorePublicationAuthority, TransactionId,
+    SelectedHead, StorePublicationAuthority, WeakPublicationAuthority, TransactionId,
 };
 pub(crate) use membership_lease::ClosureMembershipLease;
 pub use nodes::{
@@ -64,7 +65,7 @@ pub use nodes::{
     TreeReadStats, TreeWriteStats,
 };
 pub use object_batch::{MAX_OBJECT_BATCH_OBJECTS, ObjectBatchWriteReceipt};
-pub use objects::{ObjectWriteReceipt, VerifiedObjectView};
+pub use objects::{BoundedObjectReader, IdentityHashError, ObjectWriteReceipt, VerifiedObjectView, untrusted_object_id_for_encoded_value, untrusted_object_id_for_encoded_value_checkpointed, untrusted_object_id_for_encoded_parts_checkpointed};
 pub use publication::{
     CheckedWorkspacePublication, FileDurable, FilePrepared, FilePublished, WorkspaceFileDurable,
     WorkspaceFilePrepared, WorkspaceFilePublished,

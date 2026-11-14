@@ -239,45 +239,89 @@ impl ProductSemanticPublicationKey {
         &self,
         image: &Reader,
     ) -> Result<(), SemanticPublicationTargetError> {
+        match self.admit_image_checkpointed(image, |_| Ok::<(), core::convert::Infallible>(())) {
+            Ok(()) => Ok(()),
+            Err(CheckpointedSemanticTargetError::Mismatch(error)) => Err(error),
+            Err(CheckpointedSemanticTargetError::Stopped(never)) => match never {},
+        }
+    }
+
+    /// Verifies the same target as `admit_image`, with live work and stop
+    /// checkpoints during lineage validation and byte comparisons.
+    ///
+    /// # Errors
+    /// Returns the original target mismatch or the caller's stop reason.
+    pub fn admit_image_checkpointed<Reader, E>(
+        &self,
+        image: &Reader,
+        mut checkpoint: impl FnMut(u64) -> Result<(), E>,
+    ) -> Result<(), CheckpointedSemanticTargetError<E>>
+    where Reader: SemanticCoreReader + ?Sized {
+        use CheckpointedSemanticTargetError::{Mismatch, Stopped};
+        fn valid_component<E>(value: &[u8], checkpoint: &mut impl FnMut(u64) -> Result<(), E>) -> Result<bool, E> {
+            if value.is_empty() { return Ok(false); }
+            for chunk in value.chunks(1024) {
+                checkpoint(1)?;
+                if chunk.iter().any(|byte| matches!(*byte, b':' | b'\\')) { return Ok(false); }
+            }
+            Ok(true)
+        }
+        fn equal<E>(observed: Option<&[u8]>, expected: &[u8], checkpoint: &mut impl FnMut(u64) -> Result<(), E>) -> Result<bool, E> {
+            let Some(observed) = observed else { return Ok(false); };
+            if observed.len() != expected.len() { return Ok(false); }
+            for (a, b) in observed.chunks(1024).zip(expected.chunks(1024)) {
+                checkpoint(1)?;
+                if a != b { return Ok(false); }
+            }
+            Ok(true)
+        }
+        checkpoint(1).map_err(Stopped)?;
         let facts = image.image_facts();
         let expected_authority = SemanticImageAuthority::Language(self.profile);
         if facts.authority != expected_authority {
-            return Err(SemanticPublicationTargetError::Authority {
-                expected: expected_authority,
-                observed: facts.authority,
-            });
+            return Err(Mismatch(SemanticPublicationTargetError::Authority { expected: expected_authority, observed: facts.authority }));
         }
         let ImageProvenance::Captured { recipe, scope, .. } = facts.provenance else {
-            return Err(SemanticPublicationTargetError::ProvenanceUnavailable);
+            return Err(Mismatch(SemanticPublicationTargetError::ProvenanceUnavailable));
         };
         if recipe.profile != self.profile {
-            return Err(SemanticPublicationTargetError::RecipeProfile {
-                expected: self.profile,
-                observed: recipe.profile,
-            });
+            return Err(Mismatch(SemanticPublicationTargetError::RecipeProfile { expected: self.profile, observed: recipe.profile }));
         }
         if recipe.stage != Stage::LowerIr {
-            return Err(SemanticPublicationTargetError::RecipeStage {
-                observed: recipe.stage,
-            });
+            return Err(Mismatch(SemanticPublicationTargetError::RecipeStage { observed: recipe.stage }));
         }
-        let lineage = self
-            .lineage()
-            .map_err(|_| SemanticPublicationTargetError::StoredLineage)?;
-        if image.atom(scope.ecosystem) != Some(lineage.ecosystem.as_bytes()) {
-            return Err(SemanticPublicationTargetError::Ecosystem);
+        // This checks exactly the invariants of PackageLineage::new, but in
+        // bounded pieces so cancellation remains live on long components.
+        let ecosystem = self.coordinate.package_type().as_str().as_bytes();
+        let name = self.coordinate.lineage_name().as_bytes();
+        if !valid_component(ecosystem, &mut checkpoint).map_err(Stopped)?
+            || !valid_component(name, &mut checkpoint).map_err(Stopped)? {
+            return Err(Mismatch(SemanticPublicationTargetError::StoredLineage));
         }
-        if image.atom(scope.package) != Some(lineage.name.as_bytes()) {
-            return Err(SemanticPublicationTargetError::Package);
+        if !equal(image.atom(scope.ecosystem), ecosystem, &mut checkpoint).map_err(Stopped)? {
+            return Err(Mismatch(SemanticPublicationTargetError::Ecosystem));
+        }
+        if !equal(image.atom(scope.package), name, &mut checkpoint).map_err(Stopped)? {
+            return Err(Mismatch(SemanticPublicationTargetError::Package));
         }
         let Some(coordinate) = scope.coordinate else {
-            return Err(SemanticPublicationTargetError::CoordinateUnavailable);
+            return Err(Mismatch(SemanticPublicationTargetError::CoordinateUnavailable));
         };
-        if image.atom(coordinate) != Some(self.coordinate.as_str().as_bytes()) {
-            return Err(SemanticPublicationTargetError::Coordinate);
+        if !equal(image.atom(coordinate), self.coordinate.as_str().as_bytes(), &mut checkpoint).map_err(Stopped)? {
+            return Err(Mismatch(SemanticPublicationTargetError::Coordinate));
         }
+        checkpoint(1).map_err(Stopped)?;
         Ok(())
     }
+}
+
+/// A target mismatch or the live operation's stop reason.
+#[derive(Debug, Eq, PartialEq)]
+pub enum CheckpointedSemanticTargetError<E> {
+    /// The image failed an existing target admission invariant.
+    Mismatch(SemanticPublicationTargetError),
+    /// The caller stopped admission.
+    Stopped(E),
 }
 
 /// Why a reopened semantic image cannot be projected under a product key.
@@ -1573,6 +1617,13 @@ mod tests {
                 LanguageProfile::Rust(RustEdition::Rust2024),
             )?;
             matching.admit_image(&artifact.semantic_image)?;
+            assert_eq!(matching.admit_image_checkpointed(&artifact.semantic_image, |_| Ok::<_, ()>(())), Ok(()));
+            let mut checks = 0;
+            assert_eq!(matching.admit_image_checkpointed(&artifact.semantic_image, |_| {
+                checks += 1;
+                if checks == 3 { Err("cancelled") } else { Ok(()) }
+            }), Err(CheckpointedSemanticTargetError::Stopped("cancelled")));
+            assert_eq!(checks, 3);
 
             for hostile_coordinate in [
                 "pkg:cargo/activation-fixture@2.0.0",
@@ -1588,6 +1639,8 @@ mod tests {
                     hostile.admit_image(&artifact.semantic_image),
                     Err(SemanticPublicationTargetError::Coordinate)
                 );
+                assert_eq!(hostile.admit_image_checkpointed(&artifact.semantic_image, |_| Ok::<_, ()>(())),
+                    Err(CheckpointedSemanticTargetError::Mismatch(SemanticPublicationTargetError::Coordinate)));
             }
 
             let foreign_package = ProductSemanticPublicationKey::new(

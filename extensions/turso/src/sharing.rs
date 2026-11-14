@@ -25,9 +25,30 @@
 //! capability: a platform that cannot coordinate a shared log is refused by
 //! name instead of being quietly given a weaker mode.
 
-use std::{fmt, sync::Arc};
+use std::{
+    fmt,
+    sync::{Arc, LazyLock},
+};
+
+use futures_util::lock::{Mutex, MutexGuard};
 
 use turso::core::IO;
+
+static OPEN_GATE: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+/// Serializes the read-only preflight and the writable open of one process.
+///
+/// Turso keeps one shared `Database` per file in each process and hands a live
+/// one to every later opener whatever flags that opener asked for. A thread
+/// that holds a read-only preflight handle therefore makes a concurrent
+/// writable open of the same file receive the read-only database and fail with
+/// "database is readonly". Holding this gate from the preflight open until the
+/// writable open has returned keeps a read-only handle from ever being live
+/// beside one. The writer's own database then stays registered, so later
+/// read-only openers share the writable one.
+pub(crate) async fn open_gate() -> MutexGuard<'static, ()> {
+    OPEN_GATE.lock().await
+}
 
 /// The I/O backend a database is opened through.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

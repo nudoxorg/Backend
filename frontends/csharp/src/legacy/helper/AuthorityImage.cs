@@ -16,21 +16,26 @@ internal static class AuthorityImage
     private const int HeaderBytes = 256;
     private const uint Absent = uint.MaxValue;
     private static readonly byte[] DigestDomain = "nudox.csharp.authority.image.sha256.v4\0"u8.ToArray();
+    private static readonly byte[] TopLevelDigestDomain = "nudox.csharp.authority.image.sha256.v5\0"u8.ToArray();
     private static readonly int[] Widths = [8, 1, 52, 24, 12, 4, 16, 8, 8, 20, 28];
 
-    public static void Write(LoadedCompilation loaded, string sourceBinding, Stream destination)
+    public static IReadOnlyList<ForeignOccurrence> Write(LoadedCompilation loaded, string sourceBinding, Stream destination, bool captureOccurrences = false)
     {
         var binding = Path.GetFullPath(sourceBinding);
         var tree = loaded.Compilation.SyntaxTrees.SingleOrDefault(t =>
             StringComparer.Ordinal.Equals(Path.GetFullPath(t.FilePath), binding));
         if (tree is null)
             throw new OracleFailure("C# authority source binding is absent from the Roslyn compilation");
-        var source = File.ReadAllBytes(binding);
+        var source = loaded.CapturedBytes is { } captured
+            ? captured.GetValueOrDefault(binding) ?? throw new OracleFailure("C# binding is absent from captured sources")
+            : File.ReadAllBytes(binding);
         var offsets = Extractor.BuildByteOffsets(
             tree,
             source.AsSpan().StartsWith(new byte[] { 0xEF, 0xBB, 0xBF }) ? 3 : 0);
-        var image = new Builder(loaded.Compilation, tree, offsets, loaded.Root).Build(source);
+        var builder = new Builder(loaded.Compilation, tree, offsets, loaded.Root, loaded.CapturedBytes, loaded.CapturedGraphTrees, captureOccurrences);
+        var image = builder.Build(source, loaded.ErrorCount, loaded.CapturedBytes is not null);
         destination.Write(image);
+        return builder.ForeignOccurrences;
     }
 
     /// <summary>
@@ -50,12 +55,17 @@ internal static class AuthorityImage
     private static string RelativeSourcePath(string root, string treeFilePath) =>
         Path.GetRelativePath(root, treeFilePath).Replace('\\', '/');
 
+    internal sealed record ForeignOccurrence(uint Owner, uint Start, uint End, string Target);
+
     private sealed class Builder
     {
         private readonly CSharpCompilation compilation;
         private readonly SyntaxTree tree;
         private readonly int[] offsets;
         private readonly string root;
+        private readonly IReadOnlyDictionary<string, byte[]>? capturedBytes;
+        private readonly bool captureOccurrences;
+        private readonly IReadOnlySet<SyntaxTree>? capturedGraphTrees;
         private readonly Dictionary<string, uint> atomMap = new(StringComparer.Ordinal);
         private readonly List<byte> atomBytes = [];
         private readonly List<byte[]> declarations = [];
@@ -72,19 +82,27 @@ internal static class AuthorityImage
         private readonly Dictionary<SyntaxNode, uint> syntaxMap = new();
         private readonly Dictionary<ITypeSymbol, uint> typeMap = new(SymbolEqualityComparer.Default);
         private readonly HashSet<ITypeSymbol> typeInProgress = new(SymbolEqualityComparer.Default);
+        private bool hasTopLevelContext;
+        private readonly List<ForeignOccurrence> foreignOccurrences = [];
+        private int foreignBytes;
+        public IReadOnlyList<ForeignOccurrence> ForeignOccurrences => foreignOccurrences;
 
-        public Builder(CSharpCompilation compilation, SyntaxTree tree, int[] offsets, string root)
+        public Builder(CSharpCompilation compilation, SyntaxTree tree, int[] offsets, string root,
+            IReadOnlyDictionary<string, byte[]>? capturedBytes, IReadOnlySet<SyntaxTree>? capturedGraphTrees, bool captureOccurrences)
         {
             this.compilation = compilation;
             this.tree = tree;
             this.offsets = offsets;
             this.root = root;
+            this.capturedBytes = capturedBytes;
+            this.capturedGraphTrees = capturedGraphTrees;
+            this.captureOccurrences = captureOccurrences;
         }
 
         /// <summary>The atom for the bound tree's own file, root-relative.</summary>
         private uint TreeFileAtom() => Atom(RelativeSourcePath(root, tree.FilePath));
 
-        public byte[] Build(byte[] source)
+        public byte[] Build(byte[] source, int errorCount, bool capturedSources)
         {
             var model = compilation.GetSemanticModel(tree);
             foreach (var node in tree.GetRoot().DescendantNodesAndSelf())
@@ -162,7 +180,7 @@ internal static class AuthorityImage
                 Rows(typeParameters), Rows(constraints), Rows(types), Rows(children),
                 Rows(attributes), Rows(docs), Rows(references)
             };
-            return Image(source, sections);
+            return Image(source, sections, hasTopLevelContext, errorCount, capturedSources);
         }
 
         private static ISymbol? DeclaredSymbol(SemanticModel model, SyntaxNode node) => node switch
@@ -482,8 +500,21 @@ internal static class AuthorityImage
         private void AddReference(SemanticModel model, SyntaxNode node, byte tag, SyntaxNode spellingNode)
         {
             var ownerNode = node.Ancestors().FirstOrDefault(syntaxMap.ContainsKey);
-            if (ownerNode is null || !syntaxMap.TryGetValue(ownerNode, out var ownerRow)) return;
             var symbol = model.GetSymbolInfo(node).Symbol;
+            uint ownerRow;
+            if (ownerNode is null || !syntaxMap.TryGetValue(ownerNode, out ownerRow))
+            {
+                // The top-level entry point is compiler-synthesized and has no
+                // authored declaration row. Only a bound invocation directly
+                // owned by that real entry point can use the file context.
+                var entry = compilation.GetEntryPoint(default);
+                if (tag != 1 || symbol is not IMethodSymbol || entry is null
+                    || !node.Ancestors().Any(n => n is GlobalStatementSyntax)
+                    || !SymbolEqualityComparer.Default.Equals(model.GetEnclosingSymbol(node.SpanStart), entry))
+                    return;
+                ownerRow = Absent;
+                hasTopLevelContext = true;
+            }
             var target = ResolveTarget(symbol);
             var spanNode = spellingNode;
             var spelling = spellingNode.ToString();
@@ -509,7 +540,58 @@ internal static class AuthorityImage
                     && TryQualifiedMemberSpelling(symbol.ContainingType, memberName, out var qualified))
                     spelling = qualified;
             }
+            if (target == Absent && tag == 1 && TryCapturedMethodTarget(symbol, out var sourceTarget))
+            {
+                var coordinate = Atom(sourceTarget);
+                if (coordinate >= 0x7fffffffU) throw new OracleFailure("C# source target atom exceeds limit");
+                if (captureOccurrences)
+                {
+                    var occurrenceSpan = Span(spanNode);
+                    foreignBytes = checked(foreignBytes + Encoding.UTF8.GetByteCount(sourceTarget));
+                    if (foreignOccurrences.Count >= 8192 || foreignBytes > 1024 * 1024)
+                        throw new OracleFailure("C# foreign occurrence evidence exceeds limit");
+                    foreignOccurrences.Add(new ForeignOccurrence(ownerRow, occurrenceSpan.Start, occurrenceSpan.End, sourceTarget));
+                }
+                target = 0x80000000U | coordinate;
+            }
             var row = new byte[28]; Put(row, 0, ownerRow); Put(row, 4, target); Put(row, 8, Atom(spelling)); Put(row, 12, TreeFileAtom()); var s = Span(spanNode); Put(row, 16, s.Start); Put(row, 20, s.End); row[24] = tag; references.Add(row);
+        }
+
+        // A coordinate is a compiler-resolved source claim, not a name-based
+        // match. It is emitted only for one method declaration in another
+        // source tree supplied by the same captured input set.
+        private bool TryCapturedMethodTarget(ISymbol? symbol, out string coordinate)
+        {
+            coordinate = string.Empty;
+            if (capturedBytes is null || symbol is not IMethodSymbol resolved) return false;
+            var method = (resolved.ReducedFrom ?? resolved).OriginalDefinition;
+            var declarations = method.DeclaringSyntaxReferences;
+            if (declarations.Length != 1 || declarations[0].GetSyntax() is not MethodDeclarationSyntax declaration)
+                return false;
+            var targetTree = declaration.SyntaxTree;
+            if (targetTree == tree || !(capturedGraphTrees?.Contains(targetTree) ?? compilation.SyntaxTrees.Contains(targetTree))) return false;
+            var fullPath = Path.GetFullPath(targetTree.FilePath);
+            if (!capturedBytes.TryGetValue(fullPath, out var source)) return false;
+            var path = RelativeSourcePath(root, fullPath);
+            var pathBytes = Encoding.UTF8.GetBytes(path);
+            if (pathBytes.Length == 0 || pathBytes.Length > 4096 || path.Split('/').Any(part => part is "" or "." or "..")) return false;
+            var id = method.GetDocumentationCommentId();
+            if (string.IsNullOrEmpty(id)) return false;
+            var idBytes = Encoding.UTF8.GetBytes(id);
+            if (idBytes.Length > 4096) return false;
+            var bom = source.AsSpan().StartsWith(new byte[] { 0xEF, 0xBB, 0xBF }) ? 3 : 0;
+            var targetOffsets = Extractor.BuildByteOffsets(targetTree, bom);
+            var start = targetOffsets[declaration.Span.Start];
+            var end = targetOffsets[declaration.Span.End];
+            var nameStart = targetOffsets[declaration.Identifier.Span.Start];
+            var nameEnd = targetOffsets[declaration.Identifier.Span.End];
+            if (start < 0 || start > nameStart || nameStart >= nameEnd || nameEnd > end || end > source.Length) return false;
+            coordinate = string.Join('|', "csharp-source-v1", Convert.ToHexString(pathBytes).ToLowerInvariant(),
+                Convert.ToHexString(SHA256.HashData(source)).ToLowerInvariant(),
+                start.ToString(System.Globalization.CultureInfo.InvariantCulture), end.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                nameStart.ToString(System.Globalization.CultureInfo.InvariantCulture), nameEnd.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                Convert.ToHexString(idBytes).ToLowerInvariant());
+            return true;
         }
 
         private static bool TryQualifiedMemberSpelling(INamedTypeSymbol containingType, string memberName, out string spelling)
@@ -573,10 +655,14 @@ internal static class AuthorityImage
             {
                 // Every independently compiled source fragment retains its
                 // local partial type. When the same tree has several parts,
-                // only its earliest source part is the definition row; later
-                // parts are implementation rows and lower under that owner.
+                // only its earliest authored type declaration is the definition
+                // row; later parts lower under that owner. Roslyn's implicit
+                // top-level Program can also have a compilation-unit syntax
+                // reference, which is not an authored partial declaration and
+                // must not displace the real `partial class Program` row.
                 var firstLocal = named.DeclaringSyntaxReferences
-                    .Where(reference => reference.SyntaxTree == tree)
+                    .Where(reference => reference.SyntaxTree == tree
+                        && reference.GetSyntax() is BaseTypeDeclarationSyntax)
                     .OrderBy(reference => reference.Span.Start)
                     .FirstOrDefault();
                 return firstLocal is null || firstLocal.Span.Equals(node.Span) ? (byte)1 : (byte)2;
@@ -612,11 +698,12 @@ internal static class AuthorityImage
         private static void Put(byte[] row, int offset, uint value) => BinaryPrimitives.WriteUInt32LittleEndian(row.AsSpan(offset, 4), value);
         private static byte[] Rows(List<byte[]> rows) { var output = new byte[rows.Sum(r => r.Length)]; var at = 0; foreach (var row in rows) { row.CopyTo(output, at); at += row.Length; } return output; }
         private byte[] AtomRows() { var rows = new byte[atomMap.Count * 8]; var ordered = atomMap.OrderBy(p => p.Value); var at = 0; var offset = 0u; foreach (var pair in ordered) { var bytes = Convert.FromBase64String(pair.Key); Put(rows, at, offset); Put(rows, at + 4, checked((uint)bytes.Length)); offset += checked((uint)bytes.Length); at += 8; } return rows; }
-        private static byte[] Image(byte[] source, List<byte[]> sections)
+        private static byte[] Image(byte[] source, List<byte[]> sections, bool topLevelContext, int errorCount, bool capturedSources)
         {
-            var body = sections.Sum(s => s.Length); var image = new byte[HeaderBytes + body]; "NCAI"u8.CopyTo(image); BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(4), 4); BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(6), HeaderBytes); BinaryPrimitives.WriteUInt32LittleEndian(image.AsSpan(8), checked((uint)body)); SHA256.HashData(source).CopyTo(image, 12); BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(44), 11);
+            var v5 = topLevelContext || capturedSources;
+            var body = sections.Sum(s => s.Length); var image = new byte[HeaderBytes + body]; "NCAI"u8.CopyTo(image); BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(4), v5 ? (ushort)5 : (ushort)4); BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(6), HeaderBytes); BinaryPrimitives.WriteUInt32LittleEndian(image.AsSpan(8), checked((uint)body)); SHA256.HashData(source).CopyTo(image, 12); BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(44), 11); if (v5) BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(46), (ushort)Math.Min(errorCount, ushort.MaxValue));
             var offset = HeaderBytes; for (var i = 0; i < 11; i++) { var at = 48 + i * 16; BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(at), checked((ushort)(i + 1))); BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(at + 2), checked((ushort)Widths[i])); BinaryPrimitives.WriteUInt32LittleEndian(image.AsSpan(at + 4), checked((uint)(sections[i].Length / Widths[i]))); BinaryPrimitives.WriteUInt32LittleEndian(image.AsSpan(at + 8), checked((uint)offset)); BinaryPrimitives.WriteUInt32LittleEndian(image.AsSpan(at + 12), checked((uint)sections[i].Length)); sections[i].CopyTo(image, offset); offset += sections[i].Length; }
-            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256); hash.AppendData(DigestDomain); hash.AppendData(image, 0, 224); hash.AppendData(image, HeaderBytes, body); hash.GetHashAndReset().CopyTo(image, 224); return image;
+            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256); hash.AppendData(v5 ? TopLevelDigestDomain : DigestDomain); hash.AppendData(image, 0, 224); hash.AppendData(image, HeaderBytes, body); hash.GetHashAndReset().CopyTo(image, 224); return image;
         }
     }
 

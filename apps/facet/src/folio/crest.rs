@@ -656,6 +656,8 @@ pub enum Advisories {
         worst: Option<SharedString>,
         /// What the acquisition decision was.
         decision: SharedString,
+        /// Scope and age of the feed evidence, including incomplete checks.
+        note: SharedString,
     },
 }
 
@@ -682,7 +684,7 @@ impl RenderOnce for AdvisoriesCell {
         let (word, tone, quiet, note): (SharedString, Hsla, bool, SharedString) = match &self.facts {
             Advisories::Unknown { why, note } => (SharedString::from(why.word()), palette.ink3.into(), true, note.clone()),
             Advisories::Clear { note } => ("clear".into(), palette.mint.base.into(), false, note.clone()),
-            Advisories::Found { count, worst, decision } => {
+            Advisories::Found { count, worst, decision, note } => {
                 let word = format!("{count} {}", if *count == 1 { "advisory" } else { "advisories" });
                 let tone: Hsla = match decision.as_ref() {
                     "deny" => palette.coral.base.into(),
@@ -693,8 +695,8 @@ impl RenderOnce for AdvisoriesCell {
                     tone,
                     false,
                     match worst {
-                        Some(worst) => format!("worst {worst} · {decision}").into(),
-                        None => format!("decision {decision}").into(),
+                        Some(worst) => format!("worst {worst} · {decision} · {note}").into(),
+                        None => format!("decision {decision} · {note}").into(),
                     },
                 )
             }

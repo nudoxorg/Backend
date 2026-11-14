@@ -40,6 +40,16 @@ impl CommandSpec {
                 | CommandId::PackageVersions
                 | CommandId::SemanticVersions
                 | CommandId::SemanticSource
+                | CommandId::StyloQuery
+                | CommandId::StyloReadSite
+                | CommandId::SqlQuery
+                | CommandId::SqlReadSource
+                | CommandId::ImpactCapture
+                | CommandId::ImpactCompare
+                | CommandId::ImpactReadSource
+                | CommandId::ImpactDiff
+                | CommandId::StyloImpact
+                | CommandId::Impact
                 | CommandId::SemanticShapes
                 | CommandId::PackageSourceMembership
                 | CommandId::SelectSemanticVersion
@@ -98,7 +108,7 @@ pub enum CommandDomain {
 }
 
 /// The closed registry in stable display order.
-pub const COMMANDS: [CommandSpec; 54] = [
+pub const COMMANDS: [CommandSpec; 64] = [
     CommandSpec {
         id: CommandId::Advisory,
         name: "advisory",
@@ -199,7 +209,7 @@ pub const COMMANDS: [CommandSpec; 54] = [
         id: CommandId::Search,
         name: "search",
         title: "Search",
-        description: "Search exact keys, names, relations, and vectors together; every lane reports its coverage.",
+        description: "Search indexed declarations; the response reports which search capabilities are available.",
         mutation: CommandMutation::Read,
         domain: CommandDomain::Library,
     },
@@ -531,12 +541,62 @@ pub const COMMANDS: [CommandSpec; 54] = [
         mutation: CommandMutation::Read,
         domain: CommandDomain::Library,
     },
+    CommandSpec {
+        id: CommandId::StyloQuery,
+        name: "stylo-query",
+        title: "CSS Query",
+        description: "Query selected native CSS evidence by exact decoded name.",
+        mutation: CommandMutation::Read,
+        domain: CommandDomain::Library,
+    },
+    CommandSpec {
+        id: CommandId::StyloReadSite,
+        name: "stylo-read-site",
+        title: "CSS Source Site",
+        description: "Read one verified authored CSS source site.",
+        mutation: CommandMutation::Read,
+        domain: CommandDomain::Library,
+    },
+    CommandSpec { id: CommandId::SqlQuery, name: "sql-query", title: "SQL Query",
+        description: "Query selected native SQL facts under explicit dialect and context.",
+        mutation: CommandMutation::Read, domain: CommandDomain::Library },
+    CommandSpec { id: CommandId::SqlReadSource, name: "sql-read-source", title: "SQL Source",
+        description: "Read a verified native SQL diagnostic source extent.",
+        mutation: CommandMutation::Read, domain: CommandDomain::Library },
+    CommandSpec { id: CommandId::ImpactCapture, name: "impact-capture", title: "Capture Impact Basis", description: "Capture the selected CSS basis for a bounded comparison.", mutation: CommandMutation::Read, domain: CommandDomain::Library },
+    CommandSpec { id: CommandId::ImpactCompare, name: "impact-compare", title: "Compare Impact", description: "Traverse possible CSS dependency impacts on one retained comparison side.", mutation: CommandMutation::Read, domain: CommandDomain::Library },
+    CommandSpec { id: CommandId::ImpactReadSource, name: "impact-read-source", title: "Read Historical Source", description: "Read a source site from retained comparison bytes.", mutation: CommandMutation::Read, domain: CommandDomain::Library },
+    CommandSpec { id: CommandId::ImpactDiff, name: "impact-diff", title: "Diff Impact Facts", description: "Compare retained native CSS rows or verified source images and trace candidate impacts.", mutation: CommandMutation::Read, domain: CommandDomain::Library },
+    CommandSpec {
+        id: CommandId::StyloImpact,
+        name: "stylo-impact",
+        title: "CSS Impact",
+        description: "Find possible same-name CSS consumers in the selected indexed basis.",
+        mutation: CommandMutation::Read,
+        domain: CommandDomain::Library,
+    },
+    CommandSpec {
+        id: CommandId::Impact,
+        name: "impact",
+        title: "Change Impact",
+        description: "Show what a change to a CSS selector, class, custom property, or a component affects, with exact and possible paths, coverage gaps, and freshness.",
+        mutation: CommandMutation::Read,
+        domain: CommandDomain::Library,
+    },
 ];
 
 /// Finds one shared command row or internal owner-command description.
 #[must_use]
 pub fn command_spec(id: CommandId) -> CommandSpec {
     let index = match id {
+        CommandId::StyloQuery | CommandId::StyloReadSite | CommandId::StyloImpact | CommandId::Impact
+        | CommandId::SqlQuery | CommandId::SqlReadSource
+        | CommandId::ImpactCapture | CommandId::ImpactCompare | CommandId::ImpactReadSource | CommandId::ImpactDiff => {
+            return COMMANDS
+                .into_iter()
+                .find(|row| row.id == id)
+                .expect("registered CSS command");
+        }
         CommandId::SemanticSource => 53,
         CommandId::SemanticShapes => {
             return CommandSpec {

@@ -27,10 +27,12 @@ mod subscription;
 mod subscription_snapshot;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod stylo_transport_tests;
 
 pub use admission::{
     MAX_COMMAND_TEXT, ReplyAdmissionError, RequestAdmissionError, admit_reply,
-    admit_reply_with_capability, admit_request, admit_surface_reply, reply_memory_bound,
+    admit_reply_with_capability, admit_request, admit_surface_read_shape, admit_surface_references_shape, admit_surface_reply, reply_memory_bound,
 };
 pub use claims::{WireCertificate, WireClaim, WireSchema};
 pub use codec::{
@@ -72,7 +74,9 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current matched-client transport cohort. Version 39 adds a closed, path-free
+/// Current matched-client transport cohort. Version 40 adds reference coverage,
+/// native Stylo query and source reads, and coordinates source paging and live selection health.
+/// Version 39 adds a closed, path-free
 /// Rust source-scope refusal fact. Version 37 allows bounded multirow
 /// compiler-coverage pages. Version 36 adds typed per-profile compiler-refusal
 /// progress. Version 35 adds separate source-selection
@@ -84,4 +88,9 @@ pub(crate) use reply_coverage::{
 /// `Gapped` coverage and compiler details, and version 30 catalog windows and
 /// predecessor spans remain strict; live peers must upgrade together.
 /// The view journal container stays version 3 and retains historical bytes.
-pub const DTO_VERSION: u16 = 39;
+pub const DTO_VERSION: u16 = 40;
+
+#[cfg(any(unix, windows))]
+pub use admission::admit_reply_with_local_source_policy;
+#[cfg(any(unix, windows))]
+pub use codec::decode_reply_body_with_local_source_policy;

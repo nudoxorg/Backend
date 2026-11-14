@@ -284,3 +284,39 @@ fn captured_json_bytes_invalidate_the_recipe_and_native_value_type() {
         "the changed native JSON type makes the string assignment valid"
     );
 }
+
+#[test]
+fn native_private_reexport_diagnostics_use_real_project_resolver() {
+    let fixture = Fixture::new();
+    fixture.write("tsconfig.json", r#"{"compilerOptions":{"noLib":true,"types":[],"module":"ESNext","moduleResolution":"bundler","jsx":"preserve"},"files":["ui/button.ts","ui/index.ts","page.tsx"]}"#);
+    fixture.write("ui/button.ts", "function Button() { return 1; }\n");
+    fixture.write(
+        "ui/index.ts",
+        "export { Button as Action } from './button';\n",
+    );
+    let page = "// λ\nimport { Action as Confirm } from './ui';\nexport function Page() { return <><Confirm /><Confirm /></>; }\n";
+    fixture.write("page.tsx", page);
+    let primary = [PackageSource::new("page.tsx", page).unwrap()];
+    let inputs = native(&fixture, &primary);
+    let mut authority = backend_frontend_typescript::TszProjectAuthority::new();
+    authority
+        .update(inputs.sources, inputs.options, &inputs.libraries)
+        .unwrap();
+    let diagnostics = authority
+        .project()
+        .unwrap()
+        .diagnostics()
+        .map(|d| (d.file.clone(), d.code, d.message_text.clone()))
+        .collect::<Vec<_>>();
+    eprintln!("real native project diagnostics: {diagnostics:?}");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|(file, code, _)| file == "ui/index.ts" && *code == 2305)
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|(file, code, _)| file == "ui/index.ts" && *code == 2306)
+    );
+}

@@ -272,9 +272,12 @@ fn owner_recovery_rearms_observation_after_store_renewal_without_a_hydration_rep
     });
     let _release = _release; // release worker before the graph can drop
     cx.run_until_parked();
-    entered
-        .recv_timeout(Duration::from_secs(1))
-        .expect("startup hydration remains held");
+    // A gated GUI asks its owner for the first Root only once the owner has
+    // answered (6efec4713), so no hydration is held while the owner starts.
+    assert!(
+        entered.try_recv().is_err(),
+        "no Root is asked of an owner that has not answered"
+    );
     graph.root.update(cx, |root, _| {
         root.index_poll = None;
     });
@@ -283,6 +286,9 @@ fn owner_recovery_rearms_observation_after_store_renewal_without_a_hydration_rep
         mode: ServiceMode::Embedded,
     });
     cx.run_until_parked();
+    entered
+        .recv_timeout(Duration::from_secs(1))
+        .expect("the answered owner is asked for its Root, and that hydration stays held");
     assert!(
         graph
             .root
@@ -474,13 +480,20 @@ fn uncertain_saved_key_is_checked_once_after_initial_store_owner_admission(
     });
     let _release = _release;
     cx.run_until_parked();
-    entered
-        .recv_timeout(Duration::from_secs(1))
-        .expect("hydration held");
+    // A gated GUI asks its owner for the first Root only once the owner has
+    // answered (6efec4713), so no hydration is held while the owner starts.
+    assert!(
+        entered.try_recv().is_err(),
+        "no Root is asked of an owner that has not answered"
+    );
     gate.publish(OwnerState::Ready {
         key: basis(),
         mode: ServiceMode::Embedded,
     });
+    cx.run_until_parked();
+    entered
+        .recv_timeout(Duration::from_secs(1))
+        .expect("the answered owner is asked for its Root, and that hydration stays held");
     crate::runtime::wait::until("uncertain startup key checks exact new owner", || {
         cx.run_until_parked();
         graph.root.read_with(cx, |root, _| {
@@ -582,9 +595,12 @@ fn unknown_saved_key_replaces_an_obsolete_queued_check_after_owner_recovery(
     });
     let _release = _release; // release worker before the graph can drop
     cx.run_until_parked();
-    entered
-        .recv_timeout(Duration::from_secs(1))
-        .expect("hydration held");
+    // A gated GUI asks its owner for the first Root only once the owner has
+    // answered (6efec4713), so no hydration is held while the owner starts.
+    assert!(
+        entered.try_recv().is_err(),
+        "no Root is asked of an owner that has not answered"
+    );
     // The initial owner is still starting: its automatic cold reconciliation
     // must not race this deliberately queued callback. Both admissions and
     // the replacement happen before the outer update flushes any callback.
@@ -615,6 +631,10 @@ fn unknown_saved_key_replaces_an_obsolete_queued_check_after_owner_recovery(
             root.flush_pending(cx);
         });
     });
+    cx.run_until_parked();
+    entered
+        .recv_timeout(Duration::from_secs(1))
+        .expect("the answered owner is asked for its Root, and that hydration stays held");
     crate::runtime::wait::until("new attachment receives one fresh status", || {
         cx.run_until_parked();
         graph.root.read_with(cx, |root, _| {
