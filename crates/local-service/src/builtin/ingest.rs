@@ -10112,6 +10112,29 @@ mod profile_tests {
     }
 
     #[test]
+    fn vue_script_declarations_keep_source_order_when_a_nested_declaration_is_parsed_first()
+    -> Result<(), String> {
+        let scratch = scratch("vue-source-order")?;
+        fs::create_dir_all(scratch.0.join("src")).map_err(|e| e.to_string())?;
+        fs::write(
+            scratch.0.join("src/App.vue"),
+            "<script setup>\nimport { ref, onMounted } from 'vue'\n\nconst status = ref('loading')\n\nasync function loadHealth() {\n  const response = await fetch('/api/health')\n  status.value = (await response.json()).status\n}\n\nonMounted(loadHealth)\n</script>\n\n<template>\n  <main>{{ status }}</main>\n</template>\n",
+        )
+        .map_err(|e| e.to_string())?;
+        let snapshot = scan(&scratch)?;
+        let names = names_of(&snapshot, "src/App.vue");
+        let position = |wanted: &str| names.iter().position(|name| name == wanted);
+        for wanted in ["App", "ref", "onMounted", "status", "loadHealth", "response"] {
+            assert!(position(wanted).is_some(), "{wanted} missing from {names:?}");
+        }
+        assert!(
+            position("loadHealth") < position("response"),
+            "an enclosing declaration precedes the declaration inside it: {names:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn stylo_worker_attempt_budget_counts_failures_and_stops_at_sixteen() {
         let mut budget = StyloWorkerBudget::new();
         let mut launches = 0;

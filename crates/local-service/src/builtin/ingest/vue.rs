@@ -56,7 +56,12 @@ pub(super) fn scan(
                 Err(_) => continue,
             };
             supported = true;
-            for declaration in parsed.declarations {
+            // The native arena allocates a nested declaration before the
+            // declaration that encloses it, but the retained rows must follow
+            // source order within the host.
+            let mut found = parsed.declarations;
+            found.sort_by_key(|declaration| declaration.name.byte_range().start);
+            for declaration in found {
                 if declarations.len() >= 16_384 {
                     return Err("Vue script declaration bound exceeded".into());
                 }
