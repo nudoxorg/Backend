@@ -116,7 +116,7 @@ internal static class Program
                 usings = loaded.CapturedAcceptedUsings,
                 generators = "unknown",
                 inputClosure = "unknown",
-                errors = loaded.ErrorCount,
+                errors = AuthorityImage.SelectedErrorCount(loaded, options.SourceBinding!),
             });
             var evidence = evidenceStream.ToArray();
             using (var evidenceFile = new FileStream(options.CaptureEvidencePath, FileMode.CreateNew, FileAccess.Write, FileShare.None))

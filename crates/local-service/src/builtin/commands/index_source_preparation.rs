@@ -2056,6 +2056,20 @@ mod csharp_project_discovery_tests {
         claim.sources[0].byte_length += 1; assert!(!witness.matches_invocation_claim(&claim, [0x52; 32]));
         claim.sources[0].byte_length -= 1;
         assert!(witness.matches_invocation_claim(&claim, [0x52; 32]));
+        // A selected source Roslyn reported errors in is absent from the claim and
+        // accounted for by a gap with the exact selected bytes; nothing else may be.
+        let gap = |path, byte_len, fact| UnpublishedCSharpSource { path, byte_len, fact };
+        let claimed = std::mem::take(&mut claim.sources);
+        assert!(!witness.matches_invocation_claim_with_gaps(&claim, [0x52; 32], &[]));
+        assert!(witness.matches_invocation_claim_with_gaps(&claim, [0x52; 32], &[gap("App.cs", bytes.len(), fact)]));
+        assert!(!witness.matches_invocation_claim_with_gaps(&claim, [0x52; 32], &[gap("Other.cs", bytes.len(), fact)]));
+        assert!(!witness.matches_invocation_claim_with_gaps(&claim, [0x52; 32], &[gap("App.cs", bytes.len() + 1, fact)]));
+        assert!(!witness.matches_invocation_claim_with_gaps(&claim, [0x52; 32], &[gap("App.cs", bytes.len(), ingest::SourceFactIdentity::from_canonical_bytes(b"other"))]));
+        assert!(!witness.matches_invocation_claim_with_gaps(&claim, [0x52; 32],
+            &[gap("App.cs", bytes.len(), fact), gap("App.cs", bytes.len(), fact)]));
+        claim.sources = claimed;
+        assert!(!witness.matches_invocation_claim_with_gaps(&claim, [0x52; 32], &[gap("App.cs", bytes.len(), fact)]));
+        assert!(witness.matches_invocation_claim(&claim, [0x52; 32]));
 
         let wrong_operation = backend_library::IndexOperationKey::from_bytes([0x42; 32]).map_err(|e| e.to_string())?;
         let wrong_receipt = super::super::super::adapter::SelectedCSharpSourceCommit::from_selected_test(&snapshot, Some(wrong_operation)).map_err(|e| e.to_string())?;

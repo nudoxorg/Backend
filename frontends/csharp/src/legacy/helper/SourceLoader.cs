@@ -40,6 +40,12 @@ internal sealed record LoadedCompilation
     /// <summary>Total compilation errors — the fidelity signal for tiering.</summary>
     public required int ErrorCount { get; init; }
 
+    /// <summary>
+    /// Every compilation error, so an image can state the errors of the one file it
+    /// describes (plus the errors no file owns) instead of the whole compilation's.
+    /// </summary>
+    public required IReadOnlyList<Diagnostic> Errors { get; init; }
+
     /// <summary>A capped, human-readable sample of errors for stderr.</summary>
     public required IReadOnlyList<string> ReportableDiagnostics { get; init; }
 
@@ -379,6 +385,7 @@ internal static partial class SourceLoader
             SourceFileCount = files.Count,
             ReferenceCount = references.Count,
             ErrorCount = errors.Count,
+            Errors = errors,
             ReportableDiagnostics = reported,
             GeneratorSupport = generatorSupport,
             Root = identityRoot,
