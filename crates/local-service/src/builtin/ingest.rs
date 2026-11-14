@@ -159,6 +159,10 @@ pub(super) struct SqlWalkEvidence {
     root: PathBuf,
     files: Vec<CompilerFileRevision>,
     inventory_complete: bool,
+    /// Application sources (TypeScript, JavaScript, Python) of the same walk
+    /// which may hold SQL string literals; scanned only at capture.
+    embedded: Vec<CompilerFileRevision>,
+    embedded_complete: bool,
 }
 impl SqlWalkEvidence {
     pub(super) fn root(&self) -> &Path { &self.root }
@@ -166,11 +170,15 @@ impl SqlWalkEvidence {
     pub(super) fn file_count(&self) -> usize { self.files.len() }
     /// Whether the bounded walk saw every candidate `.sql` file.
     pub(super) fn inventory_complete(&self) -> bool { self.inventory_complete }
+    /// Number of application sources which may embed SQL.
+    pub(super) fn embedded_candidates(&self) -> usize { self.embedded.len() }
     pub(super) fn checked_retained_bytes(&self) -> Option<usize> {
         let mut total = std::mem::size_of::<Self>();
         sql_charge_allocation(&mut total, self.root.capacity())?;
         sql_charge_allocation(&mut total, self.files.capacity().checked_mul(std::mem::size_of::<CompilerFileRevision>())?)?;
         for file in &self.files { sql_charge_allocation(&mut total, file.relative_path.capacity())?; }
+        sql_charge_allocation(&mut total, self.embedded.capacity().checked_mul(std::mem::size_of::<CompilerFileRevision>())?)?;
+        for file in &self.embedded { sql_charge_allocation(&mut total, file.relative_path.capacity())?; }
         Some(total)
     }
 }
@@ -993,13 +1001,18 @@ pub(super) enum SelectedSourceReadError {
     Invalid,
 }
 
+/// Most application sources one walk lists as possible SQL hosts.
+const MAX_EMBEDDED_SQL_CANDIDATES: usize = 100_000;
+/// Most bytes of application source one capture reads while looking for SQL.
+const MAX_EMBEDDED_SQL_SCAN_BYTES: usize = 64 * 1024 * 1024;
+
 pub(super) fn read_stylo_selected_source(
     root: &Path,
     relative: &str,
     maximum_bytes: usize,
 ) -> Result<Vec<u8>, SelectedSourceReadError> {
     let root = ProjectRoot::open(root).map_err(|_| SelectedSourceReadError::Unavailable)?;
-    root.read(Path::new(relative), maximum_bytes).map_err(|fault| match fault {
+    root.read_host(relative, maximum_bytes).map_err(|fault| match fault {
         SourceFault::Vanished => SelectedSourceReadError::Vanished,
         SourceFault::Unavailable(SourceUnavailableReason::TooLarge)
         | SourceFault::UnavailableRead(SourceUnavailableReason::TooLarge, _) => {
@@ -1100,6 +1113,20 @@ impl ProjectRoot {
         )
         .map(fs::File::from)
         .map_err(|error| SourceFault::from_open(error.kind()))
+    }
+
+    /// Read a selected SQL host: a file, or the SQL embedded in an application
+    /// file, which is composed from that file's bytes (see `sql_embedded`).
+    fn read_host(&self, relative: &str, maximum_bytes: usize) -> Result<Vec<u8>, SourceFault> {
+        let Some(real) = super::sql_embedded::real_path(relative) else {
+            return self.read(Path::new(relative), maximum_bytes);
+        };
+        let bytes = self.read(Path::new(real), super::sql_embedded::MAX_SCAN_BYTES)?;
+        match super::sql_embedded::composed_for(relative, &bytes) {
+            Some(composed) if composed.len() <= maximum_bytes => Ok(composed),
+            Some(_) => Err(SourceFault::Unavailable(SourceUnavailableReason::TooLarge)),
+            None => Err(SourceFault::Vanished),
+        }
     }
 
     fn read(&self, relative: &Path, maximum_bytes: usize) -> Result<Vec<u8>, SourceFault> {
@@ -3557,7 +3584,16 @@ fn scan_project_with_configuration_policy_attempt(
         sql_files.push(CompilerFileRevision { relative_path, metadata: project_paths.file_revisions.get(path).copied().flatten() });
     }
     sql_files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-    let sql_walk = SqlWalkEvidence { project, root: root.clone(), files: sql_files, inventory_complete: project_paths.sql_inventory_complete };
+    let mut embedded_files = Vec::with_capacity(project_paths.embedded_paths.len());
+    for path in &project_paths.embedded_paths {
+        let relative_path = path.strip_prefix(&root).map_err(|_| "SQL candidate escaped project root")?.to_path_buf();
+        embedded_files.push(CompilerFileRevision { relative_path, metadata: project_paths.file_revisions.get(path).copied().flatten() });
+    }
+    embedded_files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    let sql_walk = SqlWalkEvidence {
+        project, root: root.clone(), files: sql_files, inventory_complete: project_paths.sql_inventory_complete,
+        embedded: embedded_files, embedded_complete: project_paths.embedded_inventory_complete,
+    };
     let revision_fence = CompilerRevisionFence {
         requested_root,
         root: root.clone(),
@@ -4182,6 +4218,8 @@ struct ProjectPaths {
     stylo_inventory: Option<(u64, [u8; 32])>,
     sql_paths: Vec<PathBuf>,
     sql_inventory_complete: bool,
+    embedded_paths: Vec<PathBuf>,
+    embedded_inventory_complete: bool,
     unsupported_css: u64,
     unsupported_sql: u64,
     unsupported_vue: u64,
@@ -4208,6 +4246,8 @@ fn project_paths_with_policy(
     let mut stylo_paths = Vec::new();
     let mut sql_paths = Vec::new();
     let mut sql_inventory_complete = true;
+    let mut embedded_paths = Vec::new();
+    let mut embedded_inventory_complete = true;
     let mut vue_paths = Vec::new();
     let mut vue_inventory_complete = true;
     let mut stylo_inventory_complete = true;
@@ -4351,6 +4391,16 @@ fn project_paths_with_policy(
                 if sql_paths.len() < backend_engine::builtin::MAX_SQL_HOSTS as usize {
                     sql_paths.push(entry.path().to_owned());
                 } else { sql_inventory_complete = false; }
+            }
+            // Application sources may carry SQL in string literals; they are only
+            // listed here and scanned at capture. Their revisions are recorded
+            // below because they are recognised sources.
+            if (frontends.is_some() || native_typescript) && recognized
+                && exact_relative.is_some_and(super::sql_embedded::is_candidate)
+            {
+                if embedded_paths.len() < MAX_EMBEDDED_SQL_CANDIDATES {
+                    embedded_paths.push(entry.path().to_owned());
+                } else { embedded_inventory_complete = false; }
             }
             if is_stylo_source {
                 if stylo_witness_available {
@@ -4528,6 +4578,8 @@ fn project_paths_with_policy(
         stylo_inventory,
         sql_paths,
         sql_inventory_complete,
+        embedded_paths,
+        embedded_inventory_complete,
         unsupported_css,
         unsupported_sql,
         unsupported_vue,
@@ -12081,6 +12133,8 @@ pub(super) struct SqlProjectCapture {
     /// True when no `.nudox/sql.json` exists and the selection was derived from
     /// the same bounded walk (every `.sql` file, dialect inferred per file).
     implicit: bool,
+    /// Whether every application source of the walk was scanned for embedded SQL.
+    embedded_complete: bool,
 }
 pub(super) struct SqlCapturedHost {
     selected: backend_library::sql_workspace::SqlProjectSource,
@@ -12135,6 +12189,7 @@ impl SqlProjectCapture {
     pub(super) fn settings_len(&self) -> usize { self.settings_bytes.len() }
     /// Whether the selection was derived from the walk because no settings file exists.
     pub(super) fn implicit(&self) -> bool { self.implicit }
+    pub(super) fn embedded_complete(&self) -> bool { self.embedded_complete }
     pub(super) fn witness(&self) -> SqlProjectWitness {
         SqlProjectWitness { implicit: self.implicit, project: self.project, config_input: self.settings.input(),
             config_source: self.settings.source(), config_len: self.settings_bytes.len(),
@@ -12174,7 +12229,7 @@ impl SqlProjectCapture {
         }
         for host in self.hosts.iter().filter(|host| host.fault.is_none()) {
             if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
-            let result = root.read(Path::new(&host.selected.path), 512 * 1024);
+            let result = root.read_host(&host.selected.path, 512 * 1024);
             if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
             let bytes = result.map_err(sql_capture_fault)?;
             let verified = backend_compile::VerifiedSourceText::admit(&bytes, host.input, host.source)
@@ -12221,7 +12276,7 @@ impl SqlProjectWitness {
                            input: backend_compile::InputContentVersion,
                            source: backend_version::ContentId<backend_version::SourceFactDomain>| -> Result<(), SqlCaptureFailure> {
             if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
-            let result = root.read(relative, limit);
+            let result = root.read_host(relative.to_str().ok_or(SqlCaptureFailure::Invalid)?, limit);
             if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
             let bytes = result.map_err(sql_capture_fault)?;
             if bytes.len() != length { return Err(SqlCaptureFailure::Stale); }
@@ -12296,6 +12351,7 @@ pub(super) fn capture_sql_project(walk: &SqlWalkEvidence, fence: &CompilerRevisi
     };
     let mut hosts = Vec::new();
     let mut total = 0usize;
+    let mut embedded_complete = walk.embedded_complete;
     let (settings, config) = if implicit {
         // No settings file: select every `.sql` file of the same bounded walk.
         let mut paths = Vec::new();
@@ -12350,6 +12406,47 @@ pub(super) fn capture_sql_project(walk: &SqlWalkEvidence, fence: &CompilerRevisi
             sources.push(selected.clone());
             hosts.push(SqlCapturedHost { selected, inferred: true, oracle: decided.is_none(), fault, bytes, input, source });
         }
+        // SQL written in application sources joins the selection after the files,
+        // so a migration always replays before code that might repeat its DDL.
+        let mut room = backend_library::sql_workspace::MAX_SQL_PROJECT_HOSTS.saturating_sub(hosts.len());
+        let mut scanned = 0usize;
+        for file in &walk.embedded {
+            if file.metadata.is_none() { continue; }
+            let Some(text) = file.relative_path.to_str() else { continue };
+            let text = text.replace('\\', "/");
+            if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+            let result = root.read(Path::new(&text), super::sql_embedded::MAX_SCAN_BYTES);
+            if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+            let source_bytes = match result {
+                Ok(bytes) => bytes,
+                // A file over the scan bound is not scanned (documented), and an
+                // unreadable one is the code domain's concern, not SQL's.
+                Err(SourceFault::Unavailable(_) | SourceFault::UnavailableRead(..)) => continue,
+                Err(error) => return Err(sql_capture_fault(error)),
+            };
+            scanned = scanned.saturating_add(source_bytes.len());
+            if scanned > MAX_EMBEDDED_SQL_SCAN_BYTES { embedded_complete = false; break; }
+            let Some(found) = super::sql_embedded::scan(&text, &source_bytes) else { continue };
+            let host_path = super::sql_embedded::virtual_path(&text);
+            // A real file already carrying this name wins; never two hosts of one path.
+            if paths.binary_search(&host_path).is_ok() { continue; }
+            if room == 0 { embedded_complete = false; break; }
+            room -= 1;
+            total = total.checked_add(found.composed.len()).ok_or(SqlCaptureFailure::Limit)?;
+            if total > 16 * 1024 * 1024 { return Err(SqlCaptureFailure::Limit); }
+            let decided = found.dialect.or(consensus);
+            let dialect = decided.unwrap_or(backend_library::sql_workspace::SqlDialect::Sqlite);
+            let selected = backend_library::sql_workspace::SqlProjectSource {
+                path: host_path, dialect, context: backend_library::sql_workspace::SqlProjectContext::Unavailable,
+            };
+            let verified = backend_compile::VerifiedSourceText::capture(&found.composed).map_err(|_| SqlCaptureFailure::Invalid)?;
+            let input = verified.content();
+            let source = verified.extent(0..found.composed.len()).map_err(|_| SqlCaptureFailure::Invalid)?.source();
+            sources.push(selected.clone());
+            hosts.push(SqlCapturedHost { selected, inferred: true, oracle: decided.is_none(), fault: None, bytes: found.composed, input, source });
+        }
+        // The settings list is path-ordered; the host order stays files first.
+        sources.sort_by(|left, right| left.path.cmp(&right.path));
         let bytes = serde_json::to_vec(&backend_library::sql_workspace::SqlProjectSettings { version: 1, sources })
             .map_err(|_| SqlCaptureFailure::Invalid)?;
         let settings = backend_library::sql_workspace::ParsedSqlProjectSettings::parse(&bytes)
@@ -12380,7 +12477,7 @@ pub(super) fn capture_sql_project(walk: &SqlWalkEvidence, fence: &CompilerRevisi
         (settings, config)
     };
     if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
-    Ok(SqlProjectCapture { project: walk.project, settings_bytes: config, settings, hosts, cancellation: Arc::clone(cancellation), implicit })
+    Ok(SqlProjectCapture { project: walk.project, settings_bytes: config, settings, hosts, cancellation: Arc::clone(cancellation), implicit, embedded_complete })
 }
 
 /// Choose a dialect from the file's path and its own tokens. `None` means no

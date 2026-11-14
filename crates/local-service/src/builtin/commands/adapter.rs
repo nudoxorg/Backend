@@ -4776,21 +4776,28 @@ impl CommandAdapter {
         if prepared_intent.as_ref().is_some_and(BuiltinIntent::has_native_ts_evidence) {
             return Err(BuiltinModelError("native TypeScript evidence requires the publication worker".into()).into());
         }
-        if prepared_intent.as_ref().is_some_and(BuiltinIntent::requires_v14_worker) {
+        // SQL custody needs the owner's receipt authority, which the owner holds
+        // for every workspace it opened; without it only the worker can commit.
+        let sql_custody = prepared_intent.as_ref().is_some_and(BuiltinIntent::requires_v14_worker);
+        if sql_custody && self.receipt_context.is_none() {
             return Err(BuiltinModelError("v14 native sections require the publication worker".into()).into());
         }
         let intent = match (prepared_intent.clone(), operation_key) {
             (Some(intent), Some(operation_key)) => Some(intent.with_operation_key(operation_key)?),
             (intent, _) => intent,
         };
+        let owner_context = self.receipt_context.clone();
         let prepared_intent = intent
             .as_ref()
             .map(|intent| {
-                prepare_builtin_intent_at(
-                    daemon,
+                // Staging is bound to the SQL proof's own cancellation token.
+                let staging = intent.sql_proof_cancellation().unwrap_or_else(|| Arc::clone(&cancellation));
+                prepare_builtin_intent_with_owner_at_snapshot(
+                    &daemon.engine().daemon().owner().snapshot(),
                     intent,
                     revision_fence.as_ref().map(|fence| fence.canonical_root()),
-                    Arc::clone(&cancellation),
+                    staging,
+                    owner_context.as_deref(),
                 )
             })
             .transpose()?;
@@ -4861,7 +4868,7 @@ impl CommandAdapter {
                     prepared_intent
                         .map(|prepared| {
                             let intent = prepared.intent.clone();
-                            commit_prepared_builtin_intent(daemon, request_id, prepared).map_err(
+                            commit_prepared_builtin_intent_inner(daemon, request_id, prepared, sql_custody).map_err(
                                 |error| {
                                     BuiltinModelError(format!(
                                         "commit product source intent: {error}"
@@ -5499,6 +5506,16 @@ impl CommandAdapter {
                 &mut self.semantic_authority,
                 self.owner_cluster.as_deref(),
                 self.pending_stored_acks.as_ref(),
+                {
+                    #[cfg(test)]
+                    {
+                        self.sql_test_workers.clone()
+                    }
+                    #[cfg(not(test))]
+                    {
+                        None
+                    }
+                },
             ) {
                 Ok(prepared) => prepared.unwrap_or(PreparedProductSelection {
                     native_noop_expectation: None,
@@ -6155,6 +6172,9 @@ impl CommandAdapter {
         let requested_package = package;
         let (package, label) = canonical_local_package(package, label)?;
         self.recover_orphaned_package_label(daemon, &label, request_id)?;
+        // A workspace which holds SQL analysis must carry its receipts through
+        // every transaction, so the deletion commits with the owner's custody.
+        let owner = self.receipt_context.clone();
         let committed = if let Some(intent) =
             remove_project_intent(daemon, package, &label, &mut self.semantic_authority)?
         {
@@ -6165,7 +6185,7 @@ impl CommandAdapter {
                 Vec::new(),
                 removals,
                 || {
-                    commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
+                    commit_builtin_intent_with_owner(daemon, request_id, &intent, owner.as_deref()).map_err(|error| {
                         BuiltinModelError(format!("commit product source intent: {error}"))
                     })
                 },
@@ -8210,6 +8230,28 @@ pub(in crate::builtin) fn commit_builtin_intent(
     commit_prepared_builtin_intent(daemon, request_id, prepared)
 }
 
+/// Commit on the owner with the receipt authority a workspace holding SQL
+/// analysis requires for every transaction. Only intents which read no source
+/// (a project deletion, with or without SQL retirement) may commit this way;
+/// an intent that needs the publication worker is refused.
+pub(in crate::builtin) fn commit_builtin_intent_with_owner(
+    daemon: &mut ProductDaemon,
+    request_id: u64,
+    intent: &BuiltinIntent,
+    owner: Option<&super::super::owner_receipt_context::OwnerReceiptContext>,
+) -> Result<(), BuiltinModelError> {
+    if intent.has_native_ts_evidence() || (intent.requires_v14_worker() && !intent.is_sql_retirement()) {
+        return Err(BuiltinModelError("this intent requires the publication worker".into()));
+    }
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    // Staging must be bound to the proof's own cancellation token.
+    let cancellation = intent
+        .sql_proof_cancellation()
+        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let prepared = prepare_builtin_intent_with_owner_at_snapshot(&snapshot, intent, None, cancellation, owner)?;
+    commit_prepared_builtin_intent_inner(daemon, request_id, prepared, intent.is_sql_retirement())
+}
+
 /// A canonical intent together with the selected base against which any
 /// capture basis was prepared. Its private fields prevent callers from
 /// changing the intent after deriving the request identity.
@@ -8242,10 +8284,19 @@ pub(in crate::builtin) fn commit_prepared_builtin_intent(
     request_id: u64,
     prepared: PreparedBuiltinIntent,
 ) -> Result<(), BuiltinModelError> {
+    commit_prepared_builtin_intent_inner(daemon, request_id, prepared, false)
+}
+
+fn commit_prepared_builtin_intent_inner(
+    daemon: &mut ProductDaemon,
+    request_id: u64,
+    prepared: PreparedBuiltinIntent,
+    sql_retirement: bool,
+) -> Result<(), BuiltinModelError> {
     if prepared.intent.has_native_ts_evidence() {
         return Err(BuiltinModelError("native TypeScript evidence requires the publication worker".into()));
     }
-    if prepared.intent.requires_v14_worker() {
+    if prepared.intent.requires_v14_worker() && !sql_retirement {
         return Err(BuiltinModelError("v14 native sections require the publication worker".into()));
     }
     let owner = daemon.engine().daemon().owner();

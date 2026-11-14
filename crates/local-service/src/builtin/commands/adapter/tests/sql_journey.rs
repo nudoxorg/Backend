@@ -932,3 +932,400 @@ fn gym_rename_keeps_the_written_name_apart_from_the_final_one() {
     assert_eq!(created.head_name.as_deref(), Some("display_name"), "the entity's final name is kept apart from the written one");
     assert!(!defined.iter().any(|d| matches!(&d.action, SqlDefinitionAction::Create) && d.name == "display_name"), "0001 never created display_name");
 }
+
+// ---------------------------------------------------------------------------
+// SQL beside application code
+// ---------------------------------------------------------------------------
+
+const APP_DB_TS: &str = "\
+import Database from 'better-sqlite3';
+
+const db = new Database('app.db');
+
+export const findAccount = db.prepare('SELECT email, balance FROM accounts WHERE id = ?');
+
+export function debit(id: number, amount: number) {
+  return db.prepare(\"UPDATE accounts SET balance = balance - ? WHERE id = ?\").run(amount, id);
+}
+
+export function spendReport(min: number) {
+  return db
+    .prepare(`
+      SELECT s.email, s.spent
+      FROM account_spend s
+      WHERE s.spent > ?
+    `)
+    .all(min);
+}
+
+export function lookup(column: string, email: string) {
+  return db.prepare(`SELECT ${column} FROM accounts WHERE email = ?`).get(email);
+}
+
+export const heading = document.querySelector('#accounts');
+";
+const APP_REPORT_PY: &str = "\
+import sqlite3
+
+
+def tier_report(conn):
+    cur = conn.cursor()
+    cur.execute(\"SELECT email, tier FROM accounts WHERE tier = ?\", (\"basic\",))
+    return cur.fetchall()
+
+
+def totals(conn, column):
+    return conn.execute(f\"SELECT {column} FROM orders WHERE total > 0\").fetchall()
+";
+const APP_API_TS: &str = "\
+import { debit, findAccount } from './db';
+
+export function charge(id: number) {
+  return debit(id, 1) && findAccount.get(id);
+}
+";
+
+fn line_in(text: &str, needle: &str) -> usize {
+    text.lines().position(|line| line.contains(needle)).expect("needle present") + 1
+}
+
+fn embedded_project_files() -> Vec<(String, Vec<u8>)> {
+    let mut files = sqlite_files();
+    files.extend(
+        [
+            ("src/db.ts", APP_DB_TS),
+            ("src/api.ts", APP_API_TS),
+            ("src/report.py", APP_REPORT_PY),
+            ("tsconfig.json", r#"{"compilerOptions":{"strict":true},"include":["*.ts","src"]}"#),
+        ]
+        .into_iter()
+        .map(|(path, text)| (path.to_owned(), text.as_bytes().to_vec())),
+    );
+    files
+}
+
+fn impact_report(session: &mut Session, project: &Path, kind: &str, name: &str) -> backend_library::impact::ImpactReport {
+    use backend_library::impact::{ImpactDomain, ImpactRequest, ImpactSeed, ImpactSeedSpec};
+    let request = ImpactRequest::new(
+        backend_library::PackageReference::parse(project.to_str().expect("path").to_owned()).expect("package"),
+        ImpactSeed::Named(ImpactSeedSpec { domain: ImpactDomain::Sql, kind: kind.into(), name: name.into(), path: None }),
+    );
+    let backend_library::SurfaceReply::Impact(report) = session
+        .surface(backend_library::SurfaceCommand::Impact { request })
+        .expect("impact through the public route")
+    else {
+        panic!("impact reply kind");
+    };
+    report
+}
+
+fn query_rows(report: &backend_library::impact::ImpactReport) -> Vec<(String, backend_library::impact::ImpactStrength)> {
+    let mut rows: Vec<_> = report
+        .rows
+        .iter()
+        .filter(|row| row.node.kind == "query")
+        .map(|row| (row.node.name.clone(), row.strength))
+        .collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    rows
+}
+
+/// SQL written in TypeScript and Python files is found, analysed by the same
+/// SQLite worker as the migrations, bound to the schema the migrations define,
+/// and linked into impact: exact where the text is static, candidate where it
+/// is built. Edits to the application file are followed by a re-index, and a
+/// cold reopen still holds the embedded hosts.
+#[test]
+fn sql_in_application_code_is_analysed_linked_into_impact_and_follows_edits() {
+    use backend_library::impact::ImpactStrength::{Candidate, Exact};
+    let workers = admitted_workers(Some(frontend_worker("sqlite", "sqlite-worker")), None);
+    let mut wire = SourceWire::start_full(
+        TestStage::BeforeSourcePreparation,
+        false,
+        false,
+        false,
+        false,
+        None,
+        true,
+        Some(SqlFixture { files: embedded_project_files(), workers }),
+    );
+    wire.wait_at_source_within(TERMINAL_WAIT);
+    wire.release();
+    wire.wait_terminal_within(TERMINAL_WAIT);
+    mixed_published(&wire);
+    wire.commands.lock().expect("adapter").source_test_hook = None;
+    let project = wire.source.parent().expect("project").to_owned();
+    let mut session = Session::connect(&wire.endpoint).expect("listener");
+
+    // The migrations still define the schema; the code adds no definitions.
+    assert_eq!(
+        definitions(&mut session, &project, SqlObjectKind::Table, None),
+        [("accounts".to_owned(), true), ("orders".to_owned(), true)]
+    );
+
+    // Statements of the two application files are listed beside the migrations.
+    let (page, statements) = all_hits(&mut session, request(&project, SqlQueryRole::Statement));
+    let embedded_paths: std::collections::BTreeSet<_> = statements
+        .iter()
+        .map(|hit| hit.path.as_str())
+        .filter(|path| path.ends_with("#embedded.sql"))
+        .collect();
+    assert_eq!(embedded_paths, ["src/db.ts#embedded.sql", "src/report.py#embedded.sql"].into_iter().collect::<std::collections::BTreeSet<_>>());
+    assert!(page.basis.inventory_complete, "every application source was scanned");
+
+    // accounts.balance is mentioned by the migrations' queries and by the TypeScript calls.
+    let mut uses = request(&project, SqlQueryRole::Reference);
+    uses.uses = Some("accounts.balance".into());
+    uses.kind = Some(SqlObjectKind::Column);
+    let (_, hits) = all_hits(&mut session, uses);
+    let in_code: Vec<_> = hits.iter().filter(|hit| hit.path == "src/db.ts#embedded.sql").collect();
+    assert_eq!(in_code.len(), 3, "one in findAccount, two in debit: {in_code:?}");
+    for hit in &in_code {
+        let (path, text) = read_text(&mut session, hit);
+        assert_eq!(path, "src/db.ts#embedded.sql");
+        assert_eq!(text, "balance", "exact span inside the statement text");
+    }
+
+    // Impact of changing accounts.balance reaches the calls that read or write it.
+    let find = line_in(APP_DB_TS, "findAccount");
+    let debit = line_in(APP_DB_TS, "UPDATE accounts");
+    let balance = impact_report(&mut session, &project, "column", "accounts.balance");
+    let rows = query_rows(&balance);
+    assert!(rows.contains(&(format!("src/db.ts:{find}"), Exact)), "{rows:?}");
+    assert!(rows.contains(&(format!("src/db.ts:{debit}"), Exact)), "{rows:?}");
+    assert!(rows.iter().any(|(name, _)| name.starts_with("db/queries/accounts.sql:")), "{rows:?}");
+    // The table's own seed also reaches the built statement, but only as a candidate.
+    let built = line_in(APP_DB_TS, "${column}");
+    let table = impact_report(&mut session, &project, "table", "accounts");
+    let rows = query_rows(&table);
+    assert!(rows.contains(&(format!("src/db.ts:{built}"), Candidate)), "built SQL is a candidate: {rows:?}");
+    assert!(rows.contains(&(format!("src/db.ts:{find}"), Exact)), "{rows:?}");
+    let python = line_in(APP_REPORT_PY, "SELECT email, tier");
+    assert!(rows.contains(&(format!("src/report.py:{python}"), Exact)), "{rows:?}");
+    let embedded = table.gaps.iter().find(|gap| gap.facet == "sql.embedded-sql").expect("the gap is still named");
+    assert_eq!(embedded.count, Some(2), "two application files are covered");
+    assert!(!table.proves_no_impact());
+    assert!(
+        !rows.iter().any(|(name, _)| name.starts_with("src/db.ts:") && name.ends_with(&format!(":{}", line_in(APP_DB_TS, "document.querySelector")))),
+        "a DOM lookup is not SQL"
+    );
+
+    // Edit the application file: debit now writes tier instead of balance.
+    let edited = APP_DB_TS.replace("UPDATE accounts SET balance = balance - ? WHERE id = ?", "UPDATE accounts SET tier = ? WHERE id = ?");
+    fs::write(project.join("src/db.ts"), &edited).expect("edit application file");
+    publish(&mut wire, 0xd2);
+    let balance = impact_report(&mut session, &project, "column", "accounts.balance");
+    let rows = query_rows(&balance);
+    assert!(rows.contains(&(format!("src/db.ts:{find}"), Exact)), "{rows:?}");
+    assert!(!rows.iter().any(|(name, _)| *name == format!("src/db.ts:{debit}")), "debit no longer touches balance: {rows:?}");
+    let tier = impact_report(&mut session, &project, "column", "accounts.tier");
+    assert!(query_rows(&tier).contains(&(format!("src/db.ts:{debit}"), Exact)), "{:?}", query_rows(&tier));
+
+    // Cold reopen: the embedded hosts are part of the persisted analysis.
+    drop(session);
+    let root = TempTree(std::mem::take(&mut wire.fixture.root.0));
+    drop(wire);
+    let reopened = crate::builtin::sql_journey_support::reopen_and_query(&root.0.join("workspace"), &project)
+        .expect("cold reopen and query");
+    assert!(reopened.analysis);
+    assert_eq!(reopened.embedded_hosts, 2);
+    assert_eq!(reopened.tables, ["accounts", "orders"]);
+}
+
+/// A project which only embeds SQL in code has SQL analysis too, and one which
+/// has none gains no SQL rows at all.
+#[test]
+fn a_project_with_only_embedded_sql_is_analysed_and_one_with_none_gains_no_rows() {
+    let workers = admitted_workers(Some(frontend_worker("sqlite", "sqlite-worker")), None);
+    let files = vec![
+        ("src/db.ts".to_owned(), b"import Database from 'better-sqlite3';\nconst db = new Database('a.db');\nexport const all = db.prepare('SELECT id, name FROM people');\n".to_vec()),
+        ("src/plain.ts".to_owned(), b"export const answer = [1, 2].map((n) => n * 2).get('select');\n".to_vec()),
+    ];
+    let mut wire = SourceWire::start_sql(TestStage::BeforeSourcePreparation, true, SqlFixture { files, workers });
+    wire.wait_at_source_within(TERMINAL_WAIT);
+    wire.release();
+    wire.wait_terminal_within(TERMINAL_WAIT);
+    mixed_published(&wire);
+    let project = wire.source.parent().expect("project").to_owned();
+    let mut session = Session::connect(&wire.endpoint).expect("listener");
+    let (_, statements) = all_hits(&mut session, request(&project, SqlQueryRole::Statement));
+    assert_eq!(statements.len(), 1, "only the call with SQL text is a statement: {statements:?}");
+    assert_eq!(statements[0].path, "src/db.ts#embedded.sql");
+    // The table is not defined by the project: the mention is an unresolved
+    // reference, named as such rather than dropped.
+    let (page, refs) = all_hits(&mut session, request(&project, SqlQueryRole::Reference));
+    assert!(refs.iter().any(|hit| matches!(&hit.fact, SqlFact::Reference(r) if r.name == "people")), "{refs:?}");
+    assert!(page.basis.inventory_complete);
+}
+
+/// Deleting a project retires every SQL row it owns, even when the workspace
+/// holds SQL: the delete used to be refused for lack of receipt custody, and a
+/// retired project must not leave rows which later SQL transitions trip over.
+#[test]
+fn deleting_a_project_retires_its_sql_rows_and_the_workspace_reopens_clean() {
+    let workers = admitted_workers(Some(frontend_worker("sqlite", "sqlite-worker")), None);
+    let mut wire = SourceWire::start_sql(
+        TestStage::BeforeSourcePreparation,
+        true,
+        SqlFixture { files: sqlite_files(), workers },
+    );
+    wire.wait_at_source_within(TERMINAL_WAIT);
+    wire.release();
+    wire.wait_terminal_within(TERMINAL_WAIT);
+    mixed_published(&wire);
+    wire.commands.lock().expect("adapter").source_test_hook = None;
+    let project = wire.source.parent().expect("project").to_owned();
+    let mut session = Session::connect(&wire.endpoint).expect("listener");
+    assert_eq!(definitions(&mut session, &project, SqlObjectKind::Table, None).len(), 2);
+
+    session.remove(project.to_str().expect("path")).expect("the project is deleted");
+    // The project is gone for readers: an error, or an explicit unavailable terminal.
+    let gone = session.surface(backend_library::SurfaceCommand::SqlQuery { request: request(&project, SqlQueryRole::Definition) });
+    assert!(
+        matches!(&gone, Err(_) | Ok(backend_library::SurfaceReply::SqlQuery(SqlQueryPage { terminal: SqlQueryTerminal::Unavailable, .. }))),
+        "{gone:?}"
+    );
+
+    // And its rows are gone from the persisted analysis, after a cold reopen.
+    drop(session);
+    let root = TempTree(std::mem::take(&mut wire.fixture.root.0));
+    drop(wire);
+    let reopened = crate::builtin::sql_journey_support::reopen_and_query(&root.0.join("workspace"), &project)
+        .expect("cold reopen of a workspace whose SQL project was deleted");
+    assert_eq!(reopened.sql_rows, 0, "no SQL row survives the deletion");
+    assert!(!reopened.analysis);
+}
+
+/// `add` behaves the same however it is reached. The synchronous route (a
+/// `Command::Add` executed in place, outside the owner's deferred lane) used to
+/// leave `.sql` files counted as unsupported; it now carries SQL custody, so
+/// the project's SQL is analysed, receipted and queryable exactly as after an
+/// owned index operation.
+#[test]
+fn the_synchronous_add_route_analyses_sql_like_the_owned_index_operation() {
+    let workers = admitted_workers(Some(frontend_worker("sqlite", "sqlite-worker")), None);
+    let mut fixture = AdapterFixture::new();
+    let (package, label) = fixture.add_target();
+    for (relative, bytes) in sqlite_files() {
+        let path = Path::new(&label).join(&relative);
+        fs::create_dir_all(path.parent().expect("parent")).expect("SQL directory");
+        fs::write(&path, bytes).expect("real SQL input");
+    }
+    fs::write(Path::new(&label).join("notes.txt"), "notes\n").expect("structural input");
+    let (adapter, daemon) = fixture.parts();
+    adapter.sql_test_workers = Some(workers);
+    let add = BuiltinIntent::add(package, label.clone()).expect("target source scope");
+    crate::builtin::commands::commit_builtin_intent(daemon, 0xc001, &add).expect("admit target");
+    adapter.publish_view(daemon, Some(&add)).expect("publish target");
+
+    adapter
+        .execute(daemon, &add_body(0xc002, package, &label))
+        .expect("synchronous add of a project with SQL");
+
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let (rows, embedded) = crate::builtin::sql_journey_support::count_rows(&snapshot).expect("SQL relation");
+    assert!(rows > 0, "the synchronous route published the SQL analysis");
+    assert_eq!(embedded, 0);
+    // Queried through the same read the CLI uses.
+    let mut query = request(Path::new(&label), SqlQueryRole::Definition);
+    query.kind = Some(SqlObjectKind::Table);
+    let page = crate::builtin::commands::sql_query::query(&snapshot, &[0x67; 32], &query).expect("query");
+    assert!(matches!(page.terminal, SqlQueryTerminal::Complete));
+    assert_eq!(page.hits.len(), 2, "accounts and orders");
+    // A second add of the unchanged project is a no-op, as on the owned route.
+    adapter
+        .execute(daemon, &add_body(0xc003, package, &label))
+        .expect("synchronous re-add");
+    let again = crate::builtin::sql_journey_support::count_rows(&daemon.engine().daemon().owner().snapshot()).expect("SQL relation");
+    assert_eq!(again.0, rows);
+}
+
+/// A migration file of `target` bytes shaped like real ones: tables, indexes,
+/// views and the queries that use them.
+fn realistic_sql(target: usize) -> String {
+    let mut out = String::new();
+    let mut index = 0usize;
+    while out.len() < target {
+        let parent = index.saturating_sub(1);
+        out.push_str(&format!(
+            "CREATE TABLE t{index} (\n  id INTEGER PRIMARY KEY,\n  parent_id INTEGER REFERENCES t{parent}(id),\n  name TEXT NOT NULL,\n  email TEXT UNIQUE,\n  balance INTEGER NOT NULL DEFAULT 0\n);\n\
+             CREATE INDEX t{index}_by_name ON t{index}(name);\n\
+             CREATE VIEW v{index} AS SELECT a.id, a.name, SUM(b.balance) AS total FROM t{index} a JOIN t{parent} b ON b.id = a.parent_id GROUP BY a.id, a.name;\n\
+             SELECT name, balance FROM t{index} WHERE id = ?1;\n\
+             UPDATE t{index} SET balance = balance - ?2 WHERE id = ?1;\n"
+        ));
+        index += 1;
+    }
+    out
+}
+
+/// The per-host wall is the worker process's, not the owner's: a host whose
+/// response is large is decoded, hashed and verified by the owner after the
+/// worker has finished, and that work must not be charged to the wall. This
+/// runs the checked path with the PRODUCT default wall (no test override) on
+/// migration files of 20 KB to 250 KB; each host must be analysed, none
+/// recorded as `Deadline`. Per-host times are printed with `--nocapture`.
+#[test]
+fn the_default_worker_wall_holds_for_realistic_migration_files() {
+    use backend_engine::builtin::{SqlAnalysisRecord, SqlHostTerminal, SqlUnavailable};
+    use backend_sql_contract::{Dialect, Engine, Request, Settings, call_worker};
+    let worker = frontend_worker("sqlite", "sqlite-worker");
+    let artifact = backend_compile::ToolchainArtifact::from_path(&worker, Vec::new()).expect("worker artifact");
+    let probe = Request {
+        version: backend_sql_contract::PROTOCOL_VERSION,
+        expected_basis: None,
+        source: b"SELECT 1".to_vec(),
+        settings: Settings::ProcessDefaults,
+        context: None,
+    };
+    let basis = (0..6)
+        .find_map(|_| call_worker(&worker, &probe, Dialect::Sqlite, Engine::Syntaqlite4e4de76).basis)
+        .expect("worker reports its producer basis");
+    // No `with_wall`: the default the product ships.
+    let permit = crate::builtin::sql_capture::SqliteWorkerPermit::from_admitted(worker, artifact, basis)
+        .expect("SQLite worker permit");
+
+    let root = tempfile::tempdir().expect("project directory");
+    let root_path = root.path().canonicalize().expect("canonical project directory");
+    for (name, size) in [("0001_small.sql", 20_000), ("0002_medium.sql", 100_000), ("0003_large.sql", 250_000)] {
+        let path = root_path.join("db").join(name);
+        fs::create_dir_all(path.parent().expect("parent")).expect("directory");
+        fs::write(path, realistic_sql(size)).expect("migration");
+    }
+    let label = root_path.to_str().expect("utf-8 path");
+    let scan = crate::builtin::ingest::scan_project(label, backend_engine::PackageKey::from_value(label).to_bytes(), &std::collections::BTreeMap::new())
+        .expect("scan");
+    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let captured = Arc::new(
+        crate::builtin::ingest::capture_sql_project(&scan.sql_walk, &scan.revision_fence, &root_path, &cancelled)
+            .expect("capture"),
+    );
+    let started = std::time::Instant::now();
+    let projection = crate::builtin::sql_capture::project_sql_project(
+        captured,
+        scan.sql_walk.clone(),
+        scan.revision_fence.clone(),
+        root_path.clone(),
+        Some(&permit),
+        None,
+        &cancelled,
+    )
+    .expect("project");
+    eprintln!("sql worker wall test: three hosts in {} ms", started.elapsed().as_millis());
+    let hosts: Vec<_> = projection
+        .rows()
+        .iter()
+        .filter_map(|(_, row)| match row {
+            SqlAnalysisRecord::Host { path, terminal, .. } => Some((path.clone(), *terminal)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(hosts.len(), 3);
+    for (path, terminal) in &hosts {
+        assert!(
+            !matches!(terminal, SqlHostTerminal::Unavailable(SqlUnavailable::Deadline)),
+            "{path} missed the default wall: {terminal:?}"
+        );
+        assert!(matches!(terminal, SqlHostTerminal::Parsed { .. }), "{path}: {terminal:?}");
+    }
+}

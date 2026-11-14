@@ -112,7 +112,8 @@ impl SqliteWorkerPermit {
             launch.environment = library
                 .environment()
                 .map_err(backend_sql_contract::CheckedError::Process)?;
-            return backend_sql_contract::analyze_checked_with_linux_library_until(
+            // The deadline is this launch's own wall; decoding the response is not charged to it.
+            return backend_sql_contract::analyze_checked_with_linux_library_within_wall(
                 request,
                 host,
                 input,
@@ -337,6 +338,7 @@ pub(super) fn capture_sqlite_host(
         limits,
         cancellation,
     };
+    let called = std::time::Instant::now();
     let response = permit.analyze(
         &request, host.bytes(), host.input(), host.source(), launch,
     )
@@ -357,6 +359,7 @@ pub(super) fn capture_sqlite_host(
         ) => SqlUnavailable::Cancelled,
         _ => SqlUnavailable::WorkerFailure,
     })?;
+    super::sql_index::trace(format_args!("sqlite worker call for {} took {} ms", host.selected().path, called.elapsed().as_millis()));
     let observed = response.response();
     let mut facts = Vec::new();
     let terminal = match &observed.syntax {
@@ -468,7 +471,9 @@ pub(super) fn capture_sqlite_host(
     // ProcessSupervisor does not promise a hard memory bound on every host.
     settings_bytes.extend_from_slice(b"memory-limit-unavailable\0");
     let settings = digest(b"nudox.sql.sqlite.settings.v1\0", &settings_bytes);
+    let hashed = std::time::Instant::now();
     let evidence = response_evidence(&request, &response, &permit.artifact, cancellation)?;
+    super::sql_index::trace(format_args!("sqlite response evidence for {} took {} ms", host.selected().path, hashed.elapsed().as_millis()));
     Ok(SqlHostDraft {
         host_key,
         path: host.selected().path.clone(),
@@ -1043,6 +1048,7 @@ pub(super) fn project_sql_project(
             ));
             continue;
         }
+        let started = std::time::Instant::now();
         let mut result = match (dialect, permit) {
             (SqlDialect::Sqlite, Some(permit)) => {
                 capture_sqlite_host(project, walk.root(), host, permit, cancellation.as_ref())
@@ -1055,6 +1061,18 @@ pub(super) fn project_sql_project(
                 None => Err(SqlUnavailable::UnsupportedDialect),
             },
         };
+        // Per-host timing for the worker wall: visible only with NUDOX_TRACE set.
+        super::sql_index::trace(format_args!(
+            "host {} ({} bytes, {:?}): {} ms, {}",
+            host.selected().path,
+            host.bytes().len(),
+            dialect,
+            started.elapsed().as_millis(),
+            match &result {
+                Ok(draft) => format!("{:?}", draft.terminal),
+                Err(reason) => format!("unavailable {reason:?}"),
+            }
+        ));
         // A host with no dialect signal is offered to the other native parser when
         // the first one rejects it. The accepted dialect is what gets recorded.
         if host.oracle() && dialect == SqlDialect::Sqlite {
@@ -1165,7 +1183,7 @@ pub(super) fn project_sql_project(
         gaps,
         // An implicit selection is the complete bounded walk; an explicit one
         // only lists what the settings file named.
-        inventory: if capture.implicit() && walk_inventory_complete { SqlInventory::Complete } else { SqlInventory::Incomplete },
+        inventory: if capture.implicit() && walk_inventory_complete && capture.embedded_complete() { SqlInventory::Complete } else { SqlInventory::Incomplete },
         inventory_digest: sql_inventory_digest(&inventory)
             .map_err(|_| SqlUnavailable::SelectionUnavailable)?,
         host_count: u32::try_from(inventory.len()).map_err(|_| SqlUnavailable::Limit)?,

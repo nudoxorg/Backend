@@ -26,10 +26,17 @@ pub(super) struct SqlAnalysisBasis {
     pub(super) closure: [u8; 32],
     pub(super) analysis_root: Option<[u8; 32]>,
 }
+/// What a live SQL proof stands on: a same-scan capture of the project's
+/// source, or the deletion of the project that owns the rows.
+#[derive(Clone)]
+pub(super) enum SqlProofSource {
+    Capture(Arc<SqlProjectProjection>),
+    Retirement { project: [u8; 32] },
+}
 /// Private same-scan capability, distinct from serialized SQL row claims.
 #[derive(Clone)]
 pub(super) struct SqlLiveProof {
-    pub(super) capture: Arc<SqlProjectProjection>,
+    pub(super) source: SqlProofSource,
     project_label: Arc<str>,
     project_bytes: Arc<[u8]>,
     pub(super) cancellation: Arc<AtomicBool>,
@@ -37,12 +44,33 @@ pub(super) struct SqlLiveProof {
 impl SqlLiveProof {
     /// Conservative charge for every retained Arc allocation and capacity.
     pub(super) fn checked_retained_bytes(&self) -> Option<usize> {
+        let capture = match &self.source {
+            SqlProofSource::Capture(capture) => capture.checked_retained_bytes()?,
+            SqlProofSource::Retirement { .. } => 0,
+        };
         std::mem::size_of::<Self>()
-            .checked_add(self.capture.checked_retained_bytes()?)?
+            .checked_add(capture)?
             .checked_add(self.project_label.len())?
             .checked_add(self.project_bytes.len())?
             .checked_add(std::mem::size_of::<AtomicBool>())?
             .checked_add(8 * std::mem::size_of::<usize>())
+    }
+    /// The source Project this proof speaks for.
+    pub(super) fn project(&self) -> [u8; 32] {
+        match &self.source {
+            SqlProofSource::Capture(capture) => capture.project(),
+            SqlProofSource::Retirement { project } => *project,
+        }
+    }
+    /// The same-scan capture, when this proof stands on one.
+    pub(super) fn capture(&self) -> Option<&Arc<SqlProjectProjection>> {
+        match &self.source {
+            SqlProofSource::Capture(capture) => Some(capture),
+            SqlProofSource::Retirement { .. } => None,
+        }
+    }
+    pub(super) fn is_retirement(&self) -> bool {
+        matches!(self.source, SqlProofSource::Retirement { .. })
     }
     /// Capture an exact bounded Project after-image alongside the private
     /// source witness; serialized bytes alone do not construct this proof.
@@ -58,9 +86,18 @@ impl SqlLiveProof {
         let mut bytes = Vec::new();
         backend_engine::ProductSourceRelation::encode_value(project, &mut bytes);
         if bytes.len() > backend_engine::ProductSourceRecord::ROW_VALUE_CAPACITY { return Err("SQL Project after-image too large".into()); }
-        Ok(Self { capture, project_label: Arc::from(fields.label), project_bytes: Arc::from(bytes), cancellation })
+        Ok(Self { source: SqlProofSource::Capture(capture), project_label: Arc::from(fields.label), project_bytes: Arc::from(bytes), cancellation })
+    }
+    /// A proof that the transition deletes `project`: nothing is captured, and
+    /// the owner recomputes the exact retirement from the selected base.
+    pub(super) fn retirement(project: [u8; 32], label: &str, cancellation: Arc<AtomicBool>) -> Self {
+        Self { source: SqlProofSource::Retirement { project }, project_label: Arc::from(label), project_bytes: Arc::from(Vec::new()), cancellation }
     }
     fn matches_project(&self, project: Option<&backend_engine::ProductSourceRecord>) -> bool {
+        if self.is_retirement() {
+            // The Project row is deleted by the same transition.
+            return project.is_none();
+        }
         let Some(project) = project else { return false; };
         let mut bytes = Vec::new();
         backend_engine::ProductSourceRelation::encode_value(project, &mut bytes);
@@ -208,17 +245,21 @@ pub(super) fn plan_sql_update(
     if proof.cancellation.load(Ordering::Acquire) {
         return Err("SQL planning cancelled".into());
     }
-    proof
-        .capture
+    let capture = match &proof.source {
+        SqlProofSource::Capture(capture) => capture,
+        SqlProofSource::Retirement { project } => {
+            return plan_sql_retirement(base, *project, &proof.cancellation);
+        }
+    };
+    capture
         .revalidate(&proof.cancellation)
         .map_err(|e| format!("SQL live source: {e:?}"))?;
-    let project = proof.capture.project();
+    let project = capture.project();
     let project_label = proof.project_label.as_ref();
     if backend_engine::PackageKey::from_value(project_label).to_bytes() != project {
         return Err("SQL proof belongs to another source Project".into());
     }
-    let captured_root = proof
-        .capture
+    let captured_root = capture
         .rows()
         .iter()
         .find_map(|(_, row)| match row {
@@ -296,7 +337,7 @@ pub(super) fn plan_sql_update(
         selected.remove(key);
     }
     let mut after = BTreeMap::new();
-    for (key, row) in proof.capture.rows() {
+    for (key, row) in capture.rows() {
         if after.insert(*key, row.clone()).is_some() || selected.insert(*key, row.clone()).is_some()
         {
             return Err("SQL project key collision".into());
@@ -333,6 +374,11 @@ pub(super) struct ValidatedSqlDelta<'a> {
     changes: &'a [SqlAnalysisChange],
     _proof: &'a SqlLiveProof,
 }
+impl ValidatedSqlDelta<'_> {
+    /// The project whose rows this delta replaces or retires.
+    pub(super) fn project(&self) -> [u8; 32] { self._proof.project() }
+    pub(super) fn is_retirement(&self) -> bool { self._proof.is_retirement() }
+}
 /// Derived only from an already validated live delta. These values are still
 /// private inputs to a receipt, not independent admission authority.
 pub(super) struct SqlReceiptInputs {
@@ -346,6 +392,9 @@ pub(super) struct SqlReceiptInputs {
 impl ValidatedSqlDelta<'_> {
     pub(super) fn cancellation(&self) -> &Arc<AtomicBool> { &self._proof.cancellation }
     pub(super) fn receipt_inputs(&self) -> Result<SqlReceiptInputs, String> {
+        let Some(capture) = self._proof.capture() else {
+            return Err("a SQL retirement issues no receipt".into());
+        };
         self.revalidate_before_grant()?;
         let cancellation = &self._proof.cancellation;
         let mut changes = blake3::Hasher::new();
@@ -372,10 +421,10 @@ impl ValidatedSqlDelta<'_> {
         project.update(b"nudox.sql.receipt-project.v1\0");
         project.update(&(self._proof.project_bytes.len() as u64).to_be_bytes());
         project.update(&self._proof.project_bytes);
-        let checked_capture = self._proof.capture.checked_capture_digest(cancellation).map_err(|e| format!("SQL receipt capture: {e:?}"))?;
-        let project_rows = self._proof.capture.project_rows_digest(cancellation).map_err(|e| format!("SQL receipt rows: {e:?}"))?;
+        let checked_capture = capture.checked_capture_digest(cancellation).map_err(|e| format!("SQL receipt capture: {e:?}"))?;
+        let project_rows = capture.project_rows_digest(cancellation).map_err(|e| format!("SQL receipt rows: {e:?}"))?;
         if cancellation.load(Ordering::Acquire) { return Err("SQL receipt cancelled".into()); }
-        Ok(SqlReceiptInputs { basis: sql_basis_for_snapshot(self.base)?, project: self._proof.capture.project(),
+        Ok(SqlReceiptInputs { basis: sql_basis_for_snapshot(self.base)?, project: capture.project(),
             project_after_image: *project.finalize().as_bytes(), changes: *changes.finalize().as_bytes(), checked_capture, project_rows })
     }
     /// Re-read the confined configuration and hosts at the owner grant barrier.
@@ -503,7 +552,7 @@ pub(super) fn validate_sql_noop(
     let selected = base
         .relation::<backend_engine::ProductSourceRelation>()
         .map_err(|e| e.to_string())?
-        .lookup(&proof.capture.project())
+        .lookup(&proof.project())
         .map_err(|e| e.to_string())?;
     if !proof.matches_project(selected.as_ref()) {
         return Err("SQL no-op Project changed".into());

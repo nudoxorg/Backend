@@ -1127,7 +1127,7 @@ fn surface(
                 ImpactCursor, ImpactDirection, ImpactDomain, ImpactHandle, ImpactRequest,
                 ImpactSeed, ImpactSeedSpec, ImpactStrengthFilter, IMPACT_DEFAULT_DEPTH,
             };
-            const SEEDS: [(&str, ImpactDomain, &str); 9] = [
+            const SEEDS: [(&str, ImpactDomain, &str); 13] = [
                 ("class", ImpactDomain::Css, "class"),
                 ("id", ImpactDomain::Css, "id"),
                 ("selector", ImpactDomain::Css, "selector"),
@@ -1137,6 +1137,10 @@ fn surface(
                 ("component", ImpactDomain::Code, "component"),
                 ("sql-table", ImpactDomain::Sql, "table"),
                 ("sql-column", ImpactDomain::Sql, "column"),
+                ("sql-view", ImpactDomain::Sql, "view"),
+                ("sql-index", ImpactDomain::Sql, "index"),
+                ("sql-function", ImpactDomain::Sql, "function"),
+                ("sql-trigger", ImpactDomain::Sql, "trigger"),
             ];
             let named: Vec<_> = SEEDS
                 .iter()
@@ -1159,7 +1163,7 @@ fn surface(
                 _ => {
                     return Err(Fault::usage(
                         "seed",
-                        "name exactly one thing to change: --class, --id, --selector, --custom-property, --at-rule, --stylesheet, --component, or --handle",
+                        "name exactly one thing to change: --class, --id, --selector, --custom-property, --at-rule, --stylesheet, --component, --sql-table, --sql-column, --sql-view, --sql-index, --sql-function, --sql-trigger, or --handle",
                     ));
                 }
             };
@@ -1198,11 +1202,20 @@ fn surface(
         },
         CommandId::SqlQuery => {
             use backend_library::sql_query::{SqlObjectKind, SqlQueryCursor, SqlQueryRequest, SqlQueryRole};
+            // `--uses-view NAME` and friends are seeds: who mentions this object.
+            let typed_uses: Vec<String> = [("view", "uses-view"), ("index", "uses-index"), ("function", "uses-function")]
+                .iter()
+                .filter_map(|(kind, option)| invocation.option(option).map(|name| format!("{kind}:{name}")))
+                .collect();
+            if typed_uses.len() + usize::from(invocation.option("uses").is_some()) > 1 {
+                return Err(Fault::usage("uses", "name at most one of --uses, --uses-view, --uses-index, --uses-function"));
+            }
+            let uses = typed_uses.into_iter().next().or_else(|| invocation.option("uses").map(str::to_owned));
             // Without `--role`, the filters say which fact family is meant:
-            // `--uses` is a reference-only filter and `--parent` a definition-only
-            // one. A bare `--name` / `--kind` asks for every definition and
-            // mention of that object, which is the `any` role.
-            let implied_role = if invocation.option("uses").is_some() {
+            // a uses filter (`--uses` or a typed seed) is reference-only and
+            // `--parent` a definition-only one. A bare `--name` / `--kind` asks
+            // for every definition and mention of that object, which is `any`.
+            let implied_role = if uses.is_some() {
                 "reference"
             } else if invocation.option("parent").is_some() {
                 "definition"
@@ -1233,7 +1246,7 @@ fn surface(
             let request = SqlQueryRequest { package: package(invocation, 0)?, role,
                 name: invocation.option("name").map(str::to_owned), kind,
                 parent: invocation.option("parent").map(str::to_owned),
-                uses: invocation.option("uses").map(str::to_owned), page_rows: limit(invocation)?,
+                uses, page_rows: limit(invocation)?,
                 output_bytes: number("output-bytes", 131_072)?, scan_rows: number("scan-rows", 65_536)?,
                 scan_bytes: number("scan-bytes", 33_554_432)?,
                 continuation: invocation.option("cursor").map(|value| SqlQueryCursor::parse(value.to_owned()))
