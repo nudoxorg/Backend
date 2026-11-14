@@ -19,6 +19,7 @@ use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 
 use tsz::config::ResolvedCompilerOptions;
+use tsz::diagnostics::data::diagnostic_codes;
 use tsz::module_resolver::{ImportKind, ModuleResolver, ResolutionFailure};
 use tsz::{ResolutionDirEntry, ResolutionFileKind, ResolutionFileSystem};
 
@@ -379,6 +380,15 @@ impl<'a> ProjectModuleResolver<'a> {
             Ok(parsed) => parsed,
             Err(error) => return failed(path, error.to_string()),
         };
+        // The loader goes on past an `extends` it cannot read, as `tsc` does, and
+        // only records a diagnostic. The options left would be a guess.
+        if let Some(missing) = parsed
+            .diagnostics
+            .iter()
+            .find(|diagnostic| matches!(diagnostic.code, diagnostic_codes::FILE_NOT_FOUND | diagnostic_codes::CANNOT_READ_FILE_2))
+        {
+            return failed(path, missing.message_text.clone());
+        }
         let mut options = match tsz::config::resolve_compiler_options_embedded(parsed.config.compiler_options.as_ref()) {
             Ok(options) => options,
             Err(error) => return failed(path, error.to_string()),
@@ -496,7 +506,7 @@ mod tests {
         let errors = resolver.configuration_errors();
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert_eq!(errors[0].0, "tsconfig.json");
-        assert!(!errors[0].1.is_empty());
+        assert!(errors[0].1.contains("outside/tsconfig.json"), "{errors:?}");
     }
 
     #[test]
