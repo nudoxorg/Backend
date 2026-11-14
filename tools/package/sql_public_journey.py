@@ -14,18 +14,35 @@ at the typed account refusal and is not a pass.
 No real accounts, no network, a private temporary state and project directory.
 """
 import argparse, atexit, json, os, pathlib, re, select, subprocess, sys, tempfile, time
-from sql_journey_safety import OwnedProcesses, digest, remove_private_root, verified_build
+from sql_journey_safety import OwnedProcesses, development_build, digest, remove_private_root, verified_build
 
 p = argparse.ArgumentParser()
 p.add_argument("--bundle", required=True)
 p.add_argument("--output", required=True)
-p.add_argument("--build-receipt", required=True, help="Root Cargo build receipt recorded before this run")
-p.add_argument("--source-checkout", required=True, help="exact clean checkout certified by the receipt")
+p.add_argument("--build-receipt", help="Root Cargo build receipt recorded before this run (release evidence)")
+p.add_argument("--source-checkout", help="exact clean checkout certified by the receipt (release evidence)")
+p.add_argument("--development", action="store_true",
+               help="development mode: skip the release build receipt and clean-checkout checks; "
+                    "the bundle's own digests are still pinned for the run. Never release evidence.")
 p.add_argument("--sql-only", action="store_true", help="leave out the TypeScript files")
 p.add_argument("--python", action="store_true", help="index Python beside SQL instead of TypeScript")
 p.add_argument("--flat", action="store_true", help="place migrations and queries in one directory")
 p.add_argument("--expect-no-worker", action="store_true", help="require named unavailable-host gaps and successful cold publication")
 a = p.parse_args()
+if a.development:
+    if a.build_receipt or a.source_checkout:
+        p.error("--development cannot be combined with --build-receipt or --source-checkout")
+elif not (a.build_receipt and a.source_checkout):
+    p.error("release evidence requires --build-receipt and --source-checkout; "
+            "pass --development for a local development bundle (not release evidence)")
+
+
+def check_build():
+    if a.development:
+        return development_build(bundle)
+    return verified_build(a.build_receipt, a.source_checkout, bundle, __file__)
+
+
 try:
     out = pathlib.Path(a.output).resolve()
     out.mkdir(parents=True, exist_ok=False)
@@ -55,10 +72,10 @@ def cleanup():
         failures.append({"kind": "build-provenance", "error": "build provenance was not established"})
     else:
         try:
-            after = verified_build(a.build_receipt, a.source_checkout, bundle, __file__)
+            after = check_build()
             current_worker = digest(worker) if worker.exists() else None
             if after != initial_build or current_worker != worker_digest:
-                raise RuntimeError("build receipt, source, binaries, harness, or SQL worker changed")
+                raise RuntimeError("build provenance, binaries, harness, or SQL worker changed")
             records.append({"build_after": after})
         except Exception as error:
             failures.append({"kind": "build-provenance", "error": str(error)})
@@ -174,7 +191,10 @@ try:
         FILES = {sql_path(path) if path.startswith("db/") else path: text for path, text in FILES.items()}
     bundle = pathlib.Path(a.bundle).resolve(strict=True)
     processes = OwnedProcesses()
-    initial_build = verified_build(a.build_receipt, a.source_checkout, bundle, __file__)
+    initial_build = check_build()
+    if a.development:
+        print("DEVELOPMENT MODE: release build receipt and clean-checkout checks skipped; "
+              "this run is not release evidence")
     worker = bundle / "backend-sqlite-worker"
     worker_digest = digest(worker) if worker.exists() else None
     records.append({"build_before": initial_build, "sqlite_worker_sha256": worker_digest})
