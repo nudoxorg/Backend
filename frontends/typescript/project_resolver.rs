@@ -582,7 +582,7 @@ mod tests {
         let read = |path: &str| Ok(json.get(path).map(|text| text.clone().into_bytes()));
         let resolver = ProjectModuleResolver::new(&files, &read);
         assert!(resolver.files_read().is_empty(), "nothing is read before the first resolution");
-        resolver.resolve("web/src/app/a.ts", "@lib/util");
+        let _ = resolver.resolve("web/src/app/a.ts", "@lib/util");
         let paths: Vec<String> = resolver.files_read().into_iter().map(|(path, _)| path).collect();
         assert_eq!(paths, ["tsconfig.base.json", "web/tsconfig.json"]);
         let bytes = resolver.files_read().into_iter().find(|(path, _)| path == "web/tsconfig.json").map(|(_, bytes)| bytes);
