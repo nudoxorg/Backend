@@ -357,9 +357,9 @@ mod tests {
             ("HOME", home.into_os_string()),
             ("PATH", bin.into_os_string()),
         ]);
-        // d0f5b78b7: with no external TypeScript selection the default is the
-        // native program, so a global npm install is not captured at all, and
-        // the GUI and the standalone owner agree on that.
+        // With no external TypeScript selection the default is the native
+        // program, so a global npm install is not captured at all, and the GUI
+        // and the standalone owner agree on that.
         let native = installed_snapshot(&captured).expect("default desktop capture");
         let native_locald = LocalCompilerHost::new(
             DesktopLaunchEnvironment { captured: &captured },

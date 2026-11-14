@@ -241,7 +241,7 @@ fn repeated_route_reversal_survives_large_text_resize_and_stops_requesting_frame
 }
 
 
-/// b61b1a44e: while a destination's real read is pending the Reader keeps its
+/// While a destination's real read is pending the Reader keeps its
 /// last actual departure as the one presentation (read-only, no targets) and
 /// says so with an "Opening page" status in the native tree. It does not
 /// paint the destination's skeleton, and `said` keeps the departure's last

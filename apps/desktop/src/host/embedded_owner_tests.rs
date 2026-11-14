@@ -339,9 +339,9 @@ fn a_refused_project_is_listed_in_the_same_boot_that_names_why() {
         .expect_err("the compile is refused: the owner has no C# authority")
         .to_string();
 
-    // 77135bf05 carries the typed package refusal across the boundary: it
-    // names the file and says which tool is missing, not a generic
-    // "semantic compilation failed" line.
+    // The typed package refusal crosses the boundary intact: it names the
+    // file and says which tool is missing, not a generic "semantic
+    // compilation failed" line.
     assert!(
         refusal.contains("Program.cs") && refusal.contains("dotnet is selected but is not configured"),
         "the refusal is the owner's named one: {refusal}"
@@ -350,8 +350,8 @@ fn a_refused_project_is_listed_in_the_same_boot_that_names_why() {
     // published, so the project stayed out of the Library until the next
     // command or restart.
     let canonical = project.canonicalize().expect("canonical project");
-    // 4d44e29e7 publishes a package whose semantic capture was refused as
-    // `Failed`, not `Ready`: it is listed, and says it did not index.
+    // A package whose semantic capture was refused is published as `Failed`,
+    // not `Ready`: it is listed, and says it did not index.
     assert_eq!(
         listed(&mut session),
         vec![(canonical.to_string_lossy().into_owned(), RowState::Failed)],

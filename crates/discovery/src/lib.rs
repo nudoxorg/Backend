@@ -1029,7 +1029,7 @@ mod tests {
             b"/coverage/\n!target/\n!node_modules/\n",
         )
         .expect("ignore");
-        // The project's own ignore file is a discovered input (`c1a150f16`, pinned by
+        // The project's own ignore file is a discovered input (see
         // `hard_defaults_are_unreincludeable`); the ignored report is not.
         assert_eq!(
             files(),

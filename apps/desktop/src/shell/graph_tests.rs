@@ -167,8 +167,8 @@ fn the_hand_stays_in_the_foot_while_the_graph_speaks(cx: &mut TestAppContext) {
     let open = ledger.texts.iter().find(|text| text.key == "hand-open").expect("the hand's chevron");
     let line = ledger.texts.iter().find(|text| text.key.starts_with("address:0:")).expect("the graph's line");
     assert_eq!(line.content, "Graph fixture · present::glyph::relation_label");
-    // 3d21e848f: held marks keep one line of the foot and the graph's line
-    // (with its recovery controls) gets its own full-width line beneath them.
+    // Held marks keep one line of the foot and the graph's line (with its
+    // recovery controls) gets its own full-width line beneath them.
     assert!(line.bounds.y >= open.bounds.y + open.bounds.height - 1.0, "the graph's line sits beneath the marks' row: {} vs {}", line.bounds.y, open.bounds.y);
 }
 
