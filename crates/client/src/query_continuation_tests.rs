@@ -1009,7 +1009,9 @@ fn selected_graph_center_authentication_refuses_a_rebound_source_without_refresh
 fn page(reply: &ReplyDto) -> &backend_library::ViewSnapshot {
     match &reply.reply {
         CommandReply::Search(page) | CommandReply::Names(page) => page,
-        _ => panic!("expected query page"),
+        // Outline pages travel as projection pages, which carry their order witness.
+        CommandReply::ProjectionPage(page) => &page.snapshot,
+        other => panic!("expected query page, got {other:?}"),
     }
 }
 fn first_token(

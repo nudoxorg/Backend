@@ -534,7 +534,15 @@ fn immutable_library_routes_keep_distinct_reusable_operands_headers_and_summary_
                 let records = result["structuredContent"]["records"]
                     .as_array()
                     .expect("selected records");
-                assert_eq!(records.len(), count);
+                // `resolve` answers "which declaration is this": it drops the
+                // import and external candidates of a name while a real declaration
+                // remains; `search` lists all of them.
+                let expected = if tool == "backend.resolve" && query == NAME {
+                    2
+                } else {
+                    count
+                };
+                assert_eq!(records.len(), expected);
                 let mut operands = std::collections::BTreeSet::new();
                 let mut symbols = std::collections::BTreeSet::new();
                 for record in records {
@@ -567,10 +575,26 @@ fn immutable_library_routes_keep_distinct_reusable_operands_headers_and_summary_
                         json!({"coordinate":coordinate,"detail":detail}),
                     );
                     assert_eq!(document["isError"], false, "{document}");
-                    assert!(
-                        document["structuredContent"].get("notes").is_none(),
-                        "a valid external target is not a failed local member proof: {document}"
-                    );
+                    if record["identity"]["shape"] == "external" {
+                        assert!(
+                            document["structuredContent"].get("notes").is_none(),
+                            "a valid external target is not a failed local member proof: {document}"
+                        );
+                    } else {
+                        // A local page states a missing relation publication as a
+                        // typed lane note; it is the only note this
+                        // fixture's local declarations may carry.
+                        let notes = document["structuredContent"]
+                            .get("notes")
+                            .and_then(serde_json::Value::as_array)
+                            .map_or(&[][..], Vec::as_slice);
+                        assert!(
+                            notes.iter().all(|note| note["slug"] == "lane-unavailable"
+                                && note["detail"]
+                                    == "No typed semantic relations were supplied; inspect package_profile"),
+                            "a local page carries only the relation-gap note: {document}"
+                        );
+                    }
                     assert_eq!(
                         document["structuredContent"]["identity"]["coordinate"],
                         coordinate

@@ -414,12 +414,15 @@ mod tests {
                 .expect("ordinary budget");
                 let dto: crate::dto::PageDto =
                     serde_json::from_slice(&encoded.bytes).expect("wire roundtrip");
-                assert_eq!(
-                    dto,
-                    crate::dto::PageDto::from_projection(&crate::PageProjection::new(
-                        &selected, detail
-                    ))
+                let mut expected = crate::dto::PageDto::from_projection(
+                    &crate::PageProjection::new(&selected, detail),
                 );
+                if detail == Detail::Standard {
+                    // The standard wire form keeps the signature text and drops its
+                    // classified tokens.
+                    expected.tokens.clear();
+                }
+                assert_eq!(dto, expected);
                 assert_eq!(dto.identity, crate::dto::IdentityDto::new(full.identity()));
                 assert_eq!(dto.section_page.as_ref(), Some(extent));
                 assert!(dto.source.is_some());
