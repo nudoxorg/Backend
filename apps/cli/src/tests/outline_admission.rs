@@ -164,6 +164,7 @@ fn cli_outline_real_full_frame_pages_preserve_original_credit_cursor_and_complet
             PROJECT,
             200,
             token,
+            &backend_present::KindFilter::default(),
             || Ok(()),
             |_, answer| {
                 // Charge the entire continuation in the actual CLI encoding, including escaping.
@@ -230,6 +231,7 @@ fn cli_outline_source_movement_and_original_scope_refuse_before_another_admissio
             PROJECT,
             200,
             None,
+            &backend_present::KindFilter::default(),
             || Ok(()),
             |_, answer| {
                 backend_present::encode_answer(answer, backend_present::Detail::Full, None, 1024)
@@ -252,6 +254,7 @@ fn cli_outline_source_movement_and_original_scope_refuse_before_another_admissio
             PROJECT,
             200,
             None,
+            &backend_present::KindFilter::default(),
             || {
                 checks += 1;
                 if !after_reply || checks > 1 {
@@ -281,6 +284,7 @@ fn cli_outline_one_row_oversize_is_atomic_and_exported_cursor_is_part_of_budget(
         PROJECT,
         1,
         None,
+        &backend_present::KindFilter::default(),
         || Ok(()),
         |_, answer| crate::render::admit_answer_with_cursor(answer, &options, None),
     )
@@ -288,9 +292,16 @@ fn cli_outline_one_row_oversize_is_atomic_and_exported_cursor_is_part_of_budget(
     assert_eq!(fault.cause().slug(), backend_present::CauseSlug::Oversized);
     assert_eq!(engine.windows.len(), 1);
     let mut engine = Outline::new(2, false);
-    let answer =
-        outline_with_output_admission(&mut engine, PROJECT, 1, None, || Ok(()), |_, _| Ok(()))
-            .expect("tiny real page");
+    let answer = outline_with_output_admission(
+        &mut engine,
+        PROJECT,
+        1,
+        None,
+        &backend_present::KindFilter::default(),
+        || Ok(()),
+        |_, _| Ok(()),
+    )
+    .expect("tiny real page");
     crate::render::admit_answer_with_cursor(&answer, &options, Some("small-owner-proof"))
         .expect("small exact cursor fits");
     let fault =
@@ -308,6 +319,7 @@ fn cli_outline_invalid_credit_and_unissued_cursor_never_probe_or_reset() {
             PROJECT,
             credit,
             cursor,
+            &backend_present::KindFilter::default(),
             || Ok(()),
             |_, _| panic!("invalid input must never reach output admission"),
         );
