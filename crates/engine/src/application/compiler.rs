@@ -35,11 +35,20 @@ use backend_frontend_rust::legacy::{
 };
 use backend_frontend_typescript::legacy::TypeScriptInvocationModeV1;
 use backend_frontend_typescript::{TszFileWorkPolicy, TszProject, TszProjectCheckerExecution};
-// Each admitted compiler lane owns its private checker pool. Two compiler
-// lanes currently admit at most four file-check workers per owner; parse,
-// bind and merge are separate stages with their existing execution controls.
+// Each admitted compiler lane owns its private checker pool, and that pool is
+// one worker wide. The workers of a pool share one type interner, one
+// definition store and one query cache, and what a file's checker leaves in
+// them depends on which files were checked before it. The semantic queries
+// that follow the check read that state, so with two workers the interleaving
+// of the pool decided what the published semantic image of a file contained
+// (a member call through a defaulted generic reference resolved in one run and
+// stayed unresolved in the next), and the same sources published different
+// views. A single worker checks the files in program order, which makes the
+// shared state, and therefore every image, a function of the program alone.
+// Parse, bind and merge are separate stages with their existing execution
+// controls.
 const TSZ_CHECKER_WORKERS_PER_COMPILER_LANE: std::num::NonZeroUsize =
-    std::num::NonZeroUsize::new(2).expect("checker worker policy is nonzero");
+    std::num::NonZeroUsize::MIN;
 
 use backend_library::interface::{
     CompilerAttempt, CompilerCapability, CompilerCause, CompilerFragmentFailure, CompilerReadiness,
@@ -10916,6 +10925,17 @@ mod staged_identity_recipe_tests {
     use backend_semantic::vocabulary::{
         CompileRecipeFact, LanguageProfile, Stage, TypeScriptSource,
     };
+
+    /// The checker workers of one lane share a type interner, a definition
+    /// store and a query cache whose contents depend on the order in which
+    /// files were checked, and the semantic queries read that state. A wider
+    /// pool let the interleaving of its workers decide what a published image
+    /// contained, so the same sources produced different views. The pool stays
+    /// one worker wide until the shared state is order independent.
+    #[test]
+    fn checker_pool_of_a_compiler_lane_is_one_worker_wide() {
+        assert_eq!(TSZ_CHECKER_WORKERS_PER_COMPILER_LANE.get(), 1);
+    }
 
     #[test]
     fn project_recipe_admission_is_exact_and_foreign_toolchains_still_refuse() {
