@@ -57,6 +57,8 @@ mod token_outline;
 mod typescript_admission;
 
 const PROJECT: &str = "/abs/polyglot";
+#[path = "tests/usage_argument_names.rs"]
+mod usage_argument_names;
 const MODULE: &str = "/abs/polyglot::src/lib.rs";
 const DECLARATION: &str = "/abs/polyglot::src/lib.rs:2::ferris";
 const MISSING: &str = "/abs/polyglot::src/lib.rs:999::nothing";

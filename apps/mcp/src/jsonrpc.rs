@@ -4118,6 +4118,7 @@ impl RpcError {
                 backend_present::Operand::Argument("cursor".to_owned()),
             )),
             detail: Some(
+        self.name_arguments_for(invocation);
                 "the continuation belongs to an older immutable revision; restart the query"
                     .to_owned(),
             ),
@@ -4172,6 +4173,28 @@ impl RpcError {
                 | FaultSlug::LaneUnavailable
                 | FaultSlug::LanePartial
                 | FaultSlug::SourceUnavailable
+    /// A usage refusal names the JSON arguments of the tool called, never the CLI flags
+    /// its sentence was written with.
+    fn name_arguments_for(&mut self, invocation: McpInvocation<'_>) {
+        let Some(grammar) = backend_present::grammar_for_tool(invocation.selected_name()) else {
+            return;
+        };
+        let Some(fault) = self.fault.as_ref().filter(|fault| fault.slug().is_usage()) else {
+            return;
+        };
+        let renamed = fault.clone().with_mcp_argument_names(grammar);
+        if &renamed == fault {
+            return;
+        }
+        if self.structured.is_some() {
+            self.structured = Some(fault_value(&renamed));
+            self.detail = Some(bounded_text(&markdown::fault(&renamed)));
+        } else {
+            self.detail = Some(renamed.cause().sentence().to_owned());
+        }
+        self.fault = Some(renamed);
+    }
+
                 | FaultSlug::Rejected
                 | FaultSlug::Usage => true,
             };
