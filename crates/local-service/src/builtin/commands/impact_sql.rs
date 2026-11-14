@@ -117,7 +117,7 @@ fn build(loaded: ProjectSql) -> DomainLoad {
     enum HostLines {
         Unread,
         File(Lines),
-        Embedded(sql_embedded::Scan, Lines),
+        Embedded(sql_embedded::Scan),
     }
     let mut lines: Vec<HostLines> = Vec::with_capacity(loaded.hosts.len());
     for host in &loaded.hosts {
@@ -128,7 +128,7 @@ fn build(loaded: ProjectSql) -> DomainLoad {
             Some(real) => read(real, sql_embedded::MAX_SCAN_BYTES)
                 .and_then(|bytes| {
                     let scan = sql_embedded::scan(real, &bytes)?;
-                    (host.length == Some(scan.composed.len() as u64)).then(|| HostLines::Embedded(scan, Lines::of(&bytes)))
+                    (host.length == Some(scan.composed.len() as u64)).then(|| HostLines::Embedded(scan))
                 })
                 .unwrap_or(HostLines::Unread),
             None => host
@@ -143,13 +143,13 @@ fn build(loaded: ProjectSql) -> DomainLoad {
     }
     let line_of = |host: usize, offset: u32| match lines.get(host) {
         Some(HostLines::File(l)) => Some(l.line(offset)),
-        Some(HostLines::Embedded(scan, _)) => scan.fragment_at(offset as usize).map(|fragment| fragment.line),
+        Some(HostLines::Embedded(scan)) => scan.fragment_at(offset as usize).map(|fragment| fragment.line),
         _ => None,
     };
     // Whether the call behind a statement builds its text at run time. An
     // embedded host which could not be mapped is treated as built, never exact.
     let dynamic_at = |host: usize, offset: u32| match lines.get(host) {
-        Some(HostLines::Embedded(scan, _)) => scan.fragment_at(offset as usize).is_none_or(|fragment| fragment.dynamic),
+        Some(HostLines::Embedded(scan)) => scan.fragment_at(offset as usize).is_none_or(|fragment| fragment.dynamic),
         _ => sql_embedded::real_path(&loaded.hosts[host].path).is_some(),
     };
     // What a user reads: the application file for an embedded host.
@@ -390,10 +390,16 @@ fn build(loaded: ProjectSql) -> DomainLoad {
         });
     }
     let embedded_hosts = loaded.hosts.iter().filter(|host| sql_embedded::real_path(&host.path).is_some()).count();
+    // The number of analysed files goes in the note: `count` is for sites the gap touches.
+    let analysed_note = match embedded_hosts {
+        0 => String::new(),
+        1 => "1 application file was analysed. ".to_owned(),
+        many => format!("{many} application files were analysed. "),
+    };
     gaps.push(ImpactGap {
         facet: "sql.embedded-sql".into(),
-        note: "SQL in string literals passed to query calls in TypeScript, JavaScript and Python files is analysed (exact where the text is static, candidate where it is built); SQL assembled elsewhere and passed as a variable, tagged templates, ORM models, query builders, application files over 1 MiB and projects with an explicit .nudox/sql.json are not".into(),
-        count: u32::try_from(embedded_hosts).ok().filter(|count| *count > 0),
+        note: format!("{analysed_note}SQL in string literals passed to query calls in TypeScript, JavaScript and Python files is analysed (exact where the text is static, candidate where it is built); SQL assembled elsewhere and passed as a variable, tagged templates, ORM models, query builders, application files over 1 MiB and projects with an explicit .nudox/sql.json are not"),
+        count: None,
     });
     gaps.push(ImpactGap {
         facet: "sql.schema-basis".into(),
@@ -467,6 +473,23 @@ mod sql_impact_regression_tests {
         };
         let result = build(loaded);
         assert!(result.gaps.iter().any(|gap| gap.facet == "sql.candidate-limit" && gap.count == Some(1)));
+    }
+
+    #[test]
+    fn analysed_embedded_hosts_are_named_in_the_note_not_counted() {
+        let host = |path: &str| SqlHost { key: [1; 32], path: path.into(), dialect: SqlDialect::Sqlite,
+            input: Some([2; 32]), source: Some([3; 32]), producer: Some([4; 32]), settings: Some([5; 32]), fact_digest: [6; 32], length: Some(1),
+            terminal: SqlHostTerminal::Parsed { source: SqlCoverage::Partial, contextual: SqlCoverage::Partial, sqlite_lineage: None } };
+        let gap_of = |hosts: Vec<SqlHost>| {
+            let loaded = ProjectSql { root: "/".into(), inventory_complete: true, implicit: true, gaps: Default::default(), hosts, facts: vec![] };
+            build(loaded).gaps.into_iter().find(|gap| gap.facet == "sql.embedded-sql").expect("the embedded-sql disclosure")
+        };
+        let gap = gap_of(vec![host("a.ts#embedded.sql"), host("b.py#embedded.sql"), host("query.sql")]);
+        assert_eq!(gap.count, None);
+        assert!(gap.note.starts_with("2 application files were analysed. "), "{}", gap.note);
+        let gap = gap_of(vec![host("query.sql")]);
+        assert_eq!(gap.count, None);
+        assert!(gap.note.starts_with("SQL in string literals"), "{}", gap.note);
     }
 
     #[test]
