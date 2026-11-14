@@ -6,6 +6,13 @@
 #
 # BIN_DIR holds backend-locald, backend-cli and backend-mcp. Debug builds skip
 # the account gate, so a transcript from them is development-mode evidence.
+#
+# The script exits non-zero when the proof fails. The fixture has ten
+# TypeScript sources; `Button` is consumed by exactly seven of them (the home,
+# about, dashboard and broken pages, NavBar, Card and Invoice, directly, through
+# an alias, through the barrel or through another component), and one import,
+# `@/widgets/Widget` in the broken page, resolves to no file, which the answer
+# must state as a `code.unresolved-imports` gap rather than hide.
 set -euo pipefail
 
 bin=$(cd "${1:?usage: impact-alias-proof.sh BIN_DIR OUT_DIR}" && pwd)
@@ -45,9 +52,29 @@ mcp() { # mcp TOOL JSON_ARGUMENTS
 for line in sys.stdin:
     try: reply = json.loads(line)
     except ValueError: continue
-    if reply.get('id') == 2: print(json.dumps(reply, indent=1)[:6000])"
+    if reply.get('id') == 2:
+        print(json.dumps(reply, indent=1)[:6000])
+        sys.exit(1 if reply.get('error') or reply.get('result', {}).get('isError') else 0)
+sys.exit('no reply to the tool call')"
 }
 section() { printf '\n===== %s\n' "$*"; }
+fail() { echo "PROOF FAILED: $*" >&2; exit 1; }
+
+# Reads an impact answer as JSON on stdin and prints its `semantic_data` value.
+semantic_value() {
+  python3 -c "import sys, json
+def find(v, k):
+    if isinstance(v, dict):
+        if k in v: return v[k]
+        for x in v.values():
+            r = find(x, k)
+            if r is not None: return r
+    if isinstance(v, list):
+        for x in v:
+            r = find(x, k)
+            if r is not None: return r
+json.dump(find(json.load(sys.stdin), 'semantic_data')['value'], sys.stdout)"
+}
 
 # A debug owner opens its stores slowly, and the first command is refused with
 # a retry hint until it has. Wait for it before submitting anything.
@@ -61,56 +88,55 @@ section "add"
 cli add "$project" --wait --wait-timeout 600 2>&1 | head -20
 
 section "wait for the TypeScript evidence (code domain files >= 10: the fixture has ten TypeScript sources)"
+files=0
 for _ in $(seq 1 240); do
-  files=$(cli --format json --detail full impact "$project" --component Button 2>/dev/null |
+  # Until the evidence is published the answer is a refusal or lacks the
+  # section; either way the count is zero and the wait continues.
+  files=$(cli --format json --detail full impact "$project" --component Button 2>/dev/null | semantic_value 2>/dev/null |
     python3 -c "import sys, json
-def find(v, k):
-    if isinstance(v, dict):
-        if k in v: return v[k]
-        for x in v.values():
-            r = find(x, k)
-            if r is not None: return r
-    if isinstance(v, list):
-        for x in v:
-            r = find(x, k)
-            if r is not None: return r
-try:
-    sem = find(json.load(sys.stdin), 'semantic_data')
-    print(next((d['files'] for d in sem['value']['domains'] if d['domain'] == 'code'), 0))
-except Exception: print(0)")
-  [ "${files:-0}" -ge 10 ] && break
+print(next((d['files'] for d in json.load(sys.stdin)['domains'] if d['domain'] == 'code'), 0))" 2>/dev/null || echo 0)
+  [ "$files" -ge 10 ] && break
   sleep 1
 done
-echo "code files: ${files:-0}"
+echo "code files: $files"
+[ "$files" -ge 10 ] || fail "the code domain published $files files, expected at least 10"
 
 for component in Button NavBar Footer; do
   section "impact $project --component $component (absolute path)"
-  cli impact "$project" --component "$component" --limit 40 2>&1 || true
+  cli impact "$project" --component "$component" --limit 40 2>&1
 done
 
 section "impact . --component Button (relative path)"
-cli impact . --component Button --limit 40 2>&1 || true
+cli impact . --component Button --limit 40 2>&1
 section "impact . --sql-table members (relative path)"
+# No SQL worker is installed here, so the answer is a refusal; the proof is that
+# it prints one.
 cli impact . --sql-table members 2>&1 || true
 section "impact ./ --component Button --format json (relative, rows)"
-cli --format json --detail full impact ./ --component Button --limit 40 2>&1 | python3 -c "import sys, json
-def find(v, k):
-    if isinstance(v, dict):
-        if k in v: return v[k]
-        for x in v.values():
-            r = find(x, k)
-            if r is not None: return r
-    if isinstance(v, list):
-        for x in v:
-            r = find(x, k)
-            if r is not None: return r
-sem = find(json.load(sys.stdin), 'semantic_data')['value']
+semantic=$(cli --format json --detail full impact ./ --component Button --limit 40 2>&1 | semantic_value)
+printf '%s' "$semantic" | python3 -c "import sys, json
+sem = json.load(sys.stdin)
 print('domains:', json.dumps(sem['domains']))
 print('totals:', json.dumps(sem['totals']))
 for row in sem['rows']:
     print(row['strength'], row['node']['kind'], row['node']['name'], row['node'].get('path'), '|', row['why'])
 for gap in sem['gaps']:
     print('GAP', gap['facet'], gap.get('count'), gap['note'][:300])"
+
+printf '%s' "$semantic" | python3 -c "import sys, json
+expected = {
+    'src/app/page.tsx', 'src/app/about/page.tsx', 'src/app/dashboard/page.tsx',
+    'src/app/broken/page.tsx', 'src/components/NavBar.tsx',
+    'src/components/ui/Card.tsx', 'src/features/billing/Invoice.tsx',
+}
+sem = json.load(sys.stdin)
+consumers = {r['node'].get('path') for r in sem['rows']} - {'src/components/Button.tsx'}
+assert consumers == expected, f'Button consumers: missing {sorted(expected - consumers)}, unexpected {sorted(consumers - expected)}'
+gaps = [g for g in sem['gaps'] if g['facet'] == 'code.unresolved-imports']
+assert len(gaps) == 1, f'expected one code.unresolved-imports gap, got {sem[\"gaps\"]}'
+assert gaps[0].get('count') == 1 and '@/widgets/Widget' in gaps[0]['note'], gaps[0]
+print('proof: seven Button consumers and the unresolved @/widgets/Widget import are reported')" ||
+  fail "the Button impact answer does not match the fixture"
 
 section "MCP backend.impact component Button"
 mcp backend.impact "{\"package\":\"$project\",\"component\":\"Button\",\"limit\":40}"
@@ -129,6 +155,7 @@ def walk(v):
         for x in v: yield from walk(x)
 print(next(walk(json.load(sys.stdin)), ''))")
 echo "coordinate: $coordinate"
-if [ -n "$coordinate" ]; then cli references "$coordinate" --limit 60 2>&1 | head -80; fi
+[ -n "$coordinate" ] || fail "search found no Button declaration coordinate"
+cli references "$coordinate" --limit 60 2>&1 | head -80
 echo
 echo "transcript root: $root"
