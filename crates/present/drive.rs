@@ -1313,7 +1313,11 @@ fn probe_relation_rows(
                 ));
                 return RelationRows { rows: Vec::new(), graph_relations: None };
             }
-            let reason = graph_relation_gap(&snapshot);
+            // A retained external target is navigation, not a local declaration:
+            // the local package's relation publication makes no claim about it,
+            // so a gap in that publication is not a failure of this page.
+            let reason = graph_relation_gap(&snapshot)
+                .filter(|_| !is_admitted_external_target(coordinate, document));
             if let Some(reason) = reason {
                 notes.push(Fault::new(
                     crate::FaultSlug::LaneUnavailable,
@@ -1353,6 +1357,28 @@ fn probe_relation_rows(
     }
 }
 
+/// Whether `coordinate` is an external navigation target that the document's own
+/// selection proves, rather than a declaration of the local package named in its
+/// scoped display address.
+fn is_admitted_external_target(coordinate: &str, document: &backend_library::Document) -> bool {
+    let identity = Identity::parse(coordinate);
+    let Some(project) = identity.project() else {
+        return false;
+    };
+    identity.shape() == crate::identity::IdentityShape::External
+        && coordinate.starts_with(&format!(
+            "{}::external::{}::",
+            project.root(),
+            backend_library::RowId::Symbol(document.symbol).stable_key(),
+        ))
+        && document.selection.as_ref().is_some_and(|selection| {
+            selection.coordinate() == coordinate
+                && selection.symbol() == document.symbol
+                && selection.source().root == document.basis
+                && document.source_basis() == Some(selection.source())
+        })
+}
+
 /// Fetches the owning package's flat outline so members can be named.
 fn probe_members(
     engine: &mut dyn Engine,
@@ -1368,19 +1394,7 @@ fn probe_members(
     // ownership by the local package named in its scoped display address.
     // Its document selection proves the target; a local outline cannot prove
     // that foreign declaration's members or source availability.
-    if identity.shape() == crate::identity::IdentityShape::External
-        && coordinate.starts_with(&format!(
-            "{}::external::{}::",
-            project.root(),
-            backend_library::RowId::Symbol(document.symbol).stable_key(),
-        ))
-        && document.selection.as_ref().is_some_and(|selection| {
-            selection.coordinate() == coordinate
-                && selection.symbol() == document.symbol
-                && selection.source().root == document.basis
-                && document.source_basis() == Some(selection.source())
-        })
-    {
+    if is_admitted_external_target(coordinate, document) {
         return Vec::new();
     }
     match document_member_rows(engine, project.root(), document) {

@@ -1890,7 +1890,12 @@ fn execute_observed_native_references(
     let view = library.view();
     let row = view_build::resolve_selected_view_address(view, target.as_str())
         .declaration()
-        .map_err(|failure| BuiltinModelError(failure.to_string()))?
+        .map_err(|failure| {
+            BuiltinModelError(match failure {
+                backend_library::CommandFailure::InvalidQuery(message) => message,
+                other => other.to_string(),
+            })
+        })?
         .ok_or_else(|| BuiltinModelError("references target is absent from the selected view".to_owned()))?;
     let backend_engine::RowId::Symbol(target_symbol) = row.id else {
         return Err(BuiltinModelError("references target is not a declaration row".to_owned()));

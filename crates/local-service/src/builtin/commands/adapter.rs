@@ -5727,6 +5727,9 @@ impl CommandAdapter {
             // separately retained excerpt may be truncated and is redundant.
             document.excerpt = backend_library::SourceExcerpt::NotCaptured;
             document.source_range = Some(range);
+        } else if row.package.is_none() && row.source.captured().is_none() {
+            // A retained external navigation target names no indexed package and
+            // captured no source, so there are no indexed bytes to verify or present.
         } else {
             match self.indexed_source_matches(daemon, row) {
                 Some(true) => {}
