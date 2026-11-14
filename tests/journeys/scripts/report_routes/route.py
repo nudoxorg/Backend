@@ -283,6 +283,7 @@ class Route:
         self.autostart_owners = {}
         self.pending = bytearray()
         self.auto_start = auto_start
+        self.registry = None
         self.owner_args = list(owner_args or [])
         base_path = os.environ.get("PATH", "/usr/bin:/bin")
         env = {k: os.environ[k] for k in ("LANG", "LC_ALL", "TZ") if k in os.environ}
@@ -312,7 +313,10 @@ class Route:
             return
         secret = self.workspace / "authority.secret"
         self._ensure_authority_secret(secret)
-        env = dict(self.env, BACKEND_LOCALD_AUTHORITY_SECRET_FILE=str(secret), **self.owner_env)
+        self.registry = registry
+        env = dict(self.env)
+        env["BACKEND_LOCALD_AUTHORITY_SECRET_FILE"] = str(secret)
+        env.update(self.owner_env)
         if registry is None:
             registry_flags = ["--registry-offline", "--registry-discovery-offline", "--advisory-offline",
                               "--forge-offline"]
@@ -435,13 +439,14 @@ class Route:
         self.spawned_processes[proc.pid] = identity
 
     def restart_owner(self, cwd):
-        """Retire the owner with proof, then start a new one on the same workspace and credential."""
+        """Retire the owner with proof, then start a new one on the same workspace, credential
+        and registry fixture (or lack of one)."""
         if self.auto_start or self.owner is None:
             raise RuntimeError("restart_owner needs an owner started by start_owner")
         self.retire_for_reopen()
         if self.endpoint.exists():
             self.endpoint.unlink()
-        self.start_owner(cwd)
+        self.start_owner(cwd, registry=self.registry)
 
     def save_records(self):
         (self.out / "records.json").write_text(json.dumps(self.records, indent=1))
