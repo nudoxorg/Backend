@@ -412,6 +412,20 @@ def refs_project(root, layout="root"):
         write(root, "backend/Program.cs", "var app = WebApplication.CreateBuilder(args).Build();\napp.Run();\n")
         write(root, "backend/Api.csproj", '<Project Sdk="Microsoft.NET.Sdk.Web"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>\n')
         return root
+    if layout == "nested_calls":
+        # Calls inside nested callables of one component.
+        refs_project(root, "root")
+        write(root, "src/ui/nested.tsx", '''import { aliasTarget } from "@/lib/util";
+
+export function Panel() {
+  const load = () => {
+    const inner = () => aliasTarget(10);
+    return inner();
+  };
+  return <button onClick={() => aliasTarget(11)}>{String(aliasTarget(12))}{String(load())}</button>;
+}
+''')
+        return root
     if layout == "gap":
         refs_project(root, "root")
         write(root, "src/ui/Shell.tsx", '''import type { ReactNode } from "react";
@@ -492,6 +506,10 @@ def refs_nested_project(root):
     return refs_project(root, "nested")
 
 
+def refs_nested_calls_project(root):
+    return refs_project(root, "nested_calls")
+
+
 def refs_gap_project(root):
     return refs_project(root, "gap")
 
@@ -523,4 +541,4 @@ def _bv(drop):
 
 
 BUILDERS = {"budget_no_csharp": _bv("csharp"), "budget_no_appshell": _bv("appshell"),
-            "budget_no_next": _bv("next_cache"), "refs_mixed": refs_mixed_project, "refs_nested": refs_nested_project, "refs_gap": refs_gap_project, "react_variants": react_variants_project, "refs": refs_project, "crm": crm_project, "budget": budget_project, "tiny": tiny_ts_project}
+            "budget_no_next": _bv("next_cache"), "refs_mixed": refs_mixed_project, "refs_nested": refs_nested_project, "refs_gap": refs_gap_project, "refs_nested_calls": refs_nested_calls_project, "react_variants": react_variants_project, "refs": refs_project, "crm": crm_project, "budget": budget_project, "tiny": tiny_ts_project}

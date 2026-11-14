@@ -287,6 +287,7 @@ fn outline_selector_bytes_shrink_native_first_page_and_preserve_complete_ids() {
         &Request::OutlinePage {
             path: PROJECT.to_owned(),
             limit: 200,
+            kinds: Default::default(),
         },
         None,
     )
@@ -439,7 +440,7 @@ fn late_token_dense_outline_continuations_shrink_delivery_keep_credit_and_preser
     assert_eq!(dense.snapshot.root.row_count(), 50);
     assert_eq!(dense.outline_order.as_ref().expect("actual later-page order").symbols(),
         &ids[50..100], "the real continuation must select all 50 dense IDs");
-    let dense_answer = backend_present::catalog_page_answer(&Request::OutlinePage { path: PROJECT.to_owned(), limit: 50 },
+    let dense_answer = backend_present::catalog_page_answer(&Request::OutlinePage { path: PROJECT.to_owned(), limit: 50, kinds: Default::default() },
         ReplyDto::new(1, CommandReply::ProjectionPage(dense))).expect("real admitted projection");
     let encoded = encode_answer(&dense_answer, Detail::Full, None, DEFAULT_RESPONSE_BUDGET_BYTES).expect("complete native DTO fits byte policy");
     let structured: Value = serde_json::from_slice(&encoded.bytes).expect("typed JSON");

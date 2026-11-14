@@ -363,6 +363,8 @@ pub enum Request {
         text: String,
         /// Page bound.
         limit: u16,
+        /// Drop import and external rows from the page; they are counted, never silent.
+        declarations_only: bool,
     },
     /// A bounded name resolution page.
     Resolve {
@@ -380,6 +382,9 @@ pub enum Request {
         path: String,
         /// Owner query limit, retained unchanged by every continuation.
         limit: u16,
+        /// Declaration kinds the page keeps; empty keeps everything. Applied to the
+        /// owner's page, with the removed count reported.
+        kinds: crate::outline::KindFilter,
     },
     /// One durable product operation.
     Surface(Box<SurfaceCommand>),
@@ -569,6 +574,7 @@ pub fn lower_with_opener(
             Request::Search {
                 text: invocation.require(0)?.to_owned(),
                 limit: limit(invocation)?,
+                declarations_only: invocation.flag("declarations-only"),
             },
         ),
         CommandId::Resolve | CommandId::Name => query_cursor(
@@ -588,12 +594,21 @@ pub fn lower_with_opener(
             } else {
                 path
             };
-            if invocation.option("limit").is_some() || invocation.option("cursor").is_some() {
+            let kinds = crate::outline::KindFilter::parse(
+                invocation.option("kind"),
+                invocation.option("exclude-kind"),
+            )
+            .map_err(|message| Fault::usage("kind", message))?;
+            if invocation.option("limit").is_some()
+                || invocation.option("cursor").is_some()
+                || !kinds.is_empty()
+            {
                 query_cursor(
                     invocation,
                     Request::OutlinePage {
                         path,
                         limit: limit(invocation)?,
+                        kinds,
                     },
                 )
             } else {

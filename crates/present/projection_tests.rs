@@ -132,7 +132,7 @@ fn page_projection_summary_omits_evidence_without_replacing_or_mutating_it() {
     );
     assert_eq!(
         value["identity"]["semantic_data"]["value"],
-        json!(symbol_key("selected-native-entry").as_bytes())
+        json!(backend_library::encode_id(symbol_key("selected-native-entry").as_bytes()))
     );
     assert_eq!(value["signature"], SIGNATURE);
     assert_eq!(value["notes"][0]["detail"], NOTE);
@@ -373,7 +373,7 @@ fn retained_external_document_page_keeps_actual_identity_and_explicit_source_ref
         assert_eq!(value["identity"]["shape"], "external");
         assert_eq!(
             value["identity"]["semantic_data"]["value"],
-            json!(native.as_bytes())
+            json!(backend_library::encode_id(native.as_bytes()))
         );
         assert!(value["identity"].get("path").is_none());
         assert!(value["identity"].get("line").is_none());

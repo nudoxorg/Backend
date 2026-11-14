@@ -1954,7 +1954,7 @@ fn bounded_outline_cli_arguments_lower_to_the_same_native_page_as_mcp() {
     let (options, rest) = options::split(&words("--limit 5 outline /p")).expect("options");
     let invocation = invoke::parse(&rest, options.limit()).expect("shared page grammar");
     assert!(
-        matches!(lower(&invocation, "/p").expect("native outline"), Request::OutlinePage { path, limit: 5 } if path == "/p")
+        matches!(lower(&invocation, "/p").expect("native outline"), Request::OutlinePage { path, limit: 5, .. } if path == "/p")
     );
     let invocation = invoke::parse(&words("outline /p --limit 5 --cursor pc4-proof"), None)
         .expect("cursor option");
@@ -1975,7 +1975,7 @@ fn bounded_outline_cli_arguments_lower_to_the_same_native_page_as_mcp() {
         assert!(matches!(
             lower(&invocation, "/p").expect("unchanged default credit"),
             Request::ResumeQuery { query, cursor }
-                if matches!(query.as_ref(), Request::OutlinePage { path, limit }
+                if matches!(query.as_ref(), Request::OutlinePage { path, limit, .. }
                     if path == "/p" && *limit == QueryLimit::MAX)
                     && cursor == "pc4-proof"
         ));
@@ -2082,6 +2082,7 @@ fn published_names_search_is_useful_partial_json_with_exact_identity_and_zero_ex
         &backend_present::Request::Search {
             text: "Document".to_owned(),
             limit: 10,
+            declarations_only: false,
         },
         reply,
     )

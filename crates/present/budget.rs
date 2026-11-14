@@ -260,6 +260,7 @@ pub fn encode_answer_with_call(
                     search_scope: list.coverage().published_names().map(|_| "published_names_only"),
                     full_search: list.coverage().published_names().map(|readiness| readiness.full_search),
                     semantic_preparation: list.coverage().published_names().map(|readiness| readiness.semantic),
+                    hidden_non_declarations: list.hidden_non_declarations(),
                 },
                 budget,
                 continuation_call,
@@ -276,6 +277,8 @@ pub fn encode_answer_with_call(
                             rows: project.rows,
                             declarations: project.declarations,
                             partial_lanes: project.partial_lanes,
+                            languages: project.languages,
+                            source_profiles: project.source_profiles,
                             fault: project.fault,
                         }
                     })
@@ -308,6 +311,7 @@ pub fn encode_answer_with_call(
                         declarations: outline.declarations,
                         unnamed: outline.unnamed,
                         page: outline.page,
+                        filtered_out: outline.filtered_out,
                     },
                     budget,
                     continuation_call,
@@ -782,6 +786,12 @@ struct SummaryRecordsDto<'a> {
     full_search: Option<backend_library::FullSearchReadiness>,
     #[serde(skip_serializing_if = "Option::is_none")]
     semantic_preparation: Option<backend_library::PublishedSemanticReadiness>,
+    #[serde(skip_serializing_if = "is_zero")]
+    hidden_non_declarations: usize,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 #[derive(Serialize)]
@@ -793,6 +803,10 @@ struct SummaryShelfEntryDto {
     declarations: Option<u64>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     partial_lanes: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    languages: Vec<crate::dto::LanguageCountDto>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    source_profiles: Vec<crate::dto::SourceProfileDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fault: Option<FaultDto>,
 }
@@ -816,6 +830,8 @@ struct SummaryOutlineDto {
     unnamed: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     page: Option<crate::dto::OutlinePageDto>,
+    #[serde(skip_serializing_if = "is_zero")]
+    filtered_out: usize,
 }
 
 #[derive(Serialize)]
@@ -1505,8 +1521,8 @@ mod tests {
         let worst_answer = Answer::Records(Box::new(worst.clone()));
         let worst = encode_answer(&worst_answer, Detail::Full, None, 256 * 1024)
             .expect("worst typed page fits hard cap");
-        assert_eq!(worst.bytes.len(), 134_052);
-        assert_eq!(worst.budget.estimated_tokens, 33_513);
+        assert_eq!(worst.bytes.len(), 124_225);
+        assert_eq!(worst.budget.estimated_tokens, 31_057);
         assert_eq!(
             worst.bytes.as_ref(),
             include_bytes!("fixtures/worst-200-full-records-selected-id.json")
@@ -1539,7 +1555,7 @@ mod tests {
                 selected,
                 serde_json::json!({
                     "kind": "selected-symbol-id",
-                    "value": backend_library::symbol_key(&format!("typed-budget-{index}")).to_bytes(),
+                    "value": backend_library::encode_id(&backend_library::symbol_key(&format!("typed-budget-{index}")).to_bytes()),
                 })
             );
         }
@@ -1551,7 +1567,7 @@ mod tests {
         let refused = encode_answer(&worst_answer, Detail::Full, None, 48 * 1024)
             .expect_err("an oversized complete page is refused before allocation");
         assert_eq!(refused.budget, 48 * 1024);
-        assert_eq!(refused.bytes, 134_052);
+        assert_eq!(refused.bytes, 124_225);
     }
 
     #[test]
@@ -1840,7 +1856,7 @@ mod tests {
                         .expect("typed worst fixture fits"),
                 );
             });
-            assert_eq!(result.expect("encoded result").bytes.len(), 134_052);
+            assert_eq!(result.expect("encoded result").bytes.len(), 124_225);
             timings.push(start.elapsed().as_nanos());
             allocations.push(info.bytes_total);
         }

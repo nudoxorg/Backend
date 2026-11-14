@@ -5345,6 +5345,7 @@ fn standard_mcp_preview_retains_every_structured_coordinate_and_the_cli_projecti
         &Request::Search {
             text: "ferris".to_owned(),
             limit: 25,
+            declarations_only: false,
         },
     )
     .expect("fixture search answer");
@@ -9761,6 +9762,70 @@ mod conditional_progress_tests {
     }
 
     #[test]
+    fn a_changed_summary_poll_names_the_job_ticket_once_and_keeps_it_elsewhere() {
+        // Every progress event repeated the full ticket, and a poll repeated the CLI line.
+        use backend_library::{
+            IndexJobProgressEvent, IndexJobProgressKind, IndexOperationObservation,
+            IndexOperationState, IndexProgressPage, SemanticLanguageProfile,
+        };
+        let active = phases().remove(1);
+        let SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(status)) = &active
+        else {
+            panic!("active status")
+        };
+        let IndexOperationState::Active { ticket, stage } = &status.state else {
+            panic!("active ticket")
+        };
+        let event = |sequence| IndexJobProgressEvent {
+            ticket: ticket.clone(),
+            sequence,
+            kind: IndexJobProgressKind::ProfileAdmitted {
+                profile: SemanticLanguageProfile::from_name("typescript").expect("profile"),
+                ordinal: 2,
+                total: 3,
+            },
+        };
+        let page = |sequence| IndexProgressPage {
+            ticket: ticket.clone(),
+            stage: *stage,
+            events: vec![event(sequence), event(sequence + 1)].into_boxed_slice(),
+            next_sequence: sequence + 1,
+            truncated: false,
+            has_more: false,
+        };
+        let mut sizes = Vec::new();
+        for (detail, compact) in [("summary", true), ("standard", false)] {
+            let mut server = ready(Fake {
+                surface_reply: Some(active.clone()),
+                profile_progress_reply: Some(page(3)),
+                ..Fake::default()
+            });
+            let mut arguments = active_arguments();
+            arguments["detail"] = json!(detail);
+            arguments["wait_millis"] = json!(0);
+            let unchanged = call(&mut server, INDEX_PROGRESS_TOOL, &arguments);
+            assert_eq!(unchanged["structuredContent"]["surface"]["data"]["state"], "pending-unchanged");
+            server.product.surface_reply = Some(active.clone());
+            server.product.profile_progress_reply = Some(page(5));
+            let changed = call(&mut server, INDEX_PROGRESS_TOOL, &arguments);
+            assert_eq!(changed["isError"], false);
+            let job = &changed["structuredContent"]["surface"]["index_job"]["value"]["detail"];
+            assert!(job["ticket"].is_object(), "the page still names its ticket once: {job}");
+            let events = job["events"].as_array().expect("events");
+            assert_eq!(events.len(), 2);
+            for event in events {
+                assert_eq!(event.get("ticket").is_none(), compact, "{detail}: {event}");
+            }
+            assert_eq!(
+                changed["structuredContent"]["index_poll"].get("shell").is_none(),
+                compact
+            );
+            sizes.push(serde_json::to_vec(&changed).expect("result").len());
+        }
+        assert!(sizes[0] < sizes[1], "summary polls are smaller: {sizes:?}");
+    }
+
+    #[test]
     fn escaped_profile_refusals_page_losslessly_within_real_mcp_budget_and_following_read() {
         use backend_library::interface::{
             CompilerAttempt, CompilerFragmentFailure, SourceAuthority,
@@ -10046,10 +10111,13 @@ mod conditional_progress_tests {
                 reference["after_observation"],
                 arguments["after_observation"]
             );
-            assert_eq!(
-                reference["ticket"],
-                serde_json::to_value(&active).expect("exact status")["data"]["detail"]["state"]["detail"]
-                    ["ticket"]
+            assert!(
+                reference.get("ticket").is_none(),
+                "the observation the caller holds already names its ticket"
+            );
+            assert!(
+                body["index_poll"].get("shell").is_none(),
+                "a poll repeats a call the caller already made"
             );
             assert_eq!(
                 body["index_poll"]["call"]["arguments"]["wait_millis"],
@@ -10062,7 +10130,7 @@ mod conditional_progress_tests {
                 serde_json::to_vec(&unchanged)
                     .expect("complete result")
                     .len()
-                    < 2200
+                    < 1500
             );
             assert_context_bounded(&unchanged);
             server.product.surface_reply = Some(active.clone());
@@ -10721,4 +10789,52 @@ fn related_first_page_caps_delivery_without_reducing_issued_credit() {
     assert_eq!(second["isError"], false, "{second}");
     assert_eq!(second["structuredContent"]["edges"].as_array().expect("edges").len(), 8);
     assert_eq!(server.product.page_limits, vec![100, 100]);
+}
+
+#[test]
+fn large_page_cursors_are_parked_under_a_short_signed_bounded_handle() {
+    // nextCursor was 2470 of 3575 bytes at limit 1 because it carried the owner's
+    // whole portable proof.
+    let mut server = ready(Fake::default());
+    let context = b"backend.search|project|args";
+    let owner = format!("pc2-{}", "ab".repeat(1200));
+    let inline = server.sign_cursor_token(&owner, context).expect("inline cursor");
+    let token = server.issue_page_cursor(&owner, context).expect("handle cursor");
+    assert!(token.starts_with("mcp3-"), "{token}");
+    assert!(token.len() < 100 && token.len() * 20 < inline.len(), "{} vs {}", token.len(), inline.len());
+    assert_eq!(
+        server.verify_cursor_token(&token, context).expect("verify").as_deref(),
+        Some(owner.as_str())
+    );
+    // Bound to the exact call: another tool, project or argument set cannot resume it.
+    assert_eq!(server.verify_cursor_token(&token, b"backend.search|project|other").expect("verify"), None);
+    // Any edit to the token is refused.
+    let mut forged = token.clone();
+    forged.replace_range(forged.len() - 1.., if token.ends_with('0') { "1" } else { "0" });
+    assert_eq!(server.verify_cursor_token(&forged, context).expect("verify"), None);
+    // A small owner cursor stays inline and stateless.
+    assert!(server.issue_page_cursor("pc2-abcd", context).expect("small").starts_with("mcp2-"));
+
+    // Bounded: only the newest handles are kept, and an evicted one says so.
+    for index in 0..CURSOR_HANDLE_CAPACITY {
+        let other = format!("pc2-{}", format!("{index:02x}").repeat(200));
+        server.issue_page_cursor(&other, context).expect("another handle");
+    }
+    assert_eq!(server.verify_cursor_token(&token, context).expect("verify"), None, "evicted");
+    let arguments = json!({"cursor": token}).as_object().expect("arguments").clone();
+    let error = server.continuation(&arguments, context).expect_err("evicted handle is refused");
+    let detail = error.detail.clone().unwrap_or_default();
+    assert!(detail.contains("short-lived") && detail.contains("without a cursor"), "{detail}");
+
+    // Expiring: a handle past its expiry no longer resolves, even if it is still stored.
+    let fresh = server.issue_page_cursor(&owner, context).expect("fresh handle");
+    assert!(server.verify_cursor_token(&fresh, context).expect("verify").is_some());
+    server
+        .cursor_handles
+        .lock()
+        .expect("handles")
+        .entries
+        .iter_mut()
+        .for_each(|entry| entry.1 = 1);
+    assert_eq!(server.verify_cursor_token(&fresh, context).expect("verify"), None, "expired");
 }

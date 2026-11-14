@@ -91,6 +91,91 @@ impl OutlineEntry {
     }
 }
 
+/// Which declaration kinds an outline keeps: the closed names `include` lists (every kind
+/// when it is empty), minus the names `exclude` lists.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct KindFilter {
+    include: Vec<DeclarationKind>,
+    exclude: Vec<DeclarationKind>,
+}
+
+impl KindFilter {
+    /// Every closed kind name a filter accepts.
+    pub const NAMES: [&'static str; 18] = [
+        "module", "class", "function", "method", "interface", "type", "macro", "constant",
+        "field", "property", "constructor", "enum", "struct", "trait", "union", "variable",
+        "import", "variant",
+    ];
+
+    /// Parses two comma-separated kind lists.
+    ///
+    /// # Errors
+    /// Names the first spelling that is not one of [`Self::NAMES`].
+    pub fn parse(include: Option<&str>, exclude: Option<&str>) -> Result<Self, String> {
+        fn list(text: Option<&str>, option: &str) -> Result<Vec<DeclarationKind>, String> {
+            let mut kinds = Vec::new();
+            for name in text.into_iter().flat_map(|text| text.split(',')) {
+                let name = name.trim();
+                if name.is_empty() {
+                    continue;
+                }
+                if !KindFilter::NAMES.contains(&name) {
+                    return Err(format!(
+                        "{option} does not name a declaration kind: `{name}`; the kinds are {}",
+                        KindFilter::NAMES.join(", ")
+                    ));
+                }
+                let kind = DeclarationKind::from_name(name);
+                if !kinds.contains(&kind) {
+                    kinds.push(kind);
+                }
+            }
+            Ok(kinds)
+        }
+        Ok(Self {
+            include: list(include, "kind")?,
+            exclude: list(exclude, "exclude-kind")?,
+        })
+    }
+
+    /// Returns whether this filter keeps every node.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.include.is_empty() && self.exclude.is_empty()
+    }
+
+    fn keeps(&self, kind: Option<DeclarationKind>) -> bool {
+        match kind {
+            // A node whose row did not resolve has no kind to judge; it stays visible.
+            None => true,
+            Some(kind) => {
+                (self.include.is_empty() || self.include.contains(&kind))
+                    && !self.exclude.contains(&kind)
+            }
+        }
+    }
+}
+
+fn filter_entries(entries: &[OutlineEntry], filter: &KindFilter, dropped: &mut usize) -> Vec<OutlineEntry> {
+    let mut kept = Vec::new();
+    for entry in entries {
+        let children = filter_entries(&entry.children, filter, dropped);
+        if filter.keeps(entry.kind) {
+            kept.push(OutlineEntry {
+                identity: entry.identity.clone(),
+                tag: entry.tag,
+                kind: entry.kind,
+                children: children.into_boxed_slice(),
+            });
+        } else {
+            // A removed node never takes its members with it: they move up to its place.
+            *dropped = dropped.saturating_add(1);
+            kept.extend(children);
+        }
+    }
+    kept
+}
+
 /// One package outline, resolved to names.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OutlineTree {
@@ -98,6 +183,28 @@ pub struct OutlineTree {
     roots: Box<[OutlineEntry]>,
     truncation: Truncation,
     page: Option<OutlinePageState>,
+    filtered_out: usize,
+}
+
+impl OutlineTree {
+    /// Keeps only the nodes the filter admits and counts those it removed. Members of a
+    /// removed node move up to its place; the page scope and continuation are unchanged.
+    #[must_use]
+    pub fn filtered(mut self, filter: &KindFilter) -> Self {
+        if filter.is_empty() {
+            return self;
+        }
+        let mut dropped = 0_usize;
+        self.roots = filter_entries(&self.roots, filter, &mut dropped).into_boxed_slice();
+        self.filtered_out = self.filtered_out.saturating_add(dropped);
+        self
+    }
+
+    /// Returns how many nodes a kind filter removed from this page.
+    #[must_use]
+    pub const fn filtered_out(&self) -> usize {
+        self.filtered_out
+    }
 }
 
 impl OutlineTree {
@@ -112,6 +219,7 @@ impl OutlineTree {
             package,
             roots: roots.into(),
             page: None,
+            filtered_out: 0,
             truncation: match extent {
                 OutlineExtent::Complete => Truncation::Complete,
                 OutlineExtent::Truncated => Truncation::Truncated,
@@ -646,4 +754,88 @@ mod page_scope_tests {
         assert_eq!(flatten(&legacy), prefix, "default bounded tree uses the same preorder prefix");
     }
 
+}
+
+#[cfg(test)]
+mod kind_filter_tests {
+    use super::*;
+    use backend_library::OutlineExtent;
+
+    fn entry(name: &str, kind: DeclarationKind, children: Vec<OutlineEntry>) -> OutlineEntry {
+        let label = format!("/workspace/ts::api.ts:1::{name}");
+        OutlineEntry {
+            identity: Some(Identity::parse(&label)),
+            tag: KeyTag::from_key(&[kind as u8; 32]),
+            kind: Some(kind),
+            children: children.into_boxed_slice(),
+        }
+    }
+
+    fn tree() -> OutlineTree {
+        // class ApiError { constructor(status, message) ; field status }
+        let constructor = entry(
+            "constructor",
+            DeclarationKind::Constructor,
+            vec![
+                entry("status", DeclarationKind::Variable, vec![]),
+                entry("message", DeclarationKind::Variable, vec![]),
+            ],
+        );
+        let class = entry(
+            "ApiError",
+            DeclarationKind::Class,
+            vec![constructor, entry("status", DeclarationKind::Field, vec![])],
+        );
+        OutlineTree::new(
+            Identity::parse("/workspace/ts"),
+            vec![class, entry("Page", DeclarationKind::Function, vec![])],
+            OutlineExtent::Complete,
+        )
+    }
+
+    fn names(entries: &[OutlineEntry]) -> Vec<String> {
+        entries
+            .iter()
+            .flat_map(|e| {
+                let mut out = vec![format!("{}:{}", e.name(), e.kind().map_or("?", |k| k.name()))];
+                out.extend(names(e.children()).into_iter().map(|n| format!("  {n}")));
+                out
+            })
+            .collect()
+    }
+
+    #[test]
+    fn excluding_variables_removes_constructor_parameters_and_counts_them() {
+        // A constructor's parameters were listed as outline children.
+        let before = tree();
+        assert_eq!(before.count(), 6);
+        let filter = KindFilter::parse(None, Some("variable")).expect("closed kind");
+        let after = tree().filtered(&filter);
+        assert_eq!(after.count(), 4, "{:?}", names(after.roots()));
+        assert_eq!(after.filtered_out(), 2);
+        assert!(!names(after.roots()).iter().any(|n| n.ends_with(":variable")));
+    }
+
+    #[test]
+    fn an_include_list_keeps_only_those_kinds_and_promotes_members_of_removed_nodes() {
+        let filter = KindFilter::parse(Some("field, function"), None).expect("closed kinds");
+        let after = tree().filtered(&filter);
+        // The class and constructor and both parameters are gone; the field moves up to the root.
+        assert_eq!(
+            names(after.roots()),
+            ["status:field", "Page:function"],
+            "{:?}",
+            names(after.roots())
+        );
+        assert_eq!(after.filtered_out(), 4);
+    }
+
+    #[test]
+    fn an_empty_filter_changes_nothing_and_an_unknown_kind_is_refused_with_the_closed_list() {
+        assert!(KindFilter::parse(None, None).expect("empty").is_empty());
+        let same = tree().filtered(&KindFilter::default());
+        assert_eq!(same, tree());
+        let error = KindFilter::parse(Some("klass"), None).expect_err("not a kind");
+        assert!(error.contains("`klass`") && error.contains("variable"), "{error}");
+    }
 }

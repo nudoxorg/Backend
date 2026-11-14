@@ -426,17 +426,27 @@ pub(crate) fn execute_with_output_admission(
         return result.and_then(|answer| restored.map(|()| answer));
     }
     let outline = match request {
-        Request::Outline(path) => Some((path.as_str(), backend_library::QueryLimit::MAX, None)),
-        Request::OutlinePage { path, limit } => Some((path.as_str(), *limit, None)),
+        Request::Outline(path) => Some((
+            path.as_str(),
+            backend_library::QueryLimit::MAX,
+            None,
+            backend_present::KindFilter::default(),
+        )),
+        Request::OutlinePage { path, limit, kinds } => {
+            Some((path.as_str(), *limit, None, kinds.clone()))
+        }
         Request::ResumeQuery { query, cursor } => match query.as_ref() {
-            Request::OutlinePage { path, limit } => {
-                Some((path.as_str(), *limit, Some(cursor.as_str())))
-            }
+            Request::OutlinePage { path, limit, kinds } => Some((
+                path.as_str(),
+                *limit,
+                Some(cursor.as_str()),
+                kinds.clone(),
+            )),
             _ => None,
         },
         _ => None,
     };
-    if let Some((path, issued, cursor)) = outline {
+    if let Some((path, issued, cursor, kinds)) = outline {
         let original = engine.session.request_context().cloned();
         let lifetime = original.clone().unwrap_or_default();
         lifetime
@@ -455,6 +465,7 @@ pub(crate) fn execute_with_output_admission(
             path,
             issued,
             cursor,
+            &kinds,
             || {
                 lifetime.check().map_err(|error| {
                     Fault::from_client_error(
@@ -628,6 +639,7 @@ fn outline_with_output_admission<E: Engine>(
     path: &str,
     issued: u16,
     cursor: Option<&str>,
+    kinds: &backend_present::KindFilter,
     mut check: impl FnMut() -> Result<(), Fault>,
     mut admit: impl FnMut(&mut E, &Answer) -> Result<(), Fault>,
 ) -> Result<Answer, Fault> {
@@ -651,6 +663,7 @@ fn outline_with_output_admission<E: Engine>(
     let request = Request::OutlinePage {
         path: path.to_owned(),
         limit: issued,
+        kinds: kinds.clone(),
     };
     let probe = Probe::OutlinePage {
         path,

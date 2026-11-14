@@ -153,7 +153,7 @@ pub use identity::{
 };
 pub use language::Language;
 pub use mcp_invocation::{MCP_REGISTERED_CALL_TOOL, McpExecutableCall, McpExposure, McpInvocation};
-pub use outline::{OutlineEntry, OutlineTree, row_resolver};
+pub use outline::{KindFilter, OutlineEntry, OutlineTree, row_resolver};
 pub use package_graph::{PackageGraphPageSelection, package_graph_json_alternative};
 pub use page::{
     Member, MemberGroup, Page, Prose, Relation, RelationGroup, Source, SourceLine, SourceSite,
@@ -174,7 +174,7 @@ pub use render::{
     text,
 };
 pub use sections::{LineRole, SectionKind, SectionReader};
-pub use shelf::{LanguageCount, Readiness, RowCount, Shelf, ShelfEntry};
+pub use shelf::{LanguageCount, ProfileFiles, ProfileSemantic, Readiness, RowCount, Shelf, ShelfEntry};
 pub use signature::{Resolved, Signature, Target, Token, TokenKind};
 pub use source_membership::PackageSourceMembershipSelection;
 pub use status::{

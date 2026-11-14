@@ -829,6 +829,8 @@ pub(super) struct Server<P> {
     protocol: &'static str,
     opener: Option<TreeOpener>,
     cursor_secret: CursorAuthority,
+    /// Short-lived server-side bodies of the large page cursors this process issued.
+    cursor_handles: std::sync::Mutex<CursorHandles>,
     request_context: Option<RequestContext>,
     /// Records each tool call against the signed-in account. `None` when this
     /// build does not require an account; `Err` when the account directory
@@ -871,6 +873,7 @@ impl<P: Product> Server<P> {
             protocol: MCP_PROTOCOL_VERSION,
             opener: None,
             cursor_secret: cursor_secret.into(),
+            cursor_handles: std::sync::Mutex::new(CursorHandles::default()),
             request_context: None,
             account: backend_account::required().then(|| {
                 backend_account::ToolCallMeter::open().map_err(|error| error.to_string())
@@ -1427,13 +1430,23 @@ impl<P: Product> Server<P> {
                     backend_present::Operand::Whole,
                 ))
             })?;
-        no_extra(arguments, &["path", "limit", "cursor", "detail"])?;
+        no_extra(
+            arguments,
+            &["path", "limit", "cursor", "detail", "kind", "exclude_kind"],
+        )?;
+        let kinds = backend_present::KindFilter::parse(
+            arguments.get("kind").and_then(Value::as_str),
+            arguments.get("exclude_kind").and_then(Value::as_str),
+        )
+        .map_err(RpcError::invalid)?;
         let grammar = backend_present::grammar_for_tool("backend.outline")
             .ok_or_else(|| RpcError::new(-32602, "Unknown tool"))?;
         let mut command = arguments.clone();
         command.remove("detail");
         command.remove("limit");
         command.remove("cursor");
+        command.remove("kind");
+        command.remove("exclude_kind");
         validate_registry_arguments(grammar, &command)
             .map_err(|fault| RpcError::from_fault(&fault))?;
         let planned_invocation = Invocation::from_json(grammar, &command)
@@ -1485,7 +1498,11 @@ impl<P: Product> Server<P> {
             if outline_owner_token.is_none() {
                 self.reimport_catalog_cursor(&page_arguments, detail, invocation, continuation)?;
             }
-            let selected = Request::OutlinePage { path: path.clone(), limit: effective };
+            let selected = Request::OutlinePage {
+                path: path.clone(),
+                limit: effective,
+                kinds: kinds.clone(),
+            };
             let probe = Probe::OutlinePage { path: &path, limit: effective };
             let window = record_pages::query_window(effective, delivery)?;
             let reply = if let Some(token) = outline_owner_token.as_deref() {
@@ -1538,8 +1555,13 @@ impl<P: Product> Server<P> {
                     .get("structuredContent")
                     .is_some_and(|value| value.get("nextCursor").is_some())
             {
-                let next_arguments =
+                let mut next_arguments =
                     json!({"path":path, "limit":effective, "detail":detail.name()});
+                for key in ["kind", "exclude_kind"] {
+                    if let Some(value) = arguments.get(key) {
+                        next_arguments[key] = value.clone();
+                    }
+                }
                 if let Some(text) = result
                     .get_mut("content")
                     .and_then(Value::as_array_mut)
@@ -2251,6 +2273,7 @@ impl<P: Product> Server<P> {
             context,
             exposure,
             compact_receipt,
+            false,
         )
     }
 
@@ -2264,6 +2287,7 @@ impl<P: Product> Server<P> {
         context: &[u8],
         exposure: McpExposure,
         compact_receipt: bool,
+        conditional_poll: bool,
     ) -> Result<Value, RpcError> {
         let mut reply = std::borrow::Cow::Borrowed(reply);
         let mut profile_progress = profile_progress;
@@ -2313,6 +2337,14 @@ impl<P: Product> Server<P> {
             let next_cursor = view.index_search_page().and_then(|page| page.next_cursor());
             let mut index_poll = backend_present::IndexPollDto::for_detail(&view, detail);
             preserve_compact_receipt_in_poll(index_poll.as_mut(), command, compact_receipt);
+            // A summary-detail poll of a durable operation repeats a call the caller already made:
+            // `index_poll.call` is the whole next step, so the CLI line is left to the first reply.
+            let compact_events = conditional_poll
+                && detail == Detail::Summary
+                && matches!(command, SurfaceCommand::IndexOperationStatus { .. });
+            if compact_events && let Some(poll) = index_poll.as_mut() {
+                poll.shell = None;
+            }
             let payload = match encode_serializable(
                 "surface",
                 detail,
@@ -2327,6 +2359,7 @@ impl<P: Product> Server<P> {
                         next_cursor,
                         index_job: view.index_job(),
                         compact_receipt,
+                        compact_events,
                     },
                 },
                 DEFAULT_RESPONSE_BUDGET_BYTES,
@@ -2415,9 +2448,17 @@ impl<P: Product> Server<P> {
             .filter(|token| !token.is_empty())
             .ok_or_else(|| RpcError::invalid("cursor must be a non-empty opaque string"))?;
         let owner_token = self.verify_cursor_token(token, context)?.ok_or_else(|| {
-            RpcError::invalid(
-                "cursor is unknown, expired, or belongs to another workspace authority",
-            )
+            if token.starts_with("mcp3-") {
+                RpcError::invalid(
+                    "this cursor was a short-lived server-side handle and it is gone: handles last 15 minutes, \
+                     live only in this MCP server process (a restart drops them), and only the 64 newest are \
+                     kept; repeat the original call without a cursor to start a fresh page chain",
+                )
+            } else {
+                RpcError::invalid(
+                    "cursor is unknown, expired, or belongs to another workspace authority",
+                )
+            }
         })?;
         self.product
             .decode_continuation(&owner_token)
@@ -2476,15 +2517,21 @@ impl<P: Product> Server<P> {
         context: &[u8],
     ) -> Result<String, RpcError> {
         let owner_token = match cursor {
-            ContinuationCursor::Page(continuation) => self
-                .product
-                .encode_continuation(continuation)
-                .map_err(|error| {
-                    RpcError::from_fault(&Fault::from_client_error(
-                        &error,
-                        backend_present::Operand::Text(self.project.clone()),
-                    ))
-                })?,
+            ContinuationCursor::Page(continuation) => {
+                let token = self
+                    .product
+                    .encode_continuation(continuation)
+                    .map_err(|error| {
+                        RpcError::from_fault(&Fault::from_client_error(
+                            &error,
+                            backend_present::Operand::Text(self.project.clone()),
+                        ))
+                    })?;
+                // A page cursor carries the owner's whole portable proof, thousands of
+                // bytes that a caller re-reads on every page. Large ones are kept here
+                // under a short signed handle instead.
+                return self.issue_page_cursor(&token, context);
+            }
             ContinuationCursor::IndexSearch(cursor) => cursor.as_str().to_owned(),
             // This cursor is already authenticated by the durable native owner
             // and binds exact roots/package/key/limit, including after restart.
@@ -2692,6 +2739,93 @@ impl<P: Product> Server<P> {
         Ok(tool_result(&text, structured, false))
     }
 
+    /// Signs `owner_token` directly when it is small, and otherwise parks it in this
+    /// process under a signed handle: `mcp3-<expiry>-<handle>-<mac>`. The handle table is
+    /// bounded ([`CURSOR_HANDLE_CAPACITY`] newest entries) and expiring
+    /// ([`CURSOR_HANDLE_TTL_SECONDS`]); the MAC binds the handle to the exact call context,
+    /// so a handle cannot resume another tool, project or argument set. A handle that was
+    /// evicted, expired, or issued by another process no longer resolves, and the caller is
+    /// told so plainly instead of being given a stale page.
+    fn issue_page_cursor(&self, owner_token: &str, context: &[u8]) -> Result<String, RpcError> {
+        if owner_token.len() <= CURSOR_HANDLE_THRESHOLD_BYTES {
+            return self.sign_cursor_token(owner_token, context);
+        }
+        if !valid_direct_cursor_owner(owner_token) {
+            return Err(RpcError::invalid(
+                "owner cursor has an unsupported encoding or exceeds its bound",
+            ));
+        }
+        let now = unix_seconds();
+        let expiry = now.saturating_add(CURSOR_HANDLE_TTL_SECONDS);
+        let key = self.cursor_secret.key()?;
+        let mut table = self
+            .cursor_handles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        table.purge(now);
+        table.counter = table.counter.wrapping_add(1);
+        let mut hasher = blake3::Hasher::new_keyed(&key);
+        hasher.update(b"mcp3-handle\0");
+        hasher.update(&table.counter.to_be_bytes());
+        hasher.update(&expiry.to_be_bytes());
+        hasher.update(owner_token.as_bytes());
+        let handle = hex_bytes(&hasher.finalize().as_bytes()[..16]);
+        table.insert(handle.clone(), expiry, owner_token.to_owned());
+        drop(table);
+        let body = format!("mcp3-{expiry}-{handle}");
+        let mac = Self::cursor_mac(&key, &body, context);
+        Ok(format!("{body}-{}", hex_bytes(&mac.as_bytes()[..16])))
+    }
+
+    fn verify_handle_cursor_token(
+        &self,
+        token: &str,
+        context: &[u8],
+    ) -> Result<Option<String>, RpcError> {
+        if token.len() > 96 {
+            return Ok(None);
+        }
+        let Some((body, encoded_mac)) = token.rsplit_once('-') else {
+            return Ok(None);
+        };
+        let Some((expiry_text, handle)) = body
+            .strip_prefix("mcp3-")
+            .and_then(|body| body.split_once('-'))
+        else {
+            return Ok(None);
+        };
+        let is_hex = |text: &str, length: usize| {
+            text.len() == length
+                && text
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        };
+        let now = unix_seconds();
+        let Some(expiry) = expiry_text.parse::<u64>().ok() else {
+            return Ok(None);
+        };
+        if expiry <= now
+            || expiry.to_string() != expiry_text
+            || !is_hex(handle, 32)
+            || !is_hex(encoded_mac, 32)
+        {
+            return Ok(None);
+        }
+        let Some(key) = self.cursor_secret.verification_key()? else {
+            return Ok(None);
+        };
+        let expected = Self::cursor_mac(&key, body, context);
+        if encoded_mac != hex_bytes(&expected.as_bytes()[..16]) {
+            return Ok(None);
+        }
+        let mut table = self
+            .cursor_handles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        table.purge(now);
+        Ok(table.get(handle, expiry))
+    }
+
     fn sign_cursor_token(&self, owner_token: &str, context: &[u8]) -> Result<String, RpcError> {
         self.sign_cursor_token_at(unix_seconds().saturating_add(900), owner_token, context)
     }
@@ -2717,6 +2851,9 @@ impl<P: Product> Server<P> {
     }
 
     fn verify_cursor_token(&self, token: &str, context: &[u8]) -> Result<Option<String>, RpcError> {
+        if token.starts_with("mcp3-") {
+            return self.verify_handle_cursor_token(token, context);
+        }
         if token.starts_with("mcp2-") {
             return self.verify_direct_cursor_token(token, context);
         }
@@ -3115,6 +3252,40 @@ fn decode_cursor_owner(encoded: &str) -> Option<String> {
 
 /// Encoding admission only: the owner still checks the retained proof,
 /// selected roots, query roles and index state after wrapper authentication.
+/// Owner cursors up to this size are signed inline; larger ones are parked in the server.
+const CURSOR_HANDLE_THRESHOLD_BYTES: usize = 256;
+/// Newest handles one server process keeps; older ones are dropped and report as gone.
+const CURSOR_HANDLE_CAPACITY: usize = 64;
+/// Seconds a handle stays valid, matching the inline cursor lifetime.
+const CURSOR_HANDLE_TTL_SECONDS: u64 = 900;
+
+/// Bounded, expiring owner cursors held for signed handles.
+#[derive(Default)]
+struct CursorHandles {
+    counter: u64,
+    entries: std::collections::VecDeque<(String, u64, String)>,
+}
+
+impl CursorHandles {
+    fn purge(&mut self, now: u64) {
+        self.entries.retain(|(_, expiry, _)| *expiry > now);
+    }
+
+    fn insert(&mut self, handle: String, expiry: u64, owner: String) {
+        while self.entries.len() >= CURSOR_HANDLE_CAPACITY {
+            self.entries.pop_front();
+        }
+        self.entries.push_back((handle, expiry, owner));
+    }
+
+    fn get(&self, handle: &str, expiry: u64) -> Option<String> {
+        self.entries
+            .iter()
+            .find(|(candidate, at, _)| candidate == handle && *at == expiry)
+            .map(|(_, _, owner)| owner.clone())
+    }
+}
+
 fn valid_direct_cursor_owner(owner: &str) -> bool {
     if let Some(encoded) = owner.strip_prefix("re1-") {
         return encoded.len() <= backend_library::MAX_INDEX_SEARCH_CURSOR_BYTES.saturating_sub(4)
@@ -4227,6 +4398,8 @@ struct SurfaceProjection<'a> {
     next_cursor: Option<&'a str>,
     index_job: Option<&'a backend_present::IndexJobProjection>,
     compact_receipt: bool,
+    /// Summary-detail operation poll: progress events leave out the ticket their job already names.
+    compact_events: bool,
 }
 
 fn preserve_compact_receipt_in_poll(
@@ -4321,8 +4494,35 @@ impl SurfaceProjection<'_> {
         } else {
             map.serialize_entry("data", data)?;
         }
-        map.serialize_entry("index_job", index_job)?;
+        if self.compact_events {
+            let mut value = serde_json::to_value(index_job).map_err(serde::ser::Error::custom)?;
+            dedupe_event_tickets(&mut value);
+            map.serialize_entry("index_job", &value)?;
+        } else {
+            map.serialize_entry("index_job", index_job)?;
+        }
         map.end()
+    }
+}
+
+/// Every progress event repeats the full job ticket (an owner epoch array and the package
+/// path). When it equals the page's own ticket, the page names it once and the event omits it.
+fn dedupe_event_tickets(job: &mut Value) {
+    let Some(detail) = job.pointer_mut("/value/detail") else {
+        return;
+    };
+    let Some(ticket) = detail.get("ticket").cloned() else {
+        return;
+    };
+    let Some(events) = detail.get_mut("events").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for event in events {
+        if let Some(object) = event.as_object_mut()
+            && object.get("ticket") == Some(&ticket)
+        {
+            object.remove("ticket");
+        }
     }
 }
 

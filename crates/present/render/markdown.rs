@@ -715,6 +715,9 @@ fn records_with_cursor(
 ) -> String {
     let mut lines = Lines::new();
     lines.push(coverage(list.coverage()));
+    if list.hidden_non_declarations() > 0 {
+        lines.push(format!("{} import/external row(s) on this page left out by declarations_only", list.hidden_non_declarations()));
+    }
     if let Some(gap) = list.graph_gap() {
         lines.push(format!("graph relations incomplete: {gap}"));
     }
@@ -807,6 +810,9 @@ pub fn shelf(shelf: &Shelf) -> String {
                 language.declarations().get()
             );
         }
+        for profile in entry.profiles() {
+            let _ = write!(head, " · {}", profile.phrase());
+        }
         lines.push(head);
         lines.push(format!("`{}`", entry.identity().coordinate()));
         if let Some(reason) = entry.readiness().fault() {
@@ -848,6 +854,9 @@ pub fn outline(tree: &OutlineTree) -> String {
     if tree.unresolved() > 0 {
         let _ = write!(summary, " · {} unnamed", tree.unresolved());
     }
+    if tree.filtered_out() > 0 {
+        let _ = write!(summary, " · {} left out by the kind filter", tree.filtered_out());
+    }
     lines.push(summary);
     if let Some(page) = tree.page().filter(|page| page.continuation.is_some()) {
         lines.push(format!("More declarations remain beyond this bounded prefix. Continue outline with --limit {} and the next cursor.", page.limit));
@@ -881,7 +890,7 @@ fn push_outline_entry(
 pub fn status(status: &Status) -> String {
     let mut lines = Lines::new();
     lines.push(format!(
-        "owner {} · publication {} · lanes {} · {} row(s) · revision {} · source {} · sequence {}",
+        "owner {} · publication {} · lanes {} · {} row(s) · revision {} · store layout {} · sequence {}",
         status.availability(),
         status.publication_state().name(),
         status.readiness(),

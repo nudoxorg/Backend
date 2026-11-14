@@ -229,6 +229,8 @@ pub struct RecordList {
     related_edges: Vec<RelatedEdge>,
     related_continuation: Option<String>,
     related_withheld: bool,
+    /// Import and external rows removed from this page by `declarations_only`.
+    hidden_non_declarations: usize,
 }
 
 impl RecordList {
@@ -255,6 +257,7 @@ impl RecordList {
             related_edges: Vec::new(),
             related_continuation: None,
             related_withheld: false,
+            hidden_non_declarations: 0,
         }
     }
 
@@ -405,6 +408,26 @@ impl RecordList {
             self.records = candidates.into_boxed_slice();
         }
         self
+    }
+
+    /// Drops the import and external rows of this page, keeping only real declarations,
+    /// and counts what was dropped so no result is silently lost. Unlike
+    /// [`Self::resolution_view`], nothing is kept to answer a name that exists only as an
+    /// import: the caller asked for declarations alone.
+    #[must_use]
+    pub fn declarations_only_view(mut self) -> Self {
+        let (kept, dropped): (Vec<_>, Vec<_>) = self.records.iter().cloned().partition(|record| {
+            record.kind() != Some(DeclarationKind::Import) && !record.is_external_reference()
+        });
+        self.hidden_non_declarations = self.hidden_non_declarations.saturating_add(dropped.len());
+        self.records = kept.into_boxed_slice();
+        self
+    }
+
+    /// Returns how many import and external rows `declarations_only` removed from this page.
+    #[must_use]
+    pub const fn hidden_non_declarations(&self) -> usize {
+        self.hidden_non_declarations
     }
 
     /// Marks that the owner holds another page after this one.

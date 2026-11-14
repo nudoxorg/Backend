@@ -718,6 +718,26 @@ const SELECTED_SYMBOL: ArgumentSpec = ArgumentSpec::optional_with_json_name(
     "Full selected row ID from identity.semantic_data: CLI takes 64 hex digits; MCP takes the exact selected-symbol-id object. Optional coordinate asserts the selected row label. Requires current-view membership.",
 );
 
+const DECLARATIONS_ONLY: ArgumentSpec = ArgumentSpec::optional_with_json_name(
+    "declarations-only",
+    "declarations_only",
+    ArgumentKind::Flag,
+    "Leave out import and external rows, so only real declarations come back. The page reports how many it removed (hidden_non_declarations).",
+);
+
+const KIND: ArgumentSpec = ArgumentSpec::optional(
+    "kind",
+    ArgumentKind::Text,
+    "Keep only these declaration kinds, comma-separated (module, class, function, method, interface, type, macro, constant, field, property, constructor, enum, struct, trait, union, variable, import, variant). Members of a removed node move up to its place.",
+);
+
+const EXCLUDE_KIND: ArgumentSpec = ArgumentSpec::optional_with_json_name(
+    "exclude-kind",
+    "exclude_kind",
+    ArgumentKind::Text,
+    "Leave out these declaration kinds, comma-separated; `variable` removes constructor parameters and locals. The page reports how many nodes it removed (filtered_out).",
+);
+
 const LIMIT: ArgumentSpec = ArgumentSpec::optional(
     "limit",
     ArgumentKind::Limit,
@@ -892,7 +912,7 @@ pub const GRAMMARS: [CommandGrammar; 64] = [
             ArgumentKind::ProjectPath,
             "Project directory; defaults to the active project.",
         )],
-        options: &[LIMIT, CURSOR],
+        options: &[LIMIT, CURSOR, KIND, EXCLUDE_KIND],
         when: "Use to learn a package's shape before searching it, when you do not yet know what to search for.",
     },
     CommandGrammar {
@@ -916,7 +936,7 @@ pub const GRAMMARS: [CommandGrammar; 64] = [
             ArgumentKind::Text,
             "Text to find in names, signatures, and documentation.",
         )],
-        options: &[LIMIT, CURSOR],
+        options: &[LIMIT, CURSOR, DECLARATIONS_ONLY],
         when: "Search indexed declarations by name, signature, and documentation, then open a coordinate. Start with a distinctive name or term. Natural-language similarity depends on semantic search being available; check the returned semantic_search status. When search_scope is published_names_only, only published names are searched while full search prepares. For CSS classes and custom properties, use stylo-query or backend.stylo_query with the indexed package; for SQL objects and analysis gaps, use sql-query or backend.sql_query; to see what a CSS change affects, use impact or backend.impact. Reported score is a descending order key (u32::MAX - rank, zero-based), not a relevance probability; compare it only within the same query/revision.",
     },
     CommandGrammar {
