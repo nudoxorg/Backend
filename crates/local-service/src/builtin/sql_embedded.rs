@@ -703,8 +703,40 @@ impl<'a> Scanner<'a> {
     }
 }
 
-fn line_of(source: &[u8], offset: usize) -> u32 {
-    u32::try_from(source[..offset.min(source.len())].iter().filter(|b| **b == b'\n').count() + 1).unwrap_or(u32::MAX)
+/// Byte offsets at which each line of `source` starts.
+fn line_starts_of(source: &[u8]) -> Vec<usize> {
+    std::iter::once(0)
+        .chain(source.iter().enumerate().filter(|(_, byte)| **byte == b'\n').map(|(at, _)| at + 1))
+        .collect()
+}
+
+/// One-based line of `offset`, given the file's [`line_starts_of`].
+fn line_of(line_starts: &[usize], offset: usize) -> u32 {
+    u32::try_from(line_starts.partition_point(|start| *start <= offset)).unwrap_or(u32::MAX)
+}
+
+/// Whether some word of `source` is a known query call name, in any letter
+/// case, followed by `(` (or `<` for a TypeScript generic). The scan proper
+/// decides what is a call; this only has to be cheap and never miss one.
+fn names_a_call(source: &[u8]) -> bool {
+    let is_part = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$' || byte >= 0x80;
+    let mut at = 0usize;
+    while at < source.len() {
+        if !is_part(source[at]) {
+            at += 1;
+            continue;
+        }
+        let end = at + source[at..].iter().take_while(|byte| is_part(**byte)).count();
+        let word = &source[at..end];
+        if CALLS.iter().any(|call| call.as_bytes().eq_ignore_ascii_case(word)) {
+            let next = source[end..].iter().find(|byte| !byte.is_ascii_whitespace());
+            if matches!(next, Some(b'(' | b'<')) {
+                return true;
+            }
+        }
+        at = end;
+    }
+    false
 }
 
 fn dialect_hint(text: &str) -> Option<SqlDialect> {
@@ -764,8 +796,7 @@ pub(super) fn scan(path: &str, source: &[u8]) -> Option<Scan> {
     }
     let text = std::str::from_utf8(source).ok()?;
     // A cheap exit for the overwhelmingly common file with no SQL in it.
-    let lower = text.to_ascii_lowercase();
-    if !LEADING_KEYWORDS.iter().any(|keyword| lower.contains(keyword)) {
+    if !names_a_call(source) {
         return None;
     }
     let tokens = Lexer::new(text, language).run();
@@ -773,6 +804,7 @@ pub(super) fn scan(path: &str, source: &[u8]) -> Option<Scan> {
     let mut composed = Vec::new();
     let mut fragments = Vec::new();
     let mut dropped = 0usize;
+    let mut line_starts: Option<Vec<usize>> = None;
     let mut index = 0usize;
     while index < scanner.tokens.len() {
         let is_call = scanner.punct(index) == Some(b'.')
@@ -872,7 +904,7 @@ pub(super) fn scan(path: &str, source: &[u8]) -> Option<Scan> {
         fragments.push(Fragment {
             start,
             end,
-            line: line_of(source, start),
+            line: line_of(line_starts.get_or_insert_with(|| line_starts_of(source)), start),
             dynamic: operands.dynamic,
             text_start,
             text_end,
@@ -920,6 +952,26 @@ await pool.query({ text: 'DELETE FROM orders WHERE id = $1', values: [1] });
         assert_eq!(scan.dialect, Some(SqlDialect::Sqlite));
         assert_eq!(&source[scan.fragments[0].start..scan.fragments[0].end], "'SELECT email, balance FROM accounts WHERE id = ?'");
         assert_eq!(scan.fragments[0].line, 4);
+    }
+
+    #[test]
+    fn the_cheap_exit_needs_a_call_name_and_an_open_parenthesis() {
+        assert!(names_a_call(b"db.Query (sql)"));
+        assert!(names_a_call(b"client.query<Row>(sql)"));
+        assert!(names_a_call(b"cur.EXECUTE\n(sql)"));
+        assert!(!names_a_call(b"const selectQuery = 'select 1';"));
+        assert!(!names_a_call(b"db.querying(x); db.get = 1; dbquery(x)"));
+        assert!(!names_a_call(b""));
+        assert!(scan("a.ts", b"const select = 1; foo(select);").is_none());
+    }
+
+    #[test]
+    fn lines_are_numbered_from_one_at_each_line_start() {
+        let source = b"a\n\nbc\nd";
+        let starts = line_starts_of(source);
+        let lines: Vec<u32> = (0..=source.len()).map(|offset| line_of(&starts, offset)).collect();
+        assert_eq!(lines, vec![1, 1, 2, 3, 3, 3, 4, 4]);
+        assert_eq!(line_of(&starts, 99), 4);
     }
 
     #[test]
