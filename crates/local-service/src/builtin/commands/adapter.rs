@@ -5822,7 +5822,14 @@ impl CommandAdapter {
         let root = admitted_project_source_root(package, &project.label, workspace).ok_or_else(unavailable)?;
         let Some(evidence) = view_build::admitted_native_evidence(
             &sources, &snapshot, &self.compiler, package, row.id, &mut self.generations,
-        ).map_err(|_| unavailable())? else { return Err(unavailable()) };
+        ).map_err(|_| unavailable())? else {
+            // A SQL declaration beside a native TypeScript publication has no
+            // native evidence by nature; its freshness is the SQL file's own.
+            if view_build::sql_row_host(&snapshot, &project.label, package, row.id).ok().flatten().is_some() {
+                return Ok(None);
+            }
+            return Err(unavailable());
+        };
         let authority = self.semantic_authority.product_statement_authority().map_err(|_| unavailable())?;
         let qualification = issue_observed_native_source_policy(
             &snapshot, selection, &evidence, &root, authority, source_budget,
