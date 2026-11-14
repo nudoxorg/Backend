@@ -2577,7 +2577,8 @@ mod declaration_resolution_controls {
     }
     #[test]
     fn declarations_only_search_leaves_out_imports_and_externals_and_counts_them() {
-        // Imports and externals came back from search with no way to leave them out.
+        // A declarations-only search leaves imports and externals out, and the
+        // reply counts what it left out.
         let rows = [
             ("api.ts:3::request", DeclarationKind::Function),
             ("page.tsx:1::request", DeclarationKind::Import),

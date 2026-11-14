@@ -636,8 +636,8 @@ mod tests {
 
     #[test]
     fn identity_fields_are_hex_so_a_claim_is_a_fraction_of_its_integer_array_size() {
-        // Each references row carried about 3.2 KB of source_policy, nearly all of it
-        // 32-integer arrays.
+        // Identity fields encode as hex strings, not 32-integer arrays, so the
+        // source policy a references row carries stays small.
         let (statement, _) = claim();
         let seal = crate::seal_native_owner_statement(&[7; 32], &statement).expect("seal");
         let qualification = SourcePolicyQualification::CapturedObserved {
@@ -655,7 +655,7 @@ mod tests {
         }
         assert!(encoded["data"]["seal"].as_str().is_some_and(|text| text.len() == 64));
         let bytes = serde_json::to_vec(&encoded).expect("bytes").len();
-        // The same claim as integer arrays was 3213 bytes in a real references row.
+        // Integer arrays would encode the same claim in more than 3 KB.
         assert!(bytes < 1900, "{bytes} bytes");
         let reopened: SourcePolicyQualification = serde_json::from_value(encoded).expect("hex decodes");
         assert_eq!(reopened, qualification);

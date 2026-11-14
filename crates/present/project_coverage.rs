@@ -648,8 +648,8 @@ mod tests {
     #[test]
     fn a_sole_mixed_language_project_names_its_languages_and_their_semantic_state()
     -> Result<(), Box<dyn std::error::Error>> {
-        // `packages` showed no languages and a null declaration count for a
-        // C# plus TypeScript project, because only package rows reach the shelf.
+        // `packages` reports the languages and the declaration count of a C# plus
+        // TypeScript project even though only package rows reach the shelf.
         use backend_semantic::vocabulary::CSharpVersion;
         let revision = revision(&[ASP], 61)?;
         let snapshot = snapshot(&revision)?;

@@ -828,7 +828,8 @@ mod kind_filter_tests {
 
     #[test]
     fn excluding_variables_removes_constructor_parameters_and_counts_them() {
-        // A constructor's parameters were listed as outline children.
+        // Constructor parameters are outline children of kind variable, so the
+        // filter removes them and counts them.
         let before = tree();
         assert_eq!(before.count(), 6);
         let filter = KindFilter::parse(None, Some("variable")).expect("closed kind");
