@@ -3701,6 +3701,14 @@ impl ResolvedCSharpProject {
     }
 }
 
+/// A selected C# source that Roslyn reported errors in, so no image was
+/// staged for it and the invocation claim does not list it.
+struct UnpublishedCSharpSource<'a> {
+    path: &'a str,
+    byte_len: usize,
+    fact: backend_version::ContentId<backend_version::SourceFactDomain>,
+}
+
 /// Private pre-compiler custody minted only from an owned same-scan plan and
 /// the selected durable source snapshot. It is not itself a unit fence.
 pub(in crate::builtin) struct CapturedCSharpUnitAdmission {
@@ -3773,25 +3781,56 @@ impl CapturedCSharpUnitAdmission {
         let Some(bytes) = staged.csharp_invocation_evidence_object(input) else { return false; };
         if self.cancellation.load(Ordering::Acquire) { return false; }
         let Some(claim) = backend_engine::application::decode_csharp_evidence(&bytes) else { return false; };
-        self.matches_invocation_claim(&claim, input)
+        // Only files Roslyn reported errors in may be absent from the claim.
+        let Some(gaps) = staged.coverage_gaps().iter().map(|gap| {
+            (gap.cause() == backend_engine::application::PackageSourceCoverageGapCause::CSharpSourceDoesNotCompile)
+                .then(|| UnpublishedCSharpSource {
+                    path: gap.relative_path(),
+                    byte_len: gap.source().byte_len as usize,
+                    fact: gap.source().identity,
+                })
+        }).collect::<Option<Vec<_>>>() else { return false; };
+        self.matches_invocation_claim_with_gaps(&claim, input, &gaps)
     }
 
     fn matches_invocation_claim(&self, claim: &backend_engine::application::CSharpEvidenceClaim<'_>, input: [u8; 32]) -> bool {
+        self.matches_invocation_claim_with_gaps(claim, input, &[])
+    }
+
+    /// The claim lists the sources that compiled. Every other selected source
+    /// must be one of `gaps`, with the exact selected bytes; nothing else may
+    /// be absent and nothing may be both claimed and absent.
+    fn matches_invocation_claim_with_gaps(
+        &self,
+        claim: &backend_engine::application::CSharpEvidenceClaim<'_>,
+        input: [u8; 32],
+        gaps: &[UnpublishedCSharpSource<'_>],
+    ) -> bool {
         use sha2::Digest;
         if self.cancellation.load(Ordering::Acquire) { return false; }
         if claim.target != *self.target.target().as_ref() || claim.input != input
             || claim.profile != self.key.profile() || claim.project_path != self.project.project_path
-            || claim.sources.len() != self.sources.len() { return false; }
+            || claim.sources.len().checked_add(gaps.len()) != Some(self.sources.len()) { return false; }
         let probes = self.project.config.probes().collect::<Vec<_>>();
         if claim.config.len() != probes.len() || claim.config.iter().zip(probes).any(|(actual, (path, text))| {
             actual.path != path || actual.text.map(str::as_bytes) != text
         }) { return false; }
-        claim.sources.iter().zip(&self.sources).all(|(actual, source)| {
-            !self.cancellation.load(Ordering::Acquire) && actual.path == source.relative_path && actual.byte_length as usize == source.source.len()
+        let mut claimed = claim.sources.iter();
+        let mut missing = gaps.iter().map(|gap| (gap.path, gap)).collect::<BTreeMap<_, _>>();
+        if missing.len() != gaps.len() { return false; }
+        for source in &self.sources {
+            if self.cancellation.load(Ordering::Acquire) { return false; }
+            if let Some(gap) = missing.remove(source.relative_path.as_str()) {
+                if gap.byte_len != source.source.len() || gap.fact != source.source_fact_identity { return false; }
+                continue;
+            }
+            let Some(actual) = claimed.next() else { return false; };
+            if !(actual.path == source.relative_path && actual.byte_length as usize == source.source.len()
                 && actual.source_fact == *source.source_fact_identity.as_ref()
                 && actual.input_content == source.content
-                && actual.source_sha256 == <[u8; 32]>::from(sha2::Sha256::digest(&source.source))
-        }) && !self.cancellation.load(Ordering::Acquire)
+                && actual.source_sha256 == <[u8; 32]>::from(sha2::Sha256::digest(&source.source))) { return false; }
+        }
+        missing.is_empty() && claimed.next().is_none() && !self.cancellation.load(Ordering::Acquire)
     }
 
     /// Worker-only: checks the exact still-selected snapshot and original
