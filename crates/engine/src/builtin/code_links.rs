@@ -139,7 +139,8 @@ pub struct CodeSelection {
 }
 
 /// Recipe of embedded Unicode fragments (a Vue `<style>` block's content).
-/// Mirrors the frontend constant; a test in the owner pins the two together.
+/// Mirrors the frontend constant; a test in the local service, which sees both
+/// crates, pins the two together.
 pub const STYLO_EMBEDDED_RECIPE: &str =
     "stylo-native-embedded-v1;verbatim-unicode;no-bom-strip;host-offset-map=checked;runtime=not-attempted";
 

@@ -607,6 +607,14 @@ mod tests {
     use backend_semantic::stylo_analysis::{StyloLimits, StyloSourceKind};
 
     #[test]
+    fn the_engine_and_the_worker_name_the_same_embedded_recipe() {
+        assert_eq!(
+            backend_engine::builtin::STYLO_EMBEDDED_RECIPE,
+            backend_frontend_stylo::EMBEDDED_RECIPE
+        );
+    }
+
+    #[test]
     fn worker_checkpoint_rejects_cancelled_and_expired_runs() {
         let cancelled = AtomicBool::new(true);
         assert!(matches!(
