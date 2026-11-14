@@ -806,6 +806,7 @@ fn stylo_failure_words(reason: StyloFailure) -> &'static str {
         StyloFailure::Deadline => "the analysis ran out of time",
         StyloFailure::WorkerFailure => "the CSS parser stopped",
         StyloFailure::PreferencesChanged => "the parser's settings changed during the analysis",
+        StyloFailure::UnsupportedSyntax => "an embedded stylesheet is in a language the CSS parser does not read",
     }
 }
 
