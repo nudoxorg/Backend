@@ -205,6 +205,115 @@ export def report-build-size []: nothing -> nothing {
     print $"CI-DISK lane=linux ($measured | str join ' ')"
 }
 
+# The text on one line: a tab or line break becomes a space.
+def one-line [text: string]: nothing -> string {
+    $text | str replace --all --regex '[\t\r\n]' ' '
+}
+
+# The test cases of one nextest JUnit report, and the number its testsuites
+# declare in their `tests` attributes. Stops with a message when the file is
+# missing or is not a JUnit report.
+#
+# A case's status is fail when it has a `failure` or `error` child, or reran
+# and never passed (`rerunFailure`, `rerunError`); skip with `skipped`; flaky
+# when it passed after `flakyFailure` or `flakyError` attempts; otherwise pass.
+# With flaky-result = "fail" nextest writes a flaky test as a `failure`, so
+# the profile's own verdict wins: that test is fail here.
+def junit-test-cases [report: string]: nothing -> record<cases: list<record>, declared: int> {
+    if not ($report | path exists) { error make {msg: "file missing"} }
+    let root = open --raw $report | from xml
+    let suites = match $root.tag {
+        "testsuites" => ($root.content | where tag == "testsuite")
+        testsuite => [$root]
+        _ => (error make {msg: $"unexpected root element ($root.tag)"})
+    }
+    let cases = $suites
+    | each {|suite|
+        let suite_name = $suite.attributes.name? | default ""
+        $suite.content | where tag == "testcase" | each {|case|
+            let children = $case.content | get tag
+            let status = if ($children | any {|tag| $tag in [failure error rerunFailure rerunError] }) {
+                "fail"
+            } else if "skipped" in $children {
+                "skip"
+            } else if ($children | any {|tag| $tag in [flakyFailure flakyError] }) {
+                "flaky"
+            } else {
+                "pass"
+            }
+            # A skipped case has no time. Any other case without a readable
+            # one is -1.000, not a fast test.
+            let seconds = try {
+                $case.attributes.time | into float
+            } catch {
+                if $status == "skip" { 0.0 } else { -1.0 }
+            }
+            {
+                status: $status
+                seconds: ($seconds | into string --decimals 3)
+                suite: (one-line (if ($suite_name | is-empty) { $case.attributes.classname? | default "" } else { $suite_name }))
+                name: (one-line ($case.attributes.name? | default ""))
+            }
+        }
+    }
+    | flatten
+    let declared = $suites
+    | each {|suite| $suite.attributes.tests? | default "0" | into int }
+    | reduce --fold 0 {|count, sum| $sum + $count }
+    {cases: $cases, declared: $declared}
+}
+
+# Prints every test case of the nextest JUnit reports in `reports` as one
+# line between PER-TEST-TABLE-BEGIN and PER-TEST-TABLE-END lines, so the build
+# log keeps each test's status and duration after the container is gone:
+# `status<TAB>seconds<TAB>binary or suite<TAB>test name`, sorted by suite then
+# name so two runs diff. Tabs and line breaks inside a name become spaces,
+# which keeps one test on one line.
+#
+# Observational, like junit_timing.py, and it never fails the lane. Reports
+# that are missing, malformed or empty print PER-TEST-TABLE-UNAVAILABLE
+# instead of a table. When the cases found differ from the sum of the
+# testsuites' own `tests` attributes the table is still printed, with a
+# PER-TEST-TABLE-MISMATCH line before the END line.
+export def print-per-test-table [lane: string, reports: list<string>]: nothing -> nothing {
+    try {
+        if ($reports | is-empty) {
+            print $"PER-TEST-TABLE-UNAVAILABLE lane=($lane) reason=no junit.xml found"
+            return
+        }
+        let parsed = $reports | sort | each {|report|
+            try {
+                junit-test-cases $report
+            } catch {|error|
+                let reason = one-line $error.msg | str substring 0..<120
+                error make {msg: $"($report | path dirname | path basename)/($report | path basename): ($reason)"}
+            }
+        }
+        let cases = $parsed | get cases | flatten
+        let declared = $parsed | get declared | reduce --fold 0 {|count, sum| $sum + $count }
+        if ($cases | is-empty) {
+            print $"PER-TEST-TABLE-UNAVAILABLE lane=($lane) reason=no test cases in ($reports | length) reports, declared ($declared)"
+            return
+        }
+        let lines = $cases
+        | sort-by suite name
+        | each {|case| [$case.status $case.seconds $case.suite $case.name] | str join (char tab) }
+        let mismatch = if ($lines | length) != $declared {
+            [
+                $"PER-TEST-TABLE-MISMATCH parsed=($lines | length) declared=($declared)"
+            ]
+        } else { [] }
+        let table = [$"PER-TEST-TABLE-BEGIN lane=($lane) tests=($lines | length)"]
+        | append $lines
+        | append $mismatch
+        | append $"PER-TEST-TABLE-END lane=($lane)"
+        print ($table | str join "\n")
+    } catch {|error|
+        let reason = one-line $error.msg | str substring 0..<160
+        print $"PER-TEST-TABLE-UNAVAILABLE lane=($lane) reason=($reason)"
+    }
+}
+
 # Restores unchanged sources' mtimes from the cache's manifest, so Cargo
 # reuses the cached build output instead of seeing a fresh clone as all new
 # (restore-mtimes.py). Only with a build cache, only in CI.

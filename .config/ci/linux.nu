@@ -251,6 +251,7 @@ def main [
     try {
         ^python3 ($env.FILE_PWD | path join "junit_timing.py") --lane linux --step-seconds $step_seconds ...$junit
     } catch { print "ci: nextest timing summary unavailable" }
+    print-per-test-table "linux" $junit
 
     report-build-size
     reclaim-build-output
