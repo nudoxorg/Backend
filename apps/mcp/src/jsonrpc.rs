@@ -1439,11 +1439,20 @@ impl<P: Product> Server<P> {
             arguments,
             &["path", "limit", "cursor", "detail", "kind", "exclude_kind"],
         )?;
-        let kinds = backend_present::KindFilter::parse(
-            arguments.get("kind").and_then(Value::as_str),
-            arguments.get("exclude_kind").and_then(Value::as_str),
-        )
-        .map_err(RpcError::invalid)?;
+        // The kind filters leave the arguments before grammar validation, so
+        // their type is checked here: a filter of the wrong type is refused,
+        // never read as "no filter".
+        let kind_list = |name: &str| match arguments.get(name) {
+            None => Ok(None),
+            Some(Value::String(text)) => Ok(Some(text.as_str())),
+            Some(_) => Err(RpcError::invalid_argument(
+                name,
+                "a comma-separated string of declaration kinds",
+            )),
+        };
+        let kinds =
+            backend_present::KindFilter::parse(kind_list("kind")?, kind_list("exclude_kind")?)
+                .map_err(RpcError::invalid)?;
         let grammar = backend_present::grammar_for_tool("backend.outline")
             .ok_or_else(|| RpcError::new(-32602, "Unknown tool"))?;
         let mut command = arguments.clone();
@@ -3255,8 +3264,6 @@ fn decode_cursor_owner(encoded: &str) -> Option<String> {
         .filter(|owner_token| !owner_token.is_empty())
 }
 
-/// Encoding admission only: the owner still checks the retained proof,
-/// selected roots, query roles and index state after wrapper authentication.
 /// Owner cursors up to this size are signed inline; larger ones are parked in the server.
 const CURSOR_HANDLE_THRESHOLD_BYTES: usize = 256;
 /// Newest handles one server process keeps; older ones are dropped and report as gone.
@@ -3291,6 +3298,8 @@ impl CursorHandles {
     }
 }
 
+/// Encoding admission only: the owner still checks the retained proof,
+/// selected roots, query roles and index state after wrapper authentication.
 fn valid_direct_cursor_owner(owner: &str) -> bool {
     if let Some(encoded) = owner.strip_prefix("re1-") {
         return encoded.len() <= backend_library::MAX_INDEX_SEARCH_CURSOR_BYTES.saturating_sub(4)

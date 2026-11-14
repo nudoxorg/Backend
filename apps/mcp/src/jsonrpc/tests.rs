@@ -5522,6 +5522,25 @@ fn positive_default_fake_members_pages_preserve_credit_cursor_family_and_overrid
 }
 
 #[test]
+fn an_outline_kind_filter_must_be_a_string_of_kinds() {
+    let mut server = ready(Fake::default());
+    let accepted = call(&mut server, "backend.outline", &json!({"kind":"function"}));
+    assert_ne!(accepted["isError"], true, "{accepted}");
+    for (name, mistyped) in [("kind", json!(5)), ("exclude_kind", json!(["function"]))] {
+        let arguments = Map::from_iter([(name.to_owned(), mistyped)]);
+        let reply = request(
+            &mut server,
+            "tools/call",
+            &json!({"name":"backend.outline","arguments":arguments}),
+        );
+        assert!(
+            reply.get("error").is_some() || reply["result"]["isError"] == true,
+            "a {name} that is not a string is refused, not read as no filter: {reply}"
+        );
+    }
+}
+
+#[test]
 fn an_outline_call_is_a_tree_of_names_never_bare_digests() {
     let mut server = ready(Fake::default());
     let result = call(&mut server, "backend.outline", &json!({}));
