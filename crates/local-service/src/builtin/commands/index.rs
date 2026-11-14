@@ -3319,6 +3319,14 @@ fn prepare_terminal_profile_partition_for_snapshot(
                 ));
             }
             matched_refusals += 1;
+            // The compiler refused this profile, so it was rejected, even when its
+            // capture holds no source: a profile whose every source lies outside the
+            // active Cargo targets captures none, yet carries this typed refusal.
+            if let ProductSemanticCaptureOutcome::Unavailable { reason }
+            | ProductSemanticCaptureOutcome::Failed { reason, .. } = &mut change.outcome
+            {
+                *reason = backend_engine::builtin::SemanticUnavailableReason::Rejected;
+            }
             change.compiler_failure = Some(failure.clone());
         }
     }

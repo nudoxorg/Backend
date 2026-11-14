@@ -6070,14 +6070,19 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                             && attempted.source == source_authority
                     ) =>
                 {
-                    coverage_gaps.push(PackageSourceCoverageGap {
-                        source: source_authority,
-                        relative_path: source.relative_path.into(),
-                        cause: rust_source_scope_gap_cause(&terminal),
-                        python_source_status: None,
-                        native_python_diagnostics: Box::new([]),
-                        typescript_diagnostic: None,
-                    });
+                    // Recorded as a degraded source, so a profile none of whose
+                    // sources is in an active target (a nested workspace that is
+                    // not a member) refuses with this file's scope failure alone
+                    // and the other profiles still publish.
+                    let cause = rust_source_scope_gap_cause(&terminal);
+                    degraded.degrade_with_cause(
+                        terminal,
+                        source.relative_path,
+                        source_authority,
+                        cause,
+                        None,
+                        &mut coverage_gaps,
+                    )?;
                     continue;
                 }
                 // A Rust source the lowering lane cannot represent (a module of

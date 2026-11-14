@@ -1663,6 +1663,73 @@ fn selected_rust_target_replaces_latest_semantic_context_and_redo_keeps_it() {
     );
 }
 
+#[test]
+fn a_nested_workspace_outside_the_root_refuses_only_its_own_edition() {
+    let mut fixture = AdapterFixture::open(TempTree::new(), false);
+    install_installed_rust_compiler(&mut fixture);
+    let (_, label) = fixture.add_target();
+    let source_root = Path::new(&label);
+    fs::create_dir_all(source_root.join("src")).expect("Cargo source directory");
+    fs::create_dir_all(source_root.join("fuzz/fuzz_targets")).expect("nested workspace directory");
+    fs::write(
+        source_root.join("Cargo.toml"),
+        "[package]\nname = \"nested_root\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[workspace]\n",
+    )
+    .expect("root package that is its own workspace");
+    fs::write(
+        source_root.join("src/main.rs"),
+        "pub fn nested_root_marker() -> usize { 3 }\nfn main() {}\n",
+    )
+    .expect("root target source");
+    // A fuzz crate is a workspace of its own, not a member of the root one, so
+    // no active Cargo target of the indexed workspace owns its sources.
+    fs::write(
+        source_root.join("fuzz/Cargo.toml"),
+        "[package]\nname = \"nested_root_fuzz\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[workspace]\nmembers = [\".\"]\n\n[[bin]]\nname = \"fuzz_root\"\npath = \"fuzz_targets/fuzz_root.rs\"\n",
+    )
+    .expect("nested workspace manifest");
+    fs::write(
+        source_root.join("fuzz/fuzz_targets/fuzz_root.rs"),
+        "fn main() {}\n",
+    )
+    .expect("nested workspace source");
+    let package = backend_library::PackageReference::parse(label).expect("local package");
+
+    let status = run_unselected_rust_operation(&mut fixture, package, 0xc5);
+    let backend_library::IndexOperationState::PartiallyPublished {
+        refused_profiles, ..
+    } = &status.state
+    else {
+        panic!("the root edition publishes and only the nested edition refuses: {status:?}");
+    };
+    let nested_edition = backend_library::SemanticLanguageProfile::new(
+        backend_semantic::vocabulary::LanguageProfile::Rust(
+            backend_semantic::vocabulary::RustEdition::Rust2021,
+        ),
+    );
+    assert_eq!(
+        refused_profiles
+            .iter()
+            .map(|refusal| refusal.profile)
+            .collect::<Vec<_>>(),
+        [nested_edition]
+    );
+    assert_eq!(
+        refused_profiles[0]
+            .compiler_failure
+            .as_ref()
+            .map(|failure| failure.relative_path()),
+        Some("fuzz/fuzz_targets/fuzz_root.rs"),
+        "the refusal names the nested source and keeps its scope diagnostic"
+    );
+    assert!(
+        public_name_rows(&mut fixture, "nested_root_marker")
+            .iter()
+            .any(|row| row.label.contains("nested_root_marker")),
+        "the root target's declarations publish"
+    );
+}
+
 fn graph_page(
     fixture: &mut AdapterFixture,
     request: backend_library::PackageGraphPageRequest,
