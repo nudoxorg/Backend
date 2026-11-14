@@ -15,6 +15,13 @@
 //! exact source reads, references, impact with exact and candidate strengths,
 //! ambiguity, honest not-found, an edit that makes the answer stale, re-index,
 //! cold reopen of the owner, and a worker-less owner that reports a gap.
+//!
+//! The graph part of the journey checks that links from TypeScript, TSX and Vue
+//! templates to classes, CSS modules and custom properties are published edges:
+//! `references` on a CSS name and `graph --component` read them, they survive
+//! an unindexed edit of the source (reported stale, not dropped) and a cold
+//! reopen, `@import` joins stylesheets, and the `<style>` blocks of a Vue
+//! component are Stylo hosts whose sites are exact byte ranges of the `.vue` file.
 //! Debug builds skip the account gate, so this is development-mode evidence.
 #![cfg(unix)]
 #![deny(unsafe_code)]
@@ -56,7 +63,9 @@ struct Owner {
 impl Owner {
     fn start(bin: &Path, workspace: &Path, authority: &Path, label: &str) -> Self {
         let serial = NEXT.fetch_add(1, Ordering::Relaxed);
-        let endpoint = PathBuf::from(format!("/tmp/nudox-css-{label}-{}-{serial}.sock", std::process::id()));
+        // Unix socket paths are short; a shared build host points this at a private directory.
+        let sockets = std::env::var_os("NUDOX_CSS_JOURNEY_SOCKDIR").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
+        let endpoint = sockets.join(format!("nudox-css-{label}-{}-{serial}.sock", std::process::id()));
         let _ = std::fs::remove_file(&endpoint);
         let args = surface_matrix::locald_args(&endpoint, workspace, authority, Some(0), true);
         let mut child = ProcessCommand::new(bin.join("backend-locald"))
@@ -212,6 +221,38 @@ fn names(report: &ImpactReport, kind: &str) -> BTreeSet<String> {
 }
 fn strength_of(report: &ImpactReport, kind: &str, name: &str) -> Option<ImpactStrength> {
     report.rows.iter().filter(|row| row.node.kind == kind && row.node.name == name).map(|row| row.strength).min()
+}
+
+fn rows_of(report: &ImpactReport) -> Vec<(String, String, ImpactStrength, String)> {
+    report.rows.iter().map(|r| (r.node.kind.clone(), r.node.name.clone(), r.strength, r.relation.clone())).collect()
+}
+
+/// The three graph surfaces whose answers must come from published links:
+/// `references` on a global class, `graph --component` and `references` on a
+/// Vue-scoped class. Each is asserted against the fixture as it goes.
+fn graph_surfaces(session: &Session<'_>, project: &Path) -> (ImpactReport, ImpactReport, ImpactReport) {
+    let _ = project;
+    // references on a CSS class lists the components which use it, nothing transitive.
+    let refs = report_in(&session.cli(&["references", ".btn"]));
+    assert!(matches!(refs.seed_state, ImpactSeedState::Resolved), "{refs:?}");
+    assert_eq!(strength_of(&refs, "component", "Button"), Some(ImpactStrength::Candidate), "{refs:?}");
+    assert!(refs.rows.iter().all(|row| row.depth == 1), "references are direct uses, not transitive impact: {refs:?}");
+    // a module class is exact, and narrowed by file it names one stylesheet's members only.
+    let module = report_in(&session.cli(&["references", ".title@src/components/Header.module.css"]));
+    assert_eq!(strength_of(&module, "component", "Header"), Some(ImpactStrength::Exact), "{module:?}");
+    assert!(!names(&module, "component").contains("ProductCard"), "{module:?}");
+    // graph around a component shows the stylesheets and classes it relies on.
+    let graph = report_in(&session.cli(&["graph", "--component", "Header"]));
+    assert!(matches!(graph.seed_state, ImpactSeedState::Resolved), "{graph:?}");
+    assert!(names(&graph, "class").is_superset(&BTreeSet::from(["header", "title", "nav"].map(String::from))), "{graph:?}");
+    assert!(names(&graph, "file").contains("src/components/Header.module.css"), "its stylesheet is named: {graph:?}");
+    let button_graph = report_in(&session.cli(&["graph", "--component", "Button"]));
+    assert!(names(&button_graph, "class").contains("btn"), "{button_graph:?}");
+    // a Vue component's template classes link to the scoped block of its own file.
+    let badge = report_in(&session.cli(&["references", ".badge@src/components/Badge.vue"]));
+    assert!(matches!(badge.seed_state, ImpactSeedState::Resolved), "{badge:?}");
+    assert_eq!(strength_of(&badge, "component", "Badge"), Some(ImpactStrength::Candidate), "{badge:?}");
+    (refs, graph, badge)
 }
 
 /// Follows `--cursor` continuations of a CSS query until the scan completes.
@@ -410,6 +451,62 @@ fn css_is_indexed_queried_traced_edited_and_reopened_through_the_real_product() 
             panic!("expected a second page: {first:?}");
         }
 
+        // 6b. TS and Vue links to CSS are published edges, not query-time guesses.
+        let (_, _, badge_before) = graph_surfaces(&session, &project);
+        let lg_before = session.impact(&["--class", "btn-lg"]);
+        assert_eq!(strength_of(&lg_before, "component", "Button"), Some(ImpactStrength::Candidate), "{lg_before:?}");
+        assert!(
+            !lg_before.gaps.iter().any(|gap| gap.facet == "code.links-unpublished"),
+            "the links must come from the published index, not a query-time scan: {:?}", lg_before.gaps
+        );
+        // A class list with runtime parts stays a candidate with stated coverage.
+        let dynamic = lg_before.gaps.iter().find(|gap| gap.facet == "code.dynamic-class").expect("dynamic class coverage is stated");
+        assert!(dynamic.note.contains("Button.tsx") && dynamic.note.contains("candidate"), "{}", dynamic.note);
+
+        // 6c. `@import` joins stylesheets; the CSS module `composes`-free fixture has none unresolved.
+        let base = session.impact(&["--stylesheet", "src/styles/base.css"]);
+        assert!(matches!(base.seed_state, ImpactSeedState::Resolved), "{base:?}");
+        let importer = base.rows.iter().find(|row| row.node.kind == "file" && row.node.name == "src/styles/global.css")
+            .unwrap_or_else(|| panic!("global.css imports base.css: {base:?}"));
+        assert_eq!((importer.relation.as_str(), importer.strength), ("css.imports-stylesheet", ImpactStrength::Exact));
+        assert!(base.rows.iter().any(|row| row.node.kind == "rule" && row.node.name == ".container"), "the importer's own rules are affected: {base:?}");
+        let imports_gap = base.gaps.iter().find(|gap| gap.facet == "css.imports").expect("imports coverage is stated");
+        assert!(imports_gap.note.contains("resolved to a project file"), "{}", imports_gap.note);
+        let theme_users = session.impact(&["--stylesheet", "src/styles/theme.css"]);
+        assert_eq!(
+            theme_users.rows.iter().find(|row| row.node.kind == "file" && row.node.name == "src/styles/global.css").map(|row| row.strength),
+            Some(ImpactStrength::Candidate),
+            "a media-qualified @import applies only under that media: {theme_users:?}"
+        );
+
+        // 6d. Vue `<style>` blocks go through Stylo; their sites are byte ranges of the `.vue` file.
+        let vue = std::fs::read(project.join("src/components/Badge.vue")).expect("Badge.vue");
+        let badge_pages = stylo_pages(&session, &project.to_string_lossy(), &["--class", "badge"]);
+        let badge_site = badge_pages
+            .iter()
+            .filter_map(|page| page["records"].as_array())
+            .flatten()
+            .find(|record| record["tags"].as_array().is_some_and(|tags| tags.iter().any(|t| t == "class selector name")))
+            .and_then(|record| record["operand"].as_str())
+            .map(str::to_owned)
+            .unwrap_or_else(|| panic!("the scoped <style> of Badge.vue was not indexed: {badge_pages:?}"));
+        let badge_read = session.cli(&["stylo-read-site", &badge_site]);
+        assert_eq!(find_key(&badge_read, "path").and_then(Value::as_str), Some("src/components/Badge.vue"), "{badge_read}");
+        let (start, end) = (
+            find_key(&badge_read, "start").and_then(Value::as_u64).expect("start") as usize,
+            find_key(&badge_read, "end").and_then(Value::as_u64).expect("end") as usize,
+        );
+        assert_eq!(&vue[start..end], b"badge", "the site is an exact byte range of the .vue file");
+        assert_eq!(find_key(&badge_read, "text").and_then(Value::as_str), Some("badge"));
+        assert!(badge_before.rows.iter().any(|row| row.node.kind == "component" && row.node.name == "Badge"), "{badge_before:?}");
+        let ribbon = stylo_pages(&session, &project.to_string_lossy(), &["--class", "ribbon"]);
+        assert!(!page_hits(&ribbon).is_empty(), "the unscoped <style> block is a Stylo host too: {ribbon:?}");
+        let brand_in_vue = session.impact(&["--custom-property", "--brand"]);
+        assert!(
+            brand_in_vue.rows.iter().any(|row| row.node.kind == "rule" && row.node.name == ".badge-new" && row.node.path.as_deref() == Some("src/components/Badge.vue")),
+            "a var() use inside a Vue <style> reaches the rule in the .vue file: {brand_in_vue:?}"
+        );
+
         // 7. Edit the stylesheet without re-indexing: the answer says it is stale.
         let theme = project.join("src/styles/theme.css");
         let mut text = std::fs::read_to_string(&theme).expect("theme.css");
@@ -419,6 +516,22 @@ fn css_is_indexed_queried_traced_edited_and_reopened_through_the_real_product() 
         match &stale.freshness {
             ImpactFreshness::Stale { changed, .. } => assert!(changed.iter().any(|path| path == "src/styles/theme.css"), "{changed:?}"),
             other => panic!("an edited stylesheet must be reported stale, got {other:?}"),
+        }
+        // The same edit window changes a component: the answer keeps the links the
+        // index published, and says they are stale, instead of dropping the file.
+        let button_path = project.join("src/components/Button.tsx");
+        let button = std::fs::read_to_string(&button_path).expect("Button.tsx");
+        assert!(button.contains(r#"size === "lg" && "btn-lg", "#));
+        std::fs::write(&button_path, button.replace(r#"size === "lg" && "btn-lg", "#, "")).expect("edit Button.tsx");
+        let lg_stale = session.impact(&["--class", "btn-lg"]);
+        assert_eq!(
+            strength_of(&lg_stale, "component", "Button"),
+            Some(ImpactStrength::Candidate),
+            "an unindexed edit must not erase the published link: {lg_stale:?}"
+        );
+        match &lg_stale.freshness {
+            ImpactFreshness::Stale { changed, .. } => assert!(changed.iter().any(|path| path == "src/components/Button.tsx"), "{changed:?}"),
+            other => panic!("an edited component must be reported stale, got {other:?}"),
         }
         let old_read = session.cli_raw(&["stylo-read-site", &theme_site]);
         let old_text = String::from_utf8_lossy(&old_read.stdout).into_owned();
@@ -439,7 +552,12 @@ fn css_is_indexed_queried_traced_edited_and_reopened_through_the_real_product() 
             let again = session.cli(&["add", &project.to_string_lossy()]);
             assert_eq!(again["answer"], "product", "{again}");
             let report = session.impact(&["--custom-property", "--brand"]);
-            if names(&report, "custom-property").contains("--brand-hover") && matches!(report.freshness, ImpactFreshness::Current { .. }) {
+            let lg = session.impact(&["--class", "btn-lg"]);
+            if names(&report, "custom-property").contains("--brand-hover")
+                && matches!(report.freshness, ImpactFreshness::Current { .. })
+                && strength_of(&lg, "component", "Button").is_none()
+                && matches!(lg.freshness, ImpactFreshness::Current { .. })
+            {
                 break report;
             }
             if Instant::now() >= end {
@@ -453,9 +571,9 @@ fn css_is_indexed_queried_traced_edited_and_reopened_through_the_real_product() 
     }
 
     // 9. Cold reopen: a new owner process on the same workspace answers from durable state.
-    let before = {
+    let (before, surfaces_before) = {
         let session = Session { bin: &bin, owner: &owner, workspace: &workspace, project: &project, authority: &authority };
-        session.impact(&["--class", "btn", "--depth", "4"])
+        (session.impact(&["--class", "btn", "--depth", "4"]), graph_surfaces(&session, &project))
     };
     owner.stop();
     let reopened = Owner::start(&bin, &workspace, &authority, "reopen");
@@ -468,6 +586,18 @@ fn css_is_indexed_queried_traced_edited_and_reopened_through_the_real_product() 
             before.rows.iter().map(|r| (r.node.kind.clone(), r.node.name.clone(), r.strength)).collect::<Vec<_>>()
         );
         assert!(matches!(after.freshness, ImpactFreshness::Current { .. }));
+        // The published links are what the reopened owner answers from.
+        let surfaces_after = graph_surfaces(&session, &project);
+        for (name, left, right) in [
+            ("references .btn", &surfaces_before.0, &surfaces_after.0),
+            ("graph --component Header", &surfaces_before.1, &surfaces_after.1),
+            ("references .badge@Badge.vue", &surfaces_before.2, &surfaces_after.2),
+        ] {
+            assert_eq!(left.totals, right.totals, "{name}: cold reopen changed the totals");
+            assert_eq!(rows_of(left), rows_of(right), "{name}: cold reopen changed the rows");
+            assert!(!right.rows.is_empty(), "{name} lost its rows");
+            assert!(!right.gaps.iter().any(|gap| gap.facet == "code.links-unpublished"), "{name} fell back to a query-time scan: {:?}", right.gaps);
+        }
         let query = session.cli(&["stylo-query", &project.to_string_lossy(), "--custom-property", "--brand-hover"]);
         assert!(find_key(&query, "hits").and_then(Value::as_array).is_some_and(|hits| !hits.is_empty()), "{query}");
     }

@@ -140,3 +140,68 @@ fn impact_needs_exactly_one_seed_and_refuses_unbounded_questions() {
     assert!(lowered(&|c| { c.set("class", "a"); c.set("direction", "sideways"); }).is_err());
     assert!(lowered(&|c| c.set("class", "a")).is_ok());
 }
+
+fn impact_of(request: Request) -> backend_library::impact::ImpactRequest {
+    let Request::Surface(command) = request else { panic!("surface request") };
+    let backend_library::SurfaceCommand::Impact { request } = *command else {
+        panic!("a style question lowers to the impact route, not to the symbol route")
+    };
+    request
+}
+
+#[test]
+fn references_on_a_css_name_asks_which_components_use_it_over_cli_and_mcp() {
+    use backend_library::impact::{ImpactDirection, ImpactDomain, ImpactSeed};
+    let grammar = grammar_for("references").expect("references grammar");
+    for (target, kind, name, path) in [
+        (".card", "class", "card", None),
+        ("#hero", "id", "hero", None),
+        ("--brand", "custom-property", "--brand", None),
+        (".title@src/Header.module.css", "class", "title", Some("src/Header.module.css")),
+    ] {
+        let mut cli = Invocation::new(grammar);
+        cli.push(target);
+        let json = serde_json::json!({ "coordinate": target });
+        let mcp = Invocation::from_json(grammar, json.as_object().unwrap()).expect("MCP input");
+        let left = impact_of(lower(&cli, PROJECT).expect("lowered"));
+        assert_eq!(left, impact_of(lower(&mcp, PROJECT).expect("lowered")), "{target}");
+        assert_eq!(left.direction, ImpactDirection::Dependents);
+        assert_eq!(left.depth, 1, "references are direct uses, not transitive impact");
+        let ImpactSeed::Named(spec) = &left.seed else { panic!("named seed") };
+        assert_eq!(spec.domain, ImpactDomain::Css);
+        assert_eq!((spec.kind.as_str(), spec.name.as_str(), spec.path.as_deref()), (kind, name, path));
+    }
+}
+
+#[test]
+fn references_on_anything_else_stays_on_the_symbol_route() {
+    let grammar = grammar_for("references").expect("references grammar");
+    for target in ["pkg/src/lib.rs::run", "./relative/path", ".", "..", ".9lives", "--", "#", ".card@"] {
+        let mut call = Invocation::new(grammar);
+        call.push(target);
+        let Request::Surface(command) = lower(&call, PROJECT).expect("lowered") else { panic!("surface request") };
+        assert!(
+            matches!(*command, backend_library::SurfaceCommand::References { .. }),
+            "{target} must still be a symbol reference"
+        );
+    }
+}
+
+#[test]
+fn graph_around_a_component_lowers_to_what_it_relies_on() {
+    use backend_library::impact::{ImpactDirection, ImpactDomain, ImpactSeed};
+    let grammar = grammar_for("graph").expect("graph grammar");
+    let mut cli = Invocation::new(grammar);
+    cli.set("component", "Button");
+    let json = serde_json::json!({ "component": "Button" });
+    let mcp = Invocation::from_json(grammar, json.as_object().unwrap()).expect("MCP input");
+    let left = impact_of(lower(&cli, PROJECT).expect("lowered"));
+    assert_eq!(left, impact_of(lower(&mcp, PROJECT).expect("lowered")));
+    assert_eq!(left.direction, ImpactDirection::Dependencies);
+    let ImpactSeed::Named(spec) = &left.seed else { panic!("named seed") };
+    assert_eq!((spec.domain, spec.kind.as_str(), spec.name.as_str()), (ImpactDomain::Code, "component", "Button"));
+    // Without --component the command is still the declaration neighbourhood.
+    let mut plain = Invocation::new(grammar);
+    plain.push("pkg/src/lib.rs::run");
+    assert!(!matches!(lower(&plain, PROJECT).expect("lowered"), Request::Surface(_)));
+}

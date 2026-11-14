@@ -7329,7 +7329,7 @@ fn validate_persisted_stylo(
             .stylo_changes
             .iter()
             .all(|change| change.after.is_none());
-        let selection_remains = rows.iter().any(|(_, row)| matches!(row, StyloAnalysisRecord::Selection { project, .. } | StyloAnalysisRecord::Attempt { project, .. } | StyloAnalysisRecord::Host { project, .. } if *project == intent.package.to_bytes()));
+        let selection_remains = rows.iter().any(|(_, row)| matches!(row, StyloAnalysisRecord::Selection { project, .. } | StyloAnalysisRecord::Attempt { project, .. } | StyloAnalysisRecord::Host { project, .. } | StyloAnalysisRecord::CodeHost { project, .. } if *project == intent.package.to_bytes()));
         if !source_deleted || !exact_retirement || selection_remains {
             return Err(BuiltinModelError(
                 "native Stylo source removal requires exact retirement".into(),
@@ -7339,7 +7339,7 @@ fn validate_persisted_stylo(
     // All modified rows must belong to this project or one of its before/after hosts.
     let mut hosts = std::collections::BTreeSet::new();
     for (key, row) in &rows {
-        if matches!(row, StyloAnalysisRecord::Host { project, .. } if *project == intent.package.to_bytes())
+        if matches!(row, StyloAnalysisRecord::Host { project, .. } | StyloAnalysisRecord::CodeHost { project, .. } if *project == intent.package.to_bytes())
         {
             hosts.insert(*key);
         }
@@ -7349,7 +7349,7 @@ fn validate_persisted_stylo(
             .into_iter()
             .flatten()
         {
-            if matches!(row, StyloAnalysisRecord::Host { project, .. } if *project == intent.package.to_bytes())
+            if matches!(row, StyloAnalysisRecord::Host { project, .. } | StyloAnalysisRecord::CodeHost { project, .. } if *project == intent.package.to_bytes())
             {
                 hosts.insert(change.key);
             }
@@ -7363,10 +7363,12 @@ fn validate_persisted_stylo(
             let owned = match row {
                 StyloAnalysisRecord::Selection { project, .. }
                 | StyloAnalysisRecord::Attempt { project, .. }
-                | StyloAnalysisRecord::Host { project, .. } => {
+                | StyloAnalysisRecord::Host { project, .. }
+                | StyloAnalysisRecord::CodeHost { project, .. } => {
                     *project == intent.package.to_bytes()
                 }
-                StyloAnalysisRecord::Fact { host, .. } => hosts.contains(host),
+                StyloAnalysisRecord::Fact { host, .. }
+                | StyloAnalysisRecord::CodeFact { host, .. } => hosts.contains(host),
             };
             if !owned {
                 return Err(BuiltinModelError(
@@ -8505,6 +8507,7 @@ mod persisted_intent_tests {
             terminal: StyloTerminal::Unavailable(StyloUnavailable::ReadUnavailable),
             fact_count: 0,
             fact_digest: backend_engine::builtin::stylo_rows_digest(&[]).expect("empty digest"),
+            fragment: None,
         };
         let key = backend_engine::builtin::stylo_host_key(project, "site.css").expect("host key");
         let mut intent = BuiltinIntent::new_with_version(

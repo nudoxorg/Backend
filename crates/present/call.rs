@@ -529,8 +529,40 @@ pub fn lower_with_opener(
         }
         CommandId::Source => declaration_request(invocation, DeclarationRead::Source),
         CommandId::Related => declaration_request(invocation, DeclarationRead::Related),
+        CommandId::Graph | CommandId::GraphQuery if invocation.option("component").is_some() => {
+            // The neighbourhood of a component in the style graph: what it relies on.
+            let name = invocation.option("component").unwrap_or_default();
+            let seed = backend_library::impact::ImpactSeedSpec {
+                domain: backend_library::impact::ImpactDomain::Code,
+                kind: "component".to_owned(),
+                name: name.to_owned(),
+                path: invocation.option("in").map(str::to_owned),
+            };
+            style_graph_request(
+                project,
+                seed,
+                backend_library::impact::ImpactDirection::Dependencies,
+                2,
+                limit(invocation)?,
+            )
+        }
         CommandId::Graph | CommandId::GraphQuery => {
             declaration_request(invocation, DeclarationRead::Graph)
+        }
+        CommandId::References
+            if invocation.at(0).and_then(css_reference_seed).is_some() =>
+        {
+            // A CSS name as the target: the components which use it.
+            let seed = invocation.at(0).and_then(css_reference_seed).ok_or_else(|| {
+                Fault::usage("coordinate", "expected a CSS class, id or custom property")
+            })?;
+            style_graph_request(
+                project,
+                seed,
+                backend_library::impact::ImpactDirection::Dependents,
+                1,
+                200,
+            )
         }
         CommandId::Search => query_cursor(
             invocation,
@@ -614,6 +646,64 @@ pub fn lower_with_opener(
             surface(invocation, spec.id, opener).map(|command| Request::Surface(Box::new(command)))
         }
     }
+}
+
+/// A CSS name written where `references` expects a coordinate: `.card`,
+/// `#hero` or `--brand`, optionally narrowed to one stylesheet as
+/// `.title@src/Header.module.css`. Declaration coordinates never begin with
+/// these, so nothing that named a symbol before names a CSS target now.
+pub(crate) fn css_reference_seed(target: &str) -> Option<backend_library::impact::ImpactSeedSpec> {
+    use backend_library::impact::{ImpactDomain, ImpactSeedSpec};
+    let (name, path) = match target.split_once('@') {
+        Some((name, path)) if !path.is_empty() => (name, Some(path.to_owned())),
+        Some(_) => return None,
+        None => (target, None),
+    };
+    let ident = |text: &str| {
+        !text.is_empty()
+            && text.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_') || !c.is_ascii())
+            && !text.starts_with(|c: char| c.is_ascii_digit())
+    };
+    let (kind, name) = if let Some(rest) = name.strip_prefix("--") {
+        ("custom-property", format!("--{rest}"), ident(rest))
+    } else if let Some(rest) = name.strip_prefix('.') {
+        ("class", rest.to_owned(), ident(rest))
+    } else if let Some(rest) = name.strip_prefix('#') {
+        ("id", rest.to_owned(), ident(rest))
+    } else {
+        return None;
+    }
+    .into_valid()?;
+    Some(ImpactSeedSpec { domain: ImpactDomain::Css, kind: kind.to_owned(), name, path })
+}
+
+trait IntoValid<A, B> {
+    fn into_valid(self) -> Option<(A, B)>;
+}
+impl<A, B> IntoValid<A, B> for (A, B, bool) {
+    fn into_valid(self) -> Option<(A, B)> {
+        self.2.then_some((self.0, self.1))
+    }
+}
+
+fn style_graph_request(
+    project: &str,
+    seed: backend_library::impact::ImpactSeedSpec,
+    direction: backend_library::impact::ImpactDirection,
+    depth: u8,
+    page_rows: u16,
+) -> Result<Request, Fault> {
+    use backend_library::impact::{ImpactRequest, ImpactSeed};
+    let package = PackageReference::parse(project)
+        .map_err(|error| Fault::admission(error, Operand::Argument(project.to_owned())))?;
+    let mut request = ImpactRequest::new(package, ImpactSeed::Named(seed));
+    request.direction = direction;
+    request.depth = depth;
+    request.page_rows = page_rows;
+    request
+        .admit()
+        .map_err(|error| Fault::usage("request", error.to_string()))?;
+    Ok(Request::Surface(Box::new(SurfaceCommand::Impact { request })))
 }
 
 /// Lowers the JSON escape hatch, which takes one tagged surface object.

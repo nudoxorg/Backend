@@ -98,6 +98,65 @@ pub struct StyloRule {
     /// Native rule start, where projected.
     pub location: Option<StyloLocation>,
 }
+impl StyloRule {
+    /// Native `CssRuleType` name of an `@import` rule.
+    pub const IMPORT_KIND: &'static str = "Import";
+
+    /// The authored specifier of an `@import` rule: the string inside the
+    /// leading `url("...")` of its native serialized prelude. Imports are
+    /// recorded, never loaded, so this names a file the stylesheet asks for and
+    /// proves nothing about whether it exists.
+    #[must_use]
+    pub fn import_specifier(&self) -> Option<String> {
+        self.parse_import().map(|(specifier, _)| specifier)
+    }
+
+    /// The `layer`, `supports(...)` and media text which follows the specifier
+    /// of an `@import` prelude, as the parser serialized it.
+    #[must_use]
+    pub fn import_qualifiers(&self) -> Option<String> {
+        let (_, end) = self.parse_import()?;
+        let rest = self.condition.as_deref()?.get(end..)?.trim();
+        (!rest.is_empty()).then(|| rest.to_owned())
+    }
+
+    /// Decoded specifier and the byte offset just after the closing `)`.
+    fn parse_import(&self) -> Option<(String, usize)> {
+        if self.native_kind != Self::IMPORT_KIND {
+            return None;
+        }
+        const OPEN: &str = "url(\"";
+        let prelude = self.condition.as_deref()?;
+        let body = prelude.strip_prefix(OPEN)?;
+        let mut out = String::new();
+        let mut chars = body.char_indices().peekable();
+        while let Some((index, c)) = chars.next() {
+            match c {
+                '"' => {
+                    let after = OPEN.len() + index + 1;
+                    return (prelude.as_bytes().get(after) == Some(&b')')).then_some((out, after + 1));
+                }
+                '\\' => {
+                    let mut hex = String::new();
+                    while hex.len() < 6 && chars.peek().is_some_and(|(_, d)| d.is_ascii_hexdigit()) {
+                        hex.extend(chars.next().map(|(_, d)| d));
+                    }
+                    if hex.is_empty() {
+                        out.push(chars.next()?.1);
+                    } else {
+                        if chars.peek().is_some_and(|(_, d)| *d == ' ') {
+                            chars.next();
+                        }
+                        out.push(u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32).unwrap_or('\u{fffd}'));
+                    }
+                }
+                other => out.push(other),
+            }
+        }
+        None
+    }
+}
+
 /// One selector in a Stylo selector list.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -291,4 +350,35 @@ pub struct StyloAnalysis {
     pub diagnostics: Vec<StyloDiagnostic>,
     /// Coverage of this finite projection.
     pub coverage: StyloCoverage,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn import(prelude: &str) -> StyloRule {
+        StyloRule {
+            path: vec![0],
+            kind: StyloRuleKind::Other,
+            native_kind: StyloRule::IMPORT_KIND.into(),
+            condition: Some(prelude.into()),
+            location: None,
+        }
+    }
+
+    #[test]
+    fn import_specifier_decodes_the_serialized_string_and_names_qualifiers() {
+        assert_eq!(import("url(\"./base.css\")").import_specifier().as_deref(), Some("./base.css"));
+        assert_eq!(import("url(\"a\\\"b.css\")").import_specifier().as_deref(), Some("a\"b.css"));
+        assert_eq!(import("url(\"\\2e /x.css\")").import_specifier().as_deref(), Some("./x.css"));
+        let layered = import("url(\"./t.css\") layer(theme) supports(display: grid) screen");
+        assert_eq!(layered.import_specifier().as_deref(), Some("./t.css"));
+        assert_eq!(layered.import_qualifiers().as_deref(), Some("layer(theme) supports(display: grid) screen"));
+        assert_eq!(import("url(\"./t.css\")").import_qualifiers(), None);
+        let mut other = import("url(\"./base.css\")");
+        other.native_kind = "Media".into();
+        assert_eq!(other.import_specifier(), None, "only import rules name a specifier");
+        assert_eq!(import("screen").import_specifier(), None);
+        assert_eq!(import("url(\"unterminated").import_specifier(), None);
+    }
 }

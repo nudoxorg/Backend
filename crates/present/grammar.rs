@@ -850,7 +850,7 @@ pub const GRAMMARS: [CommandGrammar; 64] = [
             "Exact declaration coordinate whose uses are requested. Selected row IDs are not supported by the references protocol.",
         )],
         options: &[],
-        when: "Use to answer where is this symbol used: every row carries the relation kind, the authority class, and the exact source span that proves the use.",
+        when: "Use to answer where is this symbol used: every row carries the relation kind, the authority class, and the exact source span that proves the use. Give a CSS name instead (.card, #hero, --brand, or .title@src/Header.module.css to narrow it to one stylesheet) to list the components which use that class, id or custom property, each marked exact or candidate.",
     },
     CommandGrammar {
         name: "read",
@@ -928,8 +928,14 @@ pub const GRAMMARS: [CommandGrammar; 64] = [
             ArgumentKind::Coordinate,
             "Exact declaration coordinate to traverse from.",
         )],
-        options: &[SELECTED_SYMBOL, LIMIT, CURSOR],
-        when: "Use to follow one declaration outward along calls and references in its package.",
+        options: &[
+            SELECTED_SYMBOL,
+            ArgumentSpec::optional("component", ArgumentKind::Text, "A component name in TypeScript, TSX or JSX: show the stylesheets, classes and custom properties it relies on, instead of a declaration neighbourhood."),
+            ArgumentSpec::optional("in", ArgumentKind::Text, "Project-relative file which narrows an ambiguous component name."),
+            LIMIT,
+            CURSOR,
+        ],
+        when: "Use to follow one declaration outward along calls and references in its package. With --component NAME it shows that component's stylesheets, classes and custom properties from the style graph.",
     },
     CommandGrammar {
         name: "health",

@@ -21,6 +21,7 @@ pub(super) fn from_query(
                 StyloFailure::Deadline => 6,
                 StyloFailure::WorkerFailure => 7,
                 StyloFailure::PreferencesChanged => 8,
+                StyloFailure::UnsupportedSyntax => 9,
             })
         }
         StyloAttemptState::UnknownLegacy => Freshness::UnknownLegacy,
@@ -53,6 +54,7 @@ pub(super) fn to_query(
                     6 => StyloFailure::Deadline,
                     7 => StyloFailure::WorkerFailure,
                     8 => StyloFailure::PreferencesChanged,
+                    9 => StyloFailure::UnsupportedSyntax,
                     _ => return None,
                 },
             }
@@ -106,6 +108,7 @@ mod tests {
             StyloFailure::Deadline,
             StyloFailure::WorkerFailure,
             StyloFailure::PreferencesChanged,
+            StyloFailure::UnsupportedSyntax,
         ] {
             let encoded = from_query(
                 StyloAttemptState::RetainedAfterUnavailable { reason },

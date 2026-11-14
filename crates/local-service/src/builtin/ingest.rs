@@ -11411,6 +11411,8 @@ pub(super) struct StyloProjectCapture {
     selection: backend_engine::builtin::StyloAnalysisRecord,
     attempt: Option<StyloAttemptCapture>,
     hosts: Vec<StyloProjectHost>,
+    /// Code sources scanned for style links, from the same confined walk.
+    code_hosts: Vec<super::commands::code_links::CodeHostRows>,
     fence: CompilerRevisionFence,
     source_bytes_read: usize,
     worker_attempts: u32,
@@ -11455,6 +11457,10 @@ impl StyloProjectCapture {
             if let StyloProjectHost::Captured(value) = host {
                 rows.extend(value.facts().iter().map(|(key, row)| (*key, row)));
             }
+        }
+        for code in &self.code_hosts {
+            rows.push((code.key, &code.host));
+            rows.extend(code.facts.iter().map(|(key, row)| (*key, row)));
         }
         rows.sort_by_key(|entry| entry.0);
         rows
@@ -11794,6 +11800,286 @@ fn read_stylo_bounded(
     result
 }
 
+/// Most code sources one project publishes style-link facts for.
+const MAX_CODE_HOSTS: usize = 8192;
+/// Fixed per-project cap on supervised runs for embedded (Vue `<style>`) sheets,
+/// separate from the stylesheet-file cap: a component library has many blocks.
+/// Blocks beyond it keep an explicit Limit terminal without a run.
+const MAX_STYLO_FRAGMENT_ATTEMPTS: u32 = 256;
+const MAX_VUE_HOST_BYTES: usize = 1024 * 1024;
+
+fn is_fragment_host(row: &backend_engine::builtin::StyloAnalysisRecord) -> bool {
+    matches!(row, backend_engine::builtin::StyloAnalysisRecord::Host { fragment: Some(_), .. })
+}
+
+/// Maps a capture failure of one embedded sheet to its host terminal. Only
+/// cancellation aborts the project capture.
+fn fragment_terminal(
+    error: super::stylo_capture::StyloCaptureFailure,
+) -> Result<backend_engine::builtin::StyloUnavailable, StyloProjectCaptureFailure> {
+    use super::stylo_capture::StyloCaptureFailure as C;
+    use super::stylo_worker::StyloWorkerFailure as W;
+    use backend_engine::builtin::StyloUnavailable as U;
+    Ok(match error {
+        C::Limit | C::Worker(W::Limit) => U::Limit,
+        C::Worker(W::Process(backend_compile::ProcessError::Cancelled))
+        | C::Worker(W::Terminal(backend_compile::ProcessTerminal::Cancelled))
+        | C::Worker(W::Native(backend_frontend_stylo::StyloError::Cancelled)) => {
+            return Err(StyloProjectCaptureFailure::Cancelled);
+        }
+        C::Worker(W::Process(backend_compile::ProcessError::Deadline))
+        | C::Worker(W::Terminal(backend_compile::ProcessTerminal::Deadline)) => U::Deadline,
+        C::Worker(W::Process(backend_compile::ProcessError::OutputLimit))
+        | C::Worker(W::Terminal(backend_compile::ProcessTerminal::OutputLimit)) => U::Limit,
+        C::Worker(W::Process(backend_compile::ProcessError::UnsupportedLimit(_))) => U::UnsupportedHardLimit,
+        C::Worker(W::Native(backend_frontend_stylo::StyloError::InvalidUtf8)) => U::InvalidUtf8,
+        C::Worker(W::Native(backend_frontend_stylo::StyloError::PreferencesChanged)) => U::PreferencesChanged,
+        _ => U::WorkerFailure,
+    })
+}
+
+/// Indexes every plain-CSS `<style>` block of the project's Vue single-file
+/// components through the Stylo fragment worker, as hosts whose sites are byte
+/// ranges of the `.vue` file. Sass, Less and external sources keep an explicit
+/// unsupported terminal. Returns false when the Vue inventory is incomplete.
+#[allow(clippy::too_many_arguments)]
+fn capture_vue_style_hosts(
+    scan: &IndexSnapshot,
+    permit: &super::stylo_worker::StyloWorkerPermit,
+    root: &ProjectRoot,
+    project: [u8; 32],
+    max_file: usize,
+    limits_for: &dyn Fn(usize, usize) -> Result<backend_semantic::stylo_analysis::StyloLimits, StyloProjectCaptureFailure>,
+    wall_time: std::time::Duration,
+    memory_limit: Option<usize>,
+    remaining_source: &mut usize,
+    remaining_bytes: &mut usize,
+    remaining_records: &mut usize,
+    source_bytes_read: &mut usize,
+    cancellation: &AtomicBool,
+    hosts: &mut Vec<StyloProjectHost>,
+) -> Result<bool, StyloProjectCaptureFailure> {
+    use backend_engine::builtin::{
+        StyloAnalysisRecord, StyloAnalysisRelation, StyloFragment, StyloTerminal, StyloUnavailable,
+        stylo_host_key, stylo_parser_configuration_id, stylo_rows_digest,
+    };
+    use backend_frontend_vue::BlockKind;
+    use backend_semantic::stylo_analysis::{StyloParseConfig, StyloSourceKind};
+    use backend_version::Relation;
+    let walk = &scan.vue_walk;
+    let mut complete = walk.complete();
+    let mut attempts_left = MAX_STYLO_FRAGMENT_ATTEMPTS;
+    'files: for file in walk.files() {
+        if cancellation.load(Ordering::Acquire) {
+            return Err(StyloProjectCaptureFailure::Cancelled);
+        }
+        if *remaining_records == 0 || *remaining_bytes == 0 {
+            complete = false;
+            break;
+        }
+        let Some(name) = file.relative_path.to_str().map(|path| path.replace(std::path::MAIN_SEPARATOR, "/")) else {
+            continue;
+        };
+        let bytes = match read_stylo_bounded(
+            root,
+            &file.relative_path,
+            max_file.min(MAX_VUE_HOST_BYTES),
+            remaining_source,
+            source_bytes_read,
+        ) {
+            Ok(bytes) => bytes,
+            Err(SourceFault::Vanished) => return Err(StyloProjectCaptureFailure::Stale),
+            Err(SourceFault::Fatal(error)) => return Err(StyloProjectCaptureFailure::Invalid(error)),
+            Err(_) => {
+                complete = false;
+                continue;
+            }
+        };
+        let Ok(container) = backend_frontend_vue::parse(&bytes) else {
+            complete = false;
+            continue;
+        };
+        let host_extent = container.host();
+        for (index, block) in container.blocks().iter().enumerate() {
+            let Some(BlockKind::Style { scoped, module }) = container.kind(index) else { continue };
+            let Some(content) = block.content.clone() else { continue };
+            if *remaining_records == 0 || *remaining_bytes == 0 {
+                complete = false;
+                break 'files;
+            }
+            let fragment = StyloFragment {
+                file: name.clone(),
+                block: u32::try_from(index).map_err(|_| StyloProjectCaptureFailure::Unavailable)?,
+                start: content.start as u64,
+                end: content.end as u64,
+                line: u32::try_from(bytes[..content.start].iter().filter(|byte| **byte == b'\n').count() + 1)
+                    .unwrap_or(u32::MAX),
+                scoped,
+                module,
+            };
+            let path = fragment.host_path();
+            let key = stylo_host_key(project, &path).map_err(StyloProjectCaptureFailure::Invalid)?;
+            let mut failure = if attempts_left == 0 {
+                Some(StyloUnavailable::Limit)
+            } else if container.inline_css(index).is_err() {
+                Some(StyloUnavailable::UnsupportedSyntax)
+            } else {
+                None
+            };
+            let mut captured = None;
+            let mut attempted = None;
+            if failure.is_none() {
+                let base_url = url::Url::from_file_path(walk.root().join(&file.relative_path))
+                    .map_err(|()| StyloProjectCaptureFailure::Unavailable)?
+                    .to_string();
+                let config = StyloParseConfig {
+                    source_kind: StyloSourceKind::EmbeddedUnicodeFragment,
+                    base_url,
+                    author_origin: true,
+                    no_quirks: true,
+                    allow_imports: true,
+                    limits: limits_for(*remaining_records, *remaining_bytes)?,
+                };
+                attempted = Some(config.clone());
+                attempts_left -= 1;
+                match super::stylo_capture::capture_stylo_fragment_host(
+                    permit,
+                    walk.root().to_path_buf(),
+                    project,
+                    &fragment,
+                    host_extent,
+                    &config,
+                    wall_time,
+                    memory_limit,
+                    *remaining_bytes,
+                    *remaining_records,
+                    cancellation,
+                ) {
+                    Ok(value) => captured = Some(value),
+                    Err(error) => failure = Some(fragment_terminal(error)?),
+                }
+            }
+            let host = if let Some(value) = captured {
+                *remaining_records = remaining_records.saturating_sub(value.facts().len() + 1);
+                *remaining_bytes = remaining_bytes.saturating_sub(value.encoded_bytes());
+                StyloProjectHost::Captured(value)
+            } else {
+                let policy = super::stylo_worker::stylo_worker_policy(wall_time, memory_limit)
+                    .map_err(|_| StyloProjectCaptureFailure::Unavailable)?;
+                let row = StyloAnalysisRecord::Host {
+                    project,
+                    path,
+                    content: Some(host_extent.content().to_bytes()),
+                    source: Some(*host_extent.source().as_ref()),
+                    byte_length: Some(bytes.len() as u64),
+                    utf8_bom_removed: None,
+                    configuration: attempted
+                        .as_ref()
+                        .map(|config| {
+                            stylo_parser_configuration_id(backend_engine::builtin::STYLO_EMBEDDED_RECIPE, config)
+                        })
+                        .transpose()
+                        .map_err(StyloProjectCaptureFailure::Invalid)?,
+                    worker_policy: attempted.as_ref().map(|_| policy),
+                    config: attempted,
+                    preferences: None,
+                    preference_stability: None,
+                    analysis_basis: None,
+                    source_coverage: None,
+                    source_gaps: vec![],
+                    source_observer_recipe: None,
+                    terminal: StyloTerminal::Unavailable(failure.ok_or(StyloProjectCaptureFailure::Unavailable)?),
+                    fact_count: 0,
+                    fact_digest: stylo_rows_digest(&[]).map_err(StyloProjectCaptureFailure::Invalid)?,
+                    fragment: Some(fragment),
+                };
+                row.validate().map_err(StyloProjectCaptureFailure::Invalid)?;
+                let mut encoded = Vec::new();
+                StyloAnalysisRelation::encode_value(&row, &mut encoded);
+                if encoded.len() > *remaining_bytes {
+                    complete = false;
+                    break 'files;
+                }
+                *remaining_bytes -= encoded.len();
+                *remaining_records -= 1;
+                StyloProjectHost::Unavailable { key, row }
+            };
+            hosts.push(host);
+        }
+    }
+    Ok(complete)
+}
+
+/// Scans the project's TypeScript and JavaScript sources for style links, from
+/// the same revision fence as the stylesheets. A source which cannot be read or
+/// does not fit the remaining budgets simply has no host row; readers then fall
+/// back to a query-time scan and say so. Only a vanished source is an error.
+#[allow(clippy::too_many_arguments)]
+fn capture_code_hosts(
+    fence: &CompilerRevisionFence,
+    root: &ProjectRoot,
+    project: [u8; 32],
+    max_file: usize,
+    remaining_source: &mut usize,
+    remaining_bytes: &mut usize,
+    remaining_records: &mut usize,
+    source_bytes_read: &mut usize,
+    cancellation: &AtomicBool,
+) -> Result<Vec<super::commands::code_links::CodeHostRows>, StyloProjectCaptureFailure> {
+    use super::commands::code_links::{host_rows, scan_bytes};
+    use backend_engine::builtin::StyloAnalysisRelation;
+    use backend_version::Relation;
+    let mut candidates: Vec<String> = fence
+        .files
+        .iter()
+        .filter_map(|file| file.relative_path.to_str())
+        .map(|path| path.replace(std::path::MAIN_SEPARATOR, "/"))
+        .filter(|path| super::commands::code_links::is_code_path(path))
+        .collect();
+    candidates.sort();
+    candidates.dedup();
+    let mut hosts = Vec::new();
+    for name in candidates.into_iter().take(MAX_CODE_HOSTS) {
+        if cancellation.load(Ordering::Acquire) {
+            return Err(StyloProjectCaptureFailure::Cancelled);
+        }
+        if *remaining_records == 0 || *remaining_bytes == 0 {
+            break;
+        }
+        let bytes = match read_stylo_bounded(
+            root,
+            Path::new(&name),
+            max_file,
+            remaining_source,
+            source_bytes_read,
+        ) {
+            Ok(bytes) => bytes,
+            Err(SourceFault::Vanished) => return Err(StyloProjectCaptureFailure::Stale),
+            Err(SourceFault::Fatal(error)) => return Err(StyloProjectCaptureFailure::Invalid(error)),
+            Err(_) => continue,
+        };
+        let Some(outcome) = scan_bytes(&name, &bytes) else { continue };
+        let source = *backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(&bytes).as_ref();
+        let rows = host_rows(project, &name, source, bytes.len() as u64, outcome)
+            .map_err(StyloProjectCaptureFailure::Invalid)?;
+        let mut encoded_total = 0usize;
+        for row in std::iter::once(&rows.host).chain(rows.facts.iter().map(|(_, row)| row)) {
+            let mut encoded = Vec::new();
+            StyloAnalysisRelation::encode_value(row, &mut encoded);
+            encoded_total = encoded_total.saturating_add(encoded.len());
+        }
+        let count = rows.facts.len() + 1;
+        if count > *remaining_records || encoded_total > *remaining_bytes {
+            break;
+        }
+        *remaining_records -= count;
+        *remaining_bytes -= encoded_total;
+        hosts.push(rows);
+    }
+    hosts.sort_by_key(|host| host.key);
+    Ok(hosts)
+}
+
 pub(super) fn capture_stylo_project(
     scan: &IndexSnapshot,
     permit: &super::stylo_worker::StyloWorkerPermit,
@@ -11819,8 +12105,11 @@ pub(super) fn capture_stylo_project(
     let (inventory_count, inventory_digest) = walk
         .inventory
         .ok_or(StyloProjectCaptureFailure::Unavailable)?;
+    // The fence covers stylesheets and Vue hosts alike: a changed `<style>` block
+    // must make the capture stale exactly as a changed `.css` file does.
     let fence = walk
         .bind_fence(&scan.revision_fence)
+        .and_then(|fence| scan.vue_walk.bind_fence(&fence))
         .map_err(StyloProjectCaptureFailure::Invalid)?;
     if !compiler_revision_is_current_with_cancellation(&fence, Some(cancellation))
         .map_err(StyloProjectCaptureFailure::Invalid)?
@@ -11929,7 +12218,9 @@ pub(super) fn capture_stylo_project(
                         base_url,
                         author_origin: true,
                         no_quirks: true,
-                        allow_imports: false,
+                        // Imports are recorded, never loaded: the worker answers
+                        // every request with a refused sheet.
+                        allow_imports: true,
                         limits: StyloLimits {
                             input_bytes: max_file as u64,
                             rules: u32::try_from(rule_quota)
@@ -12060,6 +12351,7 @@ pub(super) fn capture_stylo_project(
                 ),
                 fact_count: 0,
                 fact_digest: stylo_rows_digest(&[]).map_err(StyloProjectCaptureFailure::Invalid)?,
+                fragment: None,
             };
             row.validate()
                 .map_err(StyloProjectCaptureFailure::Invalid)?;
@@ -12075,7 +12367,54 @@ pub(super) fn capture_stylo_project(
         };
         hosts.push(host);
     }
+    let vue_complete = capture_vue_style_hosts(
+        scan,
+        permit,
+        &root,
+        walk.project,
+        max_file,
+        &|records, text_budget| {
+            let quota = records.saturating_sub(1);
+            let rule_quota = (quota / 4).min(100_000);
+            let record_quota = (quota / 2).min(200_000);
+            let diagnostic_quota = quota.saturating_sub(rule_quota + record_quota).min(2_000);
+            Ok(backend_semantic::stylo_analysis::StyloLimits {
+                input_bytes: max_file as u64,
+                rules: u32::try_from(rule_quota).map_err(|_| StyloProjectCaptureFailure::Unavailable)?,
+                depth: 64,
+                records: u32::try_from(record_quota).map_err(|_| StyloProjectCaptureFailure::Unavailable)?,
+                diagnostics: u32::try_from(diagnostic_quota).map_err(|_| StyloProjectCaptureFailure::Unavailable)?,
+                text_bytes: text_budget.min(8 * 1024 * 1024) as u64,
+            })
+        },
+        wall_time,
+        memory_limit,
+        &mut remaining_source,
+        &mut remaining_bytes,
+        &mut remaining_records,
+        &mut source_bytes_read,
+        cancellation,
+        &mut hosts,
+    )?;
+    complete &= vue_complete;
     hosts.sort_by_key(StyloProjectHost::key);
+    let code_hosts = capture_code_hosts(
+        &fence,
+        &root,
+        walk.project,
+        max_file,
+        &mut remaining_source,
+        &mut remaining_bytes,
+        &mut remaining_records,
+        &mut source_bytes_read,
+        cancellation,
+    )?;
+    let code_refs: Vec<_> = code_hosts.iter().map(|code| (code.key, &code.host)).collect();
+    let code_selection = backend_engine::builtin::CodeSelection {
+        recipe: backend_engine::builtin::CODE_LINK_RECIPE.to_owned(),
+        count: u32::try_from(code_hosts.len()).map_err(|_| StyloProjectCaptureFailure::Unavailable)?,
+        digest: stylo_rows_digest(&code_refs).map_err(StyloProjectCaptureFailure::Invalid)?,
+    };
     let host_refs: Vec<_> = hosts.iter().map(|host| (host.key(), host.row())).collect();
     let host_digest = stylo_rows_digest(&host_refs).map_err(StyloProjectCaptureFailure::Invalid)?;
     let selection = StyloAnalysisRecord::Selection {
@@ -12089,7 +12428,9 @@ pub(super) fn capture_stylo_project(
         discovery,
         policy_complete: false,
         max_worker_attempts: Some(MAX_STYLO_WORKER_ATTEMPTS),
-        inventory: if complete && hosts.len() as u64 == inventory_count {
+        inventory: if complete
+            && hosts.iter().filter(|host| !is_fragment_host(host.row())).count() as u64 == inventory_count
+        {
             StyloInventory::Complete
         } else {
             StyloInventory::Incomplete
@@ -12099,6 +12440,7 @@ pub(super) fn capture_stylo_project(
         host_count: u32::try_from(hosts.len())
             .map_err(|_| StyloProjectCaptureFailure::Unavailable)?,
         host_digest,
+        code: Some(code_selection),
     };
     selection
         .validate()
@@ -12113,6 +12455,7 @@ pub(super) fn capture_stylo_project(
         selection,
         attempt: None,
         hosts,
+        code_hosts,
         fence,
         source_bytes_read,
         worker_attempts: MAX_STYLO_WORKER_ATTEMPTS - worker_budget.remaining,

@@ -357,6 +357,8 @@ pub enum StyloFailure {
     WorkerFailure,
     /// Process-global preferences changed during parsing.
     PreferencesChanged,
+    /// An embedded stylesheet uses a language the native parser does not read.
+    UnsupportedSyntax,
 }
 /// Evidence of the worker capability on the latest attempt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
