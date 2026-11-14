@@ -5,7 +5,7 @@
 use backend_semantic::vocabulary::TypeScriptSource;
 use oxc_allocator::Allocator;
 use oxc_ast::ast::TSMappedTypeModifierOperator;
-use oxc_parser::Parser;
+use oxc_parser::{ParseOptions, Parser};
 use oxc_semantic::{Semantic, SemanticBuilder};
 use oxc_span::SourceType;
 use oxc_syntax::module_record::ModuleRecord;
@@ -146,7 +146,19 @@ pub fn analyze_with_declaration<'source>(
     declaration: bool,
     arena: &'source Allocator,
 ) -> Result<OxcModule<'source>, AuthorityError> {
-    let parsed = Parser::new(arena, source, source_type(profile, declaration)).parse();
+    // TypeScript's parser accepts a `return` outside any function and leaves
+    // it to the checker, which reports TS1108 as a grammar diagnostic. Node
+    // runs a CommonJS script inside a function wrapper, so a top-level
+    // `return` there is ordinary code that stops the script early. Accept the
+    // grammar TypeScript's parser accepts, so one such script does not refuse
+    // every other source of its profile.
+    let options = ParseOptions {
+        allow_return_outside_function: true,
+        ..ParseOptions::default()
+    };
+    let parsed = Parser::new(arena, source, source_type(profile, declaration))
+        .with_options(options)
+        .parse();
     if !parsed.diagnostics.is_empty() {
         return Err(AuthorityError::Syntax {
             diagnostics: parsed.diagnostics,
