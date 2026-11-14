@@ -254,13 +254,6 @@ impl ShelfEntry {
         self
     }
 
-    /// Attaches per-profile source-file counts read from the owner's source receipt.
-    #[must_use]
-    pub fn with_profiles(mut self, profiles: Vec<ProfileFiles>) -> Self {
-        self.profiles = profiles.into_boxed_slice();
-        self
-    }
-
     /// Returns the per-profile source-file counts, in the receipt's canonical order.
     #[must_use]
     pub fn profiles(&self) -> &[ProfileFiles] {

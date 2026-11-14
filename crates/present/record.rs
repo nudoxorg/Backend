@@ -416,11 +416,14 @@ impl RecordList {
     /// import: the caller asked for declarations alone.
     #[must_use]
     pub fn declarations_only_view(mut self) -> Self {
-        let (kept, dropped): (Vec<_>, Vec<_>) = self.records.iter().cloned().partition(|record| {
+        let mut records = std::mem::take(&mut self.records).into_vec();
+        let before = records.len();
+        records.retain(|record| {
             record.kind() != Some(DeclarationKind::Import) && !record.is_external_reference()
         });
-        self.hidden_non_declarations = self.hidden_non_declarations.saturating_add(dropped.len());
-        self.records = kept.into_boxed_slice();
+        self.hidden_non_declarations =
+            self.hidden_non_declarations.saturating_add(before - records.len());
+        self.records = records.into_boxed_slice();
         self
     }
 
