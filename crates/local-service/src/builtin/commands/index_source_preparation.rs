@@ -1066,31 +1066,42 @@ pub(super) fn prepare_scan_source(
             profile,
         )?;
         let input = semantic_input_digest(&scan, profile);
-        let proof = binding.and_then(|binding| {
-            compiler
-                .typescript_snapshot_reuse(
+        let proof = match binding {
+            None => Err("no compiled generation is selected for this project yet"),
+            Some(binding) => compiler
+                .typescript_snapshot_reuse_checked(
                     source_root,
                     profile,
                     input,
                     binding,
                     cancellation.as_ref(),
                 )
-                .or_else(|| {
+                .or_else(|in_memory| {
+                    // A new owner holds no in-memory witness; the selected
+                    // generation's stored witness is the only other proof.
                     let package_reference =
-                        backend_engine::PackageReference::parse(label.clone()).ok()?;
+                        backend_engine::PackageReference::parse(label.clone())
+                            .map_err(|_| "the package reference is invalid")?;
                     let semantic_coordinate = crate::builtin::compiler_scope::semantic_coordinate(
                         package, profile, coordinate,
                     )
-                    .ok()?;
+                    .map_err(|_| "the semantic coordinate is invalid")?;
                     let key = ProductSemanticPublicationKey::new(
                         package_reference,
                         semantic_coordinate,
                         profile,
                     )
-                    .ok()?;
-                    let bytes = semantic_authority
-                        .selected_typescript_snapshot_certificate(&key, binding, input)?;
-                    compiler.restore_typescript_snapshot_certificate(
+                    .map_err(|_| "the publication key is invalid")?;
+                    let Some(bytes) = semantic_authority
+                        .selected_typescript_snapshot_certificate(&key, binding, input)
+                    else {
+                        return Err(if in_memory.starts_with("this owner holds no") {
+                            "no stored read witness matches the selected generation and input"
+                        } else {
+                            in_memory
+                        });
+                    };
+                    compiler.restore_typescript_snapshot_certificate_checked(
                         source_root,
                         profile,
                         input,
@@ -1098,9 +1109,15 @@ pub(super) fn prepare_scan_source(
                         &bytes,
                         cancellation.as_ref(),
                     )
-                })
-        });
-        if let Some(proof) = proof {
+                }),
+        };
+        if let (Err(reason), Some(_)) = (&proof, binding) {
+            eprintln!(
+                "locald: {} sources are compiled again: {reason}",
+                profile.language().name()
+            );
+        }
+        if let Ok(proof) = proof {
             typescript_reused_profiles.insert(profile);
             final_revision_fence.typescript_reuse.push(proof);
         }
