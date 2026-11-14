@@ -34,6 +34,7 @@ def npm_packument(name, versions):
 class Registry:
     def __init__(self):
         self.requests = []
+        self.clients = []
         registry = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -42,6 +43,7 @@ class Registry:
 
             def do_GET(self):
                 registry.requests.append(self.path)
+                registry.clients.append(self.client_address[0])
                 body = registry.route(self.path)
                 if body is None:
                     self.send_response(404)

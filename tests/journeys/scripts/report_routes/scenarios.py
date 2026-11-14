@@ -396,7 +396,7 @@ def _has(text, *needles):
 
 
 def probe_packages(bin_dir, out):
-    """PACKAGE-01..07: the CRM scaffold's package questions against a loopback registry fixture.
+    """The full-stack scaffold's package questions against a loopback registry fixture.
 
     The owner runs online against registry_fixture.Registry only (127.0.0.1); nothing reaches a
     real registry. The fixture serves fastapi and vite metadata, no archives."""
@@ -408,43 +408,46 @@ def probe_packages(bin_dir, out):
         proj = _project(r, "crm")
         r.start_owner(proj, registry=registry)
         r.cli("add", ["add", str(proj), "--wait", "--wait-timeout", "900"], proj)
-        # PACKAGE-01: the same name explore leaves empty is found by index-search; explore says why.
+        # The same name explore leaves empty is found by index-search; explore says why.
         code, explore, text = r.cli("explore-fastapi", ["explore", "fastapi"], proj)
         note = (explore or {}).get("note", "")
-        results["PACKAGE-01"] = {"pass": code == 0 and not _rows(explore) and _has(note, "index-search fastapi", "does not mean no such package"),
+        results["explore_scope"] = {"pass": code == 0 and not _rows(explore) and _has(note, "index-search fastapi", "does not mean no such package"),
                                  "detail": note}
-        # PACKAGE-04 (metadata half): an online lookup returns the registry's observation, not "offline".
+        # An online lookup returns the registry's observation, not "offline".
         code, pkg, text = r.cli("package-fastapi", ["package", "pkg:pypi/fastapi@0.162.0"], proj)
-        results["PACKAGE-04"] = {"pass": code == 0 and "offline" not in text and "discovered" in text,
+        results["package_metadata_online"] = {"pass": code == 0 and "offline" not in text and "discovered" in text,
                                  "detail": text[:600]}
-        # PACKAGE-03: the discovered releases of a package the project uses.
+        # The discovered releases of a package the project uses.
         code, versions, text = r.cli("versions-fastapi", ["package-versions", "pkg:pypi/fastapi@0.162.0"], proj)
-        results["PACKAGE-03"] = {"pass": code == 0 and _has(text, "0.160.0", "0.161.0", "0.162.0", "None is acquired"),
+        results["package_versions_discovered"] = {"pass": code == 0 and _has(text, "0.160.0", "0.161.0", "0.162.0", "None is acquired"),
                                  "detail": text[:900]}
         code, vite, text_vite = r.cli("versions-vite", ["package-versions", "pkg:npm/vite@6.0.0"], proj)
-        results["PACKAGE-03"]["pass"] = results["PACKAGE-03"]["pass"] and code == 0 and _has(text_vite, "5.4.0", "6.0.0")
-        # PACKAGE-02: dependencies before acquisition names the acquisition.
+        results["package_versions_discovered"]["pass"] = results["package_versions_discovered"]["pass"] and code == 0 and _has(text_vite, "5.4.0", "6.0.0")
+        # Dependencies before acquisition names the acquisition.
         code, deps, text = r.cli("dependencies-fastapi", ["dependencies", "pkg:pypi/fastapi@0.162.0"], proj)
         fault = (deps or {}).get("fault", {})
-        results["PACKAGE-02"] = {"pass": fault.get("shell") == "nudox add pkg:pypi/fastapi@0.162.0"
+        results["dependencies_name_acquisition"] = {"pass": fault.get("shell") == "nudox add pkg:pypi/fastapi@0.162.0"
                                  and fault.get("call", {}).get("name") == "backend.index",
                                  "detail": fault}
-        # PACKAGE-05: an unversioned locator names the discovery route.
+        # An unversioned locator names the discovery route.
         code, vue, text = r.cli("package-vue-unversioned", ["package", "pkg:npm/vue"], proj)
-        results["PACKAGE-05"] = {"pass": code != 0 and _has(text, "exact version", "index-search"), "detail": text[:400]}
+        results["unversioned_locator_route"] = {"pass": code != 0 and _has(text, "exact version", "index-search"), "detail": text[:400]}
         # The same answers over MCP, including the acquisition route's tool.
         r.start_mcp(proj)
         explore_mcp = r.tool("backend.explore", {"query": "fastapi"})
         versions_mcp = r.tool("backend.package_versions", {"package": "pkg:pypi/fastapi@0.162.0"})
         deps_mcp = r.tool("backend.dependencies", {"package": "pkg:pypi/fastapi@0.162.0"}, allow_error=True)
         call = (deps_mcp.get("structuredContent", {}).get("fault", {}) or {}).get("call", {})
-        results["PACKAGE-07"] = {"pass": call.get("name") == "backend.index"
+        results["mcp_acquisition_route"] = {"pass": call.get("name") == "backend.index"
                                  and call.get("arguments", {}).get("path") == "pkg:pypi/fastapi@0.162.0"
                                  and "pkg:pypi/fastapi@0.162.0" in json.dumps(versions_mcp)
                                  and "index-search fastapi" in json.dumps(explore_mcp),
                                  "detail": {"dependencies_call": call}}
-        results["PACKAGE-06"] = {"pass": True, "detail": "loopback registry fixture: registry_fixture.Registry; requests="
-                                 + json.dumps(registry.requests)}
+        # The owner was configured only with the fixture's sources, so the fixture must have
+        # seen requests and every one of them must have come from the loopback interface.
+        results["registry_loopback_only"] = {"pass": bool(registry.requests) and bool(registry.clients)
+                                             and all(c in ("127.0.0.1", "::1") for c in registry.clients),
+                                             "detail": {"requests": registry.requests, "clients": sorted(set(registry.clients))}}
         return results
     finally:
         r.stop()
@@ -452,7 +455,7 @@ def probe_packages(bin_dir, out):
 
 
 def probe_vue(bin_dir, out):
-    """INVENTORY-01: the CRM scaffold's App.vue script block through search, outline, source and status."""
+    """The full-stack scaffold's App.vue script block through search, outline, source and status."""
     r = Route(bin_dir, out)
     try:
         proj = _project(r, "crm")
@@ -473,7 +476,7 @@ def probe_vue(bin_dir, out):
         outline_code, _, outline_text = r.cli("outline", ["outline", "--limit", "100"], proj)
         vue_excluded = [e for e in (status or {}).get("source_selection_scope", {}).get("extensions", []) if e.get("extension") == "vue"]
         path_ok = row.get("identity", {}).get("path") == "frontend/src/App.vue" and row.get("identity", {}).get("line") == line
-        return {"INVENTORY-01": {"pass": bool(coord) and path_ok and source_ok and "App.vue" in outline_text
+        return {"vue_script_block_inventory": {"pass": bool(coord) and path_ok and source_ok and "App.vue" in outline_text
                                  and not any(e.get("excluded_files") for e in vue_excluded),
                                  "detail": {"coordinate": coord, "row_path": row.get("identity", {}).get("path"),
                                             "row_line": row.get("identity", {}).get("line"), "expected_line": line,
@@ -484,7 +487,7 @@ def probe_vue(bin_dir, out):
 
 
 def startup_missing_checker(bin_dir, out):
-    """STARTUP-02/STATUS-01: an explicitly configured optional checker that does not exist."""
+    """An explicitly configured optional checker that does not exist."""
     r = Route(bin_dir, out, auto_start=True, extra_env={"NUDOX_PYTHON": "/nonexistent/python3"})
     try:
         proj = _project(r, "tiny")
@@ -497,7 +500,7 @@ def startup_missing_checker(bin_dir, out):
         crm = _project(r, "crm")
         code4, obj4, text4 = r.cli("add-python", ["add", str(crm), "--wait", "--wait-timeout", "900"], crm)
         code5, obj5, text5 = r.cli("health-after", ["health"], proj, timeout=300)
-        return {"STARTUP-02": {"pass": ok and code5 == 0,
+        return {"missing_checker_startup": {"pass": ok and code5 == 0,
                                "detail": f"health={code} status={code2} add={code3}; python project add={code4} "
                                          f"health afterwards={code5}; {text[-200:]!r}; add-python tail={text4[-300:]!r}"}}
     finally:
@@ -717,8 +720,8 @@ def query_output(bin_dir, out):
         (out / "poll-sizes.json").write_text(json.dumps(polls))
         unchanged = [size for kind, size in polls if kind == "index-progress-unchanged"]
         changed = [size for kind, size in polls[1:] if kind != "index-progress-unchanged"]
-        ok("poll_size", unchanged and max(unchanged) < 1000, f"unchanged polls {unchanged} bytes (base 2359)")
-        ok("poll_size", changed and max(changed) < 8000, f"changed polls {changed} bytes (base 5521-8936)")
+        ok("poll_size", unchanged and max(unchanged) < 1000, f"unchanged polls {unchanged} bytes")
+        ok("poll_size", changed and max(changed) < 8000, f"changed polls {changed} bytes")
         ok("poll_size", not result.get("isError"), "final poll is not an error")
         r.cli("add", ["add", str(proj), "--wait", "--wait-timeout", "900"], proj)
 
@@ -780,7 +783,7 @@ def query_output(bin_dir, out):
         first = r.tool("backend.search", {"query": "Button", "limit": 1})
         fsc = first.get("structuredContent", {})
         cursor = fsc.get("nextCursor")
-        ok("cursor_handle", cursor and len(cursor) < 120, f"nextCursor is {len(cursor or '')} bytes (base 2470); result {len(json.dumps(first))} bytes (base 3575)")
+        ok("cursor_handle", cursor and len(cursor) < 120, f"nextCursor is {len(cursor or '')} bytes; result {len(json.dumps(first))} bytes")
         second = r.tool("backend.search", {"query": "Button", "limit": 1, "cursor": cursor})
         ssc = second.get("structuredContent", {})
         ok("cursor_handle", not second.get("isError") and ssc.get("records") and ssc["records"][0]["identity"]["coordinate"] != fsc["records"][0]["identity"]["coordinate"],
@@ -802,17 +805,16 @@ def probe_owner_retirement(bin_dir, out):
     """What does a client see when its change races the owner's idle retirement?
 
     The detached owner retires itself after its idle window and takes a while to drain. A change
-    submitted inside that drain used to be accepted by the still-open listener and then dropped.
-    The window is shrunk to 1.5 s and the submit time is swept across the retirement.
+    submitted inside that drain must either be served or be reported as not accepted; it must
+    never be accepted by the still-open listener and then dropped. The window is shrunk to 1.5 s and the submit time is swept across the retirement.
     """
-    import subprocess, re
+    import re
     results = []
     for offset_ms in range(1200, 2400, 100):
         o = out / f"offset-{offset_ms}"
         r = Route(bin_dir, o, owner_args=["--idle-timeout-ms", "1500"])
         try:
             proj = _project(r, "tiny")
-            t0 = time.monotonic()
             r.start_owner(proj)
             started = time.monotonic()
             wait = max(0.0, offset_ms / 1000 - (time.monotonic() - started))
