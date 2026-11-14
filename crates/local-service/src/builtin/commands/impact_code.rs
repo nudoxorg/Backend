@@ -20,6 +20,8 @@ use super::impact_framework::{
     DomainLoad, Edge, FileWitness, ImpactAdapter, ImpactContext, Key, Node, node_key,
 };
 use super::impact_scan::{FileScan, ImportBinding, Imported, is_component_name, profile_for, scan_module};
+use super::code_links::PersistedHost;
+use backend_engine::builtin::CodeHostState;
 use backend_frontend_typescript::legacy::with_analysis;
 use backend_library::impact::{
     ImpactDomain, ImpactDomainBasis, ImpactDomainState, ImpactGap, ImpactSeedSpec, ImpactStrength,
@@ -439,6 +441,52 @@ fn indexed_files(cx: &ImpactContext<'_>) -> Result<Vec<IndexedFile>, String> {
     Ok(out)
 }
 
+/// How a listed file is served from the row the index published for it.
+enum Published<'a> {
+    /// The index scanned these bytes; its facts are the scan.
+    Scanned { host: &'a PersistedHost, dynamic_class_expressions: u32 },
+    /// The index found these bytes do not parse.
+    Unparsed(&'a PersistedHost),
+    /// There is no row for these bytes, or the index could not scan them: the
+    /// source is scanned here, and that scan witnesses the file.
+    ScanHere,
+}
+
+fn published_for<'a>(file: &IndexedFile, host: Option<&'a PersistedHost>) -> Published<'a> {
+    let Some(host) = host else { return Published::ScanHere };
+    let same_bytes = host.source == file.source && file.length.is_none_or(|length| length == host.byte_length);
+    if !same_bytes {
+        return Published::ScanHere;
+    }
+    match host.state {
+        CodeHostState::Scanned { dynamic_class_expressions } => Published::Scanned { host, dynamic_class_expressions },
+        CodeHostState::Unparsed => Published::Unparsed(host),
+        CodeHostState::Unavailable(_) => Published::ScanHere,
+    }
+}
+
+/// Query-time scans spent against the limits. A file the index published
+/// facts for costs nothing, however late it is listed.
+#[derive(Default)]
+struct ScanBudget {
+    scans: u32,
+    bytes: usize,
+    /// Files which needed a scan after the budget was spent.
+    over: u32,
+}
+
+impl ScanBudget {
+    /// Whether one more file may be scanned here; counts it either way.
+    fn admit(&mut self) -> bool {
+        if self.scans as usize >= MAX_FILES || self.bytes >= MAX_TOTAL_BYTES {
+            self.over += 1;
+            return false;
+        }
+        self.scans += 1;
+        true
+    }
+}
+
 impl ImpactAdapter for CodeAdapter {
     fn domain(&self) -> ImpactDomain {
         ImpactDomain::Code
@@ -458,7 +506,8 @@ impl ImpactAdapter for CodeAdapter {
         let mut witnesses = Vec::new();
         let mut gaps = Vec::new();
         let mut reasons = Vec::new();
-        let (mut stale, mut unparsed, mut total) = (Vec::new(), Vec::new(), 0usize);
+        let (mut stale, mut unparsed) = (Vec::new(), Vec::new());
+        let mut budget = ScanBudget::default();
         // Links the index published are the graph; a file with no published
         // facts (older index, budget, no CSS worker) is scanned here instead.
         let persisted = match super::code_links::read_persisted(cx.snapshot, cx.project, cx.cancelled) {
@@ -472,49 +521,40 @@ impl ImpactAdapter for CodeAdapter {
             }
         };
         let mut from_index = 0u32;
-        let mut at_query = 0u32;
-        // Files which needed a query-time scan after the budget was spent.
-        let mut over_budget = 0u32;
         for file in &listed {
             if (cx.cancelled)() {
                 return empty(ImpactDomainState::Unavailable { reason: "cancelled".to_owned() });
             }
-            if let Some(host) = persisted.as_ref().and_then(|code| code.hosts.get(&file.path)) {
-                let same_bytes = host.source == file.source && file.length.is_none_or(|length| length == host.byte_length);
-                if same_bytes {
-                    let witness = FileWitness {
+            match published_for(file, persisted.as_ref().and_then(|code| code.hosts.get(&file.path))) {
+                Published::Scanned { host, dynamic_class_expressions } => {
+                    witnesses.push(FileWitness {
                         root: root.clone(),
                         path: file.path.clone(),
                         length: host.byte_length,
                         source: file.source,
-                    };
-                    match host.state {
-                        backend_engine::builtin::CodeHostState::Scanned { dynamic_class_expressions } => {
-                            witnesses.push(witness);
-                            scans.insert(
-                                file.path.clone(),
-                                super::code_links::scan_from_facts(&file.path, dynamic_class_expressions, &host.facts),
-                            );
-                            from_index += 1;
-                            continue;
-                        }
-                        backend_engine::builtin::CodeHostState::Unparsed => {
-                            witnesses.push(witness);
-                            unparsed.push(file.path.clone());
-                            continue;
-                        }
-                        // The index could not scan it; try here, which witnesses the file.
-                        backend_engine::builtin::CodeHostState::Unavailable(_) => {}
-                    }
+                    });
+                    scans.insert(
+                        file.path.clone(),
+                        super::code_links::scan_from_facts(&file.path, dynamic_class_expressions, &host.facts),
+                    );
+                    from_index += 1;
+                    continue;
                 }
+                Published::Unparsed(host) => {
+                    witnesses.push(FileWitness {
+                        root: root.clone(),
+                        path: file.path.clone(),
+                        length: host.byte_length,
+                        source: file.source,
+                    });
+                    unparsed.push(file.path.clone());
+                    continue;
+                }
+                Published::ScanHere => {}
             }
-            // The budget counts scans made here; a file the index published
-            // facts for costs nothing, however late it is listed.
-            if at_query as usize >= MAX_FILES || total >= MAX_TOTAL_BYTES {
-                over_budget += 1;
+            if !budget.admit() {
                 continue;
             }
-            at_query += 1;
             let bytes = match super::super::ingest::read_stylo_selected_source(&root, &file.path, MAX_FILE_BYTES) {
                 Ok(bytes) => bytes,
                 Err(_) => {
@@ -522,7 +562,7 @@ impl ImpactAdapter for CodeAdapter {
                     continue;
                 }
             };
-            total += bytes.len();
+            budget.bytes += bytes.len();
             let current = *ContentId::<SourceFactDomain>::from_canonical_bytes(&bytes).as_ref();
             witnesses.push(FileWitness {
                 root: root.clone(),
@@ -575,15 +615,16 @@ impl ImpactAdapter for CodeAdapter {
                 }
             }
         }
-        if over_budget > 0 {
+        if budget.over > 0 {
             reasons.push(format!(
-                "only {at_query} of {} sources which needed a query-time scan were read",
-                at_query + over_budget
+                "only {} of {} sources which needed a query-time scan were read",
+                budget.scans,
+                budget.scans + budget.over
             ));
             gaps.push(ImpactGap {
                 facet: "code.scan-limit".to_owned(),
                 note: "the source scan budget was reached; these files were not read".to_owned(),
-                count: Some(over_budget),
+                count: Some(budget.over),
             });
         }
         if !no_facts.is_empty() {
@@ -613,6 +654,7 @@ impl ImpactAdapter for CodeAdapter {
                 count: Some(unparsed.len() as u32),
             });
         }
+        let at_query = budget.scans;
         if at_query > 0 {
             gaps.push(ImpactGap {
                 facet: "code.links-unpublished".to_owned(),
@@ -736,6 +778,51 @@ export const Plain = () => <div className="a b" class="c" />;
         let scan = scan("a.tsx", "export const A = ({s}) => <i className={`btn-${s} x`} />;");
         let tokens: BTreeSet<&str> = scan.class_uses.iter().map(|usage| usage.token.as_str()).collect();
         assert!(tokens.contains("x") && !tokens.contains("btn-"), "{tokens:?}");
+    }
+
+    fn indexed(source: u8, length: Option<u64>) -> IndexedFile {
+        IndexedFile { path: "src/a.tsx".to_owned(), length, source: [source; 32] }
+    }
+
+    fn host(source: u8, length: u64, state: CodeHostState) -> PersistedHost {
+        PersistedHost { source: [source; 32], byte_length: length, state, facts: Vec::new() }
+    }
+
+    #[test]
+    fn published_rows_serve_only_the_bytes_they_describe() {
+        let scanned = host(1, 10, CodeHostState::Scanned { dynamic_class_expressions: 2 });
+        assert!(matches!(
+            published_for(&indexed(1, Some(10)), Some(&scanned)),
+            Published::Scanned { dynamic_class_expressions: 2, .. }
+        ));
+        assert!(matches!(published_for(&indexed(1, None), Some(&scanned)), Published::Scanned { .. }));
+        assert!(matches!(published_for(&indexed(2, Some(10)), Some(&scanned)), Published::ScanHere));
+        assert!(matches!(published_for(&indexed(1, Some(11)), Some(&scanned)), Published::ScanHere));
+        assert!(matches!(published_for(&indexed(1, Some(10)), None), Published::ScanHere));
+        let unparsed = host(1, 10, CodeHostState::Unparsed);
+        assert!(matches!(published_for(&indexed(1, Some(10)), Some(&unparsed)), Published::Unparsed(_)));
+    }
+
+    #[test]
+    fn a_host_the_index_could_not_scan_is_scanned_here_and_witnessed_there() {
+        let unavailable = host(1, 10, CodeHostState::Unavailable(backend_engine::builtin::CodeUnavailable::Limit));
+        assert!(matches!(published_for(&indexed(1, Some(10)), Some(&unavailable)), Published::ScanHere));
+    }
+
+    #[test]
+    fn the_scan_budget_counts_scans_and_never_positions() {
+        let mut budget = ScanBudget::default();
+        for _ in 0..MAX_FILES {
+            assert!(budget.admit());
+        }
+        // Files served from the index never reach the budget, so a late one is
+        // unaffected; the next file which needs a scan is the one refused.
+        assert!(!budget.admit());
+        assert!(!budget.admit());
+        assert_eq!((budget.scans as usize, budget.over), (MAX_FILES, 2));
+        let mut heavy = ScanBudget { bytes: MAX_TOTAL_BYTES, ..ScanBudget::default() };
+        assert!(!heavy.admit());
+        assert_eq!((heavy.scans, heavy.over), (0, 1));
     }
 
     #[test]
