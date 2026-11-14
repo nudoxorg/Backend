@@ -57,7 +57,13 @@ pub(super) fn sql_projection(
     ));
     // Application sources may still hold SQL, so a project with none of its own
     // `.sql` files is scanned unless it has never had SQL and has no candidates.
-    if walk.file_count() == 0 && walk.embedded_candidates() == 0 && walk.inventory_complete() && !prior {
+    // An incomplete embedded inventory is never an answer of "no SQL".
+    if walk.file_count() == 0
+        && walk.embedded_candidates() == 0
+        && walk.inventory_complete()
+        && walk.embedded_complete()
+        && !prior
+    {
         return Ok(None);
     }
     let capture = match ingest::capture_sql_project(walk, fence, source_root, cancellation) {
@@ -69,7 +75,12 @@ pub(super) fn sql_projection(
             return Err(BuiltinModelError(format!("SQL source capture: {error:?}")));
         }
     };
-    if walk.file_count() == 0 && capture.hosts().is_empty() && walk.inventory_complete() && !prior {
+    if walk.file_count() == 0
+        && capture.hosts().is_empty()
+        && walk.inventory_complete()
+        && capture.embedded_complete()
+        && !prior
+    {
         // Candidates were scanned and none embeds SQL: the project has no SQL.
         return Ok(None);
     }

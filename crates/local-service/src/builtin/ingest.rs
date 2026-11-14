@@ -170,6 +170,8 @@ impl SqlWalkEvidence {
     pub(super) fn file_count(&self) -> usize { self.files.len() }
     /// Whether the bounded walk saw every candidate `.sql` file.
     pub(super) fn inventory_complete(&self) -> bool { self.inventory_complete }
+    /// Whether the walk listed every application source which may embed SQL.
+    pub(super) fn embedded_complete(&self) -> bool { self.embedded_complete }
     /// Number of application sources which may embed SQL.
     pub(super) fn embedded_candidates(&self) -> usize { self.embedded.len() }
     pub(super) fn checked_retained_bytes(&self) -> Option<usize> {
@@ -10001,13 +10003,27 @@ mod profile_tests {
         fs::write(scratch.0.join("small.ts"), b"db.exec('SELECT id FROM t');\n").map_err(|e| e.to_string())?;
         let big = format!("db.exec(\"SELECT '{}' FROM t\");\n", "a".repeat(MAX_SQL_HOST_BYTES + 1024));
         fs::write(scratch.0.join("big.ts"), big).map_err(|e| e.to_string())?;
-        let scan = scan(&scratch)?;
+        let first = scan(&scratch)?;
         let cancelled = Arc::new(AtomicBool::new(false));
-        let captured = capture_sql_project(&scan.sql_walk, &scan.revision_fence, &scratch.0, &cancelled)
+        let captured = capture_sql_project(&first.sql_walk, &first.revision_fence, &scratch.0, &cancelled)
             .map_err(|e| format!("{e:?}"))?;
         let paths: Vec<_> = captured.hosts().iter().map(|host| host.selected().path.as_str()).collect();
         assert_eq!(paths, ["small.ts#embedded.sql"]);
         assert!(!captured.embedded_complete(), "a skipped host is an incomplete inventory");
+        // An incomplete embedded inventory never reads as "this project has no SQL".
+        let workers = super::super::sql_index::SqlWorkers::default();
+        let projection = super::super::sql_index::sql_projection(
+            &first.sql_walk, &first.revision_fence, &scratch.0, false, &workers, &cancelled)
+            .map_err(|e| e.to_string())?;
+        assert!(projection.is_some());
+        fs::remove_file(scratch.0.join("small.ts")).map_err(|e| e.to_string())?;
+        fs::remove_file(scratch.0.join("big.ts")).map_err(|e| e.to_string())?;
+        fs::write(scratch.0.join("plain.ts"), b"export const answer = 42;\n").map_err(|e| e.to_string())?;
+        let second = scan(&scratch)?;
+        let projection = super::super::sql_index::sql_projection(
+            &second.sql_walk, &second.revision_fence, &scratch.0, false, &workers, &cancelled)
+            .map_err(|e| e.to_string())?;
+        assert!(projection.is_none(), "a complete scan with no SQL anywhere is no SQL");
         Ok(())
     }
 
