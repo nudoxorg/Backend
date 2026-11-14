@@ -1428,7 +1428,12 @@ mod tests {
         assert_eq!((app_row.relation.as_str(), app_row.strength), ("css.imports-stylesheet", ImpactStrength::Exact));
         let wide_row = report.rows.iter().find(|row| row.node.kind == "file" && row.node.name == "src/wide.css").expect("wide.css imports base.css");
         assert_eq!(wide_row.strength, ImpactStrength::Candidate, "a media-qualified import applies only under that media");
-        assert!(report.rows.iter().any(|row| row.node.kind == "rule" && row.node.name == ".app"), "the importer's own rules are affected: {report:?}");
+        // The change reaches the importing stylesheet and, through it, whatever loads that
+        // stylesheet. The importer's own rules are unchanged text, so they are not rows.
+        assert!(
+            !report.rows.iter().any(|row| row.node.kind == "rule" && row.node.name == ".app"),
+            "an importer's rules are not affected by the stylesheet it imports: {report:?}"
+        );
         let gap = report.gaps.iter().find(|gap| gap.facet == "css.imports").expect("imports gap is stated");
         assert!(gap.note.contains("2 resolved") && gap.note.contains("1 name a URL"), "{}", gap.note);
         assert!(!report.proves_no_impact());
