@@ -4041,7 +4041,7 @@ while True:
             ("PATH".into(), crate::tests::required_python_path()),
         ])?;
         // The request deadline is wide against the worker's per-microbatch delay
-        // (3.25 s each, 6 s in all): the second microbatch must start well inside
+        // (3.25 s each, 6.5 s in all): the second microbatch must start well inside
         // the deadline on a loaded host, and the two together must never fit.
         let limits = ProcessLimits::new(256, 64, Duration::from_secs(6), 256)?
             .with_input_bytes_limit(2_048)?;
