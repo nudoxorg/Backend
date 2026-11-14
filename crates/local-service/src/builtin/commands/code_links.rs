@@ -32,6 +32,8 @@ pub(in crate::builtin) enum ScanOutcome {
     Scanned(FileScan),
     Unparsed,
     InvalidUtf8,
+    /// The scan stopped at a budget; what it read is not a complete scan.
+    Limit,
 }
 
 /// Scans the exact bytes of one code source. `None` means the path is not code.
@@ -80,8 +82,10 @@ fn scan_vue(path: &str, bytes: &[u8]) -> ScanOutcome {
     }
     scan.components.insert(name.clone(), 1);
     scan.exports.insert("default".to_owned(), name.clone());
-    let Some(template) = backend_frontend_vue::template_classes(container.host()) else {
-        return ScanOutcome::Scanned(scan);
+    let template = match backend_frontend_vue::template_classes(container.host()) {
+        backend_frontend_vue::TemplateScan::Scanned(template) => template,
+        backend_frontend_vue::TemplateScan::Absent => return ScanOutcome::Scanned(scan),
+        backend_frontend_vue::TemplateScan::Truncated => return ScanOutcome::Limit,
     };
     let mut starts = vec![0usize];
     starts.extend(text.bytes().enumerate().filter(|(_, byte)| *byte == b'\n').map(|(index, _)| index + 1));
@@ -261,6 +265,7 @@ pub(in crate::builtin) fn host_rows(
         }
         ScanOutcome::Unparsed => (CodeHostState::Unparsed, Vec::new()),
         ScanOutcome::InvalidUtf8 => (CodeHostState::Unavailable(CodeUnavailable::InvalidUtf8), Vec::new()),
+        ScanOutcome::Limit => (CodeHostState::Unavailable(CodeUnavailable::Limit), Vec::new()),
     };
     let mut rows = Vec::with_capacity(facts.len());
     for (ordinal, fact) in facts.into_iter().enumerate() {
@@ -435,6 +440,15 @@ export const Inner = () => <span className="shared" />;
         assert!(matches!(scan_bytes("a.tsx", &[0xff, 0xfe, 0x00]), Some(ScanOutcome::InvalidUtf8)));
         assert!(scan_bytes("a.css", b".a{}").is_none());
         let rows = host_rows([7; 32], "a.tsx", [9; 32], 3, ScanOutcome::Unparsed).expect("rows");
+        assert!(rows.facts.is_empty());
+    }
+
+    #[test]
+    fn a_scan_stopped_at_a_budget_publishes_a_limit_host_without_facts() {
+        let rows = host_rows([7; 32], "src/big.vue", [9; 32], 3, ScanOutcome::Limit).expect("rows");
+        let StyloAnalysisRecord::CodeHost { state, fact_count, .. } = &rows.host else { panic!("host") };
+        assert!(matches!(state, CodeHostState::Unavailable(CodeUnavailable::Limit)));
+        assert_eq!(*fact_count, 0);
         assert!(rows.facts.is_empty());
     }
 }
