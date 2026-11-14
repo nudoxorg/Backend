@@ -329,6 +329,28 @@ pub fn row_resolver(
 }
 
 #[cfg(test)]
+mod kind_name_tests {
+    use super::KindFilter;
+
+    #[test]
+    fn outline_help_lists_exactly_the_kinds_a_filter_accepts() {
+        let grammar = crate::grammar_for("outline").expect("outline grammar");
+        let help = grammar
+            .options()
+            .iter()
+            .find(|spec| spec.name() == "kind")
+            .expect("kind option")
+            .help();
+        let listed = help
+            .split_once('(')
+            .and_then(|(_, rest)| rest.split_once(')'))
+            .map(|(list, _)| list)
+            .expect("the help lists the kinds in parentheses");
+        assert_eq!(listed.split(", ").collect::<Vec<_>>(), KindFilter::NAMES);
+    }
+}
+
+#[cfg(test)]
 mod retained_site_tests {
     use super::*;
 
