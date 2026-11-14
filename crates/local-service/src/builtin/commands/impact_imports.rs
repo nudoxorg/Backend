@@ -108,6 +108,12 @@ impl<'a> CompilerImports<'a> {
         Self { resolver: ProjectModuleResolver::new(files, read), relative: RelativeImports(files), memo: RefCell::default() }
     }
 
+    /// Project JSON the resolver read, as `(path, bytes)`. Complete only after
+    /// the lookups it serves have been made.
+    pub(super) fn files_read(&self) -> Vec<(String, Vec<u8>)> {
+        self.resolver.files_read()
+    }
+
     /// Configurations which could not be loaded, as `(path, reason)`.
     pub(super) fn configuration_errors(&self) -> Vec<(String, String)> {
         self.resolver.configuration_errors()

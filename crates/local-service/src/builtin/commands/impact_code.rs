@@ -207,7 +207,8 @@ pub(super) fn build_graph_with(
         }
         // CSS-module members.
         for usage in &scan.module_class_uses {
-            let binding = &scan.imports[usage.binding];
+            // Stored rows are checked when read; a binding with no import is skipped, never indexed.
+            let Some(binding) = scan.imports.get(usage.binding) else { continue };
             let Some(target) = resolve_relative(file, &binding.spec) else {
                 alias_imports += 1;
                 continue;
@@ -472,21 +473,24 @@ impl ImpactAdapter for CodeAdapter {
         };
         let mut from_index = 0u32;
         let mut at_query = 0u32;
-        for (index, file) in listed.iter().enumerate() {
+        // Files which needed a query-time scan after the budget was spent.
+        let mut over_budget = 0u32;
+        for file in &listed {
             if (cx.cancelled)() {
                 return empty(ImpactDomainState::Unavailable { reason: "cancelled".to_owned() });
             }
             if let Some(host) = persisted.as_ref().and_then(|code| code.hosts.get(&file.path)) {
                 let same_bytes = host.source == file.source && file.length.is_none_or(|length| length == host.byte_length);
                 if same_bytes {
-                    witnesses.push(FileWitness {
+                    let witness = FileWitness {
                         root: root.clone(),
                         path: file.path.clone(),
                         length: host.byte_length,
                         source: file.source,
-                    });
+                    };
                     match host.state {
                         backend_engine::builtin::CodeHostState::Scanned { dynamic_class_expressions } => {
+                            witnesses.push(witness);
                             scans.insert(
                                 file.path.clone(),
                                 super::code_links::scan_from_facts(&file.path, dynamic_class_expressions, &host.facts),
@@ -495,24 +499,22 @@ impl ImpactAdapter for CodeAdapter {
                             continue;
                         }
                         backend_engine::builtin::CodeHostState::Unparsed => {
+                            witnesses.push(witness);
                             unparsed.push(file.path.clone());
                             continue;
                         }
-                        // The index could not scan it; try here.
+                        // The index could not scan it; try here, which witnesses the file.
                         backend_engine::builtin::CodeHostState::Unavailable(_) => {}
                     }
                 }
             }
-            at_query += 1;
-            if index >= MAX_FILES || total >= MAX_TOTAL_BYTES {
-                reasons.push(format!("only the first {index} of {} sources were scanned", listed.len()));
-                gaps.push(ImpactGap {
-                    facet: "code.scan-limit".to_owned(),
-                    note: "the source scan budget was reached; later files were not read".to_owned(),
-                    count: Some((listed.len() - index) as u32),
-                });
-                break;
+            // The budget counts scans made here; a file the index published
+            // facts for costs nothing, however late it is listed.
+            if at_query as usize >= MAX_FILES || total >= MAX_TOTAL_BYTES {
+                over_budget += 1;
+                continue;
             }
+            at_query += 1;
             let bytes = match super::super::ingest::read_stylo_selected_source(&root, &file.path, MAX_FILE_BYTES) {
                 Ok(bytes) => bytes,
                 Err(_) => {
@@ -544,10 +546,12 @@ impl ImpactAdapter for CodeAdapter {
             }
         }
         // Hosts which only the index can list: single-file components.
+        let indexed: BTreeSet<String> = listed.iter().map(|file| file.path.clone()).collect();
         let mut extra_known: BTreeSet<String> = BTreeSet::new();
+        let mut no_facts: Vec<String> = Vec::new();
         if let Some(code) = &persisted {
             for (path, host) in &code.hosts {
-                if !path.ends_with(".vue") || listed.iter().any(|file| &file.path == path) {
+                if !path.ends_with(".vue") || indexed.contains(path) {
                     continue;
                 }
                 extra_known.insert(path.clone());
@@ -566,9 +570,32 @@ impl ImpactAdapter for CodeAdapter {
                         from_index += 1;
                     }
                     backend_engine::builtin::CodeHostState::Unparsed => unparsed.push(path.clone()),
-                    backend_engine::builtin::CodeHostState::Unavailable(_) => {}
+                    // Nothing lists these files, so there is no source to scan here instead.
+                    backend_engine::builtin::CodeHostState::Unavailable(_) => no_facts.push(path.clone()),
                 }
             }
+        }
+        if over_budget > 0 {
+            reasons.push(format!(
+                "only {at_query} of {} sources which needed a query-time scan were read",
+                at_query + over_budget
+            ));
+            gaps.push(ImpactGap {
+                facet: "code.scan-limit".to_owned(),
+                note: "the source scan budget was reached; these files were not read".to_owned(),
+                count: Some(over_budget),
+            });
+        }
+        if !no_facts.is_empty() {
+            reasons.push(format!("{} component files have no usable published facts", no_facts.len()));
+            gaps.push(ImpactGap {
+                facet: "code.unavailable-files".to_owned(),
+                note: format!(
+                    "the index could not scan them and nothing else lists them, not scanned: {}",
+                    no_facts.iter().take(4).cloned().collect::<Vec<_>>().join(", ")
+                ),
+                count: Some(no_facts.len() as u32),
+            });
         }
         if !stale.is_empty() {
             reasons.push(format!("{} source files changed since indexing and were not scanned", stale.len()));
@@ -604,7 +631,6 @@ impl ImpactAdapter for CodeAdapter {
         }
         // Imports are placed by the compiler's resolver over the indexed files
         // and the project's own tsconfig, not by path arithmetic.
-        let indexed: BTreeSet<String> = listed.iter().map(|file| file.path.clone()).collect();
         let read_project = |relative: &str| match super::super::ingest::read_stylo_selected_source(&root, relative, MAX_FILE_BYTES) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(super::super::ingest::SelectedSourceReadError::Vanished) => Ok(None),
@@ -627,6 +653,18 @@ impl ImpactAdapter for CodeAdapter {
             ));
         }
         gaps.extend(graph_gaps);
+        // Configuration read to place imports shapes the graph too: editing it
+        // must read as a change to the answer.
+        let mut shaping_paths = BTreeSet::new();
+        for (path, bytes) in imports.files_read() {
+            shaping_paths.insert(path.clone());
+            witnesses.push(FileWitness {
+                root: root.clone(),
+                path,
+                length: bytes.len() as u64,
+                source: *ContentId::<SourceFactDomain>::from_canonical_bytes(&bytes).as_ref(),
+            });
+        }
         let state = if reasons.is_empty() { ImpactDomainState::Analyzed } else { ImpactDomainState::Partial { reasons } };
         DomainLoad {
             nodes,
@@ -634,7 +672,8 @@ impl ImpactAdapter for CodeAdapter {
             gaps,
             basis: ImpactDomainBasis { domain: ImpactDomain::Code, state, files: scans.len() as u32 },
             files: witnesses,
-            known_paths: listed.iter().map(|file| file.path.clone()).chain(extra_known).collect(),
+            known_paths: indexed.iter().cloned().chain(extra_known).collect(),
+            shaping_paths,
         }
     }
 
@@ -655,6 +694,7 @@ impl ImpactAdapter for CodeAdapter {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::builtin::commands::impact_scan::ModuleClassUse;
 
     fn scan(path: &str, source: &str) -> FileScan {
         let profile = profile_for(path).expect("profile");
@@ -694,9 +734,17 @@ export const Plain = () => <div className="a b" class="c" />;
     #[test]
     fn partial_words_at_a_template_boundary_are_not_class_names() {
         let scan = scan("a.tsx", "export const A = ({s}) => <i className={`btn-${s} x`} />;");
-    use crate::builtin::commands::impact_scan::ModuleClassUse;
         let tokens: BTreeSet<&str> = scan.class_uses.iter().map(|usage| usage.token.as_str()).collect();
         assert!(tokens.contains("x") && !tokens.contains("btn-"), "{tokens:?}");
+    }
+
+    #[test]
+    fn a_module_class_use_with_no_import_is_skipped_not_indexed() {
+        let mut broken = FileScan { path: "src/a.tsx".to_owned(), ..FileScan::default() };
+        broken.module_class_uses.push(ModuleClassUse { binding: 3, class: "title".to_owned(), line: 1, owner: None });
+        let scans = BTreeMap::from([("src/a.tsx".to_owned(), broken)]);
+        let (_, edges, _) = build_graph(&scans);
+        assert!(edges.is_empty(), "{edges:?}");
     }
 
     #[test]
@@ -836,6 +884,7 @@ export default function Page() { return <Button />; }"#,
             basis: ImpactDomainBasis { domain: ImpactDomain::Code, state: ImpactDomainState::Analyzed, files: 2 },
             files: Vec::new(),
             known_paths: BTreeSet::new(),
+            shaping_paths: BTreeSet::new(),
         };
         let seed = |kind: &str, name: &str| {
             ImpactRequest::new(
@@ -859,6 +908,7 @@ export default function Page() { return <Button />; }"#,
                         basis: ImpactDomainBasis { domain: ImpactDomain::Code, state: ImpactDomainState::Analyzed, files: 2 },
                         files: Vec::new(),
                         known_paths: BTreeSet::new(),
+                        shaping_paths: BTreeSet::new(),
                     }),
                 ],
                 &|spec, node| match node.domain {

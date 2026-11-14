@@ -121,6 +121,10 @@ pub(super) struct DomainLoad {
     /// Every project path the index knows for this domain, parsed or not. Files
     /// on disk with a watched extension which are absent here are untracked.
     pub known_paths: BTreeSet<String>,
+    /// Witnessed files which are not nodes but shape the domain's answer (the
+    /// configuration read to place imports). They are compared with the disk
+    /// whenever a row of this domain is involved.
+    pub shaping_paths: BTreeSet<String>,
 }
 impl DomainLoad {
     pub(super) fn empty(domain: ImpactDomain, state: ImpactDomainState) -> Self {
@@ -131,6 +135,7 @@ impl DomainLoad {
             basis: ImpactDomainBasis { domain, state, files: 0 },
             files: Vec::new(),
             known_paths: BTreeSet::new(),
+            shaping_paths: BTreeSet::new(),
         }
     }
 }
@@ -439,11 +444,13 @@ pub(super) fn answer(
     let mut files: Vec<FileWitness> = Vec::new();
     let mut known: BTreeSet<String> = BTreeSet::new();
     let mut sql_known: BTreeSet<String> = BTreeSet::new();
+    let mut shaping: BTreeMap<ImpactDomain, BTreeSet<String>> = BTreeMap::new();
     let mut loaded_domains = BTreeSet::new();
     for (domain, load) in loads {
         loaded_domains.insert(domain);
         if domain == ImpactDomain::Sql { sql_known.extend(load.known_paths.iter().cloned()); }
         known.extend(load.known_paths);
+        shaping.entry(domain).or_default().extend(load.shaping_paths);
         domains.push(load.basis);
         gaps.extend(load.gaps);
         files.extend(load.files);
@@ -765,6 +772,15 @@ pub(super) fn answer(
     let sql_involved = seed_keys.iter().any(|key| nodes.get(key).is_some_and(|node| node.domain == ImpactDomain::Sql))
         || pending.iter().any(|item| nodes.get(&item.node).is_some_and(|node| node.domain == ImpactDomain::Sql));
     if sql_involved { touched.extend(sql_known); }
+    let involved_domains: BTreeSet<ImpactDomain> = seed_keys
+        .iter()
+        .chain(pending.iter().map(|item| &item.node))
+        .filter_map(|key| nodes.get(key))
+        .map(|node| node.domain)
+        .collect();
+    for domain in involved_domains {
+        touched.extend(shaping.remove(&domain).unwrap_or_default());
+    }
     let by_path: BTreeMap<&str, &FileWitness> = files.iter().map(|f| (f.path.as_str(), f)).collect();
     let mut freshness = freshness(&by_path, &touched);
     if let Some(root_dir) = files.first().map(|f| f.root.clone()) {

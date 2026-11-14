@@ -432,6 +432,7 @@ fn build(loaded: ProjectSql) -> DomainLoad {
         },
         known_paths: loaded.hosts.iter().map(|host| host.path.clone()).collect(),
         files,
+        shaping_paths: BTreeSet::new(),
     }
 }
 

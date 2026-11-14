@@ -239,6 +239,19 @@ impl<'a> ProjectModuleResolver<'a> {
         }
     }
 
+    /// The project JSON served to the resolver so far, as `(path, bytes)`:
+    /// every configuration, `extends` target and manifest its answers rest on.
+    /// Files which do not exist are not listed. Call this after resolving.
+    #[must_use]
+    pub fn files_read(&self) -> Vec<(String, Vec<u8>)> {
+        self.view
+            .json
+            .borrow()
+            .iter()
+            .filter_map(|(path, bytes)| Some((path.clone(), bytes.as_ref()?.as_ref().clone())))
+            .collect()
+    }
+
     /// Configurations which could not be loaded, as `(path, reason)`.
     #[must_use]
     pub fn configuration_errors(&self) -> Vec<(String, String)> {
@@ -545,6 +558,25 @@ mod tests {
             }
         }
         assert_eq!(resolve(&files, &json, "src/a.ts", "@scope/pkg"), ProjectModule::Package);
+    }
+
+    #[test]
+    fn the_configuration_chain_is_reported_as_read() {
+        let (files, json) = project(
+            &["web/src/lib/util.ts", "web/src/app/a.ts"],
+            &[
+                ("tsconfig.base.json", r#"{"compilerOptions":{"baseUrl":".","paths":{"@lib/*":["web/src/lib/*"]}}}"#),
+                ("web/tsconfig.json", r#"{"extends":"../tsconfig.base.json"}"#),
+            ],
+        );
+        let read = |path: &str| Ok(json.get(path).map(|text| text.clone().into_bytes()));
+        let resolver = ProjectModuleResolver::new(&files, &read);
+        assert!(resolver.files_read().is_empty(), "nothing is read before the first resolution");
+        resolver.resolve("web/src/app/a.ts", "@lib/util");
+        let paths: Vec<String> = resolver.files_read().into_iter().map(|(path, _)| path).collect();
+        assert_eq!(paths, ["tsconfig.base.json", "web/tsconfig.json"]);
+        let bytes = resolver.files_read().into_iter().find(|(path, _)| path == "web/tsconfig.json").map(|(_, bytes)| bytes);
+        assert_eq!(bytes.as_deref(), json.get("web/tsconfig.json").map(String::as_bytes));
     }
 
     #[test]

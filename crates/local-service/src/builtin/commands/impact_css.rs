@@ -866,6 +866,7 @@ pub(super) fn build_graph(model: &CssModel, issue: &dyn Fn(&Key, &Key) -> Option
             basis: ImpactDomainBasis { domain: ImpactDomain::Css, state, files: parsed_files },
             files,
             known_paths,
+            shaping_paths: BTreeSet::new(),
         },
         parsed_files as usize,
     )
