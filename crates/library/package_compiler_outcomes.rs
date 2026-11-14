@@ -364,6 +364,10 @@ pub enum PackageCompilerOutcomesUnavailable {
     ProjectNotSelected,
     /// The selected closure retains no capture for this package.
     CaptureNotRecorded,
+    /// The package holds SQL analysis and no compiler capture: its SQL files
+    /// are analysed by the SQL worker and read with `sql-query`, so there is no
+    /// compiler profile to report.
+    SqlAnalysisOnly,
     /// Retained capture rows describe a different source version.
     CaptureNotCurrent,
     /// Selected markers cannot establish one complete current capture.
@@ -478,6 +482,7 @@ impl PackageCompilerOutcomes {
                 Self::Unavailable { reason, .. } => match reason {
                     PackageCompilerOutcomesUnavailable::ProjectNotSelected
                     | PackageCompilerOutcomesUnavailable::CaptureNotRecorded
+                    | PackageCompilerOutcomesUnavailable::SqlAnalysisOnly
                     | PackageCompilerOutcomesUnavailable::CaptureNotCurrent => selector.is_some(),
                     PackageCompilerOutcomesUnavailable::ProfileNotRefused
                     | PackageCompilerOutcomesUnavailable::DiagnosticNotRecorded => {

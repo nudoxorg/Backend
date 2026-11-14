@@ -557,9 +557,9 @@ def bookshop_search(label, name, signature, path):
 
 def bookshop_discovery(label):
     return [
-        bookshop_search(label + "-price", "list_price_cents", "SQL column books.list_price_cents", "db/migrations/0010_bookshop.sql"),
+        bookshop_search(label + "-price", "list_price_cents", "SQL column books.list_price_cents", "db/migrations/0011_bookshop_rename.sql"),
         bookshop_search(label + "-view", "book_sales", "SQL view book_sales", "db/migrations/0010_bookshop.sql"),
-        bookshop_search(label + "-table", "order_lines", "SQL table order_lines", "db/migrations/0010_bookshop.sql"),
+        bookshop_search(label + "-table", "order_lines", "SQL table order_lines", "db/migrations/0011_bookshop_rename.sql"),
     ]
 
 
@@ -592,7 +592,7 @@ def report_regressions(label):
     code, raw = cli(label + "-find-table", ["search", "order_lines"])
     if code != 0:
         fail(f"{label}: search order_lines failed: {raw[:800]}")
-    coordinates = [t for t in strings(json.loads(raw)) if t.endswith("::" + sql_path("db/migrations/0010_bookshop.sql") + "::order_lines")]
+    coordinates = [t for t in strings(json.loads(raw)) if t.endswith("::" + sql_path("db/migrations/0011_bookshop_rename.sql") + "::order_lines")]
     if not coordinates:
         fail(f"{label}: search gave no coordinate for the SQL table: {raw[:1200]}")
     code, raw = cli(label + "-show", ["show", coordinates[0]])
@@ -617,6 +617,20 @@ def report_regressions(label):
         rows = [r for r in json.loads(raw).get("records", []) if r.get("signature") == signature]
         if len(rows) != 1 or rows[0].get("kind") != kind:
             fail(f"{label}: SQL declaration {name} should be one `{signature}` row of kind {kind}: {rows}")
+    # A renamed declaration is filed under the file of its last rename and says
+    # where it was created and what it was called then.
+    code, raw = cli(label + "-find-renamed", ["search", "list_price_cents"])
+    renamed = [t for t in strings(json.loads(raw)) if t.endswith("::" + sql_path("db/migrations/0011_bookshop_rename.sql") + "::books::list_price_cents")] if code == 0 else []
+    if not renamed:
+        fail(f"{label}: the renamed column is not filed under its rename migration: {raw[:1200]}")
+    code, raw = cli(label + "-show-renamed", ["show", renamed[0]])
+    if code != 0 or f"renamed from price_cents, created in {sql_path('db/migrations/0010_bookshop.sql')}" not in raw:
+        fail(f"{label}: show of the renamed column lacks its lineage (exit {code}): {raw[:1200]}")
+    if a.sql_only:
+        # A project of only SQL has no compiler capture; the profile says who analyses it.
+        code, text = cli_text(label + "-package-profile", ["package-profile", str(project), "--compiler-outcome", '{"kind":"current"}'])
+        if code != 0 or "analysed by the SQL worker" not in text or "capture" in text:
+            fail(f"{label}: package-profile of a SQL-only project does not name the SQL analysis (exit {code}): {text[:1200]}")
 
 
 report_regressions("report")
