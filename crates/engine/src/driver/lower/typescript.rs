@@ -4483,6 +4483,23 @@ enum NativeCallableScopeEvent {
     },
 }
 
+/// The generic declaration an applied reference instantiates.
+///
+/// A reference to a generic class that omits its defaulted type arguments
+/// reaches the lowering either as the application `C<A, B>` or as the bare
+/// declaration, depending on which file the shared checker visited first. Both
+/// name the same declaration and the same members, so a member lookup follows
+/// the base of an application instead of depending on that visiting order.
+fn native_tsz_applied_base(checker: &TszCheckerState<'_>, mut type_id: TszTypeId) -> TszTypeId {
+    for _ in 0..8 {
+        let Some(TypeData::Application(application)) = checker.ctx.types.lookup(type_id) else {
+            break;
+        };
+        type_id = checker.ctx.types.type_application(application).base;
+    }
+    type_id
+}
+
 /// Resolves a property name through an exact namespace import or the receiver's
 /// checker type and member table. Namespace exports retain their terminal file
 /// owner because raw symbol IDs are binder-relative. No project-wide name scan
@@ -4514,7 +4531,14 @@ fn native_tsz_member_symbol(
     } else {
         receiver_type
     };
-    let owner_symbol = checker.ctx.resolve_type_to_symbol_id(receiver_type)?;
+    let owner_symbol = checker
+        .ctx
+        .resolve_type_to_symbol_id(receiver_type)
+        .or_else(|| {
+            checker
+                .ctx
+                .resolve_type_to_symbol_id(native_tsz_applied_base(checker, receiver_type))
+        })?;
     // A receiver's class symbol may belong to a different project file than
     // the call site (for example, a field initialized with Angular's
     // `inject(Service)`). Symbol ids are binder-relative, so looking the id
@@ -13980,6 +14004,61 @@ mod lane_tests {
                 }),
             "spec call must name the exact controller declaration: {spec_targets:?}"
         );
+        Ok(())
+    }
+
+    /// Which class a member call resolves to must not depend on which of the
+    /// two files the checker visited first. A reference that omits its
+    /// defaulted type arguments is handed to the lowering as an application
+    /// when its user is checked before its owner and as the bare declaration
+    /// otherwise; the member lookup used to understand only the second form,
+    /// so the same sources published a different set of resolved calls.
+    #[test]
+    fn native_tsz_member_calls_through_defaulted_generic_references_do_not_depend_on_check_order()
+    -> Result<(), LaneError> {
+        let owner = "export class Box<T = number> {\n  private value!: T;\n  read(): T { return this.value; }\n}\n";
+        let user = concat!(
+            "import { Box } from './box.js';\n",
+            "type Holder = { box: Box };\n",
+            "export function use(holder: Holder) { return holder.box.read(); }\n",
+        );
+        let method_start = u32::try_from(
+            owner
+                .find("read()")
+                .ok_or(LaneError::Missing("defaulted generic method source"))?,
+        )?;
+        // The checker visits files in path order: the first layout checks the
+        // owner before its user, the second layout the user before its owner.
+        for (owner_path, user_path) in [
+            ("src/a_box.ts", "src/z_use.ts"),
+            ("src/z_box.ts", "src/a_use.ts"),
+        ] {
+            let resolutions = [module_resolution(
+                user_path,
+                "./box.js",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File {
+                    path: owner_path.to_owned(),
+                },
+            )];
+            let authority = native_tsz_project_with_resolutions(
+                &[(owner_path, owner), (user_path, user)],
+                &resolutions,
+            )?;
+            let project = authority
+                .project()
+                .ok_or(LaneError::Missing("defaulted generic TSZ project"))?;
+            let facts = collect_native_tsz_file(project, user_path, user)?;
+            let targets = staged_tsz_coordinates(&facts)?;
+            assert!(
+                targets.iter().any(|(kind, path, _, _, name, _)| {
+                    *kind == ReferenceKind::MethodCall
+                        && path == owner_path
+                        && *name == method_start
+                }),
+                "{user_path} (owner {owner_path}): the call must name the exact class member whichever file is checked first: {targets:?}"
+            );
+        }
         Ok(())
     }
 
