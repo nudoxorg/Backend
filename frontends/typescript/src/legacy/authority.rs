@@ -151,7 +151,10 @@ pub fn analyze_with_declaration<'source>(
     // runs a CommonJS script inside a function wrapper, so a top-level
     // `return` there is ordinary code that stops the script early. Accept the
     // grammar TypeScript's parser accepts, so one such script does not refuse
-    // every other source of its profile.
+    // every other source of its profile. This holds for every profile: in a
+    // TypeScript source the checked program still reports TS1108 (the tsz
+    // checker's statement checks), so the error moves to the checker as it
+    // does in TypeScript itself rather than disappearing.
     let options = ParseOptions {
         allow_return_outside_function: true,
         ..ParseOptions::default()
