@@ -92,6 +92,13 @@ pub(super) fn owner_open_refusal_with_shutdown(
             evidence.files
         ));
     }
+    if matches!(
+        &error,
+        crate::LocaldError::Workspace(backend_engine::WorkspaceError::Model(_))
+    ) && super::profile::is_unauthenticated_staged_state(&error.to_string())
+    {
+        return ProcessError::SavedStateUnreadable(error.to_string());
+    }
     ProcessError::Profile(error.to_string())
 }
 

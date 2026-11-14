@@ -1726,6 +1726,13 @@ pub enum ProcessError {
     /// ([`crate::EmbeddedLocalService::start_replacing_state_from_another_build`]);
     /// one that does not must ask its operator.
     StateFromAnotherBuild(String),
+    /// The workspace holds saved index state whose staged evidence this build
+    /// cannot authenticate: another build wrote it, or it is damaged. The
+    /// message names what failed. Nothing of it is trusted. It is not a
+    /// transient file-system failure, which stays [`ProcessError::Profile`] so
+    /// a retry can succeed. A host that owns its workspace can set the state
+    /// aside whole and index again, as for [`ProcessError::StateFromAnotherBuild`].
+    SavedStateUnreadable(String),
     /// Framing/transport limits failed validation.
     Protocol(ProtocolError),
     /// Unix listener startup or lifecycle failure.
@@ -1750,6 +1757,9 @@ impl fmt::Display for ProcessError {
                     formatter,
                     "workspace state is from another build: {message}"
                 )
+            }
+            Self::SavedStateUnreadable(message) => {
+                write!(formatter, "saved index state cannot be authenticated: {message}")
             }
             Self::Protocol(error) => error.fmt(formatter),
             Self::Listener(error) => error.fmt(formatter),

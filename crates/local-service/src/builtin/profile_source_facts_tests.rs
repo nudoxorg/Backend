@@ -418,6 +418,29 @@ fn staged_reopen_diagnostic_retains_temporary_io_cause() {
     assert!(message.contains("nudox --workspace <new-empty-workspace> add <project> --wait"));
 }
 
+#[test]
+fn staged_reopen_refusal_is_unauthenticated_only_when_its_cause_is_content() {
+    let state = Path::new("/private/workspace/objects");
+    let refusal = |cause: &str| {
+        super::staged_reopen_recovery_message(state, &super::BuiltinModelError(cause.to_owned()))
+            .to_string()
+    };
+    for cause in [
+        "reopen selected staged membership: Corrupt",
+        "read stage manifest: Corrupt",
+        "staged replay union bound: Corrupt",
+    ] {
+        assert!(super::is_unauthenticated_staged_state(&refusal(cause)), "{cause}");
+    }
+    for cause in [
+        "reopen selected staged membership: TemporaryIo(\"filesystem busy\")",
+        "read stage manifest: Io(\"permission denied\")",
+    ] {
+        assert!(!super::is_unauthenticated_staged_state(&refusal(cause)), "{cause}");
+    }
+    assert!(!super::is_unauthenticated_staged_state("decode persisted manifest: Corrupt"));
+}
+
 fn copy_fixture_tree(source: &Path, target: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(target)?;
     for entry in std::fs::read_dir(source)? {
