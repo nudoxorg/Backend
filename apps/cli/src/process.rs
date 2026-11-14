@@ -584,46 +584,91 @@ fn plan(words: &[String], options: &Options, project: &str) -> Result<Plan, Faul
 }
 
 // A local directory passed to `add` is canonicalized by the owner before it
-// becomes a Project label. Resolve explicit relative path operands for the CLI
-// package-profile and sql-query commands against the same selected workspace
-// root so their lookup uses that exact local identity. PURLs and bare local
-// labels stay untouched, and the JSON surface escape hatch above keeps
-// protocol operands exact.
+// becomes a Project label. Resolve explicit relative path operands of every
+// surface command that names a local package (package-profile, sql-query,
+// impact, stylo-query, package-source-membership and the rest) against the
+// same selected workspace root, so each lookup uses that exact local identity.
+// PURLs and bare local labels stay untouched, and the JSON surface escape
+// hatch above keeps protocol operands exact.
+//
+// The commands share one wire shape for a local package reference
+// (`{"kind":"local","value":...}`), so the rewrite walks that shape instead of
+// naming each command: a new command with a package operand gets the same
+// treatment without a second list to keep in step.
 fn normalize_package_profile_path(request: Request, project: &str) -> Result<Request, Fault> {
     let command = match request {
         Request::Surface(command) => command,
         other => return Ok(other),
     };
-    let command = match *command {
-        backend_library::SurfaceCommand::PackageProfile {
-            package: backend_library::PackageReference::Local(label),
-            compiler_outcome,
-        } => {
-            let package = resolve_relative_local_package(label, project)?;
-            backend_library::SurfaceCommand::PackageProfile {
-                package,
-                compiler_outcome,
-            }
-        }
-        backend_library::SurfaceCommand::SqlQuery { mut request } => {
-            if let backend_library::PackageReference::Local(label) = request.package.clone() {
-                request.package = resolve_relative_local_package(label, project)?;
-            }
-            backend_library::SurfaceCommand::SqlQuery { request }
-        }
-        other => return Ok(Request::Surface(Box::new(other))),
-    };
+    let mut wire = serde_json::to_value(&*command)
+        .map_err(|error| Fault::usage(SURFACE_VERB, format!("the command could not be encoded: {error}")))?;
+    if !rewrite_relative_local_packages(&mut wire, project)? {
+        return Ok(Request::Surface(command));
+    }
+    let command: backend_library::SurfaceCommand = serde_json::from_value(wire).map_err(|error| {
+        Fault::usage(SURFACE_VERB, format!("the command could not be rebuilt with its resolved package: {error}"))
+    })?;
     command.admit().map_err(|error| {
         Fault::admission(error, Operand::Argument(command_package_operand(&command)))
     })?;
     Ok(Request::Surface(Box::new(command)))
 }
 
+/// Rewrites every relative local package reference in `wire`; reports whether any changed.
+fn rewrite_relative_local_packages(wire: &mut serde_json::Value, project: &str) -> Result<bool, Fault> {
+    use serde_json::Value;
+    let mut changed = false;
+    match wire {
+        Value::Object(fields) => {
+            let relative = fields.len() == 2
+                && fields.get("kind").and_then(Value::as_str) == Some("local")
+                && fields.get("value").and_then(Value::as_str).is_some();
+            if relative {
+                let label = fields.get("value").and_then(Value::as_str).unwrap_or_default().to_owned();
+                let product = backend_library::ProductText::new(label.as_str())
+                    .map_err(|error| Fault::admission(error, Operand::Argument(label.clone())))?;
+                if let backend_library::PackageReference::Local(resolved) = resolve_relative_local_package(product, project)?
+                    && resolved.as_str() != label
+                {
+                    fields.insert("value".to_owned(), Value::String(resolved.as_str().to_owned()));
+                    changed = true;
+                }
+            } else {
+                for child in fields.values_mut() {
+                    changed |= rewrite_relative_local_packages(child, project)?;
+                }
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                changed |= rewrite_relative_local_packages(child, project)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(changed)
+}
+
 fn command_package_operand(command: &backend_library::SurfaceCommand) -> String {
-    match command {
-        backend_library::SurfaceCommand::PackageProfile { package, .. } => package.as_str().to_owned(),
-        backend_library::SurfaceCommand::SqlQuery { request } => request.package.as_str().to_owned(),
-        _ => String::new(),
+    serde_json::to_value(command)
+        .ok()
+        .and_then(|wire| first_local_package(&wire))
+        .unwrap_or_default()
+}
+
+fn first_local_package(wire: &serde_json::Value) -> Option<String> {
+    use serde_json::Value;
+    match wire {
+        Value::Object(fields) => {
+            if fields.get("kind").and_then(Value::as_str) == Some("local")
+                && let Some(value) = fields.get("value").and_then(Value::as_str)
+            {
+                return Some(value.to_owned());
+            }
+            fields.values().find_map(first_local_package)
+        }
+        Value::Array(items) => items.iter().find_map(first_local_package),
+        _ => None,
     }
 }
 
@@ -791,6 +836,52 @@ mod package_profile_path_tests {
         let absolute = sql_query_request(&["sql-query", dot.to_str().unwrap(), "--role", "gap"], project);
         let relative = sql_query_request(&["sql-query", ".", "--role", "gap"], project);
         assert_eq!(absolute.package, relative.package);
+    }
+
+    fn planned_surface(words: &[&str], project: &str) -> backend_library::SurfaceCommand {
+        let words = words.iter().map(|word| (*word).to_owned()).collect::<Vec<_>>();
+        let plan = plan(&words, &Options::fallback(), project).expect("surface plan");
+        let Request::Surface(command) = plan.request else {
+            panic!("{words:?} lowers to a surface request");
+        };
+        *command
+    }
+
+    #[test]
+    fn every_command_with_a_package_operand_resolves_relative_paths() {
+        let temp = tempfile::tempdir().expect("temporary workspace");
+        let project_path = temp.path().join("project");
+        let nested_path = project_path.join("nested");
+        std::fs::create_dir_all(&nested_path).expect("nested directory");
+        let project = project_path.to_str().expect("UTF-8 temporary path");
+        let dot = canonical_surface_path(&project_path);
+        let nested = canonical_surface_path(&nested_path);
+        let commands: [&[&str]; 8] = [
+            &["impact", "{}", "--component", "Button"],
+            &["impact", "{}", "--sql-table", "members"],
+            &["impact", "{}", "--class", "card"],
+            &["stylo-query", "{}", "--class", "card"],
+            &["semantic-versions", "{}"],
+            &["package-profile", "{}"],
+            &["sql-query", "{}", "--role", "gap"],
+            &["package-versions", "{}"],
+        ];
+        for template in commands {
+            for (input, expected) in [(".", &dot), ("./nested", &nested), ("../project", &dot)] {
+                let words = template.iter().map(|word| if *word == "{}" { input } else { word }).collect::<Vec<_>>();
+                let command = planned_surface(&words, project);
+                assert_eq!(
+                    command_package_operand(&command),
+                    expected.to_string_lossy(),
+                    "{words:?}"
+                );
+            }
+            // An absolute path and a bare label stay exactly as typed.
+            let absolute = template.iter().map(|word| if *word == "{}" { "/repo/other" } else { word }).collect::<Vec<_>>();
+            assert_eq!(command_package_operand(&planned_surface(&absolute, project)), "/repo/other", "{absolute:?}");
+            let bare = template.iter().map(|word| if *word == "{}" { "demo" } else { word }).collect::<Vec<_>>();
+            assert_eq!(command_package_operand(&planned_surface(&bare, project)), "demo", "{bare:?}");
+        }
     }
 
     #[test]
