@@ -2236,6 +2236,7 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
                         use backend_library::sql_query::SqlFailure;
                         match reason {
                             SqlFailure::EngineNotAdmitted => "no SQL worker is admitted or available".to_owned(),
+                            SqlFailure::UnsupportedDialect if page.basis.implicit_selection => "no admitted worker supports this SQL dialect; no .nudox/sql.json declares one, so it was inferred from the file's own content (declare each file's dialect in .nudox/sql.json)".to_owned(),
                             SqlFailure::UnsupportedDialect => "no admitted worker supports this SQL dialect".to_owned(),
                             SqlFailure::Read => "source file could not be read".to_owned(),
                             SqlFailure::SelectionUnavailable => "SQL file selection is unavailable".to_owned(),
@@ -2273,7 +2274,11 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
                     "; no match, but this is NOT proof of absence: see the gaps (query --role gap lists affected files and statements)"
                 }
             } else { "" };
-            let selection = if page.basis.implicit_selection { "all .sql files, dialect inferred" } else { "files named by .nudox/sql.json" };
+            let selection = if page.basis.implicit_selection {
+                format!("all .sql files, dialect inferred (no .nudox/sql.json; declare dialects there, for example {})", backend_library::SQL_SETTINGS_EXAMPLE)
+            } else {
+                "files named by .nudox/sql.json".to_owned()
+            };
             view.note = Some(format!("{terminal}; selection: {selection}; gaps: {gap_text}{empty_hint}. No deployed database is claimed."));
             view.semantic_data = Some(ProductSemanticData::SqlQuery(page.clone())); view
         }
