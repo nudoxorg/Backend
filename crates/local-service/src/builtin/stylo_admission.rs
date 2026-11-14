@@ -33,7 +33,7 @@ pub(super) fn stylo_adapter_fingerprint() -> [u8; 32] {
         include_bytes!("commands/index.rs"),
         include_bytes!("commands/index_source_preparation.rs"),
         include_bytes!("commands/code_links.rs"),
-        include_bytes!("commands/impact_code.rs"),
+        include_bytes!("commands/impact_scan.rs"),
         include_bytes!("ingest.rs"),
         include_bytes!("source_budget.rs"),
         include_bytes!("source_frontier.rs"),

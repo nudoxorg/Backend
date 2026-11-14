@@ -2,12 +2,12 @@
 //! stylesheets, classes and custom properties, kept as persisted relation rows.
 //!
 //! The scan is the same lexical OXC pass the impact adapter has always run at
-//! query time (`impact_code::scan_module`); this module turns its result into
+//! query time (`impact_scan::scan_module`); this module turns its result into
 //! bounded rows at index time and back into the identical scan when the rows
 //! are read, so the impact graph is built from published facts rather than a
 //! second parse. Nothing here claims more than the scan does: a literal class
 //! token is a candidate, a class list with runtime parts is counted as dynamic.
-use super::impact_code::{
+use super::impact_scan::{
     ClassUse, FileScan, ImportBinding, Imported, ModuleClassUse, PropertyUse, RenderUse,
     profile_for, scan_module,
 };
