@@ -79,7 +79,7 @@ pub(super) struct Fragment {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct Scan {
-    /// The embedded host's bytes: one statement per call, each ended by `;\n`.
+    /// The embedded host's bytes: one statement per call, each ended by `;\n` (`\n;\n` after a line comment).
     pub(super) composed: Vec<u8>,
     pub(super) fragments: Vec<Fragment>,
     /// Dialect the file's imports name, when they name one.
@@ -863,7 +863,10 @@ pub(super) fn scan(path: &str, source: &[u8]) -> Option<Scan> {
         let text_start = composed.len();
         composed.extend_from_slice(trimmed.as_bytes());
         let text_end = composed.len();
-        composed.extend_from_slice(b";\n");
+        // A final line holding `--` may end in a line comment, which would swallow
+        // the terminator and merge the next call into this one: end it on its own line.
+        let last_line = trimmed.rsplit('\n').next().unwrap_or(trimmed);
+        composed.extend_from_slice(if last_line.contains("--") { b"\n;\n" } else { b";\n" });
         let start = scanner.tokens[operands.first].start;
         let end = scanner.tokens[operands.last].end;
         fragments.push(Fragment {
@@ -917,6 +920,17 @@ await pool.query({ text: 'DELETE FROM orders WHERE id = $1', values: [1] });
         assert_eq!(scan.dialect, Some(SqlDialect::Sqlite));
         assert_eq!(&source[scan.fragments[0].start..scan.fragments[0].end], "'SELECT email, balance FROM accounts WHERE id = ?'");
         assert_eq!(scan.fragments[0].line, 4);
+    }
+
+    #[test]
+    fn a_trailing_line_comment_does_not_swallow_the_terminator() {
+        let source = "db.exec(`SELECT 1 FROM a -- the first`);\ndb.exec('SELECT 2 FROM b');\n";
+        let scan = scan("a.js", source.as_bytes()).unwrap();
+        let text = String::from_utf8(scan.composed.clone()).unwrap();
+        assert_eq!(text, "SELECT 1 FROM a -- the first\n;\nSELECT 2 FROM b;\n");
+        let [first, second] = &scan.fragments[..] else { panic!("two fragments") };
+        assert_eq!(&text[first.text_start..first.text_end], "SELECT 1 FROM a -- the first");
+        assert_eq!(&text[second.text_start..second.text_end], "SELECT 2 FROM b");
     }
 
     #[test]
