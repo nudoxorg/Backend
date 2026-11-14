@@ -931,6 +931,9 @@ pub struct OutlineDto {
     /// Nodes a kind filter removed from this page; absent when none was removed.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub filtered_out: usize,
+    /// Anonymous or function-local nodes `top_level` left out of this page; absent when none.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub locals_hidden: usize,
 }
 
 impl OutlineDto {
@@ -955,6 +958,7 @@ impl OutlineDto {
                 sequence: page.sequence,
             }),
             filtered_out: tree.filtered_out(),
+            locals_hidden: tree.locals_hidden(),
         }
     }
 }

@@ -611,7 +611,8 @@ pub fn lower_with_opener(
                 invocation.option("kind"),
                 invocation.option("exclude-kind"),
             )
-            .map_err(|message| Fault::usage("kind", message))?;
+            .map_err(|message| Fault::usage("kind", message))?
+            .with_top_level(invocation.flag("top-level"));
             if invocation.option("limit").is_some()
                 || invocation.option("cursor").is_some()
                 || !kinds.is_empty()

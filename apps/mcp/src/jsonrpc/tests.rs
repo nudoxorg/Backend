@@ -5545,6 +5545,30 @@ fn an_outline_kind_filter_must_be_a_string_of_kinds() {
 }
 
 #[test]
+fn an_outline_top_level_option_is_a_boolean_and_keeps_top_level_declarations() {
+    let mut server = ready(Fake::default());
+    for value in [true, false] {
+        let result = call(&mut server, "backend.outline", &json!({"top_level": value}));
+        assert_ne!(result["isError"], true, "{result}");
+        let text = text_of(&result);
+        assert!(text.contains("  ƒ ferris"), "a declaration of the module stays listed: {text}");
+        assert!(result["structuredContent"].get("locals_hidden").is_none(), "nothing local to count");
+    }
+    let reply = request(
+        &mut server,
+        "tools/call",
+        &json!({"name":"backend.outline","arguments":{"top_level":"yes"}}),
+    );
+    assert!(
+        reply.get("error").is_some() || reply["result"]["isError"] == true,
+        "a top_level that is not a boolean is refused: {reply}"
+    );
+    let listed = request(&mut server, "tools/list", &json!({}));
+    let outline = tool_named(&listed["result"]["tools"], "backend.outline");
+    assert_eq!(outline["inputSchema"]["properties"]["top_level"]["type"], "boolean");
+}
+
+#[test]
 fn an_outline_call_is_a_tree_of_names_never_bare_digests() {
     let mut server = ready(Fake::default());
     let result = call(&mut server, "backend.outline", &json!({}));

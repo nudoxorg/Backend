@@ -857,6 +857,13 @@ pub fn outline(tree: &OutlineTree) -> String {
     if tree.filtered_out() > 0 {
         let _ = write!(summary, " · {} left out by the kind filter", tree.filtered_out());
     }
+    if tree.locals_hidden() > 0 {
+        let _ = write!(
+            summary,
+            " · {} anonymous or function-local left out (omit top_level to list them)",
+            tree.locals_hidden()
+        );
+    }
     lines.push(summary);
     if let Some(page) = tree.page().filter(|page| page.continuation.is_some()) {
         lines.push(format!("More declarations remain beyond this bounded prefix. Continue outline with --limit {} and the next cursor.", page.limit));

@@ -738,6 +738,13 @@ const EXCLUDE_KIND: ArgumentSpec = ArgumentSpec::optional_with_json_name(
     "Leave out these declaration kinds, comma-separated; `variable` removes constructor parameters and locals. The page reports how many nodes it removed (filtered_out).",
 );
 
+const TOP_LEVEL: ArgumentSpec = ArgumentSpec::optional_with_json_name(
+    "top-level",
+    "top_level",
+    ArgumentKind::Flag,
+    "Leave out anonymous callables and every declaration inside a function body (locals, parameters, inner functions), keeping what a file, class or module offers. The page reports how many it left out (locals_hidden); omit this to list them.",
+);
+
 const LIMIT: ArgumentSpec = ArgumentSpec::optional(
     "limit",
     ArgumentKind::Limit,
@@ -912,8 +919,8 @@ pub const GRAMMARS: [CommandGrammar; 64] = [
             ArgumentKind::ProjectPath,
             "Project directory; defaults to the active project.",
         )],
-        options: &[LIMIT, CURSOR, KIND, EXCLUDE_KIND],
-        when: "Use to learn a package's shape before searching it, when you do not yet know what to search for.",
+        options: &[LIMIT, CURSOR, KIND, EXCLUDE_KIND, TOP_LEVEL],
+        when: "Use to learn a package's shape before searching it, when you do not yet know what to search for. Pass top_level (--top-level) to leave out anonymous callables and function-local declarations.",
     },
     CommandGrammar {
         name: "resolve",

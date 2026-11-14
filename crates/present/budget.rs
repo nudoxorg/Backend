@@ -362,6 +362,7 @@ pub fn encode_answer_with_call(
                         unnamed: outline.unnamed,
                         page: outline.page,
                         filtered_out: outline.filtered_out,
+                        locals_hidden: outline.locals_hidden,
                     },
                     budget,
                     continuation_call,
@@ -883,6 +884,8 @@ struct SummaryOutlineDto {
     page: Option<crate::dto::OutlinePageDto>,
     #[serde(skip_serializing_if = "is_zero")]
     filtered_out: usize,
+    #[serde(skip_serializing_if = "is_zero")]
+    locals_hidden: usize,
 }
 
 #[derive(Serialize)]

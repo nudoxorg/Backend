@@ -1454,8 +1454,15 @@ impl<P: Product> Server<P> {
             })?;
         no_extra(
             arguments,
-            &["path", "limit", "cursor", "detail", "kind", "exclude_kind"],
+            &["path", "limit", "cursor", "detail", "kind", "exclude_kind", "top_level"],
         )?;
+        let top_level = match arguments.get("top_level") {
+            None => false,
+            Some(Value::Bool(value)) => *value,
+            Some(_) => {
+                return Err(RpcError::invalid_argument("top_level", "true or false"));
+            }
+        };
         // The kind filters leave the arguments before grammar validation, so
         // their type is checked here: a filter of the wrong type is refused,
         // never read as "no filter".
@@ -1469,7 +1476,8 @@ impl<P: Product> Server<P> {
         };
         let kinds =
             backend_present::KindFilter::parse(kind_list("kind")?, kind_list("exclude_kind")?)
-                .map_err(RpcError::invalid)?;
+                .map_err(RpcError::invalid)?
+                .with_top_level(top_level);
         let grammar = backend_present::grammar_for_tool("backend.outline")
             .ok_or_else(|| RpcError::new(-32602, "Unknown tool"))?;
         let mut command = arguments.clone();
@@ -1478,6 +1486,7 @@ impl<P: Product> Server<P> {
         command.remove("cursor");
         command.remove("kind");
         command.remove("exclude_kind");
+        command.remove("top_level");
         validate_registry_arguments(grammar, &command)
             .map_err(|fault| RpcError::from_fault(&fault))?;
         let planned_invocation = Invocation::from_json(grammar, &command)
