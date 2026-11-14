@@ -2540,6 +2540,11 @@ pub enum PackageSemanticError {
     /// Restored compile references are unavailable or do not match the captured project.
     #[error("C# restored references unavailable: {0}")]
     CSharpRestore(#[source] backend_frontend_csharp::legacy::RestoreError),
+    /// No source of the package compiled in any language profile.
+    #[error(
+        "no source compiled in any language profile, so there is no semantic generation to publish; package-profile names each profile's outcome"
+    )]
+    NothingCompiled,
     /// A checked size computation overflowed or exceeded the package budget.
     #[error("package semantic publication exceeds its {lane} byte budget")]
     Capacity {
@@ -7088,7 +7093,7 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         }
         let count = staged.artifacts.len();
         if count == 0 {
-            return Err(PackageSemanticError::Capacity { lane: "manifest" });
+            return Err(PackageSemanticError::NothingCompiled);
         }
         let mut fragment_bytes = 0_usize;
         for artifact in &staged.artifacts {
@@ -7243,7 +7248,7 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         let plane_execution_identity = staged.plane_execution_identity;
         let count = staged.artifacts.len();
         if count == 0 {
-            return Err(PackageSemanticError::Capacity { lane: "manifest" });
+            return Err(PackageSemanticError::NothingCompiled);
         }
         let mut fragment_bytes = 0_usize;
         for artifact in &staged.artifacts {
