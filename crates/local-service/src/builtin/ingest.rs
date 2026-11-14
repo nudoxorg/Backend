@@ -3244,9 +3244,10 @@ const NATIVE_TS_MIXED_REFUSAL: &str = "native TypeScript scan cannot admit mixed
 /// TypeScript. A walk with a TypeScript path and any other supported source
 /// language (Rust, Python, Go, Java, C#, C or C++) is rescanned in the legacy
 /// structural lane, which indexes every language exactly as it does without
-/// TypeScript routing. A project that already has selected native evidence
-/// cannot make that move here, so it refuses and says why instead of
-/// publishing a partial or empty result.
+/// TypeScript routing. That holds when the project already has selected native
+/// evidence too: a workspace that gains a second language is never refused.
+/// The structural result states its own coverage, and the earlier native rows
+/// stop being served because the publication that selected them is replaced.
 pub(super) fn scan_project_with_native_typescript_auto(
     coordinate: &str,
     project: [u8; 32],
@@ -3260,19 +3261,8 @@ pub(super) fn scan_project_with_native_typescript_auto(
     let mut snapshot = scan_project_with_configuration_policy_attempt(
         coordinate, project, reusable, source_selection_policy(), true, true,
         Some(cancellation.as_ref()), policy, interpreter, None, observation,
-        if force_native { NativeTsScanMode::Native } else { NativeTsScanMode::Auto },
-    )
-    .map_err(|error| {
-        if force_native && error == NATIVE_TS_MIXED_REFUSAL {
-            format!(
-                "{error}: this project already has selected native TypeScript evidence and also \
-                 contains another supported source language; nothing was indexed or dropped, and \
-                 the workspace is unchanged"
-            )
-        } else {
-            error
-        }
-    })?;
+        if force_native { NativeTsScanMode::Retained } else { NativeTsScanMode::Auto },
+    )?;
     if let Some(capture) = snapshot.native_typescript_capture.as_mut() {
         capture.cancellation = Some(cancellation);
     }
@@ -3345,6 +3335,10 @@ enum NativeTsScanMode {
     Native,
     /// Native when TypeScript is the only supported language, else legacy.
     Auto,
+    /// The project has prior selected native evidence: native even when its
+    /// last TypeScript path is gone, and legacy when another supported
+    /// language appears beside it.
+    Retained,
 }
 
 fn scan_project_with_configuration_policy_attempt(
@@ -3394,7 +3388,7 @@ fn scan_project_with_configuration_policy_attempt(
     native_paths.sort();
     let native_typescript = match mode {
         NativeTsScanMode::Legacy => false,
-        NativeTsScanMode::Native => true,
+        NativeTsScanMode::Native | NativeTsScanMode::Retained => true,
         NativeTsScanMode::Auto => !native_paths.is_empty(),
     };
     if static_discovery && !native_typescript {
@@ -3403,7 +3397,7 @@ fn scan_project_with_configuration_policy_attempt(
     let frontends = selected_frontends;
     let frontier_policy_allowed = !native_typescript && discovery == source_selection_policy();
     if native_typescript && (!paths.is_empty() || !project_paths.vue_paths.is_empty()) {
-        if matches!(mode, NativeTsScanMode::Auto) {
+        if matches!(mode, NativeTsScanMode::Auto | NativeTsScanMode::Retained) {
             // Native evidence cannot carry a second language (the v13 intent
             // admits no structural rows), and dropping those files would hide
             // them. The legacy lane covers every language, TypeScript
@@ -6586,14 +6580,19 @@ mod tests {
         assert_eq!(mixed.source_version, legacy.source_version);
         assert_eq!(mixed.files.len(), legacy.files.len());
 
-        // Prior native evidence cannot move to the structural lane here: refuse with a reason.
-        let Err(refusal) = scan_project_with_native_typescript_auto(
+        // Prior native evidence does not turn a mixed project away: it is scanned in the
+        // structural lane exactly like the first index, with no native capture.
+        let retained = scan_project_with_native_typescript_auto(
             root_text, project, &BTreeMap::new(), Arc::clone(&cancelled), true, None, None,
-        ) else {
-            return Err("forced native lane must refuse a mixed project".into());
+        )?;
+        assert!(retained.native_typescript_capture.is_none());
+        assert_eq!(retained.source_version, legacy.source_version);
+        assert_eq!(retained.files.len(), legacy.files.len());
+        // The native-only lane (no prior evidence routing) still refuses a mixed walk.
+        let Err(refusal) = scan_native_typescript_only(root_text, project, Arc::clone(&cancelled)) else {
+            return Err("native-only lane must refuse a mixed project".into());
         };
         assert!(refusal.contains(NATIVE_TS_MIXED_REFUSAL), "{refusal}");
-        assert!(refusal.contains("selected native TypeScript evidence"), "{refusal}");
         Ok(())
     }
 

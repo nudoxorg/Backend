@@ -605,5 +605,145 @@ def gate_on_signed_out(bin_dir, out):
         r.stop()
 
 
-SCENARIOS = {"gate_on_signed_out": gate_on_signed_out, "verify_budget": verify_budget, "probe_budget_no_csharp": probe_budget_no_csharp, "probe_budget_no_appshell": probe_budget_no_appshell, "probe_budget_no_next": probe_budget_no_next, "probe_refusals": probe_refusals, "probe_refs_mixed": probe_refs_mixed, "startup_missing_checker": startup_missing_checker, "probe_crm": probe_crm, "probe_budget_diag": probe_budget_diag, "probe_reindex_refusal": probe_reindex_refusal, "probe_refs_nested": probe_refs_nested, "probe_refs_gap": probe_refs_gap, "probe_react_variants": probe_react_variants, "probe_budget": probe_budget, "startup_path": startup_path, "probe_refs": probe_refs,
+def _long_ts_project(root, files, tag):
+    """A TypeScript project big enough that its index outlasts many status reads."""
+    root = pathlib.Path(root)
+    fixtures.write(root, "package.json", '{"name":"long-%s","version":"1.0.0","private":true}\n' % tag)
+    fixtures.write(root, "tsconfig.json", '{"compilerOptions":{"strict":true,"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","noEmit":true},"include":["src"]}\n')
+    for index in range(files):
+        previous = f'import {{ step{index - 1} }} from "./m{index - 1}";\n' if index else ""
+        chain = f"step{index - 1}(n) + " if index else ""
+        body = "".join(f"export function helper{index}_{k}(a: number, b: string): string {{ return b + String(a * {k + 1}); }}\n" for k in range(12))
+        fixtures.write(root, f"src/m{index}.ts",
+                       f"{previous}export function step{index}(n: number): number {{ return {chain}n + {index}; }}\n{body}"
+                       f"export interface Shape{index} {{ id: number; label: string; next?: Shape{max(index - 1, 0)}; }}\n")
+    return root
+
+
+FRAME_BAD = ("disconnect", "broken pipe", "connection reset", "endpoint closed", "mutation outcome", "unknown outcome")
+
+
+def long_index_frame_budget(bin_dir, out):
+    """Does a long index make the real CLI and MCP clients fail on the owner's frame budget?
+
+    The owner is started with BACKEND_LOCALD_MAX_FRAMES_PER_CONNECTION lowered (only the owner sees it, so
+    the clients still believe in the default 256 and must recover from the retirement after the fact).
+    Set FRAME_BUDGET to 256 to leave the owner untouched and rely on the index outlasting 256 frames.
+    """
+    budget = os.environ.get("FRAME_BUDGET", "8")
+    files = int(os.environ.get("LONG_FILES", "300"))
+    owner_env = {} if budget == "256" else {"BACKEND_LOCALD_MAX_FRAMES_PER_CONNECTION": budget}
+    r = Route(bin_dir, out, owner_env=owner_env)
+    detail = {"frame_budget": budget, "files": files}
+    ok = True
+    try:
+        cli_proj = _long_ts_project(r.root / "cli_proj", files, "cli")
+        mcp_proj = _long_ts_project(r.root / "mcp_proj", files, "mcp")
+        r.start_owner(cli_proj)
+        started = time.monotonic()
+        code, obj, text = r.cli("add", ["add", str(cli_proj), "--wait", "--wait-timeout", "900"], cli_proj)
+        detail["cli_seconds"] = round(time.monotonic() - started, 1)
+        detail["cli_exit"] = code
+        detail["cli_bad_words"] = [w for w in FRAME_BAD if w in text.lower()]
+        detail["cli_state"] = json.dumps(obj)[:300] if obj is not None else text[:300]
+        ok &= code == 0 and not detail["cli_bad_words"]
+        r.start_mcp(mcp_proj)
+        started = time.monotonic()
+        result = r.tool("backend.index", {"path": str(mcp_proj)})
+        polls, errors = 1, int(bool(result.get("isError")))
+        deadline = time.monotonic() + 900
+        while True:
+            call = (result.get("structuredContent") or {}).get("index_poll", {}).get("call")
+            if not call:
+                break
+            if time.monotonic() > deadline:
+                raise RuntimeError("MCP index timed out")
+            time.sleep(0.02)
+            result = r.rpc("tools/call", call)
+            polls += 1
+            errors += int(bool(result.get("isError")))
+        detail.update({"mcp_seconds": round(time.monotonic() - started, 1), "mcp_polls": polls, "mcp_error_results": errors,
+                       "mcp_final_isError": bool(result.get("isError"))})
+        text = json.dumps(result).lower()
+        detail["mcp_bad_words"] = [w for w in FRAME_BAD if w in text]
+        ok &= errors == 0 and not result.get("isError") and not detail["mcp_bad_words"]
+        found = r.tool("backend.search", {"query": "step7", "limit": 3})
+        detail["mcp_search_isError"] = bool(found.get("isError"))
+        ok &= not found.get("isError")
+        (out / "summary.json").write_text(json.dumps(detail, indent=1))
+        return {"long_index_frame_budget": {"pass": bool(ok), "detail": json.dumps(detail)}}
+    finally:
+        r.stop()
+
+
+TS_VIEW = "export function Greeting() {\n  return '%s';\n}\n"
+CSHARP_PROGRAM = "public class OrderService { public int Count() { return 1; } }\n"
+
+
+def _served_source(r, proj, label, name):
+    """The source text the public route serves for the declaration named `name` (None when none is served)."""
+    _, found, _ = r.cli(f"search-{label}", ["search", name, "--limit", "20"], proj)
+    texts = []
+    for row in _rows(found):
+        ident = row.get("identity", {})
+        if ident.get("name") != name or not ident.get("coordinate"):
+            continue
+        code, _, text = r.cli(f"source-{label}-{len(texts)}", ["source", ident["coordinate"]], proj, json_out=False)
+        if code == 0:
+            texts.append(text)
+    return texts
+
+
+def ts_gains_second_language(bin_dir, out):
+    """A TypeScript project indexed through native evidence gains C#: the whole index must not fail,
+    TypeScript must be served from the current files, and a cold reopen must serve the same."""
+    r = Route(bin_dir, out)
+    steps = {}
+    ok = True
+    try:
+        proj = r.root / "mixed_proj"
+        fixtures.write(proj, "tsconfig.json", '{"compilerOptions":{"strict":true},"include":["*.ts"]}\n')
+        fixtures.write(proj, "view.ts", TS_VIEW % "before")
+        fixtures.write(proj, "consumer.ts", "import { Greeting } from './view';\nGreeting();\n")
+        r.start_owner(proj)
+        code, obj, text = r.cli("add-ts-only", ["add", str(proj), "--wait", "--wait-timeout", "900"], proj)
+        steps["ts_only_add_exit"] = code
+        first = _served_source(r, proj, "ts-only", "Greeting")
+        steps["ts_only_served"] = [("before" in t) for t in first]
+        ok &= code == 0 and any("return 'before'" in t for t in first)
+        # The project gains C# beside its TypeScript, and the TypeScript changes.
+        fixtures.write(proj, "Program.cs", CSHARP_PROGRAM)
+        fixtures.write(proj, "view.ts", TS_VIEW % "after")
+        code, obj, text = r.cli("add-mixed", ["add", str(proj), "--wait", "--wait-timeout", "900"], proj)
+        steps["mixed_add_exit"] = code
+        steps["mixed_add_refused"] = "cannot admit mixed" in text or "already has selected native" in text
+        ok &= code == 0 and not steps["mixed_add_refused"]
+        ts = _served_source(r, proj, "mixed-ts", "Greeting")
+        cs = _served_source(r, proj, "mixed-cs", "OrderService")
+        steps["mixed_ts_current"] = any("return 'after'" in t for t in ts)
+        steps["mixed_ts_stale"] = any("return 'before'" in t for t in ts)
+        steps["mixed_cs_served"] = any("OrderService" in t for t in cs)
+        ok &= steps["mixed_ts_current"] and not steps["mixed_ts_stale"] and steps["mixed_cs_served"]
+        r.cli("status-mixed", ["--format", "markdown", "status"], proj, json_out=False)
+        # Cold reopen: same answers from a new owner process.
+        r.restart_owner(proj)
+        ts2 = _served_source(r, proj, "reopen-ts", "Greeting")
+        cs2 = _served_source(r, proj, "reopen-cs", "OrderService")
+        steps["reopen_ts_current"] = any("return 'after'" in t for t in ts2) and not any("return 'before'" in t for t in ts2)
+        steps["reopen_cs_served"] = any("OrderService" in t for t in cs2)
+        ok &= steps["reopen_ts_current"] and steps["reopen_cs_served"]
+        # Dropping the second language again keeps the project indexable.
+        (proj / "Program.cs").unlink()
+        code, obj, text = r.cli("add-back", ["add", str(proj), "--wait", "--wait-timeout", "900"], proj)
+        steps["back_add_exit"] = code
+        back = _served_source(r, proj, "back-ts", "Greeting")
+        steps["back_ts_current"] = any("return 'after'" in t for t in back) and not any("return 'before'" in t for t in back)
+        ok &= code == 0 and steps["back_ts_current"]
+        (out / "summary.json").write_text(json.dumps(steps, indent=1))
+        return {"ts_gains_second_language": {"pass": bool(ok), "detail": json.dumps(steps)}}
+    finally:
+        r.stop()
+
+
+SCENARIOS = {"ts_gains_second_language": ts_gains_second_language, "long_index_frame_budget": long_index_frame_budget, "gate_on_signed_out": gate_on_signed_out, "verify_budget": verify_budget, "probe_budget_no_csharp": probe_budget_no_csharp, "probe_budget_no_appshell": probe_budget_no_appshell, "probe_budget_no_next": probe_budget_no_next, "probe_refusals": probe_refusals, "probe_refs_mixed": probe_refs_mixed, "startup_missing_checker": startup_missing_checker, "probe_crm": probe_crm, "probe_budget_diag": probe_budget_diag, "probe_reindex_refusal": probe_reindex_refusal, "probe_refs_nested": probe_refs_nested, "probe_refs_gap": probe_refs_gap, "probe_react_variants": probe_react_variants, "probe_budget": probe_budget, "startup_path": startup_path, "probe_refs": probe_refs,
              "probe_edits": probe_edits, "probe_churn": probe_churn, "probe_mcp": probe_mcp}

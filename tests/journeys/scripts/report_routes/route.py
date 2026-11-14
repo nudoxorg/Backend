@@ -266,7 +266,7 @@ class RetirementUnproved(RuntimeError):
 class Route:
     """One private HOME, one owner, any number of CLI and MCP calls."""
 
-    def __init__(self, bin_dir, out, auto_start=False, path_extra=None, extra_env=None):
+    def __init__(self, bin_dir, out, auto_start=False, path_extra=None, extra_env=None, owner_env=None):
         self.bin = pathlib.Path(bin_dir)
         self.out = pathlib.Path(out)
         self.out.mkdir(parents=True, exist_ok=True)
@@ -296,6 +296,8 @@ class Route:
             env["NUDOX_ACCOUNT_GATE"] = os.environ["NUDOX_ACCOUNT_GATE"]
         env.update(extra_env or {})
         self.env = env
+        # Environment only the owner process sees (CLI and MCP keep `env`).
+        self.owner_env = dict(owner_env or {})
         self.workspace = self.root / "state"
         self.workspace.mkdir(mode=0o700)
         self.endpoint = self.root / "owner.sock"
@@ -306,7 +308,7 @@ class Route:
             return
         secret = self.workspace / "authority.secret"
         self._ensure_authority_secret(secret)
-        env = dict(self.env, BACKEND_LOCALD_AUTHORITY_SECRET_FILE=str(secret))
+        env = dict(self.env, BACKEND_LOCALD_AUTHORITY_SECRET_FILE=str(secret), **self.owner_env)
         with open(self.out / "owner-stderr.log", "wb") as log:
             self.owner = subprocess.Popen(
                 [str(self.bin / "backend-locald"), "--endpoint", str(self.endpoint), "--workspace",
@@ -419,6 +421,15 @@ class Route:
             except (OSError, RuntimeError):
                 identity["unproved"] = True
         self.spawned_processes[proc.pid] = identity
+
+    def restart_owner(self, cwd):
+        """Retire the owner with proof, then start a new one on the same workspace and credential."""
+        if self.auto_start or self.owner is None:
+            raise RuntimeError("restart_owner needs an owner started by start_owner")
+        self.retire_for_reopen()
+        if self.endpoint.exists():
+            self.endpoint.unlink()
+        self.start_owner(cwd)
 
     def save_records(self):
         (self.out / "records.json").write_text(json.dumps(self.records, indent=1))
