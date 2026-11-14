@@ -2115,7 +2115,12 @@ impl BuiltinIntent {
         self.encoding_version == Self::NATIVE_EVIDENCE_VERSION
             || (matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION) && self.native_evidence_basis.is_some())
     }
-    /// SQL proof hydration and source revalidation must run on the worker.
+    /// Whether this is an SQL-analysis intent, as opposed to another v14
+    /// carrier. Only these can take the owner's receipt authority to commit.
+    pub(super) fn is_sql_intent(&self) -> bool {
+        self.encoding_version == Self::SQL_VERSION
+    }
+    /// Whether the intent carries SQL claims or the live proof they were built from.
     pub(super) fn has_sql_evidence(&self) -> bool {
         matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION) && (self.sql_proof.is_some() || self.sql_extension.is_some())
     }
@@ -2127,10 +2132,23 @@ impl BuiltinIntent {
                 .any(|row| !matches!(row, backend_engine::builtin::SqlAnalysisRecord::Attempt { .. }))
         }))
     }
-    /// A staged v14 carrier can shed its sections and private proof. Refuse
-    /// synchronous hydration based on its durable version, not in-memory data.
+    /// A staged v14 carrier can shed its sections and private proof, so the
+    /// durable version decides, not in-memory data. A v14 intent commits off
+    /// the publication worker only as an SQL intent with the owner's receipt
+    /// authority, or as a bare SQL retirement.
     pub(super) fn requires_v14_worker(&self) -> bool {
         matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION)
+    }
+
+    /// A bare v14 carrier of the given kind, for exercising the commit routes.
+    #[cfg(test)]
+    pub(in crate::builtin) fn v14_carrier_for_test(csharp: bool, label: &str) -> Self {
+        let package = backend_engine::PackageKey::from_value(label);
+        let version = if csharp { Self::CSHARP_VERSION } else { Self::SQL_VERSION };
+        Self::new_with_version(
+            version, BuiltinIntentOperation::Index, package, label,
+            vec![], vec![], None, None, None, vec![], vec![], vec![],
+        ).expect("v14 carrier")
     }
 
     pub(super) fn validate_native_stage_cancellation(

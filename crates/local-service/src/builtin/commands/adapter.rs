@@ -4810,8 +4810,11 @@ impl CommandAdapter {
         }
         // SQL custody needs the owner's receipt authority, which the owner holds
         // for every workspace it opened; without it only the worker can commit.
-        let sql_custody = prepared_intent.as_ref().is_some_and(BuiltinIntent::requires_v14_worker);
-        if sql_custody && self.receipt_context.is_none() {
+        // Only SQL intents may take that route; any other v14 carrier (C#) stays
+        // with the worker whether or not the owner holds the authority.
+        let sql_custody = prepared_intent.as_ref().is_some_and(BuiltinIntent::is_sql_intent);
+        let v14 = prepared_intent.as_ref().is_some_and(BuiltinIntent::requires_v14_worker);
+        if v14 && !(sql_custody && self.receipt_context.is_some()) {
             return Err(BuiltinModelError("v14 native sections require the publication worker".into()).into());
         }
         let intent = match (prepared_intent.clone(), operation_key) {
@@ -8323,12 +8326,12 @@ fn commit_prepared_builtin_intent_inner(
     daemon: &mut ProductDaemon,
     request_id: u64,
     prepared: PreparedBuiltinIntent,
-    sql_retirement: bool,
+    owner_may_commit_sql: bool,
 ) -> Result<(), BuiltinModelError> {
     if prepared.intent.has_native_ts_evidence() {
         return Err(BuiltinModelError("native TypeScript evidence requires the publication worker".into()));
     }
-    if prepared.intent.requires_v14_worker() && !sql_retirement {
+    if prepared.intent.requires_v14_worker() && !owner_may_commit_sql {
         return Err(BuiltinModelError("v14 native sections require the publication worker".into()));
     }
     let owner = daemon.engine().daemon().owner();
@@ -9303,6 +9306,54 @@ mod tests {
     #[cfg(unix)]
     #[path = "stylo_process.rs"]
     mod stylo_process_tests;
+
+    #[test]
+    fn only_sql_intents_commit_v14_on_the_owner() {
+        let root = TempTree::new();
+        let profile = profile_descriptor(BuiltinProfile::Product).expect("product profile");
+        let dispatcher =
+            builtin_dispatcher(Some(ECHO_AUTHORITY_SECRET), profile, 60_000).expect("dispatcher");
+        let registry = crate::builtin::product_relation_registry().expect("registry");
+        let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
+            &root.0,
+            BuiltinModel,
+            genesis().expect("genesis"),
+            dispatcher,
+            backend_engine::DaemonConfig::default(),
+            registry,
+        )
+        .expect("fresh daemon");
+        let (root_bytes, sequence) = {
+            let head = daemon.engine().daemon().owner().head();
+            (*head.root().as_bytes(), head.sequence())
+        };
+        for csharp in [true, false] {
+            let intent = BuiltinIntent::v14_carrier_for_test(csharp, "/tmp/v14-owner-route");
+            assert!(intent.requires_v14_worker());
+            assert_eq!(intent.is_sql_intent(), !csharp);
+            // The finish_add route passes exactly this flag.
+            let owner_may_commit_sql = intent.is_sql_intent();
+            let prepared = super::PreparedBuiltinIntent {
+                request_identity: [0; 32],
+                base_workspace_root: root_bytes,
+                base_workspace_sequence: sequence,
+                base_closure_id: [0; 32],
+                intent,
+            };
+            let message = super::commit_prepared_builtin_intent_inner(
+                &mut daemon, 1, prepared, owner_may_commit_sql,
+            )
+            .expect_err("a bare carrier never commits")
+            .to_string();
+            // The C# carrier stops at the worker guard; the SQL one passes it
+            // and stops on the closure it was not prepared against.
+            assert_eq!(
+                message.contains("require the publication worker"),
+                csharp,
+                "{message}"
+            );
+        }
+    }
 
     #[test]
     fn owned_intent_preparation_moves_facts_and_preserves_bound_canonical_identity() {
