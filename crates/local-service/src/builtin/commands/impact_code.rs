@@ -15,6 +15,7 @@
 //! * a JSX tag bound by import to a component in an indexed file is an
 //!   **exact** render link; aliases, packages and unresolved barrels are gaps.
 use super::impact_css::{global_class_key, module_class_key, stylesheet_key, custom_property_key};
+use super::impact_imports::{CompilerImports, ImportLookup, Lookup, RelativeImports, is_code_specifier};
 use super::impact_framework::{
     DomainLoad, Edge, FileWitness, ImpactAdapter, ImpactContext, Key, Node, node_key,
 };
@@ -514,30 +515,6 @@ pub(super) fn resolve_relative(file: &str, spec: &str) -> Option<String> {
     Some(parts.join("/"))
 }
 
-const CODE_EXTENSIONS: &[&str] = &["tsx", "ts", "jsx", "js", "mjs", "cjs", "mts", "cts"];
-
-/// The indexed file a relative module specifier names, probing extensions and
-/// index files the way bundlers do.
-fn resolve_module(files: &BTreeSet<String>, from: &str, spec: &str) -> Option<String> {
-    let base = resolve_relative(from, spec)?;
-    if files.contains(&base) {
-        return Some(base);
-    }
-    for extension in CODE_EXTENSIONS {
-        let candidate = format!("{base}.{extension}");
-        if files.contains(&candidate) {
-            return Some(candidate);
-        }
-    }
-    for extension in CODE_EXTENSIONS {
-        let candidate = format!("{base}/index.{extension}");
-        if files.contains(&candidate) {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
 fn component_key(file: &str, name: &str) -> Key {
     node_key(ImpactDomain::Code, "component", file, name)
 }
@@ -547,9 +524,15 @@ fn module_key(file: &str) -> Key {
 
 struct Resolver<'a> {
     scans: &'a BTreeMap<String, FileScan>,
-    files: BTreeSet<String>,
+    lookup: &'a dyn ImportLookup,
 }
 impl Resolver<'_> {
+    fn module(&self, from: &str, spec: &str) -> Option<String> {
+        match self.lookup.lookup(from, spec) {
+            Lookup::File(path) => Some(path),
+            Lookup::Package | Lookup::Unresolved(_) => None,
+        }
+    }
     /// Component key behind `exported` of `file`, following barrels a few hops.
     fn export_target(&self, file: &str, exported: &str, hops: u8) -> Option<Key> {
         let scan = self.scans.get(file)?;
@@ -565,11 +548,11 @@ impl Resolver<'_> {
             return None;
         }
         let (spec, imported) = scan.reexports.get(exported)?;
-        let target = resolve_module(&self.files, file, spec)?;
+        let target = self.module(file, spec)?;
         self.export_target(&target, if imported == "*" { exported } else { imported }, hops - 1)
     }
     fn import_target(&self, file: &str, binding: &ImportBinding) -> Option<Key> {
-        let target = resolve_module(&self.files, file, &binding.spec)?;
+        let target = self.module(file, &binding.spec)?;
         let exported = match &binding.imported {
             Imported::Default => "default".to_owned(),
             Imported::Named(name) => name.clone(),
@@ -582,7 +565,16 @@ impl Resolver<'_> {
 /// Build the code graph from scans. Pure over `scans`, unit-testable.
 pub(super) fn build_graph(scans: &BTreeMap<String, FileScan>) -> (BTreeMap<Key, Node>, Vec<Edge>, Vec<ImpactGap>) {
     let files: BTreeSet<String> = scans.keys().cloned().collect();
-    let resolver = Resolver { scans, files };
+    build_graph_with(scans, &RelativeImports(&files))
+}
+
+/// Build the code graph with import specifiers resolved by `lookup`.
+pub(super) fn build_graph_with(
+    scans: &BTreeMap<String, FileScan>,
+    lookup: &dyn ImportLookup,
+) -> (BTreeMap<Key, Node>, Vec<Edge>, Vec<ImpactGap>) {
+    let resolver = Resolver { scans, lookup };
+    let mut unresolved_imports: Vec<(String, String, String)> = Vec::new();
     let mut nodes: BTreeMap<Key, Node> = BTreeMap::new();
     let mut edges: Vec<Edge> = Vec::new();
     let mut alias_imports = 0u32;
@@ -623,11 +615,17 @@ pub(super) fn build_graph(scans: &BTreeMap<String, FileScan>) -> (BTreeMap<Key, 
                 node
             });
         }
-        for binding in &scan.imports {
-            if (binding.spec.starts_with("@/") || binding.spec.starts_with("~/") || binding.spec.starts_with('#'))
-                && resolve_relative(file, &binding.spec).is_none()
-            {
-                alias_imports += 1;
+        // Code imports which name no indexed file are reported, never dropped.
+        // Stylesheet and asset specifiers have their own links and gaps.
+        let reexported = scan.reexports.values().map(|(spec, _)| spec.as_str());
+        let imported = scan.imports.iter().map(|binding| binding.spec.as_str());
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        for spec in imported.chain(reexported).filter(|spec| is_code_specifier(spec)) {
+            if !seen.insert(spec) {
+                continue;
+            }
+            if let Lookup::Unresolved(reason) = lookup.lookup(file, spec) {
+                unresolved_imports.push((file.clone(), spec.to_owned(), reason));
             }
         }
         // Class tokens.
@@ -775,8 +773,26 @@ pub(super) fn build_graph(scans: &BTreeMap<String, FileScan>) -> (BTreeMap<Key, 
     if alias_imports > 0 {
         gaps.push(ImpactGap {
             facet: "code.alias-imports".to_owned(),
-            note: "imports through path aliases or packages are not resolved, so links through them are missing".to_owned(),
+            note: "stylesheet imports through path aliases or packages are not resolved, so style links through them are missing".to_owned(),
             count: Some(alias_imports),
+        });
+    }
+    if !unresolved_imports.is_empty() {
+        let shown = unresolved_imports
+            .iter()
+            .take(3)
+            .map(|(file, spec, reason)| format!("{file} imports \"{spec}\" ({reason})"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let more = unresolved_imports.len().saturating_sub(3);
+        // First, so a truncated gap list still shows that consumers may be missing.
+        gaps.insert(0, ImpactGap {
+            facet: "code.unresolved-imports".to_owned(),
+            note: format!(
+                "import specifiers which name no indexed file, so components and styles reached through them are not followed and consumers may be missing: {shown}{}",
+                if more > 0 { format!("; and {more} more") } else { String::new() }
+            ),
+            count: Some(unresolved_imports.len() as u32),
         });
     }
     if unresolved_renders > 0 {
@@ -941,7 +957,30 @@ impl ImpactAdapter for CodeAdapter {
                 count: None,
             });
         }
-        let (nodes, edges, graph_gaps) = build_graph(&scans);
+        // Imports are placed by the compiler's resolver over the indexed files
+        // and the project's own tsconfig, not by path arithmetic.
+        let indexed: BTreeSet<String> = listed.iter().map(|file| file.path.clone()).collect();
+        let read_project = |relative: &str| match super::super::ingest::read_stylo_selected_source(&root, relative, MAX_FILE_BYTES) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(super::super::ingest::SelectedSourceReadError::Vanished) => Ok(None),
+            Err(error) => Err(std::io::Error::other(format!("{error:?}"))),
+        };
+        let imports = CompilerImports::new(&indexed, &read_project);
+        let (nodes, edges, mut graph_gaps) = build_graph_with(&scans, &imports);
+        for (config, error) in imports.configuration_errors() {
+            reasons.push(format!("{config} could not be used to resolve imports: {error}"));
+            graph_gaps.insert(0, ImpactGap {
+                facet: "code.tsconfig".to_owned(),
+                note: format!("{config} could not be loaded ({error}); imports which need it are reported as unresolved"),
+                count: None,
+            });
+        }
+        if let Some(unresolved) = graph_gaps.iter().find(|gap| gap.facet == "code.unresolved-imports") {
+            reasons.push(format!(
+                "{} import specifiers name no indexed file, so some consumers may be missing",
+                unresolved.count.unwrap_or(0)
+            ));
+        }
         gaps.extend(graph_gaps);
         let state = if reasons.is_empty() { ImpactDomainState::Analyzed } else { ImpactDomainState::Partial { reasons } };
         DomainLoad {
@@ -1211,3 +1250,7 @@ export default function Page() { return <Button />; }"#,
         assert!(deps.rows.iter().any(|row| row.node.kind == "rule" && row.node.name == ".btn"), "{deps:?}");
     }
 }
+
+#[cfg(test)]
+#[path = "impact_imports_tests.rs"]
+mod imports_tests;

@@ -34,6 +34,7 @@ mod stylo_impact_adapter;
 mod impact_framework;
 mod impact_css;
 mod impact_code;
+mod impact_imports;
 mod impact_sql;
 
 pub(in crate::builtin) use adapter::{CommandAdapter, Executed, ExpectedNativeSourceOrigin, selected_native_policy_for_row};
