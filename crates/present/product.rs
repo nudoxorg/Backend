@@ -1904,6 +1904,34 @@ fn explore_empty_note(query: Option<&str>, project_scope: bool) -> String {
     }
 }
 
+/// Says plainly when an index-search page holds no package, so local declarations alone are
+/// never read as a registry answer.
+///
+/// Only what the page itself establishes is claimed: whether the registry index was ever
+/// populated is not in the reply, so the note names the calls that look a package up or
+/// acquire it instead of guessing.
+fn index_search_package_note(hits: &[RegistrySearchHit], more: bool) -> Option<String> {
+    if hits.iter().any(|hit| !matches!(hit, RegistrySearchHit::LocalDeclaration(_))) {
+        return None;
+    }
+    let found = if hits.is_empty() {
+        "no package or declaration row"
+    } else {
+        "no package, only declaration rows,"
+    };
+    let scope = if more {
+        format!("This page holds {found} from the local registry index; later pages may.")
+    } else {
+        format!("No package from the local registry index matched: this search returned {found}.")
+    };
+    Some(format!(
+        "{scope} This answer does not say whether registry discovery has populated that index. \
+         `package <pinned purl>` (backend.package) looks up one exact release and \
+         `add <pinned purl>` (backend.index) acquires it; `explore` (backend.explore) browses \
+         only acquired packages and indexed projects."
+    ))
+}
+
 /// Registry, library, and semantic-generation answers.
 fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
     Some(match reply {
@@ -2034,15 +2062,23 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         SurfaceReply::IndexSearch(records) => {
             ProductView::rows("index-search", registry_rows(records))
         }
-        SurfaceReply::IndexSearchWithDiscovery(hits) => ProductView::rows(
-            "index-search",
-            hits.iter().map(registry_search_hit_row).collect(),
-        ),
-        SurfaceReply::IndexSearchPage(page) => ProductView::rows(
-            "index-search",
-            page.hits.iter().map(registry_search_hit_row).collect(),
-        )
-        .with_index_search_page(page),
+        SurfaceReply::IndexSearchWithDiscovery(hits) => {
+            let mut view = ProductView::rows(
+                "index-search",
+                hits.iter().map(registry_search_hit_row).collect(),
+            );
+            view.note = index_search_package_note(hits, false);
+            view
+        }
+        SurfaceReply::IndexSearchPage(page) => {
+            let mut view = ProductView::rows(
+                "index-search",
+                page.hits.iter().map(registry_search_hit_row).collect(),
+            )
+            .with_index_search_page(page);
+            view.note = index_search_package_note(&page.hits, page.next_cursor.is_some());
+            view
+        }
         SurfaceReply::PackageVersions(records) => {
             ProductView::rows("package-versions", registry_rows(records))
         }
@@ -5143,6 +5179,67 @@ mod tests {
             let original = serde_json::to_value(&reply).expect("source facts");
             assert!(original.to_string().contains("literal\\nforged"));
         }
+    }
+
+    fn local_hit(name: &str) -> RegistrySearchHit {
+        RegistrySearchHit::LocalDeclaration(LocalDeclarationSearchRecord {
+            coordinate: backend_library::ProductText::new(format!("/project::src/{name}.ts:1::{name}"))
+                .expect("coordinate"),
+            name: backend_library::ProductText::new(name).expect("name"),
+            source: LocalDeclarationSource::Captured {
+                path: backend_library::ProductText::new(format!("src/{name}.ts")).expect("path"),
+                line: std::num::NonZeroU32::new(1).expect("line"),
+            },
+        })
+    }
+
+    #[test]
+    fn index_search_with_no_package_says_so_and_names_the_next_calls() {
+        let views = [
+            product_view(&SurfaceReply::IndexSearchWithDiscovery(Box::new([
+                local_hit("setupConfig"),
+                local_hit("setupLink"),
+            ]))),
+            product_view(&SurfaceReply::IndexSearchPage(IndexSearchPage {
+                snapshot: [7; 32],
+                evaluated_at_millis: 11,
+                hits: Box::new([local_hit("setupConfig")]),
+                next_cursor: None,
+                result_count: IndexSearchResultCount::Exact(1),
+            })),
+        ];
+        for view in &views {
+            let note = view.note().expect("a page with no package hit says so");
+            assert!(note.contains("No package from the local registry index matched"), "{note}");
+            assert!(note.contains("only declaration rows"), "{note}");
+            assert!(note.contains("does not say whether registry discovery has populated"), "{note}");
+            assert!(note.contains("`add <pinned purl>` (backend.index)"), "{note}");
+            assert!(note.contains("`package <pinned purl>` (backend.package)"), "{note}");
+            for rendered in [crate::markdown::product(view), crate::text::product(view, crate::Theme::plain())] {
+                assert!(rendered.contains("No package from the local registry index matched"), "{rendered}");
+            }
+            assert!(crate::dto::ProductDto::new(view).note.is_some());
+        }
+    }
+
+    #[test]
+    fn an_empty_index_search_claims_nothing_beyond_the_reply() {
+        let empty = product_view(&SurfaceReply::IndexSearchWithDiscovery(Box::new([])));
+        let note = empty.note().expect("note");
+        assert!(note.contains("no package or declaration row"), "{note}");
+        assert!(!note.contains("is empty") && !note.contains("not been populated"), "{note}");
+        // A page with more to come only speaks for itself.
+        let first = product_view(&SurfaceReply::IndexSearchPage(IndexSearchPage {
+            snapshot: [7; 32],
+            evaluated_at_millis: 11,
+            hits: Box::new([local_hit("setupConfig")]),
+            next_cursor: Some(IndexSearchCursor::new("owner-v4-token").expect("cursor")),
+            result_count: IndexSearchResultCount::AtLeast(2),
+        }));
+        let note = first.note().expect("note");
+        assert!(note.contains("This page holds no package, only declaration rows"), "{note}");
+        assert!(note.contains("later pages may"), "{note}");
+        assert!(!note.contains("No package from the local registry index matched"), "{note}");
     }
 
     #[test]
