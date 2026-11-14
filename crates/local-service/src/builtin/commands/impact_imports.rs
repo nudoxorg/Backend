@@ -36,11 +36,15 @@ const CODE_EXTENSIONS: &[&str] = &["tsx", "ts", "jsx", "js", "mjs", "cjs", "mts"
 const NON_CODE_EXTENSIONS: &[&str] = &[
     "css", "scss", "sass", "less", "styl", "svg", "png", "jpg", "jpeg", "gif", "webp", "avif", "ico", "bmp", "json",
     "woff", "woff2", "ttf", "otf", "eot", "mp3", "mp4", "webm", "ogg", "wav", "md", "mdx", "txt", "html", "vue",
-    "svelte", "astro", "graphql", "gql", "sql", "wasm", "pdf", "csv",
+    "svelte", "astro", "graphql", "gql", "sql", "wasm", "pdf", "csv", "yaml", "yml", "toml", "xml", "node",
 ];
 
-/// Whether a specifier can name a TypeScript or JavaScript module.
+/// Whether a specifier can name a TypeScript or JavaScript module. A bundler
+/// `?query` or `#hash` (`./logo.svg?react`) is not part of the file name.
 pub(super) fn is_code_specifier(spec: &str) -> bool {
+    // A leading `#` is a subpath import (`#internal/x`), not a hash.
+    let end = spec.char_indices().skip(1).find(|(_, c)| matches!(c, '?' | '#')).map_or(spec.len(), |(index, _)| index);
+    let spec = &spec[..end];
     let name = spec.rsplit('/').next().unwrap_or(spec);
     match name.rsplit_once('.') {
         Some((stem, extension)) if !stem.is_empty() => !NON_CODE_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str()),
@@ -120,7 +124,7 @@ impl ImportLookup for CompilerImports<'_> {
             ProjectModule::File(path) => Lookup::File(path),
             ProjectModule::Package => Lookup::Package,
             ProjectModule::Unresolved(reason) => match self.relative.lookup(importer, spec) {
-                found @ Lookup::File(_) if spec.starts_with('.') => found,
+                found @ Lookup::File(_) => found,
                 _ => Lookup::Unresolved(reason),
             },
         };
@@ -141,6 +145,21 @@ mod tests {
         assert!(!is_code_specifier("./card.module.css"));
         assert!(!is_code_specifier("@/assets/logo.svg"));
         assert!(!is_code_specifier("./data.json"));
+        for config in ["./settings.yaml", "./settings.yml", "./Cargo.toml", "./feed.xml", "./addon.node"] {
+            assert!(!is_code_specifier(config), "{config}");
+        }
+    }
+
+    #[test]
+    fn a_query_or_hash_does_not_hide_the_extension() {
+        for asset in ["./logo.svg?react", "./a.css?inline", "./x.png?url", "./icons.svg#sprite", "@/a/b.css?inline&x=/y.ts"] {
+            assert!(!is_code_specifier(asset), "{asset}");
+        }
+        assert!(is_code_specifier("./worker.ts?worker"));
+        assert!(is_code_specifier("./util?v=1.css.map"));
+        assert!(is_code_specifier("#internal/util"));
+        assert!(is_code_specifier("#internal/util?x"));
+        assert!(!is_code_specifier("#internal/theme.css"));
     }
 
     #[test]
