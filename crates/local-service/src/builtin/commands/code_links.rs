@@ -323,8 +323,8 @@ pub(in crate::builtin) fn read_persisted(
     let Some(StyloAnalysisRecord::Selection { code: Some(_), .. }) = selection else {
         return Ok(None);
     };
-    let mut hosts: BTreeMap<[u8; 32], (String, PersistedHost, Vec<(u32, CodeFactRow)>)> = BTreeMap::new();
-    let mut facts: Vec<([u8; 32], u32, CodeFactRow)> = Vec::new();
+    let mut hosts: BTreeMap<[u8; 32], StoredHost> = BTreeMap::new();
+    let mut facts: Vec<([u8; 32], [u8; 32], StyloAnalysisRecord)> = Vec::new();
     let mut after: Option<[u8; 32]> = None;
     let mut scanned = 0usize;
     loop {
@@ -338,31 +338,94 @@ pub(in crate::builtin) fn read_persisted(
         }
         for (key, row) in entries {
             after = Some(*key);
-            scanned += 1;
-            if scanned > MAX_CODE_ROWS {
-                return Err("the code link relation exceeds the impact scan budget".to_owned());
+            // The budget counts code rows; the stylesheet rows sharing the relation are not ours.
+            if matches!(row, StyloAnalysisRecord::CodeHost { .. } | StyloAnalysisRecord::CodeFact { .. }) {
+                scanned += 1;
+                if scanned > MAX_CODE_ROWS {
+                    return Err("the code link relation exceeds the impact scan budget".to_owned());
+                }
             }
             match row {
-                StyloAnalysisRecord::CodeHost { project: owner, path, source, byte_length, state, .. } if *owner == project => {
-                    hosts.insert(*key, (path.clone(), PersistedHost { source: *source, byte_length: *byte_length, state: *state, facts: Vec::new() }, Vec::new()));
+                StyloAnalysisRecord::CodeHost { project: owner, path, source, byte_length, state, fact_count, fact_digest } if *owner == project => {
+                    hosts.insert(
+                        *key,
+                        StoredHost {
+                            path: path.clone(),
+                            host: PersistedHost { source: *source, byte_length: *byte_length, state: *state, facts: Vec::new() },
+                            fact_count: *fact_count,
+                            fact_digest: *fact_digest,
+                            rows: Vec::new(),
+                        },
+                    );
                 }
-                StyloAnalysisRecord::CodeFact { host, ordinal, fact } => facts.push((*host, *ordinal, fact.clone())),
+                StyloAnalysisRecord::CodeFact { host, .. } => facts.push((*host, *key, row.clone())),
                 _ => {}
             }
         }
     }
-    for (host, ordinal, fact) in facts {
+    for (host, key, row) in facts {
         if let Some(entry) = hosts.get_mut(&host) {
-            entry.2.push((ordinal, fact));
+            entry.rows.push((key, row));
         }
     }
     let mut out = BTreeMap::new();
-    for (_, (path, mut host, mut rows)) in hosts {
-        rows.sort_by_key(|(ordinal, _)| *ordinal);
-        host.facts = rows.into_iter().map(|(_, fact)| fact).collect();
-        out.insert(path, host);
+    for (_, stored) in hosts {
+        out.insert(stored.path.clone(), stored.verified());
     }
     Ok(Some(PersistedCode { hosts: out }))
+}
+
+/// A code host and its fact rows as read, before they are checked against the
+/// count and digest the host row carries.
+struct StoredHost {
+    path: String,
+    host: PersistedHost,
+    fact_count: u32,
+    fact_digest: [u8; 32],
+    rows: Vec<([u8; 32], StyloAnalysisRecord)>,
+}
+
+impl StoredHost {
+    /// The host with its facts in ordinal order. Rows which do not match the
+    /// host's own count and digest, or whose module-class bindings do not name
+    /// leading imports, are not trusted: the host reads as unavailable and the
+    /// source is scanned instead.
+    fn verified(mut self) -> PersistedHost {
+        let untrusted = |mut host: PersistedHost| {
+            host.state = CodeHostState::Unavailable(CodeUnavailable::ReadUnavailable);
+            host.facts.clear();
+            host
+        };
+        self.rows.sort_by_key(|(key, _)| *key);
+        let refs: Vec<_> = self.rows.iter().map(|(key, row)| (*key, row)).collect();
+        if self.rows.len() != self.fact_count as usize || stylo_rows_digest(&refs) != Ok(self.fact_digest) {
+            return untrusted(self.host);
+        }
+        let mut ordered: Vec<(u32, CodeFactRow)> = Vec::with_capacity(self.rows.len());
+        for (_, row) in self.rows {
+            let StyloAnalysisRecord::CodeFact { ordinal, fact, .. } = row else { return untrusted(self.host) };
+            ordered.push((ordinal, fact));
+        }
+        ordered.sort_by_key(|(ordinal, _)| *ordinal);
+        if ordered.iter().enumerate().any(|(index, (ordinal, _))| *ordinal as usize != index) {
+            return untrusted(self.host);
+        }
+        self.host.facts = ordered.into_iter().map(|(_, fact)| fact).collect();
+        if !bindings_name_leading_imports(&self.host.facts) {
+            return untrusted(self.host);
+        }
+        self.host
+    }
+}
+
+/// Whether every module-class fact binds an import, counted as the scan counts
+/// them: by position among the leading `Import` facts.
+fn bindings_name_leading_imports(facts: &[CodeFactRow]) -> bool {
+    let leading = facts.iter().take_while(|fact| matches!(fact, CodeFactRow::Import { .. })).count();
+    facts.iter().all(|fact| match fact {
+        CodeFactRow::ModuleClassUse { binding, .. } => (*binding as usize) < leading,
+        _ => true,
+    })
 }
 
 #[cfg(test)]
@@ -450,5 +513,60 @@ export const Inner = () => <span className="shared" />;
         assert!(matches!(state, CodeHostState::Unavailable(CodeUnavailable::Limit)));
         assert_eq!(*fact_count, 0);
         assert!(rows.facts.is_empty());
+    }
+
+    fn stored(scan: FileScan) -> StoredHost {
+        let rows = host_rows([7; 32], &scan.path.clone(), [9; 32], 10, ScanOutcome::Scanned(scan)).expect("rows");
+        let StyloAnalysisRecord::CodeHost { source, byte_length, state, fact_count, fact_digest, .. } = &rows.host else {
+            panic!("host")
+        };
+        StoredHost {
+            path: "src/Card.tsx".to_owned(),
+            host: PersistedHost { source: *source, byte_length: *byte_length, state: *state, facts: Vec::new() },
+            fact_count: *fact_count,
+            fact_digest: *fact_digest,
+            rows: rows.facts,
+        }
+    }
+
+    #[test]
+    fn stored_facts_are_trusted_only_when_they_match_the_host_row() {
+        let scan = scanned("src/Card.tsx", SOURCE);
+        let expected = facts_of(&scan);
+        let host = stored(scan.clone()).verified();
+        assert!(matches!(host.state, CodeHostState::Scanned { .. }));
+        assert_eq!(host.facts, expected);
+
+        let mut missing = stored(scan.clone());
+        missing.rows.pop();
+        let host = missing.verified();
+        assert!(matches!(host.state, CodeHostState::Unavailable(CodeUnavailable::ReadUnavailable)));
+        assert!(host.facts.is_empty());
+
+        let mut altered = stored(scan);
+        if let Some((_, StyloAnalysisRecord::CodeFact { fact: CodeFactRow::ClassUse { token, .. }, .. })) =
+            altered.rows.iter_mut().find(|(_, row)| matches!(row, StyloAnalysisRecord::CodeFact { fact: CodeFactRow::ClassUse { .. }, .. }))
+        {
+            token.push('x');
+        }
+        let host = altered.verified();
+        assert!(matches!(host.state, CodeHostState::Unavailable(CodeUnavailable::ReadUnavailable)));
+    }
+
+    #[test]
+    fn a_module_class_binding_outside_the_imports_is_not_trusted() {
+        let mut scan = FileScan { path: "src/Card.tsx".to_owned(), ..FileScan::default() };
+        scan.imports.push(ImportBinding {
+            local: "styles".to_owned(),
+            spec: "./Card.module.css".to_owned(),
+            imported: Imported::Default,
+            line: 1,
+        });
+        scan.module_class_uses.push(ModuleClassUse { binding: 0, class: "title".to_owned(), line: 2, owner: None });
+        assert!(matches!(stored(scan.clone()).verified().state, CodeHostState::Scanned { .. }));
+        scan.module_class_uses[0].binding = 7;
+        let host = stored(scan).verified();
+        assert!(matches!(host.state, CodeHostState::Unavailable(CodeUnavailable::ReadUnavailable)));
+        assert!(host.facts.is_empty());
     }
 }
