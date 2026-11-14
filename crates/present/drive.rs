@@ -506,12 +506,28 @@ pub fn empty_search_reason(published_names_only: bool, text: &str) -> String {
         );
     }
     reason.push_str(
-        "; the index reflects files as of the last index, so code edited or added on disk since then is not searchable until it is re-indexed (nudox add), and files of a type no frontend claims are not indexed. Inline script blocks in .vue single-file components have partial native syntax coverage; template, style, external script and complete Vue framework semantics are unavailable (`status` counts hosts with unavailable inline scripts). For CSS classes and custom properties, use stylo-query or backend.stylo_query with the indexed package; for SQL objects and analysis gaps, use sql-query or backend.sql_query",
+        "; the index reflects files as of the last index, so code edited or added on disk since then is not searchable until it is re-indexed (nudox add, backend.index). Dependencies (node_modules, registry packages) are not indexed unless added: acquire one release with `nudox add <pinned purl>` (backend.index with the pinned purl as path), and find its purl with `index-search <name>` (backend.index_search)",
     );
     reason
 }
 
 /// Projects an already admitted native search/name/outline reply without another read.
+    let lowered = text.to_ascii_lowercase();
+    if text.starts_with(['.', '#']) || text.starts_with("--") || lowered.contains(".css") {
+        reason.push_str(
+            ". For CSS classes and custom properties, use stylo-query or backend.stylo_query with the indexed package",
+        );
+    }
+    if lowered.contains(".sql") {
+        reason.push_str(
+            ". For SQL objects and analysis gaps, use sql-query or backend.sql_query",
+        );
+    }
+    if lowered.contains(".vue") {
+        reason.push_str(
+            ". Inline script blocks in .vue single-file components have partial native syntax coverage; template, style, external script and complete Vue framework semantics are unavailable (`status` counts hosts with unavailable inline scripts)",
+        );
+    }
 /// Surfaces can retain typed response-ceiling errors before this projection.
 ///
 /// # Errors
@@ -644,13 +660,7 @@ pub fn answer_paged(
                 let reason = hidden_only_reason(list.hidden_non_declarations(), list.has_more());
                 list.with_empty_reason(reason)
             } else if list.is_empty() {
-                list.with_empty_reason(
-                    if published_names.is_some() {
-                        "no current declaration names matched; full lexical search has not been queried in this result stage. For CSS classes and custom properties, use stylo-query or backend.stylo_query with the indexed package; for SQL objects and analysis gaps, use sql-query or backend.sql_query"
-                    } else {
-                        "no indexed declarations matched this query text; try a declaration name, signature fragment, or documentation keyword. For CSS classes and custom properties, use stylo-query or backend.stylo_query with the indexed package; for SQL objects and analysis gaps, use sql-query or backend.sql_query"
-                    },
-                )
+                list.with_empty_reason(empty_search_reason(published_names.is_some(), text))
             } else {
                 list
             };
@@ -2645,7 +2655,6 @@ mod empty_search_reason_controls {
             let reason = empty_search_reason(published_only, "brandNewHelper");
             assert!(reason.contains("not searchable until it is re-indexed"), "{reason}");
             assert!(reason.contains("nudox add"), "{reason}");
-            assert!(reason.contains(".vue single-file components"), "{reason}");
             assert!(!reason.contains("several words"), "a single name needs no phrase advice: {reason}");
         }
     }
@@ -2654,6 +2663,32 @@ mod empty_search_reason_controls {
     fn a_multiword_empty_search_explains_phrase_matching() {
         let reason = empty_search_reason(false, "where is the balance validated");
         assert!(reason.contains("several words"), "{reason}");
+    #[test]
+    fn an_empty_search_says_dependencies_are_not_indexed_and_how_to_add_one() {
+        let reason = empty_search_reason(false, "computeLayoutParams");
+        assert!(reason.contains("node_modules"), "{reason}");
+        assert!(reason.contains("not indexed unless added"), "{reason}");
+        assert!(reason.contains("nudox add <pinned purl>"), "{reason}");
+        assert!(reason.contains("backend.index"), "{reason}");
+        assert!(reason.contains("backend.index_search"), "{reason}");
+    }
+
+    #[test]
+    fn an_empty_search_names_a_file_type_only_when_the_query_names_it() {
+        let plain = empty_search_reason(false, "PageShell");
+        for absent in ["Vue", ".vue", "CSS", "SQL", "stylo"] {
+            assert!(!plain.contains(absent), "{absent} does not apply to a plain name: {plain}");
+        }
+        assert!(empty_search_reason(false, ".panel").contains("backend.stylo_query"));
+        assert!(empty_search_reason(false, "--accent").contains("backend.stylo_query"));
+        assert!(empty_search_reason(false, "schema.sql").contains("backend.sql_query"));
+        assert!(empty_search_reason(false, "App.vue").contains(".vue single-file components"));
+        assert!(
+            empty_search_reason(false, "plain").len() < 700,
+            "the unconditional message stays short"
+        );
+    }
+
         assert!(reason.contains("semantic_search"), "{reason}");
     }
 }
