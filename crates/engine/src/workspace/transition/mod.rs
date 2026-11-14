@@ -17,6 +17,31 @@ use std::sync::Arc;
 
 const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 
+/// Bounded summary bytes of a closure for the journal's prepared record.
+///
+/// The flat export is a compatibility encoding that only the journal's
+/// diagnostic summary hashes: recovery reads the authenticated closure, and
+/// the workspace pack names the closure by its identity. A project whose
+/// inline evidence exceeds the record bound is still a valid closure, so its
+/// summary names the closure identity instead of refusing the index.
+fn closure_summary_bytes(manifest: &ClosureManifest) -> Result<Vec<u8>, WorkspaceError> {
+    closure_summary_bytes_within(manifest, MAX_RECORD_BYTES)
+}
+
+fn closure_summary_bytes_within(
+    manifest: &ClosureManifest,
+    maximum: usize,
+) -> Result<Vec<u8>, WorkspaceError> {
+    match manifest.encode(maximum) {
+        Err(backend_store::StoreError::Bounds) => {
+            let mut bytes = Vec::from(&b"SCI1"[..]);
+            bytes.extend_from_slice(manifest.id().as_bytes());
+            Ok(bytes)
+        }
+        encoded => encoded.map_err(WorkspaceError::store),
+    }
+}
+
 #[inline(never)]
 fn consume_commit(commit: Commit) {
     // Checked capabilities are reconstructed from the commit before the
@@ -299,13 +324,7 @@ impl PreparedTransition {
         persisted.membership = Some(self.closure.membership_id());
         let mut encoded = Vec::from(&b"SCM1"[..]);
         encoded.extend_from_slice(self.closure.membership_id().as_bytes());
-        encoded.extend_from_slice(
-            &self
-                .closure
-                .control_manifest()
-                .encode(MAX_RECORD_BYTES)
-                .map_err(WorkspaceError::store)?,
-        );
+        encoded.extend_from_slice(&closure_summary_bytes(self.closure.control_manifest())?);
         persisted.closure_bytes = Arc::from(encoded);
         Ok(self)
     }
@@ -475,10 +494,7 @@ impl PreparedTransition {
             &closure,
             registry,
         )?;
-        let mut closure_bytes = closure
-            .control_manifest()
-            .encode(MAX_RECORD_BYTES)
-            .map_err(WorkspaceError::store)?;
+        let mut closure_bytes = closure_summary_bytes(closure.control_manifest())?;
         let membership_id = closure.stored_membership().map(|_| closure.membership_id());
         if let Some(id) = membership_id {
             let mut compact = Vec::from(&b"SCM1"[..]);
@@ -995,5 +1011,51 @@ impl PersistedTransition {
 
     pub(super) fn closure_bytes(&self) -> &[u8] {
         &self.closure_bytes
+    }
+}
+
+#[cfg(test)]
+mod closure_summary_tests {
+    use super::{ClosureManifest, closure_summary_bytes_within};
+    use backend_store::TypedObject;
+    use backend_version::{ObjectKey, Schema};
+
+    struct Blob;
+    impl Schema for Blob {
+        const DOMAIN: u8 = 0xee;
+        const TYPE: u16 = 1;
+        type Value = [u8];
+
+        fn encode(value: &Self::Value, output: &mut Vec<u8>) {
+            output.extend_from_slice(value);
+        }
+    }
+
+    fn manifest(sizes: &[usize]) -> ClosureManifest {
+        let mut objects: Vec<TypedObject> = sizes
+            .iter()
+            .enumerate()
+            .map(|(index, size)| {
+                let mut value = vec![u8::try_from(index % 251).unwrap_or(0); *size];
+                value.extend_from_slice(&index.to_be_bytes());
+                TypedObject::from_value(&ObjectKey::<Blob>::from_value(value.as_slice()), value.as_slice())
+            })
+            .collect();
+        objects.sort_by_key(|object| (object.schema(), *object.key(), *object.version()));
+        ClosureManifest::new(objects).expect("closure of distinct objects")
+    }
+
+    /// A closure whose inline objects exceed the record bound still summarises:
+    /// it names its identity instead of refusing the transition that holds it.
+    #[test]
+    fn an_oversized_closure_summarises_by_identity() {
+        let large = manifest(&[600, 700, 800]);
+        let summary = closure_summary_bytes_within(&large, 1024).expect("identity summary");
+        assert_eq!(&summary[..4], b"SCI1");
+        assert_eq!(&summary[4..], large.id().as_bytes());
+
+        let small = manifest(&[16, 32]);
+        let flat = closure_summary_bytes_within(&small, 1024).expect("flat export");
+        assert_eq!(flat, small.encode(1024).expect("bounded export"));
     }
 }
