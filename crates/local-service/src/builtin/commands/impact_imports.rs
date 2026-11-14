@@ -7,7 +7,9 @@
 //! uses, served the indexed file set and the project's own JSON configuration.
 //! A specifier which should name project code but does not resolve is reported
 //! with the reason; it is never silently dropped.
-use backend_frontend_typescript::project_resolver::{ProjectModule, ProjectModuleResolver};
+use backend_frontend_typescript::project_resolver::{
+    ProjectModule, ProjectModuleResolver, looks_like_path_alias,
+};
 use super::impact_code::resolve_relative;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -79,7 +81,7 @@ impl ImportLookup for RelativeImports<'_> {
         if spec.starts_with("./") || spec.starts_with("../") {
             return Lookup::Unresolved("the path leaves the project".to_owned());
         }
-        if spec.starts_with("@/") || spec.starts_with("~/") || spec.starts_with('#') {
+        if looks_like_path_alias(spec) {
             return Lookup::Unresolved("path aliases are resolved from the project's tsconfig, which was not read".to_owned());
         }
         Lookup::Package

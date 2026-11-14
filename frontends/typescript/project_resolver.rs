@@ -29,6 +29,14 @@ const CONFIG_NAMES: [&str; 2] = ["tsconfig.json", "jsconfig.json"];
 /// Reads one project-relative file. `Ok(None)` means the file does not exist.
 pub type ProjectReader<'a> = dyn Fn(&str) -> io::Result<Option<Vec<u8>>> + 'a;
 
+/// Whether `specifier` is written the way projects spell a path alias (`@/x`,
+/// `~/x`, `#x`), so a failure to resolve it is a missing mapping rather than a
+/// package outside the project.
+#[must_use]
+pub fn looks_like_path_alias(specifier: &str) -> bool {
+    specifier.starts_with("@/") || specifier.starts_with("~/") || specifier.starts_with('#')
+}
+
 /// What a module specifier names, as the compiler's resolver sees it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProjectModule {
@@ -250,7 +258,7 @@ impl<'a> ProjectModuleResolver<'a> {
         if self.base_url_covers(&slot.options, specifier) {
             return ProjectModule::Unresolved("starts at a baseUrl entry, but no indexed file matches".to_owned());
         }
-        if specifier.starts_with("@/") || specifier.starts_with("~/") || specifier.starts_with('#') {
+        if looks_like_path_alias(specifier) {
             return ProjectModule::Unresolved(match &slot.path {
                 Some(config) => format!("looks like a path alias, but {config} declares no paths entry that matches it"),
                 None => "looks like a path alias, but the project has no tsconfig.json or jsconfig.json".to_owned(),
@@ -280,9 +288,12 @@ impl<'a> ProjectModuleResolver<'a> {
             return false;
         }
         let joined = if base.is_empty() { first.to_owned() } else { format!("{base}/{first}") };
+        // A file named by the first segment plus an extension: only paths with
+        // that prefix can match, and the sorted set yields exactly those.
         self.view.is_dir_relative(&joined)
-            || self.view.files.iter().any(|file| {
-                file.strip_prefix(&joined).is_some_and(|rest| rest.starts_with('.') && !rest[1..].contains('/'))
+            || self.view.files.range(joined.clone()..).take_while(|file| file.starts_with(&joined)).any(|file| {
+                let rest = &file[joined.len()..];
+                rest.starts_with('.') && !rest[1..].contains('/')
             })
     }
 
