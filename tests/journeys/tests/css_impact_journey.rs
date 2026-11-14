@@ -230,8 +230,7 @@ fn rows_of(report: &ImpactReport) -> Vec<(String, String, ImpactStrength, String
 /// The three graph surfaces whose answers must come from published links:
 /// `references` on a global class, `graph --component` and `references` on a
 /// Vue-scoped class. Each is asserted against the fixture as it goes.
-fn graph_surfaces(session: &Session<'_>, project: &Path) -> (ImpactReport, ImpactReport, ImpactReport) {
-    let _ = project;
+fn graph_surfaces(session: &Session<'_>) -> (ImpactReport, ImpactReport, ImpactReport) {
     // references on a CSS class lists the components which use it, nothing transitive.
     let refs = report_in(&session.cli(&["references", ".btn"]));
     assert!(matches!(refs.seed_state, ImpactSeedState::Resolved), "{refs:?}");
@@ -452,7 +451,7 @@ fn css_is_indexed_queried_traced_edited_and_reopened_through_the_real_product() 
         }
 
         // 6b. TS and Vue links to CSS are published edges, not query-time guesses.
-        let (_, _, badge_before) = graph_surfaces(&session, &project);
+        let (_, _, badge_before) = graph_surfaces(&session);
         let lg_before = session.impact(&["--class", "btn-lg"]);
         assert_eq!(strength_of(&lg_before, "component", "Button"), Some(ImpactStrength::Candidate), "{lg_before:?}");
         assert!(
@@ -573,7 +572,7 @@ fn css_is_indexed_queried_traced_edited_and_reopened_through_the_real_product() 
     // 9. Cold reopen: a new owner process on the same workspace answers from durable state.
     let (before, surfaces_before) = {
         let session = Session { bin: &bin, owner: &owner, workspace: &workspace, project: &project, authority: &authority };
-        (session.impact(&["--class", "btn", "--depth", "4"]), graph_surfaces(&session, &project))
+        (session.impact(&["--class", "btn", "--depth", "4"]), graph_surfaces(&session))
     };
     owner.stop();
     let reopened = Owner::start(&bin, &workspace, &authority, "reopen");
@@ -587,7 +586,7 @@ fn css_is_indexed_queried_traced_edited_and_reopened_through_the_real_product() 
         );
         assert!(matches!(after.freshness, ImpactFreshness::Current { .. }));
         // The published links are what the reopened owner answers from.
-        let surfaces_after = graph_surfaces(&session, &project);
+        let surfaces_after = graph_surfaces(&session);
         for (name, left, right) in [
             ("references .btn", &surfaces_before.0, &surfaces_after.0),
             ("graph --component Header", &surfaces_before.1, &surfaces_after.1),
