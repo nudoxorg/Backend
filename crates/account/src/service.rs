@@ -142,13 +142,14 @@ pub enum RecordError {
     Service(#[from] ServiceError),
 }
 
-/// The body of a usage record. Fields are declared in wire order rather than
-/// built from `serde_json::json!`, whose key order follows the `preserve_order`
-/// feature that other workspace members switch on.
+/// The body of a usage record, `{"kind":"tool_call","count":n}`. Fields are
+/// declared in wire order rather than built from `serde_json::json!`, whose key
+/// order follows the `preserve_order` feature that other workspace members
+/// switch on.
 #[derive(Serialize)]
 struct UsageRecord {
-    count: i64,
     kind: &'static str,
+    count: i64,
 }
 
 /// A client for the auth service.
@@ -217,7 +218,7 @@ impl Service {
             .agent
             .post(format!("{}/v1/usage/record", self.base))
             .header("Authorization", format!("Bearer {}", key.expose()))
-            .send_json(UsageRecord { count, kind: "tool_call" })
+            .send_json(UsageRecord { kind: "tool_call", count })
             .map_err(unreachable)?;
         let status = response.status().as_u16();
         match status {
@@ -421,7 +422,7 @@ pub(crate) mod tests {
         ));
         let requests = fake.requests();
         assert!(
-            requests[0].ends_with(r#"{"count":2,"kind":"tool_call"}"#),
+            requests[0].ends_with(r#"{"kind":"tool_call","count":2}"#),
             "{requests:?}"
         );
     }
