@@ -48,6 +48,13 @@ pub enum ProjectModule {
     Unresolved(String),
 }
 
+/// The configuration file which governs a directory.
+struct Governing {
+    path: String,
+    /// Why the file could not be read, when it could not.
+    unreadable: Option<String>,
+}
+
 struct ConfigSlot {
     /// Project-relative path of the governing configuration, when one exists.
     path: Option<String>,
@@ -186,6 +193,9 @@ pub struct ProjectModuleResolver<'a> {
     view: ProjectView<'a>,
     /// Governing configuration by directory.
     by_directory: RefCell<BTreeMap<String, Rc<ConfigSlot>>>,
+    /// Loaded configurations by the path which governs them, so every
+    /// directory under one configuration shares a single load.
+    by_config: RefCell<BTreeMap<Option<String>, Rc<ConfigSlot>>>,
 }
 
 impl<'a> ProjectModuleResolver<'a> {
@@ -193,7 +203,7 @@ impl<'a> ProjectModuleResolver<'a> {
     /// `read` serves project JSON (configuration, `extends` targets, manifests).
     #[must_use]
     pub fn new(files: &'a BTreeSet<String>, read: &'a ProjectReader<'a>) -> Self {
-        Self { view: ProjectView::new(files, read), by_directory: RefCell::default() }
+        Self { view: ProjectView::new(files, read), by_directory: RefCell::default(), by_config: RefCell::default() }
     }
 
     /// Resolve `specifier` as written in `importer` (a project-relative path).
@@ -298,42 +308,52 @@ impl<'a> ProjectModuleResolver<'a> {
     }
 
     /// The governing configuration of `directory`: the nearest `tsconfig.json`
-    /// or `jsconfig.json` at or above it, inside the project.
+    /// or `jsconfig.json` at or above it, inside the project. A configuration
+    /// is loaded once, however many directories it governs.
     fn config_for(&self, directory: &str) -> Rc<ConfigSlot> {
         if let Some(slot) = self.by_directory.borrow().get(directory) {
             return Rc::clone(slot);
         }
+        let governing = self.governing_config(directory);
+        let cached = self.by_config.borrow().get(&governing.as_ref().map(|found| found.path.clone())).cloned();
+        let slot = cached.unwrap_or_else(|| {
+            let slot = Rc::new(match governing {
+                Some(Governing { path, unreadable: Some(error) }) => ConfigSlot {
+                    path: Some(path),
+                    options: ResolvedCompilerOptions::default(),
+                    error: Some(error),
+                },
+                Some(Governing { path, unreadable: None }) => self.load_config(path),
+                None => ConfigSlot { path: None, options: ResolvedCompilerOptions::default(), error: None },
+            });
+            self.by_config.borrow_mut().insert(slot.path.clone(), Rc::clone(&slot));
+            slot
+        });
+        self.by_directory.borrow_mut().insert(directory.to_owned(), Rc::clone(&slot));
+        slot
+    }
+
+    /// The nearest configuration file at or above `directory`, if any.
+    fn governing_config(&self, directory: &str) -> Option<Governing> {
         let mut current = directory;
-        let slot = loop {
+        loop {
             let found = CONFIG_NAMES.iter().find_map(|name| {
                 let path = if current.is_empty() { (*name).to_owned() } else { format!("{current}/{name}") };
                 match self.view.json(&path) {
-                    Ok(Some(_)) => Some(Ok(path)),
+                    Ok(Some(_)) => Some(Governing { path, unreadable: None }),
                     Ok(None) => None,
-                    Err(error) => Some(Err((path, error.to_string()))),
+                    Err(error) => Some(Governing { path, unreadable: Some(error.to_string()) }),
                 }
             });
-            match found {
-                Some(Ok(path)) => break Rc::new(self.load_config(path)),
-                Some(Err((path, error))) => {
-                    break Rc::new(ConfigSlot {
-                        path: Some(path),
-                        options: ResolvedCompilerOptions::default(),
-                        error: Some(error),
-                    });
-                }
-                None => {}
+            if found.is_some() {
+                return found;
             }
             match current.rsplit_once('/') {
                 Some((parent, _)) => current = parent,
-                None if current.is_empty() => {
-                    break Rc::new(ConfigSlot { path: None, options: ResolvedCompilerOptions::default(), error: None });
-                }
+                None if current.is_empty() => return None,
                 None => current = "",
             }
-        };
-        self.by_directory.borrow_mut().insert(directory.to_owned(), Rc::clone(&slot));
-        slot
+        }
     }
 
     fn load_config(&self, path: String) -> ConfigSlot {
@@ -396,15 +416,10 @@ mod tests {
     }
 
     #[test]
-    fn tsx_sources_resolve_when_the_configuration_does_not_enable_jsx() {
-        let (files, json) = project(
-            &["src/components/Button.tsx", "src/app/page.tsx"],
-            &[("tsconfig.json", r#"{"compilerOptions":{"paths":{"@/*":["./src/*"]}}}"#)],
-        );
-        assert_eq!(
-            resolve(&files, &json, "src/app/page.tsx", "@/components/Button"),
-            ProjectModule::File("src/components/Button.tsx".to_owned())
-        );
+    fn tsx_sources_resolve_when_there_is_no_configuration_to_enable_jsx() {
+        let (files, json) = project(&["src/ui/Button.tsx", "src/ui/index.tsx", "src/page.tsx"], &[]);
+        assert_eq!(resolve(&files, &json, "src/page.tsx", "./ui/Button"), ProjectModule::File("src/ui/Button.tsx".to_owned()));
+        assert_eq!(resolve(&files, &json, "src/page.tsx", "./ui"), ProjectModule::File("src/ui/index.tsx".to_owned()));
     }
 
     #[test]
@@ -461,10 +476,75 @@ mod tests {
         );
         let read = |path: &str| Ok(json.get(path).map(|text| text.clone().into_bytes()));
         let resolver = ProjectModuleResolver::new(&files, &read);
-        let outcome = resolver.resolve("src/a.ts", "@/b");
-        // Either the loader refused the chain (named) or it resolved with the
-        // paths it could read; it must never be reported as an external package.
-        assert_ne!(outcome, ProjectModule::Package, "{outcome:?}");
+        match resolver.resolve("src/a.ts", "@/b") {
+            ProjectModule::Unresolved(reason) => assert!(reason.starts_with("tsconfig.json could not be loaded: "), "{reason}"),
+            other => panic!("expected the configuration failure, got {other:?}"),
+        }
+        let errors = resolver.configuration_errors();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].0, "tsconfig.json");
+        assert!(!errors[0].1.is_empty());
+    }
+
+    #[test]
+    fn directories_under_one_configuration_share_its_single_load() {
+        let (files, json) = project(
+            &["src/a/x.ts", "src/b/c/y.ts", "other/z.ts"],
+            &[("tsconfig.json", r#"{"compilerOptions":{"paths":{"@/*":["./src/*"]}}}"#)],
+        );
+        let read = |path: &str| Ok(json.get(path).map(|text| text.clone().into_bytes()));
+        let resolver = ProjectModuleResolver::new(&files, &read);
+        let first = resolver.config_for("src/a");
+        for directory in ["src/b/c", "src/b", "other", ""] {
+            assert!(Rc::ptr_eq(&first, &resolver.config_for(directory)), "{directory}");
+        }
+        assert_eq!(resolver.by_config.borrow().len(), 1);
+        assert_eq!(resolver.by_directory.borrow().len(), 5);
+    }
+
+    #[test]
+    fn a_base_url_entry_that_matches_nothing_is_named_and_a_near_prefix_is_not_one() {
+        let (files, json) = project(
+            &["src/lib.ts", "src/library/x.ts", "src/app/a.ts"],
+            &[("tsconfig.json", r#"{"compilerOptions":{"baseUrl":"src"}}"#)],
+        );
+        // `src/lib.ts` exists, so the first segment names a baseUrl entry.
+        match resolve(&files, &json, "src/app/a.ts", "lib/missing") {
+            ProjectModule::Unresolved(reason) => assert!(reason.contains("baseUrl"), "{reason}"),
+            other => panic!("expected a baseUrl entry, got {other:?}"),
+        }
+        // A directory of that name does too.
+        match resolve(&files, &json, "src/app/a.ts", "library/missing") {
+            ProjectModule::Unresolved(reason) => assert!(reason.contains("baseUrl"), "{reason}"),
+            other => panic!("expected a baseUrl entry, got {other:?}"),
+        }
+        // `src/library/x.ts` shares the prefix `src/lib` without being `src/lib.*`.
+        let (files, json) = project(
+            &["src/library/x.ts", "src/app/a.ts"],
+            &[("tsconfig.json", r#"{"compilerOptions":{"baseUrl":"src"}}"#)],
+        );
+        assert_eq!(resolve(&files, &json, "src/app/a.ts", "lib/y"), ProjectModule::Package);
+        assert_eq!(resolve(&files, &json, "src/app/a.ts", "react"), ProjectModule::Package);
+    }
+
+    #[test]
+    fn path_alias_spellings_are_unresolved_not_packages() {
+        for specifier in ["@/x", "~/x", "#x"] {
+            assert!(looks_like_path_alias(specifier), "{specifier}");
+        }
+        for specifier in ["@scope/pkg", "react", "~user", "x#y"] {
+            assert!(!looks_like_path_alias(specifier), "{specifier}");
+        }
+        let (files, json) = project(&["src/a.ts"], &[("tsconfig.json", r#"{"compilerOptions":{}}"#)]);
+        for specifier in ["@/x", "~/x", "#x"] {
+            match resolve(&files, &json, "src/a.ts", specifier) {
+                ProjectModule::Unresolved(reason) => {
+                    assert!(reason.contains("looks like a path alias") && reason.contains("tsconfig.json"), "{specifier}: {reason}");
+                }
+                other => panic!("{specifier}: expected unresolved alias, got {other:?}"),
+            }
+        }
+        assert_eq!(resolve(&files, &json, "src/a.ts", "@scope/pkg"), ProjectModule::Package);
     }
 
     #[test]
