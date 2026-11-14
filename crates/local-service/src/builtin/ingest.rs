@@ -12076,6 +12076,11 @@ fn capture_vue_style_hosts(
         for (index, block) in container.blocks().iter().enumerate() {
             let Some(BlockKind::Style { scoped, module }) = container.kind(index) else { continue };
             let Some(content) = block.content.clone() else { continue };
+            // `<style scoped></style>` has content of no bytes: no rules, no
+            // sites, and no fragment the relation could admit.
+            if content.is_empty() {
+                continue;
+            }
             if *remaining_records == 0 || *remaining_bytes == 0 {
                 complete = false;
                 break 'files;

@@ -1209,7 +1209,6 @@ pub fn admit_stylo_selection(
     {
         return Err("Stylo selected host witness mismatch".into());
     }
-    let embedded_recipe = super::STYLO_EMBEDDED_RECIPE.to_owned();
     // Work is bounded before allocating lookup structures or cloning facts.
     stylo_rows_digest(facts)?;
     let mut host_paths = Vec::with_capacity(hosts.len());
@@ -1280,7 +1279,7 @@ pub fn admit_stylo_selection(
         else {
             return Err("Stylo host row required".into());
         };
-        let recipe: &String = if fragment.is_some() { &embedded_recipe } else { recipe };
+        let recipe: &str = if fragment.is_some() { super::STYLO_EMBEDDED_RECIPE } else { recipe };
         let selected = by_host
             .remove(host_key)
             .ok_or("Stylo host witness missing")?;
@@ -1363,7 +1362,7 @@ pub fn admit_stylo_selection(
         }
         let analysis = StyloAnalysis {
             config: host_config,
-            recipe: recipe.clone(),
+            recipe: recipe.to_owned(),
             support_fingerprint: *producer,
             utf8_bom_removed: utf8_bom_removed.ok_or("Stylo BOM handling missing")?,
             preferences: preferences

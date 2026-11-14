@@ -291,3 +291,19 @@ fn cancelled_native_script_capture_is_not_published() {
         .is_err()
     );
 }
+
+#[test]
+fn an_empty_style_block_has_content_of_no_bytes() {
+    let source = "<template><i /></template>\n<style scoped></style>\n<style>.a{}</style>";
+    let parsed = parse(source.as_bytes()).unwrap();
+    let styles: Vec<_> = parsed
+        .blocks()
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| matches!(parsed.kind(*index), Some(BlockKind::Style { .. })))
+        .map(|(_, block)| block.content.clone())
+        .collect();
+    assert_eq!(styles.len(), 2);
+    assert!(styles[0].as_ref().is_some_and(std::ops::Range::is_empty), "{styles:?}");
+    assert!(styles[1].as_ref().is_some_and(|range| !range.is_empty()), "{styles:?}");
+}
