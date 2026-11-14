@@ -3133,7 +3133,17 @@ pub(super) fn execute_references(
                 })
             })?
             .ok_or_else(|| {
-                BuiltinModelError("references target is absent from the selected view".to_owned())
+                BuiltinModelError(match view.row_by_label(target.as_str()) {
+                    // A library symbol the project uses (a DOM or runtime API) is retained as a
+                    // navigation target, not a declaration, so it has no indexed uses to list.
+                    Some(row) if super::super::discovery_search::is_external_placeholder(row) => {
+                        "references target is declared outside the project, in a library it uses; \
+                         uses of external symbols are not indexed as references, so search the \
+                         source text for its name"
+                            .to_owned()
+                    }
+                    _ => "references target is absent from the selected view".to_owned(),
+                })
             })?;
         let target_symbol = match target_row.id {
             backend_engine::RowId::Symbol(symbol) => symbol,
