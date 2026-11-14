@@ -75,6 +75,9 @@ pub(crate) struct PreparedPackageMetadata {
     cancelled: Arc<AtomicBool>,
     request_started_at: Instant,
     queued_at: Option<Instant>,
+    /// The caller asked for the package's version list rather than the one
+    /// pinned release; the fetched document answers both.
+    pub(crate) versions_requested: bool,
 }
 
 pub(crate) struct FetchedPackageMetadata {
@@ -325,6 +328,7 @@ impl DiscoveryGateway {
             cancelled: Arc::clone(&self.cancelled),
             request_started_at: Instant::now(),
             queued_at: None,
+            versions_requested: false,
         })
     }
 

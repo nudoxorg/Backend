@@ -391,6 +391,98 @@ def probe_crm(bin_dir, out):
         r.stop()
 
 
+def _has(text, *needles):
+    return all(needle in text for needle in needles)
+
+
+def probe_packages(bin_dir, out):
+    """PACKAGE-01..07: the CRM scaffold's package questions against a loopback registry fixture.
+
+    The owner runs online against registry_fixture.Registry only (127.0.0.1); nothing reaches a
+    real registry. The fixture serves fastapi and vite metadata, no archives."""
+    import registry_fixture
+    registry = registry_fixture.Registry()
+    r = Route(bin_dir, out)
+    results = {}
+    try:
+        proj = _project(r, "crm")
+        r.start_owner(proj, registry=registry)
+        r.cli("add", ["add", str(proj), "--wait", "--wait-timeout", "900"], proj)
+        # PACKAGE-01: the same name explore leaves empty is found by index-search; explore says why.
+        code, explore, text = r.cli("explore-fastapi", ["explore", "fastapi"], proj)
+        note = (explore or {}).get("note", "")
+        results["PACKAGE-01"] = {"pass": code == 0 and not _rows(explore) and _has(note, "index-search fastapi", "does not mean no such package"),
+                                 "detail": note}
+        # PACKAGE-04 (metadata half): an online lookup returns the registry's observation, not "offline".
+        code, pkg, text = r.cli("package-fastapi", ["package", "pkg:pypi/fastapi@0.162.0"], proj)
+        results["PACKAGE-04"] = {"pass": code == 0 and "offline" not in text and "discovered" in text,
+                                 "detail": text[:600]}
+        # PACKAGE-03: the discovered releases of a package the project uses.
+        code, versions, text = r.cli("versions-fastapi", ["package-versions", "pkg:pypi/fastapi@0.162.0"], proj)
+        results["PACKAGE-03"] = {"pass": code == 0 and _has(text, "0.160.0", "0.161.0", "0.162.0", "None is acquired"),
+                                 "detail": text[:900]}
+        code, vite, text_vite = r.cli("versions-vite", ["package-versions", "pkg:npm/vite@6.0.0"], proj)
+        results["PACKAGE-03"]["pass"] = results["PACKAGE-03"]["pass"] and code == 0 and _has(text_vite, "5.4.0", "6.0.0")
+        # PACKAGE-02: dependencies before acquisition names the acquisition.
+        code, deps, text = r.cli("dependencies-fastapi", ["dependencies", "pkg:pypi/fastapi@0.162.0"], proj)
+        fault = (deps or {}).get("fault", {})
+        results["PACKAGE-02"] = {"pass": fault.get("shell") == "nudox add pkg:pypi/fastapi@0.162.0"
+                                 and fault.get("call", {}).get("name") == "backend.index",
+                                 "detail": fault}
+        # PACKAGE-05: an unversioned locator names the discovery route.
+        code, vue, text = r.cli("package-vue-unversioned", ["package", "pkg:npm/vue"], proj)
+        results["PACKAGE-05"] = {"pass": code != 0 and _has(text, "exact version", "index-search"), "detail": text[:400]}
+        # The same answers over MCP, including the acquisition route's tool.
+        r.start_mcp(proj)
+        explore_mcp = r.tool("backend.explore", {"query": "fastapi"})
+        versions_mcp = r.tool("backend.package_versions", {"package": "pkg:pypi/fastapi@0.162.0"})
+        deps_mcp = r.tool("backend.dependencies", {"package": "pkg:pypi/fastapi@0.162.0"}, allow_error=True)
+        call = (deps_mcp.get("structuredContent", {}).get("fault", {}) or {}).get("call", {})
+        results["PACKAGE-07"] = {"pass": call.get("name") == "backend.index"
+                                 and call.get("arguments", {}).get("path") == "pkg:pypi/fastapi@0.162.0"
+                                 and "pkg:pypi/fastapi@0.162.0" in json.dumps(versions_mcp)
+                                 and "index-search fastapi" in json.dumps(explore_mcp),
+                                 "detail": {"dependencies_call": call}}
+        results["PACKAGE-06"] = {"pass": True, "detail": "loopback registry fixture: registry_fixture.Registry; requests="
+                                 + json.dumps(registry.requests)}
+        return results
+    finally:
+        r.stop()
+        registry.stop()
+
+
+def probe_vue(bin_dir, out):
+    """INVENTORY-01: the CRM scaffold's App.vue script block through search, outline, source and status."""
+    r = Route(bin_dir, out)
+    try:
+        proj = _project(r, "crm")
+        r.start_owner(proj)
+        code, _, _ = r.cli("add", ["add", str(proj), "--wait", "--wait-timeout", "900"], proj)
+        host = (proj / "frontend/src/App.vue").read_text()
+        _, found, text = r.cli("search-loadhealth", ["search", "loadHealth"], proj)
+        coord = _coord(_rows(found), "loadHealth")
+        row = next((x for x in _rows(found) if x.get("identity", {}).get("name") == "loadHealth"), {})
+        line = host[:host.index("async function loadHealth")].count("\n") + 1
+        _, onm, onm_text = r.cli("search-onmounted", ["search", "onMounted"], proj)
+        _, status, status_text = r.cli("status", ["status"], proj)
+        source_ok = False
+        src_text = ""
+        if coord:
+            _, src, src_text = r.cli("source-loadhealth", ["source", coord], proj)
+            source_ok = "async function loadHealth()" in src_text and "status.value = (await response.json()).status" in src_text
+        outline_code, _, outline_text = r.cli("outline", ["outline", "--limit", "100"], proj)
+        vue_excluded = [e for e in (status or {}).get("source_selection_scope", {}).get("extensions", []) if e.get("extension") == "vue"]
+        path_ok = row.get("identity", {}).get("path") == "frontend/src/App.vue" and row.get("identity", {}).get("line") == line
+        return {"INVENTORY-01": {"pass": bool(coord) and path_ok and source_ok and "App.vue" in outline_text
+                                 and not any(e.get("excluded_files") for e in vue_excluded),
+                                 "detail": {"coordinate": coord, "row_path": row.get("identity", {}).get("path"),
+                                            "row_line": row.get("identity", {}).get("line"), "expected_line": line,
+                                            "source_ok": source_ok, "onMounted_found": "onMounted" in onm_text and bool(_rows(onm)),
+                                            "vue_status": vue_excluded}}}
+    finally:
+        r.stop()
+
+
 def startup_missing_checker(bin_dir, out):
     """STARTUP-02/STATUS-01: an explicitly configured optional checker that does not exist."""
     r = Route(bin_dir, out, auto_start=True, extra_env={"NUDOX_PYTHON": "/nonexistent/python3"})
@@ -974,5 +1066,5 @@ def ts_gains_second_language(bin_dir, out):
         r.stop()
 
 
-SCENARIOS = {"references_nested_calls": references_nested_calls, "perf_timing": perf_timing, "probe_owner_retirement": probe_owner_retirement, "query_output": query_output, "ts_gains_second_language": ts_gains_second_language, "long_index_frame_budget": long_index_frame_budget, "gate_on_signed_out": gate_on_signed_out, "verify_budget": verify_budget, "probe_budget_no_csharp": probe_budget_no_csharp, "probe_budget_no_appshell": probe_budget_no_appshell, "probe_budget_no_next": probe_budget_no_next, "probe_refusals": probe_refusals, "probe_refs_mixed": probe_refs_mixed, "startup_missing_checker": startup_missing_checker, "probe_crm": probe_crm, "probe_budget_diag": probe_budget_diag, "probe_reindex_refusal": probe_reindex_refusal, "probe_refs_nested": probe_refs_nested, "probe_refs_gap": probe_refs_gap, "probe_react_variants": probe_react_variants, "probe_budget": probe_budget, "startup_path": startup_path, "probe_refs": probe_refs,
+SCENARIOS = {"probe_packages": probe_packages, "probe_vue": probe_vue, "references_nested_calls": references_nested_calls, "perf_timing": perf_timing, "probe_owner_retirement": probe_owner_retirement, "query_output": query_output, "ts_gains_second_language": ts_gains_second_language, "long_index_frame_budget": long_index_frame_budget, "gate_on_signed_out": gate_on_signed_out, "verify_budget": verify_budget, "probe_budget_no_csharp": probe_budget_no_csharp, "probe_budget_no_appshell": probe_budget_no_appshell, "probe_budget_no_next": probe_budget_no_next, "probe_refusals": probe_refusals, "probe_refs_mixed": probe_refs_mixed, "startup_missing_checker": startup_missing_checker, "probe_crm": probe_crm, "probe_budget_diag": probe_budget_diag, "probe_reindex_refusal": probe_reindex_refusal, "probe_refs_nested": probe_refs_nested, "probe_refs_gap": probe_refs_gap, "probe_react_variants": probe_react_variants, "probe_budget": probe_budget, "startup_path": startup_path, "probe_refs": probe_refs,
              "probe_edits": probe_edits, "probe_churn": probe_churn, "probe_mcp": probe_mcp}

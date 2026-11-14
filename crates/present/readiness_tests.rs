@@ -349,11 +349,17 @@ fn dependency_failure_preserves_requested_package_and_does_not_invent_an_sdk_cau
         assert_eq!(fault.slug(), FaultSlug::LaneUnavailable);
         assert_eq!(fault.cause().slug(), CauseSlug::NotCaptured);
         assert_eq!(fault.operand().render(), package.as_str());
+        // A pinned registry release has no dependency facts until it is
+        // acquired, so the next step is the acquisition, not another lookup.
         assert_eq!(
-            fault.affordance().tool_call().expect("inspect package"),
+            fault.affordance().tool_call().expect("acquire release"),
             serde_json::json!({
-                "name": "backend.package", "arguments": {"package": package.as_str()}
+                "name": "backend.index", "arguments": {"path": package.as_str()}
             })
+        );
+        assert_eq!(
+            fault.affordance().shell().expect("shell"),
+            format!("nudox add {}", package.as_str())
         );
         assert!(markdown::answer(&answer).contains(package.as_str()));
     }

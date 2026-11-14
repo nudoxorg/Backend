@@ -5623,6 +5623,17 @@ pub enum SurfaceReply {
     IndexSearchPage(IndexSearchPage),
     /// Recorded versions.
     PackageVersions(Box<[RegistryPackageRecord]>),
+    /// Releases of one registry package that source metadata observed but no
+    /// archive backs. These are never acquired records: they carry standing,
+    /// download and advisory claims only, so no dependency, README or engine
+    /// fact can be read from them until the exact release is acquired.
+    DiscoveredVersions {
+        /// The pinned coordinate the caller named; its package identity (type,
+        /// namespace, name) selects the releases.
+        package: PackageCoordinate,
+        /// One claim per observed release and source, never empty.
+        candidates: Box<[RegistryDiscoveryCandidate]>,
+    },
     /// Immutable compiler generations for one exact package.
     SemanticVersions(Box<[SemanticVersionRecord]>),
     /// Bounded immutable compiler identities with native source references.
@@ -5751,7 +5762,9 @@ impl SurfaceReply {
             Self::IndexSearch(_) => CommandId::IndexSearch,
             Self::IndexSearchWithDiscovery(_) => CommandId::IndexSearch,
             Self::IndexSearchPage(_) => CommandId::IndexSearch,
-            Self::PackageVersions(_) | Self::PackageVersionsInstalled(_) => CommandId::PackageVersions,
+            Self::PackageVersions(_)
+            | Self::PackageVersionsInstalled(_)
+            | Self::DiscoveredVersions { .. } => CommandId::PackageVersions,
             Self::SemanticVersions(_) | Self::SemanticVersionsPage(_) => {
                 CommandId::SemanticVersions
             }
@@ -5872,6 +5885,7 @@ impl SurfaceReply {
             | Self::Dependents(RegistryMetadata::Partial { value: v, .. })
             | Self::Owner(RegistryMetadata::Partial { value: v, .. }) => v.len(),
             Self::IndexSearchWithDiscovery(hits) => hits.len(),
+            Self::DiscoveredVersions { candidates, .. } => candidates.len(),
             Self::PackageDiscovery { observation, .. } => match observation {
                 RegistryPackageDiscoveryObservation::Observed { candidates } => candidates.len(),
                 _ => 1,
@@ -6100,6 +6114,24 @@ impl SurfaceReply {
                         }
                     }
                 }
+                Self::DiscoveredVersions {
+                    package,
+                    candidates,
+                } => {
+                    if candidates.is_empty() {
+                        return Err(ProductAdmissionError::RegistryAuthority);
+                    }
+                    for candidate in candidates {
+                        candidate.admit()?;
+                        let selected = &candidate.coordinate;
+                        if selected.package_type() != package.package_type()
+                            || selected.namespace() != package.namespace()
+                            || selected.name() != package.name()
+                        {
+                            return Err(ProductAdmissionError::RegistryAuthority);
+                        }
+                    }
+                }
                 Self::PackageDiscovery {
                     package,
                     observation,
@@ -6261,6 +6293,12 @@ impl SurfaceReply {
             }),
             Self::IndexSearchPage(page) | Self::ExploredSearchPage(page) => fixed_record_bound()
                 .saturating_add(serde_json::to_vec(page).map_or(0, |bytes| bytes.len())),
+            Self::DiscoveredVersions {
+                package,
+                candidates,
+            } => fixed_record_bound()
+                .saturating_add(package.as_str().len())
+                .saturating_add(serialized_json_size(candidates)),
             Self::PackageDiscovery {
                 package,
                 observation,
