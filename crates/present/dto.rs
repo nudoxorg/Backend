@@ -685,14 +685,7 @@ mod optional_hex_32 {
     ) -> Result<S::Ok, S::Error> {
         match value {
             None => serializer.serialize_none(),
-            Some(bytes) => {
-                let mut hex = String::with_capacity(64);
-                for byte in bytes {
-                    use core::fmt::Write as _;
-                    let _ = write!(hex, "{byte:02x}");
-                }
-                serializer.serialize_str(&hex)
-            }
+            Some(bytes) => serializer.serialize_str(&backend_library::encode_id(bytes)),
         }
     }
 
@@ -709,17 +702,9 @@ mod optional_hex_32 {
         match Option::<Spelling>::deserialize(deserializer)? {
             None => Ok(None),
             Some(Spelling::Bytes(bytes)) => Ok(Some(bytes)),
-            Some(Spelling::Hex(text)) => {
-                if text.len() != 64 || text.bytes().any(|b| !matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
-                    return Err(de::Error::custom("expected 64 lowercase hex digits"));
-                }
-                let mut bytes = [0_u8; 32];
-                for (slot, pair) in bytes.iter_mut().zip(text.as_bytes().chunks_exact(2)) {
-                    let nibble = |b: u8| if b.is_ascii_digit() { b - b'0' } else { b - b'a' + 10 };
-                    *slot = nibble(pair[0]) * 16 + nibble(pair[1]);
-                }
-                Ok(Some(bytes))
-            }
+            Some(Spelling::Hex(text)) => backend_library::decode_id(&text)
+                .map(Some)
+                .map_err(|_| de::Error::custom("expected 64 hex digits")),
         }
     }
 }

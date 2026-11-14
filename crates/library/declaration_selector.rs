@@ -11,12 +11,7 @@ pub struct SelectedSymbolId([u8; 32]);
 /// bytes of a 32-integer array and far fewer tokens; read back from either spelling.
 impl Serialize for SelectedSymbolId {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut hex = String::with_capacity(64);
-        for byte in self.0 {
-            use core::fmt::Write as _;
-            let _ = write!(hex, "{byte:02x}");
-        }
-        serializer.serialize_str(&hex)
+        serializer.serialize_str(&crate::encode_id(&self.0))
     }
 }
 

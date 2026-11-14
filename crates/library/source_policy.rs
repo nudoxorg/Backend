@@ -15,6 +15,9 @@ pub enum SourcePolicyStability {
 
 /// Sixteen identity bytes as 32 lowercase hexadecimal digits: a quarter of the bytes of an
 /// integer array, and one token run instead of sixteen.
+///
+/// Policy claims only travel from the owner to a client of the same DTO version, so the
+/// older integer-array spelling is refused rather than read.
 mod hex_16 {
     use serde::{Deserialize, Deserializer, Serializer, de};
 
