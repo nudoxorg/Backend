@@ -1568,7 +1568,15 @@ fn verified_local_excerpt(file: &str, excerpt: &str, line: u32) -> Option<ByteSp
     if excerpt.is_empty() {
         return None;
     }
-    // The excerpt may begin after indentation on its first line.
+    // The producer captures an indented declaration whole, including the
+    // indentation of its first line, so the excerpt can begin at the line.
+    if rest.starts_with(excerpt) {
+        return ByteSpan::new(
+            u32::try_from(start).ok()?,
+            u32::try_from(start.checked_add(excerpt.len())?).ok()?,
+        );
+    }
+    // Or it may begin after indentation on its first line.
     let line_end = rest.find('\n').unwrap_or(rest.len());
     let first_line = &rest[..line_end];
     let column = first_line.find(excerpt.lines().next().unwrap_or_default().trim_start())?;
@@ -4537,6 +4545,20 @@ mod tests {
         let external = SymbolRef::new(&format!("{PRESENT}::external::opaque-id")).expect("external address");
         let package = external.package().expect("project portion");
         assert!(crate::shell::kit::indexed_result_route(&package, &external, crate::navigation::View::Page).is_none());
+    }
+
+    /// The producer captures an indented declaration whole, so its excerpt
+    /// starts with the first line's own indentation.
+    #[test]
+    fn an_indented_excerpt_is_verified_where_the_file_has_it() {
+        let file = "impl T {\n    /// Doc.\n    pub fn f(&self) {\n        g();\n    }\n}\n";
+        let whole = "    /// Doc.\n    pub fn f(&self) {\n        g();\n    }";
+        let span = verified_local_excerpt(file, whole, 2).expect("indented excerpt");
+        assert_eq!(file.get(span.range()), Some(whole));
+        let trimmed = whole.trim_start();
+        let span = verified_local_excerpt(file, trimmed, 2).expect("excerpt after indentation");
+        assert_eq!(file.get(span.range()), Some(trimmed));
+        assert!(verified_local_excerpt(file, "    /// Other.\n    pub fn f(&self) {", 2).is_none());
     }
 
     #[test]

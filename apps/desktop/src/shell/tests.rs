@@ -1634,7 +1634,7 @@ fn failed_owner_settings_first_frame_paints_the_accessible_page(cx: &mut TestApp
     rig.draw();
     rig.repaint();
     assert!(rig.cx.update(|window, _| window.painted_texts().iter().any(|text|
-        text.text.to_string().contains("The packages around your projects could not be read"))),
+        text.text.to_string().contains("The Library could not be read"))),
         "the first native frame really paints the failed Home body");
 
     rig.cx.simulate_keystrokes("secondary-,");
@@ -1648,7 +1648,7 @@ fn failed_owner_settings_first_frame_paints_the_accessible_page(cx: &mut TestApp
     });
     assert!(paint.iter().any(|text| text == "Theme") && paint.iter().any(|text| text == "Contrast"),
         "Settings controls paint on the first native frame: {paint:?}");
-    assert!(!paint.iter().any(|text| text.contains("The packages around your projects could not be read")),
+    assert!(!paint.iter().any(|text| text.contains("The Library could not be read")),
         "the old failed Home cannot remain under the local page: {paint:?}");
     assert!(ax.contains("Appearance") && ax.contains("Theme") && ax.contains("Contrast"),
         "native accessibility and pixels describe the same Settings body: {ax}");
@@ -1668,7 +1668,7 @@ fn failed_owner_inbox_first_frame_paints_the_accessible_page(cx: &mut TestAppCon
     gate.publish(OwnerState::Failed(OwnerFault::Host(Arc::from("owner could not start"))));
     rig.draw();
     rig.repaint();
-    let inbox = native_bounds(&mut rig, "button", "Inbox", true).expect("native Inbox control");
+    let inbox = native_bounds(&mut rig, "Button", "Inbox", true).expect("native Inbox control");
     rig.cx.simulate_click(inbox.center(), Modifiers::default());
     rig.cx.run_until_parked();
     rig.draw_frame();
@@ -1680,7 +1680,7 @@ fn failed_owner_inbox_first_frame_paints_the_accessible_page(cx: &mut TestAppCon
     });
     assert!(paint.iter().any(|text| text.contains("Nothing followed yet")),
         "Inbox's local explanation paints on the first native frame: {paint:?}");
-    assert!(!paint.iter().any(|text| text.contains("The packages around your projects could not be read")),
+    assert!(!paint.iter().any(|text| text.contains("The Library could not be read")),
         "the old failed Home cannot remain under Inbox: {paint:?}");
     assert!(ax.contains("Nothing followed yet"),
         "native accessibility and pixels describe the same Inbox body: {ax}");

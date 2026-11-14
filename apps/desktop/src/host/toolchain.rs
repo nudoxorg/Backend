@@ -349,10 +349,30 @@ mod tests {
         std::fs::write(&node, "#!/bin/sh\nexit 0\n").expect("node");
         std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o700))
             .expect("node permissions");
+        let report = bin.join("ts-report");
+        std::fs::write(&report, "#!/bin/sh\nexit 0\n").expect("report program");
+        std::fs::set_permissions(&report, std::fs::Permissions::from_mode(0o700))
+            .expect("report program permissions");
         let mut captured = BTreeMap::from([
             ("HOME", home.into_os_string()),
             ("PATH", bin.into_os_string()),
         ]);
+        // d0f5b78b7: with no external TypeScript selection the default is the
+        // native program, so a global npm install is not captured at all, and
+        // the GUI and the standalone owner agree on that.
+        let native = installed_snapshot(&captured).expect("default desktop capture");
+        let native_locald = LocalCompilerHost::new(
+            DesktopLaunchEnvironment { captured: &captured },
+            LocalHostDiscovery::InstalledTools,
+        )
+        .capture_installed_selection()
+        .expect("default locald capture");
+        assert_eq!(&native, native_locald.snapshot());
+        assert_eq!(native.path(LocalHostVariable::NudoxTypeScriptDefaultCompiler), None);
+        // An operator who selects an external TypeScript host program opts in
+        // to host discovery: the global npm symlink and its node are then
+        // found, identically by both.
+        captured.insert(LocalHostVariable::NudoxTypeScriptReportProgram.environment_name(), report.into_os_string());
         let desktop = installed_snapshot(&captured).expect("desktop capture");
         let locald = LocalCompilerHost::new(
             DesktopLaunchEnvironment {
@@ -530,6 +550,11 @@ mod tests {
     fn machine(tag: &str) -> Machine {
         let root = crate::host::scratch_base().join(format!("nx-toolchain-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("scratch root");
+        // The owner records the tools it finds by canonical path. A scratch
+        // root under a link (`/tmp` is one on macOS) must be named by its
+        // target for the machine's tools to be the paths the owner reports.
+        let root = std::fs::canonicalize(&root).expect("canonical scratch root");
         let bin = root.join("toolchain/bin");
         let cargo_home = root.join("home/.cargo");
         let go_cache = root.join("home/go/pkg/mod");
