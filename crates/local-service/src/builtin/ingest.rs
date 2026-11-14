@@ -1003,6 +1003,10 @@ pub(super) enum SelectedSourceReadError {
 
 /// Most application sources one walk lists as possible SQL hosts.
 const MAX_EMBEDDED_SQL_CANDIDATES: usize = 100_000;
+/// Largest SQL host, read or composed, one capture selects and re-reads.
+const MAX_SQL_HOST_BYTES: usize = 512 * 1024;
+/// Most host bytes one SQL project capture holds in all.
+const MAX_SQL_PROJECT_BYTES: usize = 16 * 1024 * 1024;
 /// Most bytes of application source one capture reads while looking for SQL.
 const MAX_EMBEDDED_SQL_SCAN_BYTES: usize = 64 * 1024 * 1024;
 
@@ -9991,6 +9995,23 @@ mod profile_tests {
     }
 
     #[test]
+    fn an_oversized_embedded_host_is_left_out_without_failing_the_project() -> Result<(), String> {
+        let mut scratch = scratch("sql-embedded-oversized")?;
+        scratch.0 = scratch.0.canonicalize().map_err(|e| e.to_string())?;
+        fs::write(scratch.0.join("small.ts"), b"db.exec('SELECT id FROM t');\n").map_err(|e| e.to_string())?;
+        let big = format!("db.exec(\"SELECT '{}' FROM t\");\n", "a".repeat(MAX_SQL_HOST_BYTES + 1024));
+        fs::write(scratch.0.join("big.ts"), big).map_err(|e| e.to_string())?;
+        let scan = scan(&scratch)?;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let captured = capture_sql_project(&scan.sql_walk, &scan.revision_fence, &scratch.0, &cancelled)
+            .map_err(|e| format!("{e:?}"))?;
+        let paths: Vec<_> = captured.hosts().iter().map(|host| host.selected().path.as_str()).collect();
+        assert_eq!(paths, ["small.ts#embedded.sql"]);
+        assert!(!captured.embedded_complete(), "a skipped host is an incomplete inventory");
+        Ok(())
+    }
+
+    #[test]
     fn sql_project_queue_proof_drops_host_buffers_and_rechecks_them() -> Result<(), String> {
         let mut scratch = scratch("sql-compact")?;
         scratch.0 = scratch.0.canonicalize().map_err(|e| e.to_string())?;
@@ -12595,7 +12616,7 @@ impl SqlProjectCapture {
         }
         for host in self.hosts.iter().filter(|host| host.fault.is_none()) {
             if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
-            let result = root.read_host(&host.selected.path, 512 * 1024);
+            let result = root.read_host(&host.selected.path, MAX_SQL_HOST_BYTES);
             if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
             let bytes = result.map_err(sql_capture_fault)?;
             let verified = backend_compile::VerifiedSourceText::admit(&bytes, host.input, host.source)
@@ -12663,7 +12684,7 @@ impl SqlProjectWitness {
             check_bytes(Path::new(backend_library::sql_workspace::SQL_PROJECT_SETTINGS_PATH),
                 backend_library::sql_workspace::MAX_SQL_PROJECT_SETTINGS_BYTES, self.config_len, self.config_input, self.config_source)?;
         }
-        for host in &self.hosts { check_bytes(Path::new(&host.path), 512 * 1024, host.length, host.input, host.source)?; }
+        for host in &self.hosts { check_bytes(Path::new(&host.path), MAX_SQL_HOST_BYTES, host.length, host.input, host.source)?; }
         check_fence()
     }
 }
@@ -12724,7 +12745,7 @@ pub(super) fn capture_sql_project(walk: &SqlWalkEvidence, fence: &CompilerRevisi
         for file in &walk.files {
             if file.metadata.is_none() { continue; }
             let Some(text) = file.relative_path.to_str() else { return Err(SqlCaptureFailure::Invalid) };
-            let text = text.replace('\\', "/");
+            let text = text.replace(std::path::MAIN_SEPARATOR, "/");
             if text == backend_library::sql_workspace::SQL_PROJECT_SETTINGS_PATH
                 || !text.rsplit_once('.').is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("sql")) { continue; }
             paths.push(text);
@@ -12736,7 +12757,7 @@ pub(super) fn capture_sql_project(walk: &SqlWalkEvidence, fence: &CompilerRevisi
         let mut read = Vec::with_capacity(paths.len());
         for path in &paths {
             if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
-            let result = root.read(Path::new(path), 512 * 1024);
+            let result = root.read(Path::new(path), MAX_SQL_HOST_BYTES);
             if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
             let (bytes, fault) = match result {
                 Ok(bytes) => (bytes, None),
@@ -12749,7 +12770,7 @@ pub(super) fn capture_sql_project(walk: &SqlWalkEvidence, fence: &CompilerRevisi
                 },
             };
             total = total.checked_add(bytes.len()).ok_or(SqlCaptureFailure::Limit)?;
-            if total > 16 * 1024 * 1024 { return Err(SqlCaptureFailure::Limit); }
+            if total > MAX_SQL_PROJECT_BYTES { return Err(SqlCaptureFailure::Limit); }
             let guess = infer_sql_dialect(path, &bytes);
             read.push((path.clone(), bytes, fault, guess));
         }
@@ -12779,7 +12800,7 @@ pub(super) fn capture_sql_project(walk: &SqlWalkEvidence, fence: &CompilerRevisi
         for file in &walk.embedded {
             if file.metadata.is_none() { continue; }
             let Some(text) = file.relative_path.to_str() else { continue };
-            let text = text.replace('\\', "/");
+            let text = text.replace(std::path::MAIN_SEPARATOR, "/");
             if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
             let result = root.read(Path::new(&text), super::sql_embedded::MAX_SCAN_BYTES);
             if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
@@ -12796,10 +12817,18 @@ pub(super) fn capture_sql_project(walk: &SqlWalkEvidence, fence: &CompilerRevisi
             let host_path = super::sql_embedded::virtual_path(&text);
             // A real file already carrying this name wins; never two hosts of one path.
             if paths.binary_search(&host_path).is_ok() { continue; }
+            // A host the verification would refuse to re-read, or one that would
+            // push the project past its byte cap, is left out of this capture
+            // alone; the inventory is then incomplete rather than the project lost.
+            if found.composed.len() > MAX_SQL_HOST_BYTES
+                || total.saturating_add(found.composed.len()) > MAX_SQL_PROJECT_BYTES
+            {
+                embedded_complete = false;
+                continue;
+            }
             if room == 0 { embedded_complete = false; break; }
             room -= 1;
-            total = total.checked_add(found.composed.len()).ok_or(SqlCaptureFailure::Limit)?;
-            if total > 16 * 1024 * 1024 { return Err(SqlCaptureFailure::Limit); }
+            total += found.composed.len();
             let decided = found.dialect.or(consensus);
             let dialect = decided.unwrap_or(backend_library::sql_workspace::SqlDialect::Sqlite);
             let selected = backend_library::sql_workspace::SqlProjectSource {
@@ -12830,11 +12859,11 @@ pub(super) fn capture_sql_project(walk: &SqlWalkEvidence, fence: &CompilerRevisi
             if !walk.files.iter().any(|file| file.relative_path == path && file.metadata.is_some()) {
                 return Err(SqlCaptureFailure::Unavailable);
             }
-            let result = root.read(path, 512 * 1024);
+            let result = root.read(path, MAX_SQL_HOST_BYTES);
             if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
             let bytes = result.map_err(sql_capture_fault)?;
             total = total.checked_add(bytes.len()).ok_or(SqlCaptureFailure::Limit)?;
-            if total > 16 * 1024 * 1024 { return Err(SqlCaptureFailure::Limit); }
+            if total > MAX_SQL_PROJECT_BYTES { return Err(SqlCaptureFailure::Limit); }
             let verified = backend_compile::VerifiedSourceText::capture(&bytes).map_err(|_| SqlCaptureFailure::Invalid)?;
             let input = verified.content();
             let source = verified.extent(0..bytes.len()).map_err(|_| SqlCaptureFailure::Invalid)?.source();
