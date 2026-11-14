@@ -9849,6 +9849,115 @@ mod conditional_progress_tests {
     }
 
     #[test]
+    fn a_later_operation_poll_carries_only_events_after_the_last_one_it_was_sent() {
+        use backend_library::{
+            IndexJobProgressEvent, IndexJobProgressKind, IndexOperationObservation,
+            IndexOperationState, IndexProgressPage, SemanticLanguageProfile,
+        };
+        let active = phases().remove(1);
+        let SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(status)) = &active
+        else {
+            panic!("active status")
+        };
+        let IndexOperationState::Active { ticket, stage } = &status.state else {
+            panic!("active ticket")
+        };
+        let history = |through: u64| IndexProgressPage {
+            ticket: ticket.clone(),
+            stage: *stage,
+            events: (1..=through)
+                .map(|sequence| IndexJobProgressEvent {
+                    ticket: ticket.clone(),
+                    sequence,
+                    kind: IndexJobProgressKind::ProfileAdmitted {
+                        profile: SemanticLanguageProfile::from_name("typescript").expect("profile"),
+                        ordinal: 2,
+                        total: 3,
+                    },
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            next_sequence: through,
+            truncated: false,
+            has_more: false,
+        };
+        let mut server = ready(Fake {
+            surface_reply: Some(active.clone()),
+            profile_progress_reply: Some(history(5)),
+            ..Fake::default()
+        });
+        let first = call(
+            &mut server,
+            INDEX_PROGRESS_TOOL,
+            &json!({"operation_key": status.operation_key, "detail": "summary"}),
+        );
+        assert_eq!(first["isError"], false);
+        let events = |result: &Value| {
+            result["structuredContent"]["surface"]["index_job"]["value"]["detail"]["events"]
+                .as_array()
+                .expect("events")
+                .iter()
+                .map(|event| event["sequence"].as_u64().expect("sequence"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(events(&first), [1, 2, 3, 4, 5], "the first poll has the whole history");
+        let next = first["structuredContent"]["index_poll"]["call"].clone();
+        assert_eq!(next["arguments"]["after_event"], 5, "the call names the last event reached");
+        assert!(next["arguments"].get("after_sequence").is_none(), "after_sequence stays a ticket option");
+
+        // Two more events happen; the owner still replays its history from the start.
+        server.product.surface_reply = Some(active.clone());
+        server.product.profile_progress_reply = Some(history(7));
+        let mut arguments = next["arguments"].clone();
+        arguments["wait_millis"] = json!(0);
+        let resumed = call(&mut server, INDEX_PROGRESS_TOOL, &arguments);
+        assert_eq!(resumed["isError"], false, "{resumed}");
+        assert_eq!(events(&resumed), [6, 7], "only the new events");
+        let detail = &resumed["structuredContent"]["surface"]["index_job"]["value"]["detail"];
+        assert_eq!(detail["events_not_repeated"], 5);
+        assert_eq!(detail["next_sequence"], 7, "the position and the stage stay");
+        assert!(detail["stage"].is_string(), "{detail}");
+        assert_eq!(
+            resumed["structuredContent"]["index_poll"]["call"]["arguments"]["after_event"],
+            7
+        );
+        assert_eq!(
+            resumed["structuredContent"]["index_poll"]["call"]["arguments"]["operation_key"],
+            next["arguments"]["operation_key"]
+        );
+
+        // The same state read without the position replays everything.
+        server.product.surface_reply = Some(active.clone());
+        arguments.as_object_mut().expect("arguments").remove("after_event");
+        let replayed = call(&mut server, INDEX_PROGRESS_TOOL, &arguments);
+        assert_eq!(events(&replayed), [1, 2, 3, 4, 5, 6, 7]);
+        let (before, after) = (
+            serde_json::to_vec(&replayed).expect("result").len(),
+            serde_json::to_vec(&resumed).expect("result").len(),
+        );
+        println!("index_progress poll bytes: before {before}, after {after}");
+        assert!(after < before, "{after} < {before}");
+        assert_context_bounded(&resumed);
+
+        // An unchanged poll keeps the position for the next one.
+        server.product.surface_reply = Some(active.clone());
+        let mut again = resumed["structuredContent"]["index_poll"]["call"]["arguments"].clone();
+        again["wait_millis"] = json!(0);
+        let unchanged = call(&mut server, INDEX_PROGRESS_TOOL, &again);
+        assert_eq!(unchanged["structuredContent"]["surface"]["data"]["state"], "pending-unchanged");
+        assert_eq!(unchanged["structuredContent"]["index_poll"]["call"]["arguments"]["after_event"], 7);
+        // The ticket route has its own position and refuses the operation one.
+        let mut ticket_poll = ready(Fake::default());
+        let refused = call(
+            &mut ticket_poll,
+            INDEX_PROGRESS_TOOL,
+            &json!({"ticket": ticket_value(&index_job_ticket()), "after_event": 3}),
+        );
+        assert_eq!(refused["isError"], true);
+        assert!(ticket_poll.product.surface_commands.is_empty());
+    }
+
+    #[test]
     fn escaped_profile_refusals_page_losslessly_within_real_mcp_budget_and_following_read() {
         use backend_library::interface::{
             CompilerAttempt, CompilerFragmentFailure, SourceAuthority,

@@ -179,6 +179,7 @@ fn surface_graph_result(
                 index_job: None,
                 compact_receipt: false,
                 compact_events: false,
+                events_seen: 0,
             },
         },
         DEFAULT_RESPONSE_BUDGET_BYTES,

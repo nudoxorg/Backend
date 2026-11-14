@@ -68,6 +68,12 @@ impl<P: Product> Server<P> {
                 RpcError::invalid("wait_millis must be an integer between 0 and 10000")
             })?,
         };
+        // An operation poll may name the last event it was sent (`after_event`); later polls omit those.
+        let events_seen = if operation {
+            arguments.get("after_event").and_then(Value::as_u64).unwrap_or(0)
+        } else {
+            0
+        };
         let query = IndexProgressRead::new(command.clone(), after, wait)
             .map_err(|error| RpcError::invalid(error.to_string()))?;
         let request_context = self.request_context.clone().unwrap_or_default();
@@ -120,6 +126,7 @@ impl<P: Product> Server<P> {
                     exposure,
                     compact_receipt,
                     true,
+                    events_seen,
                 )?,
             IndexCompilerProgressUpdate::Unchanged(reference) => {
                 let mut index_poll = backend_present::IndexPollDto::for_reference_in_context(
@@ -129,6 +136,7 @@ impl<P: Product> Server<P> {
                 )
                 .ok_or_else(|| RpcError::tool("pending progress has no exact observation"))?;
                 preserve_compact_receipt_in_poll(Some(&mut index_poll), command, compact_receipt);
+                carry_event_position(Some(&mut index_poll), Some(events_seen));
                 // A poll repeats the call the caller just made; the exact next call is in
                 // `index_poll.call`, so neither the text nor a CLI line copies it again.
                 index_poll.shell = None;

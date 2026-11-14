@@ -566,6 +566,11 @@ fn index_progress_tool() -> Value {
                     "default": 0,
                     "description": "Return only progress events after this sequence. Reuse next_sequence from the previous pending observation."
                 },
+                "after_event": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "With operation_key: leave out progress events up to this sequence, which an earlier reply already carried. index_poll.call sets it; omit it to read the whole event history."
+                },
                 "after_observation": {
                     "type": "string", "pattern": "^[0-9a-f]{64}$",
                     "description": "Exact full active observation fingerprint returned in index_poll.call; requires operation_key. Changes of owner, state, request or source capture cannot be represented as unchanged."
@@ -581,7 +586,7 @@ fn index_progress_tool() -> Value {
                 "detail": detail_property(INDEX_PROGRESS_TOOL)
             },
             "oneOf": [
-                {"required": ["ticket"], "not": {"anyOf": [{"required": ["operation_key"]}, {"required": ["after_observation"]}]}},
+                {"required": ["ticket"], "not": {"anyOf": [{"required": ["operation_key"]}, {"required": ["after_observation"]}, {"required": ["after_event"]}]}},
                 {"required": ["operation_key"], "not": {"anyOf": [{"required": ["ticket"]}, {"required": ["after_sequence"]}]}}
             ],
             "allOf": [{

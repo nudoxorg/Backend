@@ -2249,6 +2249,7 @@ impl<P: Product> Server<P> {
                     &[
                         "ticket",
                         "after_sequence",
+                        "after_event",
                         "operation_key",
                         "after_observation",
                         "wait_millis",
@@ -2266,6 +2267,12 @@ impl<P: Product> Server<P> {
                     {
                         return Err(RpcError::invalid(
                             "use either operation_key or ticket with after_sequence",
+                        ));
+                    }
+                    // `after_event` only trims events an earlier reply already carried.
+                    if arguments.get("after_event").is_some_and(|value| value.as_u64().is_none()) {
+                        return Err(RpcError::invalid(
+                            "after_event must be a non-negative integer",
                         ));
                     }
                     let operation_key =
@@ -2296,6 +2303,9 @@ impl<P: Product> Server<P> {
                         exposure,
                         compact_receipt,
                     );
+                }
+                if arguments.contains_key("after_event") {
+                    return Err(RpcError::invalid("after_event applies to operation_key polls"));
                 }
                 let ticket = index_job_ticket(arguments)?;
                 let after_sequence = match arguments.get("after_sequence") {
@@ -2376,6 +2386,7 @@ impl<P: Product> Server<P> {
             exposure,
             compact_receipt,
             false,
+            0,
         )
     }
 
@@ -2390,6 +2401,7 @@ impl<P: Product> Server<P> {
         exposure: McpExposure,
         compact_receipt: bool,
         conditional_poll: bool,
+        events_seen: u64,
     ) -> Result<Value, RpcError> {
         let mut reply = std::borrow::Cow::Borrowed(reply);
         let mut profile_progress = profile_progress;
@@ -2447,6 +2459,19 @@ impl<P: Product> Server<P> {
             if compact_events && let Some(poll) = index_poll.as_mut() {
                 poll.shell = None;
             }
+            // The next poll names the last event this reply reached, so it carries only
+            // what happens after it. The conditional options stay as they were.
+            if compact_events {
+                carry_event_position(
+                    index_poll.as_mut(),
+                    match view.index_job() {
+                        Some(backend_present::IndexJobProjection::Progress(
+                            backend_library::IndexJobObservation::Pending(page),
+                        )) => Some(page.next_sequence),
+                        _ => None,
+                    },
+                );
+            }
             let payload = match encode_serializable(
                 "surface",
                 detail,
@@ -2462,6 +2487,7 @@ impl<P: Product> Server<P> {
                         index_job: view.index_job(),
                         compact_receipt,
                         compact_events,
+                        events_seen,
                     },
                 },
                 DEFAULT_RESPONSE_BUDGET_BYTES,
@@ -4541,6 +4567,22 @@ struct SurfaceProjection<'a> {
     compact_receipt: bool,
     /// Summary-detail operation poll: progress events leave out the ticket their job already names.
     compact_events: bool,
+    /// Events up to this sequence were in the caller's earlier reply; they are not repeated.
+    events_seen: u64,
+}
+
+/// Names the last event reached in `index_poll.call`, so a later poll resumes after it.
+fn carry_event_position(index_poll: Option<&mut backend_present::IndexPollDto>, position: Option<u64>) {
+    let Some(position) = position.filter(|position| *position > 0) else {
+        return;
+    };
+    if let Some(arguments) = index_poll
+        .and_then(|poll| poll.call.get_mut("arguments"))
+        .and_then(Value::as_object_mut)
+        && arguments.contains_key("operation_key")
+    {
+        arguments.insert("after_event".to_owned(), json!(position));
+    }
 }
 
 fn preserve_compact_receipt_in_poll(
@@ -4638,6 +4680,7 @@ impl SurfaceProjection<'_> {
         if self.compact_events {
             let mut value = serde_json::to_value(index_job).map_err(serde::ser::Error::custom)?;
             dedupe_event_tickets(&mut value);
+            drop_seen_events(&mut value, self.events_seen);
             map.serialize_entry("index_job", &value)?;
         } else {
             map.serialize_entry("index_job", index_job)?;
@@ -4664,6 +4707,26 @@ fn dedupe_event_tickets(job: &mut Value) {
         {
             object.remove("ticket");
         }
+    }
+}
+
+/// A poll that names the last event it saw is sent only what came after: earlier events leave
+/// the page, which keeps its stage and `next_sequence`, and says how many it did not repeat.
+fn drop_seen_events(job: &mut Value, seen: u64) {
+    if seen == 0 {
+        return;
+    }
+    let Some(detail) = job.pointer_mut("/value/detail").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let Some(events) = detail.get_mut("events").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let before = events.len();
+    events.retain(|event| event.get("sequence").and_then(Value::as_u64).is_none_or(|sequence| sequence > seen));
+    let dropped = before - events.len();
+    if dropped > 0 {
+        detail.insert("events_not_repeated".to_owned(), json!(dropped));
     }
 }
 
