@@ -18351,7 +18351,7 @@ class Named { run({ active }: { active: { id: number } }) { return active.id; } 
         Ok(())
     }
 
-    /// TSX-01: `import type` through a barrel resolves to the terminal declaration exactly like a
+    /// `import type` through a barrel resolves to the terminal declaration exactly like a
     /// value import does, so the declaration's consumers include the importer.
     #[test]
     fn native_tsz_type_only_import_through_a_barrel_keeps_the_terminal_declaration() -> Result<(), LaneError> {
