@@ -737,7 +737,8 @@ fn shelf(engine: &mut dyn Engine) -> Result<Answer, Fault> {
     let shelf = match health.as_ref() {
         Some(health) => {
             let project_coverage = read_current_project_coverage(engine, &snapshot, health);
-            let profiles = read_current_project_profiles(engine, &snapshot, health);
+            let profiles =
+                read_current_project_profiles(engine, &snapshot, health, &project_coverage);
             shelf_from_snapshot_with_project_coverage(&snapshot, tag, health, &project_coverage)
                 .with_profiles(&profiles)
         }

@@ -149,19 +149,33 @@ impl ProjectCoverageEvidence {
     }
 }
 
-/// Most local projects whose source receipt one `packages` call will read.
+/// Most local projects whose source receipt one `packages` call will read. A project past
+/// the bound has no profile row: its languages are unread, never reported as none.
 const MAX_PROFILE_READS: usize = 32;
+
+/// The selected publication relations an evidence read came from. Reads that disagree
+/// came from separate owner snapshots and are never combined.
+fn publication_relations(evidence: &ProjectCoverageEvidence) -> ([u8; 32], [u8; 32], [u8; 32]) {
+    (
+        evidence.binding.source_relation_root,
+        evidence.binding.semantic_relation_root,
+        evidence.binding.capture_relation_root,
+    )
+}
 
 /// Reads the per-language file counts of every ready local project from its current
 /// owner-authenticated source receipt. Unlike the semantic-gap attribution above this
 /// does not wait for a gap, and it covers a sole project: it is what lets `packages`
-/// name the languages a project holds. Any view advance discards the whole read, so a
-/// project never receives another revision's receipt, and a project whose receipt is
-/// unavailable is simply absent, never reported as having no languages.
+/// name the languages a project holds. Evidence `known` from that attribution is reused
+/// rather than read again. A view advance, or receipts from different publications,
+/// discard the whole read, so a project never receives another revision's receipt; a
+/// project whose receipt is unavailable is simply absent, never reported as having no
+/// languages.
 pub(crate) fn read_current_project_profiles(
     engine: &mut dyn Engine,
     snapshot: &ViewSnapshot,
     health: &HealthReport,
+    known: &BTreeMap<PackageKey, ProjectCoverageEvidence>,
 ) -> BTreeMap<PackageKey, Vec<crate::shelf::ProfileFiles>> {
     let mut result = BTreeMap::new();
     let view_root = health.revision().root();
@@ -169,6 +183,8 @@ pub(crate) fn read_current_project_profiles(
         return result;
     }
     let source_root = *health.basis().root.as_bytes();
+    let mut relations = None;
+    let mut reads = 0;
     for (key, label) in snapshot
         .root
         .rows()
@@ -177,33 +193,41 @@ pub(crate) fn read_current_project_profiles(
             (RowId::Package(key), RowState::Ready) => Some((key, row.label.as_str())),
             _ => None,
         })
-        .take(MAX_PROFILE_READS)
     {
-        let Ok(package) = PackageReference::parse(label.to_owned()) else {
-            continue;
+        let read;
+        let evidence = match known.get(&key) {
+            Some(evidence) => evidence,
+            None => {
+                let Ok(package) = PackageReference::parse(label.to_owned()) else {
+                    continue;
+                };
+                if !matches!(package, PackageReference::Local(_)) || reads == MAX_PROFILE_READS {
+                    continue;
+                }
+                reads += 1;
+                let reply = engine.surface(SurfaceCommand::PackageCoverageCurrent {
+                    package: package.clone(),
+                    view_root: *view_root.as_bytes(),
+                });
+                let Some(evidence) = reply.ok().and_then(package_coverage).and_then(|coverage| {
+                    ProjectCoverageEvidence::from_owner_reply(
+                        view_root,
+                        source_root,
+                        key,
+                        &package,
+                        coverage,
+                    )
+                }) else {
+                    continue;
+                };
+                read = evidence;
+                &read
+            }
         };
-        if !matches!(package, PackageReference::Local(_)) {
-            continue;
+        let observed = publication_relations(evidence);
+        if relations.replace(observed).is_some_and(|previous| previous != observed) {
+            return BTreeMap::new();
         }
-        let reply = engine.surface(SurfaceCommand::PackageCoverageCurrent {
-            package: package.clone(),
-            view_root: *view_root.as_bytes(),
-        });
-        let Some(evidence) = reply
-            .ok()
-            .and_then(package_coverage)
-            .and_then(|coverage| {
-                ProjectCoverageEvidence::from_owner_reply(
-                    view_root,
-                    source_root,
-                    key,
-                    &package,
-                    coverage,
-                )
-            })
-        else {
-            continue;
-        };
         result.insert(key, evidence.profile_files());
     }
     if engine.revision().ok() != Some(view_root) {
@@ -275,11 +299,7 @@ pub(crate) fn read_current_project_coverage(
         ) else {
             continue;
         };
-        let relation_roots = (
-            evidence.binding.source_relation_root,
-            evidence.binding.semantic_relation_root,
-            evidence.binding.capture_relation_root,
-        );
+        let relation_roots = publication_relations(&evidence);
         if selected_relation_roots
             .replace(relation_roots)
             .is_some_and(|previous| previous != relation_roots)
@@ -677,7 +697,7 @@ mod tests {
             advance_after_read: false,
             reads: 0,
         };
-        let profiles = read_current_project_profiles(&mut engine, &snapshot, &revision.health);
+        let profiles = read_current_project_profiles(&mut engine, &snapshot, &revision.health, &BTreeMap::new());
         let shelf = crate::assemble::shelf_from_snapshot_with_health(
             &snapshot,
             crate::KeyTag::from_key(&[64; 32]),
@@ -716,7 +736,7 @@ mod tests {
             advance_after_read: true,
             reads: 0,
         };
-        assert!(read_current_project_profiles(&mut advancing, &snapshot, &revision.health).is_empty());
+        assert!(read_current_project_profiles(&mut advancing, &snapshot, &revision.health, &BTreeMap::new()).is_empty());
         Ok(())
     }
 
