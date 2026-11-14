@@ -47,6 +47,12 @@ impl Connections {
             );
             match self.listener.accept() {
                 Ok((stream, _)) => {
+                    // The listener polls without blocking; macOS hands that mode to
+                    // every accepted socket, which would turn the read deadline
+                    // below into an immediate "would block" fault.
+                    stream
+                        .set_nonblocking(false)
+                        .expect("fixture blocking connection");
                     stream
                         .set_read_timeout(Some(IO_TIMEOUT))
                         .expect("fixture read deadline");

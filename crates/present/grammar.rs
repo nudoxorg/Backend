@@ -35,6 +35,8 @@ pub enum ArgumentKind {
     ForgeCoordinate,
     /// Free search or name text.
     Text,
+    /// An explicit Cargo target name.
+    TargetName,
     /// A project folder selected by stable identity or unique name.
     ProjectSelector,
     /// A unique project folder name.
@@ -96,6 +98,7 @@ impl ArgumentKind {
             Self::PackageCoordinate => "PURL",
             Self::ForgeCoordinate => "FORGE",
             Self::Text => "TEXT",
+            Self::TargetName => "NAME",
             Self::ProjectSelector => "PROJECT",
             Self::ProjectName => "NAME",
             Self::LockfilePath => "LOCKFILE",
@@ -784,7 +787,7 @@ pub const GRAMMARS: [CommandGrammar; 64] = [
             ArgumentKind::ExecutionIntent,
             "Compilation class: interactive protects local latency; background permits bounded remote calibration. Defaults to interactive.",
         ), ArgumentSpec::optional_with_json_name(
-            "cargo-target", "cargo_target", ArgumentKind::Text,
+            "cargo-target", "cargo_target", ArgumentKind::TargetName,
             "Explicit Cargo target name. Index only its compiler-proven source closure; package input provenance is retained. Missing or duplicate target names refuse.",
         )],
         when: "Pass the absolute local project directory to index or re-index it. The CLI also accepts index as an alias for add. Call it when packages does not list the project, or when its source changed. Use background execution when the request may be calibrated remotely.",
@@ -1502,7 +1505,7 @@ pub const GRAMMARS: [CommandGrammar; 64] = [
             "Local package path or exact version-pinned package URL.",
         )],
         options: &[
-            ArgumentSpec::optional_with_json_name("cargo-target", "cargo_target", ArgumentKind::Text,
+            ArgumentSpec::optional_with_json_name("cargo-target", "cargo_target", ArgumentKind::TargetName,
                 "Explicit Cargo target name; the selected target replaces the package's previous Rust context."),
             ArgumentSpec::optional_with_json_name(
                 "execution-intent",

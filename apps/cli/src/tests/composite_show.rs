@@ -229,7 +229,10 @@ fn show_required_subread_failure_preserves_output_and_returns_nonzero() {
                         .get("notes")
                         .and_then(serde_json::Value::as_array)
                         .map_or(0, Vec::len),
-                    usize::from(related) + usize::from(members)
+                    // The relations lane always states itself: a refused probe is a
+                    // fault note, and an answered probe whose snapshot carries no typed
+                    // relation publication is a relation-gap note.
+                    1 + usize::from(members)
                 );
                 if members {
                     assert!(

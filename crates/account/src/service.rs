@@ -12,7 +12,7 @@
 //! cap itself, so no limit is repeated here.
 
 use crate::key::ApiKey;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// The production auth service.
@@ -142,6 +142,15 @@ pub enum RecordError {
     Service(#[from] ServiceError),
 }
 
+/// The body of a usage record. Fields are declared in wire order rather than
+/// built from `serde_json::json!`, whose key order follows the `preserve_order`
+/// feature that other workspace members switch on.
+#[derive(Serialize)]
+struct UsageRecord {
+    count: i64,
+    kind: &'static str,
+}
+
 /// A client for the auth service.
 #[derive(Clone, Debug)]
 pub struct Service {
@@ -208,7 +217,7 @@ impl Service {
             .agent
             .post(format!("{}/v1/usage/record", self.base))
             .header("Authorization", format!("Bearer {}", key.expose()))
-            .send_json(serde_json::json!({ "kind": "tool_call", "count": count }))
+            .send_json(UsageRecord { count, kind: "tool_call" })
             .map_err(unreachable)?;
         let status = response.status().as_u16();
         match status {

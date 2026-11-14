@@ -118,7 +118,8 @@ fn page_limit_domains_preserve_defaults_and_admit_exact_engine_boundaries() {
                         backend_library::QueryLimit::MAX,
                         backend_library::DEFAULT_SEMANTIC_VERSIONS_LIMIT,
                     ),
-                    "stylo-query" => (128, 20),
+                    "stylo-query" | "sql-query" => (128, 20),
+                    "impact" => (200, 40),
                     _ => (200, DEFAULT_LIMIT),
                 };
                 assert_eq!(

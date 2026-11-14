@@ -974,6 +974,9 @@ fn product_projection(
     if let Some(note) = view.note() {
         lines.push(note);
         if view.records().is_empty() {
+            if view.is_references_result() {
+                lines.push("no reference records captured at this revision".to_owned());
+            }
             semantic_source_footer(view, &mut lines, target);
             index_search_page_footer(view, &mut lines, target);
             index_job_footer(view, detail, &mut lines);

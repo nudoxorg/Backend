@@ -173,8 +173,8 @@ impl SourcePolicyStatement {
 }
 
 /// Reply qualification. A captured statement is an unverified owner-sealed claim.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
 pub enum SourcePolicyQualification {
     /// No selected observation is proven, including older replies.
     #[default]
@@ -184,6 +184,22 @@ pub enum SourcePolicyQualification {
         /// Boxed claim keeps unknown per-row results compact.
         data: Box<SourcePolicyCaptured>,
     },
+}
+impl<'de> Deserialize<'de> for SourcePolicyQualification {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Serde accepts extra fields on internally tagged unit variants even
+        // with deny_unknown_fields. An empty struct closes `Unknown` as well.
+        #[derive(Deserialize)]
+        #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+        enum Strict {
+            Unknown {},
+            CapturedObserved { data: Box<SourcePolicyCaptured> },
+        }
+        Ok(match Strict::deserialize(deserializer)? {
+            Strict::Unknown {} => Self::Unknown,
+            Strict::CapturedObserved { data } => Self::CapturedObserved { data },
+        })
+    }
 }
 /// Unverified statement and its owner seal; neither is standalone authority.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
