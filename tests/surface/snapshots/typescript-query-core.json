@@ -51,7 +51,7 @@
           "schema": 3,
           "sequence": 2,
           "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-          "source_root": "182a160ca842d10e69c0a9d4159f4b192793cd23e5ba400929adfd5913206d9c"
+          "source_root": "67e5d3d449cf12355d254714c9658e48b38155c32af7842c17f6eadb85389577"
         },
         "roots": [
           {
@@ -1180,7 +1180,7 @@
           }
         ],
         "readiness": "partial",
-        "revision": "182a160c",
+        "revision": "67e5d3d4",
         "rows": 3382
       }
     },
@@ -3239,7 +3239,7 @@
                 "schema": 3,
                 "sequence": 2,
                 "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-                "source_root": "182a160ca842d10e69c0a9d4159f4b192793cd23e5ba400929adfd5913206d9c"
+                "source_root": "67e5d3d449cf12355d254714c9658e48b38155c32af7842c17f6eadb85389577"
               },
               "roots": [
                 {
