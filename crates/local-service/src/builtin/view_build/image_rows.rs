@@ -413,7 +413,9 @@ fn apply_charge(
 ) -> Result<(), super::super::BuiltinModelError> {
     let updated = match charge {
         Charge::Sub(bytes) => sink.remaining_bytes.checked_sub(bytes),
-        Charge::Add(bytes) => sink.remaining_bytes.checked_add(bytes),
+        // A credit cannot raise an unbounded budget (`usize::MAX`) above itself;
+        // only an over-charge is a bound violation.
+        Charge::Add(bytes) => Some(sink.remaining_bytes.saturating_add(bytes)),
     };
     *sink.remaining_bytes = updated.ok_or_else(|| {
         super::super::BuiltinModelError(
