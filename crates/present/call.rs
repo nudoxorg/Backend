@@ -143,6 +143,8 @@ impl Invocation {
             .any(|spec| spec.kind() == ArgumentKind::SelectedSymbol)
             && self.at(0).is_none()
             && self.option("selected-id").is_none()
+            // `graph --component` starts from a component name, not a declaration.
+            && !(self.grammar.name() == "graph" && self.option("component").is_some())
         {
             return Err(Fault::usage(
                 self.grammar.name(),
