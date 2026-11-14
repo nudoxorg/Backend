@@ -89,8 +89,19 @@ impl UsesSet {
         }
     }
 }
+/// Split an optional `kind:` prefix from a `uses` operand; the kind is any of
+/// [`SqlObjectKind::ALL`], in any letter case, and an unknown one is refused.
+fn split_kind(spec: &str) -> Result<(Option<SqlObjectKind>, &str), BuiltinModelError> {
+    let Some((kind, rest)) = spec.split_once(':') else { return Ok((None, spec)) };
+    match SqlObjectKind::parse(&kind.to_ascii_lowercase()) {
+        Some(kind) => Ok((Some(kind), rest)),
+        None => Err(error("uses expects name, table.column or kind:name with a known kind")),
+    }
+}
 /// Resolve `table`, `schema.table`, `table.column` or `schema.table.column` against
 /// the definitions of the selected project, by head name (after every rename).
+/// Any of them may be prefixed `kind:` (`view:orders`, `index:orders.id`) to match
+/// only that kind of object.
 fn resolve_uses(
     relation: &RelationHandle,
     project: [u8; 32],
@@ -122,25 +133,7 @@ fn resolve_uses(
             None => break,
         }
     }
-    // `kind:name` narrows the match to one kind of object (view:, index:, ...).
-    let (wanted, spec) = match spec.split_once(':') {
-        Some((kind, rest)) => {
-            let kind = match kind.to_ascii_lowercase().as_str() {
-                "schema" => SqlObjectKind::Schema,
-                "table" => SqlObjectKind::Table,
-                "view" => SqlObjectKind::View,
-                "column" => SqlObjectKind::Column,
-                "index" => SqlObjectKind::Index,
-                "trigger" => SqlObjectKind::Trigger,
-                "function" => SqlObjectKind::Function,
-                "type" => SqlObjectKind::Type,
-                "sequence" => SqlObjectKind::Sequence,
-                _ => return Err(error("uses expects name, table.column or kind:name with a known kind")),
-            };
-            (Some(kind), rest)
-        }
-        None => (None, spec),
-    };
+    let (wanted, spec) = split_kind(spec)?;
     let parts: Vec<String> = spec.split('.').map(|part| part.to_ascii_lowercase()).collect();
     let lower = |value: &Option<String>| value.as_deref().map(str::to_ascii_lowercase);
     let creates = |definition: &SqlDefinition| {
@@ -815,6 +808,18 @@ mod tests {
     use super::*;
     use backend_library::PackageReference;
     use backend_semantic::sql_analysis::SqliteRelationKind;
+    #[test]
+    fn uses_operands_split_an_optional_kind_prefix() {
+        assert_eq!(split_kind("orders").unwrap(), (None, "orders"));
+        assert_eq!(split_kind("orders.id").unwrap(), (None, "orders.id"));
+        assert_eq!(split_kind("view:orders").unwrap(), (Some(SqlObjectKind::View), "orders"));
+        assert_eq!(split_kind("INDEX:main.orders_id").unwrap(), (Some(SqlObjectKind::Index), "main.orders_id"));
+        for kind in SqlObjectKind::ALL {
+            assert_eq!(split_kind(&format!("{}:x", kind.as_str())).unwrap(), (Some(kind), "x"));
+        }
+        let refused = split_kind("widget:orders").unwrap_err().to_string();
+        assert!(refused.contains("known kind"), "{refused}");
+    }
     #[test]
     fn native_names_are_exact_and_diagnostics_do_not_match_relation_filters() {
         let mut request = SqlQueryRequest {

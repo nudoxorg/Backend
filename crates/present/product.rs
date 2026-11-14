@@ -1682,17 +1682,7 @@ fn fresh_index_attempt_affordance(
 /// claims the later name.
 fn sql_definition_label(definition: &backend_library::sql_query::SqlDefinition) -> String {
     use backend_library::sql_query::{SqlDefinitionAction, SqlObjectKind};
-    let kind_word = match definition.kind {
-        SqlObjectKind::Schema => "schema",
-        SqlObjectKind::Table => "table",
-        SqlObjectKind::View => "view",
-        SqlObjectKind::Column => "column",
-        SqlObjectKind::Index => "index",
-        SqlObjectKind::Trigger => "trigger",
-        SqlObjectKind::Function => "function",
-        SqlObjectKind::Type => "type",
-        SqlObjectKind::Sequence => "sequence",
-    };
+    let kind_word = definition.kind.as_str();
     let qualified = |owner: Option<&str>, name: &str| match owner {
         Some(owner) if definition.kind == SqlObjectKind::Column => format!("{owner}.{name}"),
         _ => name.to_owned(),
@@ -2237,17 +2227,7 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
             use backend_library::sql_query::SqlQueryTerminal;
             use backend_library::sql_query::SqlFact;
             use backend_library::sql_query::{SqlObjectKind, SqlResolution, SqlStatementSupport};
-            let kind_word = |kind: SqlObjectKind| match kind {
-                SqlObjectKind::Schema => "schema",
-                SqlObjectKind::Table => "table",
-                SqlObjectKind::View => "view",
-                SqlObjectKind::Column => "column",
-                SqlObjectKind::Index => "index",
-                SqlObjectKind::Trigger => "trigger",
-                SqlObjectKind::Function => "function",
-                SqlObjectKind::Type => "type",
-                SqlObjectKind::Sequence => "sequence",
-            };
+            let kind_word = |kind: SqlObjectKind| kind.as_str();
             let mut first_source = true;
             let mut rows: Vec<_> = page.hits.iter().map(|hit| {
                 let label = match &hit.fact {

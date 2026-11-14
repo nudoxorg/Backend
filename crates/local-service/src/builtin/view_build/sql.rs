@@ -91,17 +91,7 @@ pub(super) fn projection(
     let mut display = String::with_capacity(display_len);
     if let Some(parent) = column_parent { display.push_str(parent); display.push('.'); }
     display.push_str(name);
-    let kind = match definition.kind {
-        SqlObjectKind::Column => "column",
-        SqlObjectKind::Table => "table",
-        SqlObjectKind::View => "view",
-        SqlObjectKind::Index => "index",
-        SqlObjectKind::Trigger => "trigger",
-        SqlObjectKind::Function => "function",
-        SqlObjectKind::Schema => "schema",
-        SqlObjectKind::Type => "type",
-        SqlObjectKind::Sequence => "sequence",
-    };
+    let kind = definition.kind.as_str();
     let coordinate_len = label.len().checked_add(path.len()).and_then(|n| n.checked_add(name.len()))
         .and_then(|n| n.checked_add(4))
         .and_then(|n| n.checked_add(column_parent.map_or(0, |p| p.len().saturating_add(2))))
@@ -304,11 +294,7 @@ pub(super) fn append(
             let prefix = parent.unwrap_or("");
             let coordinate_sep = if parent.is_some() { "::" } else { "" };
             let display_sep = if parent.is_some() { "." } else { "" };
-            let kind = match definition.kind {
-                SqlObjectKind::Column => "column", SqlObjectKind::Table => "table", SqlObjectKind::View => "view",
-                SqlObjectKind::Index => "index", SqlObjectKind::Trigger => "trigger", SqlObjectKind::Function => "function",
-                SqlObjectKind::Schema => "schema", SqlObjectKind::Type => "type", SqlObjectKind::Sequence => "sequence",
-            };
+            let kind = definition.kind.as_str();
             let label = ExactText::measure(format_args!("{}::{path}::{prefix}{coordinate_sep}{name}", indexed.label)).map_err(|e| BuiltinModelError(e.into()))?;
             let identity = ExactText::measure(format_args!("{}::{path}::{prefix}{coordinate_sep}{name}\0sql:{ordinal}", indexed.label)).map_err(|e| BuiltinModelError(e.into()))?;
             let signature = ExactText::measure(format_args!("SQL {kind} {prefix}{display_sep}{name}")).map_err(|e| BuiltinModelError(e.into()))?;
@@ -458,11 +444,7 @@ pub(super) fn append_query(
             let prefix = parent.unwrap_or("");
             let coordinate_sep = if parent.is_some() { "::" } else { "" };
             let display_sep = if parent.is_some() { "." } else { "" };
-            let kind = match definition.kind {
-                SqlObjectKind::Column => "column", SqlObjectKind::Table => "table", SqlObjectKind::View => "view",
-                SqlObjectKind::Index => "index", SqlObjectKind::Trigger => "trigger", SqlObjectKind::Function => "function",
-                SqlObjectKind::Schema => "schema", SqlObjectKind::Type => "type", SqlObjectKind::Sequence => "sequence",
-            };
+            let kind = definition.kind.as_str();
             let row_kind = declaration_kind(definition.kind).name();
             let coordinate = ExactText::measure(format_args!("{}::{}::{prefix}{coordinate_sep}{name}", indexed.label, host.path)).map_err(|e| BuiltinModelError(e.into()))?;
             let identity = ExactText::measure(format_args!("{}::{}::{prefix}{coordinate_sep}{name}\0sql:{ordinal}", indexed.label, host.path)).map_err(|e| BuiltinModelError(e.into()))?;

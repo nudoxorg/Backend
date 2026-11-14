@@ -49,20 +49,6 @@ fn statement_key(host: &[u8; 32], ordinal: u32) -> Key {
     *hash.finalize().as_bytes()
 }
 
-fn kind_str(kind: SqlObjectKind) -> &'static str {
-    match kind {
-        SqlObjectKind::Schema => "schema",
-        SqlObjectKind::Table => "table",
-        SqlObjectKind::View => "view",
-        SqlObjectKind::Column => "column",
-        SqlObjectKind::Index => "index",
-        SqlObjectKind::Trigger => "trigger",
-        SqlObjectKind::Function => "function",
-        SqlObjectKind::Type => "type",
-        SqlObjectKind::Sequence => "sequence",
-    }
-}
-
 /// Zero-based byte offset to one-based line, from the file's own newlines.
 struct Lines(Vec<usize>);
 impl Lines {
@@ -193,7 +179,7 @@ fn build(loaded: ProjectSql) -> DomainLoad {
         } else {
             (name.clone(), definition.schema.clone().unwrap_or_default())
         };
-        let kind = kind_str(definition.kind);
+        let kind = definition.kind.as_str();
         let key = entity_key(&entity_ref);
         let mut node = Node::new(DOMAIN, kind, &scope, &display);
         node.seedable = definition.live_at_head;
@@ -284,7 +270,7 @@ fn build(loaded: ProjectSql) -> DomainLoad {
                         SqlObjectKind::Table => "sql.constrains",
                         _ => "sql.used-by",
                     };
-                    (kind_str(object.kind), object.name.clone(), String::new(), relation)
+                    (object.kind.as_str(), object.name.clone(), String::new(), relation)
                 }
                 _ => {
                     let path = &shown_path(*host);

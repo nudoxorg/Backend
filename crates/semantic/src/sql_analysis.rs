@@ -142,6 +142,33 @@ pub enum SqlObjectKind {
     Type,
     Sequence,
 }
+impl SqlObjectKind {
+    /// Every kind, in declaration order.
+    pub const ALL: [Self; 9] = [
+        Self::Schema, Self::Table, Self::View, Self::Column, Self::Index,
+        Self::Trigger, Self::Function, Self::Type, Self::Sequence,
+    ];
+
+    /// The word this kind is written as in queries, signatures and coordinates.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Schema => "schema",
+            Self::Table => "table",
+            Self::View => "view",
+            Self::Column => "column",
+            Self::Index => "index",
+            Self::Trigger => "trigger",
+            Self::Function => "function",
+            Self::Type => "type",
+            Self::Sequence => "sequence",
+        }
+    }
+
+    /// The kind written as `word` (lowercase, as [`Self::as_str`] gives it).
+    pub fn parse(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.as_str() == word)
+    }
+}
 /// What a definition statement does to its object.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum SqlDefinitionAction {

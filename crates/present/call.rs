@@ -1350,12 +1350,9 @@ fn surface(
             };
             let kind = match invocation.option("kind") {
                 None => None,
-                Some(value) => Some(match value {
-                    "schema" => SqlObjectKind::Schema, "table" => SqlObjectKind::Table, "view" => SqlObjectKind::View,
-                    "column" => SqlObjectKind::Column, "index" => SqlObjectKind::Index, "trigger" => SqlObjectKind::Trigger,
-                    "function" => SqlObjectKind::Function, "type" => SqlObjectKind::Type, "sequence" => SqlObjectKind::Sequence,
-                    _ => return Err(Fault::usage("kind", "expected schema, table, view, column, index, trigger, function, type, or sequence")),
-                }),
+                Some(value) => Some(SqlObjectKind::parse(value).ok_or_else(|| {
+                    Fault::usage("kind", "expected schema, table, view, column, index, trigger, function, type, or sequence")
+                })?),
             };
             let number = |key: &str, default: u32| -> Result<u32, Fault> {
                 invocation.option(key).map_or(Ok(default), |value| value.parse::<u32>()
