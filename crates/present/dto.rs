@@ -1522,7 +1522,7 @@ impl ProductDto {
                     tags: if detail == Some(Detail::Summary) && record.reference_details().is_some() {
                         Vec::new()
                     } else {
-                        record.tags().to_vec()
+                        record.tags_for(detail).to_vec()
                     },
                     native_metadata: record.native_metadata().cloned(),
                     source_metadata: record.source_metadata().cloned(),
@@ -1535,7 +1535,7 @@ impl ProductDto {
                     compiler_profile: record.compiler_profile(),
                 })
                 .collect(),
-            note: view.note().map(ToOwned::to_owned),
+            note: view.note_for(detail).map(std::borrow::Cow::into_owned),
             fault: view.fault().map(FaultDto::new),
             partial_publication_warning: view.partial_publication_warning().cloned(),
             declaration_source_range: view.declaration_source_range().cloned(),

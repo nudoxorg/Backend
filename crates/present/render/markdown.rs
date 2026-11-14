@@ -980,8 +980,8 @@ fn product_projection(
             return lines.finish();
         }
     }
-    if let Some(note) = view.note() {
-        lines.push(note);
+    if let Some(note) = view.note_for(detail) {
+        lines.push(note.into_owned());
         if view.records().is_empty() {
             if view.is_references_result() {
                 lines.push("no reference records captured at this revision".to_owned());
@@ -1013,8 +1013,8 @@ fn product_projection(
     let mut shown_coverage_continuation = false;
     for record in readable_records.as_ref() {
         let mut head = record.title().to_owned();
-        if !record.tags().is_empty() {
-            let _ = write!(head, "  ·  {}", record.tags().join(" · "));
+        if !record.tags_for(detail).is_empty() {
+            let _ = write!(head, "  ·  {}", record.tags_for(detail).join(" · "));
         }
         lines.push(head);
         if let Some(note) = crate::product::source_policy_note(record.source_policy()) {

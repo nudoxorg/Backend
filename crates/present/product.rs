@@ -95,6 +95,8 @@ pub struct ProductRecord {
     source_policy: backend_library::SourcePolicyQualification,
     site_symbol: Option<[u8; 32]>,
     reference_details: Option<ReferenceDetails>,
+    /// The last tag is a raw source excerpt, which a summary leaves out.
+    excerpt_tag: bool,
 }
 
 impl ProductRecord {
@@ -118,6 +120,23 @@ impl ProductRecord {
             source_policy: backend_library::SourcePolicyQualification::Unknown,
             site_symbol: None,
             reference_details: None,
+            excerpt_tag: false,
+        }
+    }
+
+    /// Marks the last tag as a raw source excerpt, shown at standard and full detail only.
+    #[must_use]
+    fn with_excerpt_tag(mut self) -> Self {
+        self.excerpt_tag = true;
+        self
+    }
+
+    /// The tags this row shows at `detail`: a summary leaves out raw source excerpts.
+    #[must_use]
+    pub fn tags_for(&self, detail: Option<crate::Detail>) -> &[String] {
+        match (self.excerpt_tag, detail) {
+            (true, Some(crate::Detail::Summary)) => &self.tags[..self.tags.len().saturating_sub(1)],
+            _ => &self.tags,
         }
     }
 
@@ -958,6 +977,21 @@ impl ProductView {
     #[must_use]
     pub fn records(&self) -> &[ProductRecord] {
         &self.records
+    }
+
+    /// The note at `detail`, saying so when a summary left source excerpts out.
+    #[must_use]
+    pub fn note_for(&self, detail: Option<crate::Detail>) -> Option<std::borrow::Cow<'_, str>> {
+        let note = self.note.as_deref()?;
+        let omitted = detail == Some(crate::Detail::Summary)
+            && self.records.iter().any(|record| record.excerpt_tag);
+        Some(if omitted {
+            std::borrow::Cow::Owned(format!(
+                "{note} Raw source excerpts are omitted at summary; request detail=standard or full to read them."
+            ))
+        } else {
+            std::borrow::Cow::Borrowed(note)
+        })
     }
 
     /// Returns the one-line note, when the reply carried a scalar answer.
@@ -3955,7 +3989,7 @@ fn installed_package_view(heading: &str, facts: &backend_library::InstalledPacka
         rows.extend(facts.files.iter().map(|file| ProductRecord::new(file.path.as_str(), None, vec![
             format!("observed {} bytes · source window starts at byte {} · digest {} · {}", file.bytes, file.offset, file.digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>(), if file.truncated { "partial source excerpt" } else { "complete source excerpt" }),
             file.excerpt.as_str().to_owned(),
-        ])));
+        ]).with_excerpt_tag()));
     }
     let mut view = ProductView::rows(heading, rows);
     view.note = Some("Current local metadata and bounded API entrypoint excerpts; files were read without executing package code. API coverage is partial; no compiler graph or registry acquisition is implied.".to_owned());

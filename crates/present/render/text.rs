@@ -679,7 +679,7 @@ fn product_projection(view: &ProductView, theme: Theme, detail: Detail) -> Strin
             return lines.finish();
         }
     }
-    if let Some(note) = view.note() {
+    if let Some(note) = view.note_for(Some(detail)) {
         lines.push(format!("  {note}"));
         if view.records().is_empty() {
             if view.is_references_result() {
@@ -711,11 +711,11 @@ fn product_projection(view: &ProductView, theme: Theme, detail: Detail) -> Strin
             theme.paint(Style::Ready, "●"),
             theme.paint(Style::Name, record.title())
         );
-        if !record.tags().is_empty() {
+        if !record.tags_for(Some(detail)).is_empty() {
             let _ = write!(
                 head,
                 "  {}",
-                theme.paint(Style::Dim, &record.tags().join(" · "))
+                theme.paint(Style::Dim, &record.tags_for(Some(detail)).join(" · "))
             );
         }
         lines.push(head);

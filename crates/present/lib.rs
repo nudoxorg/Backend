@@ -72,6 +72,8 @@ mod outline;
 #[cfg(test)]
 mod owner_recovery_tests;
 mod package_graph;
+#[cfg(test)]
+mod package_summary_tests;
 mod page;
 mod document_sections;
 pub use document_sections::{DocumentContinuation, DocumentSectionPage};
