@@ -933,9 +933,13 @@ pub(super) fn prepare_scan_source(
         scan,
         workspace_snapshot,
     } = result;
-    // A native-only walk does not witness global or ancestor ignore inputs.
-    // Its repeated digest alone cannot authorize an old TS program or capture.
+    // A native walk's repeated digest cannot authorize the replay cache of an
+    // old compile. It authorizes a stored TS read witness only when the walk also
+    // witnessed the global and ancestor ignore inputs, because the witness then
+    // replays the program's whole read closure.
     let native_typescript_discovery_incomplete = scan.native_typescript_discovery_incomplete();
+    let native_typescript_snapshot_unwitnessed =
+        native_typescript_discovery_incomplete && !scan.native_typescript_ambient_ignore_witnessed();
     let mut final_revision_fence = scan.revision_fence.clone();
     let cancellation = work.cancellation.clone();
     let relation = base_snapshot
@@ -1052,7 +1056,7 @@ pub(super) fn prepare_scan_source(
     // closure, including dependencies and negative filesystem observations.
     let mut typescript_reused_profiles = BTreeSet::new();
     for &profile in &live {
-        if native_typescript_discovery_incomplete
+        if native_typescript_snapshot_unwitnessed
             || !matches!(profile, LanguageProfile::TypeScript(_))
             || lost.contains(&profile)
         {
@@ -1647,7 +1651,14 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
             reused_profiles,
             pending_changes,
         } => {
-            if native_typescript.is_some() {
+            // A native TypeScript profile reaches here only through its stored
+            // read witness (the compiler replay cache is never consulted for a
+            // native walk). That witness was replayed against the current files
+            // above and is checked again at final selection, so no compiler
+            // attempt is owed and the revalidated capture is not needed further.
+            if native_typescript.is_some()
+                && !reused_profiles.iter().any(|profile| matches!(profile, LanguageProfile::TypeScript(_)))
+            {
                 return Err(BuiltinModelError("native TypeScript requires a fresh compiler attempt".into()));
             }
             if captures.is_empty() {
