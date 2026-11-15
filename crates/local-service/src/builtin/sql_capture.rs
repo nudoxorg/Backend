@@ -641,10 +641,19 @@ pub(super) fn sql_project_rows_digest_refs(
             SqlAnalysisRecord::Host { project: owner, .. } if *owner == project => { hosts.insert(*key); if hosts.len() > backend_engine::builtin::MAX_SQL_HOSTS as usize { return Err(SqlUnavailable::Limit); } }
             SqlAnalysisRecord::Attempt { project: owner, .. } if *owner == project => {},
             SqlAnalysisRecord::Fact { .. } => {},
-            _ => return Err(SqlUnavailable::SelectionUnavailable),
+            _ => {
+                super::sql_index::trace(format_args!("a project row belongs to another project"));
+                return Err(SqlUnavailable::SelectionUnavailable);
+            }
         }
     }
-    if selection_count != 1 || hosts.len() != declared_hosts as usize { return Err(SqlUnavailable::SelectionUnavailable); }
+    if selection_count != 1 || hosts.len() != declared_hosts as usize {
+        super::sql_index::trace(format_args!(
+            "{selection_count} selection row(s) declare {declared_hosts} host(s), {} host row(s) present",
+            hosts.len()
+        ));
+        return Err(SqlUnavailable::SelectionUnavailable);
+    }
     let mut hash = blake3::Hasher::new();
     hash.update(b"nudox.sql.receipt-project-rows.v1\0");
     hash.update(&project);
@@ -990,16 +999,24 @@ pub(super) fn project_sql_project(
     };
     capture
         .revalidate(&walk, &fence, &requested_root, cancellation)
-        .map_err(|error| match error {
-            super::ingest::SqlCaptureFailure::Cancelled => SqlUnavailable::Cancelled,
-            super::ingest::SqlCaptureFailure::Limit => SqlUnavailable::Limit,
-            _ => SqlUnavailable::SelectionUnavailable,
+        .map_err(|error| {
+            super::sql_index::trace(format_args!("capture is not current at projection: {error:?}"));
+            match error {
+                super::ingest::SqlCaptureFailure::Cancelled => SqlUnavailable::Cancelled,
+                super::ingest::SqlCaptureFailure::Limit => SqlUnavailable::Limit,
+                _ => SqlUnavailable::SelectionUnavailable,
+            }
         })?;
     let project = capture.project();
     let walk_inventory_complete = walk.inventory_complete();
     // The stored root must equal the selected project label exactly so cold
     // replay never relies on the later state of filesystem symlinks.
     if !exact_root_match(&requested_root, walk.root()) {
+        super::sql_index::trace(format_args!(
+            "selected root {} is not the walked root {}",
+            requested_root.display(),
+            walk.root().display()
+        ));
         return Err(SqlUnavailable::SelectionUnavailable);
     }
     let root = walk
