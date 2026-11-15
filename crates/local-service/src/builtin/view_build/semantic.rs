@@ -1580,10 +1580,15 @@ impl<'a> SourceRowProjection<'a> {
             rows.push(match package_row_name(&project.label, workspace) {
                 Ok(name) => row.with_signature(name),
                 Err(error) => {
+                    let root = std::path::Path::new(&project.label);
+                    // A virtual Cargo workspace has members but no package of its own, so
+                    // like a project without a manifest its row carries no package name.
+                    let virtual_workspace = matches!(
+                        super::super::local_manifest::rust_manifest_kind(root),
+                        Ok(Some(super::super::local_manifest::RustManifestKind::VirtualWorkspace))
+                    );
                     if project.label.starts_with("pkg:")
-                        || std::path::Path::new(&project.label)
-                            .join("Cargo.toml")
-                            .is_file()
+                        || (root.join("Cargo.toml").is_file() && !virtual_workspace)
                     {
                         return Err(BuiltinModelError(error));
                     }
