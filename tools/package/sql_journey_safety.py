@@ -431,6 +431,25 @@ def verified_build(receipt, checkout, bundle, script):
             "harness_sha256": digest(script), "helper_sha256": digest(__file__)}
 
 
+def development_build(bundle):
+    """Pin the bundle's own bytes for a development run.
+
+    There is no Root build receipt or certified checkout here, so the result
+    says so; it still detects any bundle file changing while the journey runs.
+    """
+    bundle = Path(bundle).resolve(strict=True)
+    artifacts = {}
+    for name in ("backend-locald", "backend-cli", "backend-mcp", "backend-sqlite-worker"):
+        item = bundle / name
+        if item.is_file():
+            artifacts[name] = {"sha256": digest(item)}
+    if not artifacts:
+        raise RuntimeError("development bundle holds no backend binaries")
+    return {"mode": "development", "release_evidence": False,
+            "note": "release build receipt and clean-checkout verification skipped",
+            "artifacts": artifacts}
+
+
 def remove_private_root(root, identity):
     root = Path(root)
     current = root.lstat()

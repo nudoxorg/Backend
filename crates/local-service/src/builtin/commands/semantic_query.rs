@@ -255,6 +255,14 @@ pub(super) fn execute_semantic_graph(
     };
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let sources = read_package_sources(&snapshot, package)?;
+    // A SQL declaration is bound by the SQL analysis, not a compiler
+    // publication: beside a TypeScript profile whose edges are held back it
+    // must not inherit that profile's observed-policy refusal.
+    if let Some(project) = sources.projects.get(&package.to_bytes()) {
+        if view_build::sql_row_host(&snapshot, &project.label, package, source_id)?.is_some() {
+            return Ok(None);
+        }
+    }
     let available = view_build::SourceAvailability::of(&sources)?;
     let view = library.view();
     let relation = snapshot

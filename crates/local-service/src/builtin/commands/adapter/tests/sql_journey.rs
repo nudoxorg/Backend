@@ -1328,4 +1328,55 @@ fn the_default_worker_wall_holds_for_realistic_migration_files() {
         );
         assert!(matches!(terminal, SqlHostTerminal::Parsed { .. }), "{path}: {terminal:?}");
     }
+
+/// S6 (home): a column renamed by a later migration is filed under the file of
+/// its last rename, with lineage back to the creating file. Search, show and
+/// the outline all agree, and an unrenamed declaration stays where it was
+/// created.
+#[test]
+fn gym_renamed_column_is_filed_under_its_last_rename_with_lineage() {
+    let mut gym = gym();
+    let renamed = search_coordinate(&mut gym.session, "display_name").expect("display_name is searchable");
+    assert!(renamed.contains("migrations/0002_membership.sql"), "filed under the rename, not the creating file: {renamed}");
+    assert!(!renamed.contains("0001_init.sql"), "{renamed}");
+    let untouched = search_coordinate(&mut gym.session, "email").expect("email is searchable");
+    assert!(untouched.contains("migrations/0001_init.sql"), "an unrenamed column stays in its creating file: {untouched}");
+
+    let selector = backend_library::DeclarationSelector::Coordinate(renamed.clone());
+    let reply = gym
+        .session
+        .declaration(&selector, backend_library::DeclarationRead::Document)
+        .expect("show of the renamed column");
+    let CommandReply::Document(document) = reply.reply else { panic!("document reply kind") };
+    assert_eq!(document.signature.as_deref(), Some("SQL column members.display_name"));
+    let text = format!("{:?}", document.fragments);
+    assert!(text.contains("migrations/0002_membership.sql"), "{text}");
+    assert!(text.contains("renamed from full_name, created in migrations/0001_init.sql"), "{text}");
+
+    // The column still nests under its table, whose own home is its creating file.
+    let members = sql_row(&mut gym.session, "members", "SQL table members");
+    let display_name = sql_row(&mut gym.session, "display_name", "SQL column members.display_name");
+    let backend_library::RowId::Symbol(members_key) = members.id else { panic!("table row symbol") };
+    assert_eq!(display_name.parent, Some(members_key));
+}
+
+/// A project that holds only SQL has no compiler capture. Its package profile
+/// says the SQL worker analyses it and where to read that, instead of an
+/// error-shaped "capture not recorded".
+#[test]
+fn gym_package_profile_names_the_sql_analysis_instead_of_a_missing_capture() {
+    use backend_library::{PackageCompilerOutcomeRead as Read, PackageCompilerOutcomes as Outcomes, PackageCompilerOutcomesUnavailable as Unavailable};
+    let mut gym = gym();
+    let package = backend_library::PackageReference::parse(gym.project.to_str().expect("path")).expect("local package");
+    let backend_library::SurfaceReply::PackageCompilerOutcomes(compiler_outcomes) = gym
+        .session
+        .surface(backend_library::SurfaceCommand::PackageProfile { package, compiler_outcome: Some(Read::Current) })
+        .expect("package profile of a SQL-only project")
+    else {
+        panic!("an explicit current read answers with compiler outcomes")
+    };
+    assert!(
+        matches!(compiler_outcomes, Outcomes::Unavailable { reason: Unavailable::SqlAnalysisOnly, .. }),
+        "{compiler_outcomes:?}"
+    );
 }

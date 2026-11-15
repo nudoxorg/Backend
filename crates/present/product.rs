@@ -2438,6 +2438,7 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
                         use backend_library::sql_query::SqlFailure;
                         match reason {
                             SqlFailure::EngineNotAdmitted => "no SQL worker is admitted or available".to_owned(),
+                            SqlFailure::UnsupportedDialect if page.basis.implicit_selection => "no admitted worker supports this SQL dialect; no .nudox/sql.json declares one, so it was inferred from the file's own content (declare each file's dialect in .nudox/sql.json)".to_owned(),
                             SqlFailure::UnsupportedDialect => "no admitted worker supports this SQL dialect".to_owned(),
                             SqlFailure::Read => "source file could not be read".to_owned(),
                             SqlFailure::SelectionUnavailable => "SQL file selection is unavailable".to_owned(),
@@ -2475,7 +2476,11 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
                     "; no match, but this is NOT proof of absence: see the gaps (query --role gap lists affected files and statements)"
                 }
             } else { "" };
-            let selection = if page.basis.implicit_selection { "all .sql files, dialect inferred" } else { "files named by .nudox/sql.json" };
+            let selection = if page.basis.implicit_selection {
+                format!("all .sql files, dialect inferred (no .nudox/sql.json; declare dialects there, for example {})", backend_library::SQL_SETTINGS_EXAMPLE)
+            } else {
+                "files named by .nudox/sql.json".to_owned()
+            };
             view.note = Some(format!("{terminal}; selection: {selection}; gaps: {gap_text}{empty_hint}. No deployed database is claimed."));
             view.semantic_data = Some(ProductSemanticData::SqlQuery(page.clone())); view
         }
@@ -3469,6 +3474,7 @@ fn compiler_outcome_rows(
             ProductRecord::new(title,page.next.and_then(|read|serde_json::to_string(&read).ok()),vec![format!("{} of {} captured sources have semantic artifacts",page.completed,page.source_count)])
         }).collect(),
         Outcomes::Stale { .. } => vec![ProductRecord::new("compiler outcome selection changed; read package-profile again", None, Vec::new())],
+        Outcomes::Unavailable { reason: backend_library::PackageCompilerOutcomesUnavailable::SqlAnalysisOnly, .. } => vec![ProductRecord::new("no compiler profile: this project's SQL files are analysed by the SQL worker, not a compiler; see sql-query (MCP: backend.sql_query)", None, Vec::new())],
         Outcomes::Unavailable { reason, .. } => vec![ProductRecord::new(format!("current compiler outcomes unavailable: {}", wire_words(reason)), None, Vec::new())],
     }
 }
@@ -4986,6 +4992,19 @@ mod tests {
         assert_eq!(super::bounded_publication_detail("complete"), "complete");
     }
     use super::*;
+
+    #[test]
+    fn sql_only_package_profile_points_at_sql_query_not_a_missing_capture() {
+        let outcomes = backend_library::PackageCompilerOutcomes::Unavailable {
+            package: backend_library::PackageReference::parse("/project").expect("local package"),
+            reason: backend_library::PackageCompilerOutcomesUnavailable::SqlAnalysisOnly,
+        };
+        let rows = compiler_outcome_rows(&outcomes);
+        assert_eq!(rows.len(), 1);
+        let text = format!("{:?}", rows[0]);
+        assert!(text.contains("analysed by the SQL worker") && text.contains("sql-query"), "{text}");
+        assert!(!text.contains("capture-not-recorded") && !text.contains("unavailable"), "{text}");
+    }
 
     #[test]
     fn coverage_gap_text_places_the_exact_owner_context_at_its_source_position() {
