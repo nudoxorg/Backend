@@ -2395,6 +2395,29 @@ fn semantic_shapes_jsonrpc_refuses_oversized_view_without_dropping_required_fact
     }
 }
 
+/// A selected id is written as 64 lowercase hex digits and read back from either spelling.
+fn selected_id_hex(wire: &Value) -> String {
+    let text = wire
+        .as_str()
+        .expect("a selected id is written as 64 hex digits");
+    assert!(
+        text.len() == 64 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
+        "{text}"
+    );
+    let from_hex: backend_library::SelectedSymbolId =
+        serde_json::from_value(wire.clone()).expect("the hex spelling reads back");
+    let from_array: backend_library::SelectedSymbolId =
+        serde_json::from_value(json!(from_hex.bytes())).expect("the array spelling reads back");
+    assert_eq!(from_hex, from_array);
+    text.to_owned()
+}
+
+/// The wire spelling of `bytes` as a selected id: exactly their 64 hex digits.
+fn assert_selected_id_wire(wire: &Value, bytes: &[u8; 32]) {
+    let expected: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    assert_eq!(selected_id_hex(wire), expected);
+}
+
 fn text_of(result: &Value) -> String {
     result["content"][0]["text"]
         .as_str()
@@ -5262,9 +5285,9 @@ fn page_projection_mcp_combined_summary_retains_real_faults_and_section_notes() 
         result["structuredContent"]["identity"]["coordinate"],
         DECLARATION
     );
-    assert_eq!(
-        result["structuredContent"]["identity"]["semantic_data"]["value"],
-        json!(native.as_bytes())
+    assert_selected_id_wire(
+        &result["structuredContent"]["identity"]["semantic_data"]["value"],
+        native.as_bytes(),
     );
     assert_eq!(
         result["structuredContent"]["signature"],
@@ -5423,9 +5446,9 @@ fn standard_mcp_preview_retains_every_structured_coordinate_and_the_cli_projecti
             text.lines().any(|line| line == format!("  `{coordinate}`")),
             "{text}"
         );
-        assert_eq!(
-            row["identity"]["semantic_data"]["value"],
-            json!(symbol_key(coordinate).as_bytes())
+        assert_selected_id_wire(
+            &row["identity"]["semantic_data"]["value"],
+            symbol_key(coordinate).as_bytes(),
         );
     }
     assert!(text.contains("showing 1 exact coordinate(s); 0 omitted from text preview"));
@@ -10867,9 +10890,9 @@ fn search_published_names_preserves_useful_records_and_explicit_pending_scope() 
         assert_eq!(page["semantic_preparation"]["state"], "pending");
         assert_eq!(page["records"].as_array().expect("useful rows").len(), 1);
         assert_eq!(page["records"][0]["identity"]["coordinate"], DECLARATION);
-        assert_eq!(
-            page["records"][0]["identity"]["semantic_data"]["value"],
-            json!(*symbol_key(DECLARATION).as_bytes())
+        assert_selected_id_wire(
+            &page["records"][0]["identity"]["semantic_data"]["value"],
+            symbol_key(DECLARATION).as_bytes(),
         );
         assert!(
             result["content"]

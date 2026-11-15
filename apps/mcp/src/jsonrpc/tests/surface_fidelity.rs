@@ -1012,9 +1012,18 @@ fn selected_graph_continuation_refuses_changed_id_or_coordinate_assertion() {
         next["structuredContent"]["records"][0]["identity"]["semantic_data"]
     );
     for expected in [center, neighbor] {
+        let expected_hex: String = expected
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
         assert!([&first, &next].iter().any(|page|
-            page["structuredContent"]["records"][0]["identity"]["semantic_data"]["value"] == json!(expected.as_bytes())),
+            page["structuredContent"]["records"][0]["identity"]["semantic_data"]["value"] == json!(expected_hex)),
             "exact center and neighbor, never substituted rows");
+        for page in [&first, &next] {
+            // Whichever row the page holds, its id reads back from both spellings.
+            selected_id_hex(&page["structuredContent"]["records"][0]["identity"]["semantic_data"]["value"]);
+        }
     }
     server.product.library = retained_library();
     assert!(matches!(

@@ -366,13 +366,8 @@ fn outline_selector_bytes_shrink_native_first_page_and_preserve_complete_ids() {
             for node in nodes {
                 assert_eq!(node["coordinate"], coordinate);
                 assert_eq!(node["semantic_data"]["kind"], "selected-symbol-id");
-                let bytes: [u8; 32] =
-                    serde_json::from_value(node["semantic_data"]["value"].clone())
-                        .expect("exact selected ID");
-                assert!(
-                    ids.insert(backend_library::encode_id(&bytes)),
-                    "no exact ID repeated"
-                );
+                let id = selected_id_hex(&node["semantic_data"]["value"]);
+                assert!(ids.insert(id), "no exact ID repeated");
             }
             pages += 1;
             assert!(pages <= symbols.len(), "bounded progress");
@@ -482,9 +477,8 @@ fn late_token_dense_outline_continuations_shrink_delivery_keep_credit_and_preser
             let mut pending = value["roots"].as_array().expect("roots").iter().collect::<Vec<_>>();
             let mut count = 0_usize;
             while let Some(node) = pending.pop() {
-                let id: [u8; 32] = serde_json::from_value(node["semantic_data"]["value"].clone()).expect("complete 32-byte selected ID");
+                let id = selected_id_hex(&node["semantic_data"]["value"]);
                 assert_eq!(node["semantic_data"]["kind"], "selected-symbol-id");
-                let id = backend_library::encode_id(&id);
                 assert_eq!(node["key"], &id[..8]);
                 assert!(selected.insert(id), "no selectable identity repeated");
                 assert!(node["coordinate"].as_str().expect("whole coordinate").starts_with(PROJECT));

@@ -1,7 +1,37 @@
 //! Native catalog pages under actual whole-envelope pressure.
 use super::*;
 
+/// The captures predate hex selected ids and spell each one as a 32-integer array. Only that
+/// spelling is rewritten to the current one; every other captured byte is compared as it was
+/// taken, and both spellings must read back as the same page.
+fn captured_with_hex_ids(captured: &Value) -> Value {
+    let mut current = captured.clone();
+    let records = current
+        .get_mut("records")
+        .and_then(Value::as_array_mut)
+        .expect("captured records");
+    for record in records {
+        let value = record
+            .pointer_mut("/identity/semantic_data/value")
+            .expect("captured selected id");
+        let bytes: [u8; 32] =
+            serde_json::from_value(value.clone()).expect("captured 32-integer selected id");
+        *value = json!(bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>());
+    }
+    let old: backend_present::RecordListDto =
+        serde_json::from_value(captured.clone()).expect("the array spelling reads back");
+    let new: backend_present::RecordListDto =
+        serde_json::from_value(current.clone()).expect("the hex spelling reads back");
+    assert_eq!(
+        serde_json::to_value(&old).expect("page"),
+        serde_json::to_value(&new).expect("page"),
+        "both spellings are the same page"
+    );
+    current
+}
+
 fn captured_record_answer(captured: &Value) -> Answer {
+    let captured = &captured_with_hex_ids(captured);
     let page: backend_present::RecordListDto =
         serde_json::from_value(captured.clone()).expect("actual captured presentation page");
     let records = page
@@ -345,7 +375,7 @@ fn actual_searxng_three_row_pages_are_admitted_with_their_exact_owned_resume_cal
                 .expect("production typed encoder preserves the complete captured smaller page");
                 let structured: Value =
                     serde_json::from_slice(&payload.bytes).expect("complete production projection");
-                assert_eq!(structured["records"], captured["records"]);
+                assert_eq!(structured["records"], captured_with_hex_ids(captured)["records"]);
                 assert_eq!(structured["more"], true);
                 assert!(
                     structured.get("nextCursor").is_none(),
