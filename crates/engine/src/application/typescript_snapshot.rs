@@ -110,7 +110,8 @@ pub(crate) fn restore_snapshot_certificate(
     bytes: &[u8],
     cancelled: &AtomicBool,
 ) -> Option<TypeScriptSnapshotReuse> {
-    restore_snapshot_certificate_checked(client, root, profile, input, binding, bytes, cancelled).ok()
+    restore_snapshot_certificate_checked(client, root, profile, input, binding, bytes, cancelled)
+        .ok()
 }
 
 /// Same as [`restore_snapshot_certificate`], naming the first check that declined reuse.
@@ -133,7 +134,8 @@ pub(crate) fn restore_snapshot_certificate_checked(
         capability.environment_identity(),
         capability.target_platform_identity(),
     );
-    let (Some(toolchain), Some(local_authority), Some(environment), Some(platform)) = current else {
+    let (Some(toolchain), Some(local_authority), Some(environment), Some(platform)) = current
+    else {
         return Err("the compiler toolchain identity is unavailable");
     };
     let current = (toolchain, local_authority, environment, platform);
@@ -147,7 +149,10 @@ pub(crate) fn restore_snapshot_certificate_checked(
     if certificate.root != root {
         return Err("the stored read witness belongs to another project root");
     }
-    if certificate.profile != profile || certificate.input != input || certificate.binding != binding {
+    if certificate.profile != profile
+        || certificate.input != input
+        || certificate.binding != binding
+    {
         return Err("the stored read witness is for a different input or published generation");
     }
     if (
@@ -468,7 +473,12 @@ impl LocalCompilerClient {
         cancelled: &AtomicBool,
     ) -> Option<TypeScriptSnapshotReuse> {
         self.restore_typescript_snapshot_certificate_checked(
-            root, profile, input, binding, certificate, cancelled,
+            root,
+            profile,
+            input,
+            binding,
+            certificate,
+            cancelled,
         )
         .ok()
     }

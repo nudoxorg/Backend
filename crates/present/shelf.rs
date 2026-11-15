@@ -160,7 +160,11 @@ impl ProfileFiles {
     /// Records one profile's file count and semantic state.
     #[must_use]
     pub const fn new(profile: &'static str, files: u64, semantic: ProfileSemantic) -> Self {
-        Self { profile, files, semantic }
+        Self {
+            profile,
+            files,
+            semantic,
+        }
     }
 
     /// Returns the closed profile spelling (`typescript`, `tsx`, `csharp`, ...).
@@ -191,7 +195,12 @@ impl ProfileFiles {
                 "{} {} file(s) (semantic partial {completed} of {total})",
                 self.profile, self.files
             ),
-            other => format!("{} {} file(s) (semantic {})", self.profile, self.files, other.name()),
+            other => format!(
+                "{} {} file(s) (semantic {})",
+                self.profile,
+                self.files,
+                other.name()
+            ),
         }
     }
 }

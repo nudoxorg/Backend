@@ -16,7 +16,12 @@ fn captured_with_hex_ids(captured: &Value) -> Value {
             .expect("captured selected id");
         let bytes: [u8; 32] =
             serde_json::from_value(value.clone()).expect("captured 32-integer selected id");
-        *value = json!(bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>());
+        *value = json!(
+            bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
     }
     let old: backend_present::RecordListDto =
         serde_json::from_value(captured.clone()).expect("the array spelling reads back");
@@ -375,7 +380,10 @@ fn actual_searxng_three_row_pages_are_admitted_with_their_exact_owned_resume_cal
                 .expect("production typed encoder preserves the complete captured smaller page");
                 let structured: Value =
                     serde_json::from_slice(&payload.bytes).expect("complete production projection");
-                assert_eq!(structured["records"], captured_with_hex_ids(captured)["records"]);
+                assert_eq!(
+                    structured["records"],
+                    captured_with_hex_ids(captured)["records"]
+                );
                 assert_eq!(structured["more"], true);
                 assert!(
                     structured.get("nextCursor").is_none(),
@@ -492,7 +500,11 @@ fn measured_catalog_page(
                 .expect("native query")
                 .to_owned();
             let request = if tool == "backend.search" {
-                Request::Search { text, limit, declarations_only: false }
+                Request::Search {
+                    text,
+                    limit,
+                    declarations_only: false,
+                }
             } else {
                 Request::Resolve { text, limit }
             };

@@ -11,8 +11,14 @@ fn a_missing_stylo_name_names_the_json_arguments_not_the_cli_flags() {
     );
     let fault = tool_failure(&response, "usage");
     let detail = fault["detail"].as_str().expect("detail");
-    assert!(detail.contains("exactly one of class or custom_property"), "{detail}");
-    assert!(!detail.contains("--"), "no CLI flag in an MCP refusal: {detail}");
+    assert!(
+        detail.contains("exactly one of class or custom_property"),
+        "{detail}"
+    );
+    assert!(
+        !detail.contains("--"),
+        "no CLI flag in an MCP refusal: {detail}"
+    );
     assert!(server.product.surface_commands.is_empty());
 }
 
@@ -28,5 +34,8 @@ fn both_stylo_names_are_refused_without_cli_flags() {
     );
     let fault = tool_failure(&response, "usage");
     let detail = fault["detail"].as_str().expect("detail");
-    assert!(!detail.contains("--class") && !detail.contains("--custom-property"), "{detail}");
+    assert!(
+        !detail.contains("--class") && !detail.contains("--custom-property"),
+        "{detail}"
+    );
 }

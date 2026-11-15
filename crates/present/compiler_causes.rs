@@ -261,10 +261,15 @@ mod tests {
             )
             .expect("source-bound C# refusal")
             .expect("authority refusal");
-            let bytes = failure.encode_bounded_json().expect("canonical refusal JSON");
+            let bytes = failure
+                .encode_bounded_json()
+                .expect("canonical refusal JSON");
             let reopened = PackageCompilerFailure::decode_bounded_json(&bytes)
                 .expect("cold compiler-outcome reader");
-            Fault::compiler_refusal(&reopened, Operand::Whole).cause().sentence().to_owned()
+            Fault::compiler_refusal(&reopened, Operand::Whole)
+                .cause()
+                .sentence()
+                .to_owned()
         };
 
         let restored = render(CSharpRestoreState::Present);
@@ -282,8 +287,14 @@ mod tests {
             "a named reference replaces the general instruction: {restored}"
         );
         let unrestored = render(CSharpRestoreState::Missing);
-        assert!(unrestored.contains("which has no usable restore result"), "{unrestored}");
-        assert!(unrestored.contains("run dotnet restore for that project"), "{unrestored}");
+        assert!(
+            unrestored.contains("which has no usable restore result"),
+            "{unrestored}"
+        );
+        assert!(
+            unrestored.contains("run dotnet restore for that project"),
+            "{unrestored}"
+        );
     }
 
     #[test]
@@ -316,15 +327,28 @@ mod tests {
         let failure = PackageCompilerFailure::from_package_terminal("src/App.cs", &terminal)
             .expect("source-bound C# refusal")
             .expect("authority refusal");
-        let bytes = failure.encode_bounded_json().expect("canonical refusal JSON");
+        let bytes = failure
+            .encode_bounded_json()
+            .expect("canonical refusal JSON");
         let reopened = PackageCompilerFailure::decode_bounded_json(&bytes)
             .expect("cold compiler-outcome reader");
-        let rendered =
-            Fault::compiler_refusal(&reopened, Operand::Whole).cause().sentence().to_owned();
-        assert!(rendered.contains("configured dotnet is a launcher script"), "{rendered}");
-        assert!(rendered.contains("point NUDOX_DOTNET at the real dotnet executable"), "{rendered}");
+        let rendered = Fault::compiler_refusal(&reopened, Operand::Whole)
+            .cause()
+            .sentence()
+            .to_owned();
+        assert!(
+            rendered.contains("configured dotnet is a launcher script"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("point NUDOX_DOTNET at the real dotnet executable"),
+            "{rendered}"
+        );
         assert!(!rendered.contains("/nix/store"), "{rendered}");
-        assert!(!rendered.contains("confirm dotnet and the Roslyn helper"), "{rendered}");
+        assert!(
+            !rendered.contains("confirm dotnet and the Roslyn helper"),
+            "{rendered}"
+        );
     }
 
     #[test]
@@ -528,7 +552,9 @@ mod tests {
             if matches!(command, SurfaceCommand::PackageCoverageCurrent { .. }) {
                 // This fixture records no source receipt; the shelf must treat that as
                 // "no language evidence", never as a failure.
-                return Err(ClientError::Protocol("no source receipt recorded".to_owned()));
+                return Err(ClientError::Protocol(
+                    "no source receipt recorded".to_owned(),
+                ));
             }
             let SurfaceCommand::PackageProfile {
                 package,
@@ -679,7 +705,10 @@ mod tests {
             // languages; a project that is still loading is not read, and no
             // compiler-cause read is made for any of these. The shelf itself takes one
             // packages probe.
-            assert_eq!(engine.surfaces, usize::from(matches!(state, RowState::Ready)));
+            assert_eq!(
+                engine.surfaces,
+                usize::from(matches!(state, RowState::Ready))
+            );
             assert_eq!(engine.package_reads, 1);
         }
     }

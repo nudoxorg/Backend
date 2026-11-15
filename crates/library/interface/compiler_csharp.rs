@@ -301,7 +301,10 @@ mod tests {
         assert!(failure.detail().contains("launcher script"));
         assert!(failure.advice().contains("NUDOX_DOTNET"));
         assert_eq!(failure.kind_tag(), "csharp_host_launcher_script");
-        assert_eq!(serde_json::to_string(&failure).unwrap(), "\"launcher_script\"");
+        assert_eq!(
+            serde_json::to_string(&failure).unwrap(),
+            "\"launcher_script\""
+        );
         assert!(serde_json::from_str::<CSharpHostFormatFailure>("\"elf\"").is_err());
     }
 
@@ -358,7 +361,11 @@ mod tests {
 
     #[test]
     fn advice_depends_on_the_restore_state() {
-        assert!(facts(CSharpRestoreState::Missing).advice().contains("dotnet restore"));
+        assert!(
+            facts(CSharpRestoreState::Missing)
+                .advice()
+                .contains("dotnet restore")
+        );
         assert!(
             facts(CSharpRestoreState::Present)
                 .advice()

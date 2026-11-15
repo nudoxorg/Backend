@@ -1044,7 +1044,10 @@ mod closure_summary_tests {
             .map(|(index, size)| {
                 let mut value = vec![u8::try_from(index % 251).unwrap_or(0); *size];
                 value.extend_from_slice(&index.to_be_bytes());
-                TypedObject::from_value(&ObjectKey::<Blob>::from_value(value.as_slice()), value.as_slice())
+                TypedObject::from_value(
+                    &ObjectKey::<Blob>::from_value(value.as_slice()),
+                    value.as_slice(),
+                )
             })
             .collect();
         objects.sort_by_key(|object| (object.schema(), *object.key(), *object.version()));

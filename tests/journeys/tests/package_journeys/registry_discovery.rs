@@ -1062,7 +1062,9 @@ fn explore_of_an_unacquired_name_states_its_scope_and_points_to_index_search() {
 
     let explored = cli_json(endpoint, &workspace, &["explore", "fixture"]);
     assert_eq!(explored["records"].as_array().expect("records").len(), 0);
-    let note = explored["note"].as_str().expect("an empty explore carries a note");
+    let note = explored["note"]
+        .as_str()
+        .expect("an empty explore carries a note");
     assert!(
         note.contains("Nothing acquired or indexed matches `fixture`")
             && note.contains("does not mean no such package or symbol exists")
@@ -1074,7 +1076,10 @@ fn explore_of_an_unacquired_name_states_its_scope_and_points_to_index_search() {
         endpoint,
         &workspace,
         &secret,
-        &[(10, json!({"name":"backend.explore","arguments":{"query":"fixture"}}))],
+        &[(
+            10,
+            json!({"name":"backend.explore","arguments":{"query":"fixture"}}),
+        )],
     );
     let structured = mcp_structured(&replies, 10, "explore");
     assert_eq!(structured["note"], explored["note"]);
@@ -1096,7 +1101,10 @@ fn unacquired_release_queries_name_the_acquisition_and_list_discovered_versions(
     // the package (not only the pinned one) are listed with their standing.
     let versions = cli_json(endpoint, &workspace, &["package-versions", purl]);
     let rendered = versions.to_string();
-    assert!(rendered.contains(purl) && rendered.contains("discovered · unacquired"), "{versions}");
+    assert!(
+        rendered.contains(purl) && rendered.contains("discovered · unacquired"),
+        "{versions}"
+    );
     let note = versions["note"].as_str().expect("versions note");
     assert!(
         note.contains("None is acquired") && note.contains("add <pinned purl>"),
@@ -1105,8 +1113,9 @@ fn unacquired_release_queries_name_the_acquisition_and_list_discovered_versions(
 
     // dependencies: typed refusal that names the acquisition command.
     let output = cli(endpoint, &workspace, "json", &["dependencies", purl]);
-    let refused: Value = serde_json::from_slice(&output.stdout)
-        .unwrap_or_else(|error| panic!("dependencies printed no JSON ({error}): {}", fault(&output)));
+    let refused: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        panic!("dependencies printed no JSON ({error}): {}", fault(&output))
+    });
     let rendered = refused.to_string();
     assert!(rendered.contains("lane-unavailable"), "{refused}");
     let detail = refused["fault"]["detail"].as_str().expect("fault detail");
@@ -1125,19 +1134,33 @@ fn unacquired_release_queries_name_the_acquisition_and_list_discovered_versions(
         &workspace,
         &secret,
         &[
-            (10, json!({"name":"backend.package_versions","arguments":{"package":purl}})),
-            (11, json!({"name":"backend.dependencies","arguments":{"package":purl}})),
+            (
+                10,
+                json!({"name":"backend.package_versions","arguments":{"package":purl}}),
+            ),
+            (
+                11,
+                json!({"name":"backend.dependencies","arguments":{"package":purl}}),
+            ),
         ],
     );
     let listed = mcp_structured(&replies, 10, "package_versions");
     assert!(listed.to_string().contains(purl), "{listed}");
     let refusal = &replies[&11]["result"]["structuredContent"];
-    assert_eq!(refusal["fault"]["call"]["name"], "backend.index", "{refusal}");
+    assert_eq!(
+        refusal["fault"]["call"]["name"], "backend.index",
+        "{refusal}"
+    );
     assert_eq!(refusal["fault"]["call"]["arguments"]["path"], purl);
 
     // A package the registry does not know is a typed refusal that reports
     // what the lookup found, never an empty list.
-    let unknown = cli(endpoint, &workspace, "json", &["package-versions", "pkg:npm/absent@1.0.0"]);
+    let unknown = cli(
+        endpoint,
+        &workspace,
+        "json",
+        &["package-versions", "pkg:npm/absent@1.0.0"],
+    );
     assert!(!unknown.status.success(), "{}", fault(&unknown));
     let refusal = fault(&unknown);
     assert!(
@@ -1174,7 +1197,10 @@ fn package_and_advisory_agree_when_advisory_coverage_is_unknown() {
     };
     for prefix in ["decision:", "coverage:", "freshness:"] {
         let from_advisory = tags(&advisory, prefix);
-        assert!(!from_advisory.is_empty(), "advisory has no `{prefix}` tag: {advisory}");
+        assert!(
+            !from_advisory.is_empty(),
+            "advisory has no `{prefix}` tag: {advisory}"
+        );
         assert_eq!(
             tags(&package, prefix),
             from_advisory,

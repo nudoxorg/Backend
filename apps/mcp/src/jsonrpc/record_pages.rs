@@ -81,8 +81,13 @@ impl<P: Product> Server<P> {
         let (Request::Search { limit, .. } | Request::Resolve { limit, .. }) = request else {
             return Err(RpcError::tool("records preparation changed request shape"));
         };
-        let keep_declarations_only =
-            matches!(request, Request::Search { declarations_only: true, .. });
+        let keep_declarations_only = matches!(
+            request,
+            Request::Search {
+                declarations_only: true,
+                ..
+            }
+        );
         let mut issued = *limit;
         let mut delivery = issued;
         let mut pinned = None;

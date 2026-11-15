@@ -134,11 +134,13 @@ impl StyloRule {
             match c {
                 '"' => {
                     let after = OPEN.len() + index + 1;
-                    return (prelude.as_bytes().get(after) == Some(&b')')).then_some((out, after + 1));
+                    return (prelude.as_bytes().get(after) == Some(&b')'))
+                        .then_some((out, after + 1));
                 }
                 '\\' => {
                     let mut hex = String::new();
-                    while hex.len() < 6 && chars.peek().is_some_and(|(_, d)| d.is_ascii_hexdigit()) {
+                    while hex.len() < 6 && chars.peek().is_some_and(|(_, d)| d.is_ascii_hexdigit())
+                    {
                         hex.extend(chars.next().map(|(_, d)| d));
                     }
                     if hex.is_empty() {
@@ -147,7 +149,12 @@ impl StyloRule {
                         if chars.peek().is_some_and(|(_, d)| *d == ' ') {
                             chars.next();
                         }
-                        out.push(u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32).unwrap_or('\u{fffd}'));
+                        out.push(
+                            u32::from_str_radix(&hex, 16)
+                                .ok()
+                                .and_then(char::from_u32)
+                                .unwrap_or('\u{fffd}'),
+                        );
                     }
                 }
                 other => out.push(other),
@@ -368,16 +375,32 @@ mod tests {
 
     #[test]
     fn import_specifier_decodes_the_serialized_string_and_names_qualifiers() {
-        assert_eq!(import("url(\"./base.css\")").import_specifier().as_deref(), Some("./base.css"));
-        assert_eq!(import("url(\"a\\\"b.css\")").import_specifier().as_deref(), Some("a\"b.css"));
-        assert_eq!(import("url(\"\\2e /x.css\")").import_specifier().as_deref(), Some("./x.css"));
+        assert_eq!(
+            import("url(\"./base.css\")").import_specifier().as_deref(),
+            Some("./base.css")
+        );
+        assert_eq!(
+            import("url(\"a\\\"b.css\")").import_specifier().as_deref(),
+            Some("a\"b.css")
+        );
+        assert_eq!(
+            import("url(\"\\2e /x.css\")").import_specifier().as_deref(),
+            Some("./x.css")
+        );
         let layered = import("url(\"./t.css\") layer(theme) supports(display: grid) screen");
         assert_eq!(layered.import_specifier().as_deref(), Some("./t.css"));
-        assert_eq!(layered.import_qualifiers().as_deref(), Some("layer(theme) supports(display: grid) screen"));
+        assert_eq!(
+            layered.import_qualifiers().as_deref(),
+            Some("layer(theme) supports(display: grid) screen")
+        );
         assert_eq!(import("url(\"./t.css\")").import_qualifiers(), None);
         let mut other = import("url(\"./base.css\")");
         other.native_kind = "Media".into();
-        assert_eq!(other.import_specifier(), None, "only import rules name a specifier");
+        assert_eq!(
+            other.import_specifier(),
+            None,
+            "only import rules name a specifier"
+        );
         assert_eq!(import("screen").import_specifier(), None);
         assert_eq!(import("url(\"unterminated").import_specifier(), None);
     }

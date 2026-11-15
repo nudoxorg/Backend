@@ -483,7 +483,10 @@ pub(super) struct SlotsIter<'a, T> {
 // A position in borrowed slots, so a copy never requires the slot values to clone.
 impl<T> Clone for SlotsIter<'_, T> {
     fn clone(&self) -> Self {
-        Self { slots: self.slots, next: self.next }
+        Self {
+            slots: self.slots,
+            next: self.next,
+        }
     }
 }
 impl<'a, T> Iterator for SlotsIter<'a, T> {

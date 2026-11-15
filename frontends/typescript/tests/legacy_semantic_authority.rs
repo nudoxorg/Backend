@@ -173,7 +173,10 @@ fn commonjs_script_with_a_top_level_return_is_admitted() -> Result<(), Authority
         .any(|declaration| {
             let start = usize::try_from(declaration.name.start).ok();
             let end = usize::try_from(declaration.name.end).ok();
-            start.zip(end).and_then(|(start, end)| source.get(start..end)) == Some("finish")
+            start
+                .zip(end)
+                .and_then(|(start, end)| source.get(start..end))
+                == Some("finish")
         })
         .then_some(())
         .ok_or(AuthorityTestError::MissingSymbol { name: "finish" })?;

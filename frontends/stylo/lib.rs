@@ -21,23 +21,23 @@ impl Write for BoundedText {
         Ok(())
     }
 }
+use cssparser::SourceLocation as ImportLocation;
 use style::{
     context::QuirksMode,
-    media_queries::MediaList,
-    servo_arc::Arc as ServoArc,
-    shared_lock::Locked,
-    values::CssUrl,
     custom_properties::{References, SubstitutionFunctionKind},
     error_reporting::{ContextualParseError, ParseErrorReporter},
+    media_queries::MediaList,
     properties::{CustomDeclarationValue, PropertyDeclaration},
+    servo_arc::Arc as ServoArc,
+    shared_lock::Locked,
     shared_lock::SharedRwLock,
     stylesheets::{
         AllowImportRules, CssRule, ImportRule, Origin, StylesheetContents, StylesheetLoader,
         UrlExtraData,
         import_rule::{ImportLayer, ImportSheet, ImportSupportsCondition},
     },
+    values::CssUrl,
 };
-use cssparser::SourceLocation as ImportLocation;
 
 /// Records every `@import` the parser accepts and refuses to load any of
 /// them. The parser needs a loader to build an import rule at all; this one
@@ -61,7 +61,9 @@ impl StylesheetLoader for ImportRecorder {
             let guard = lock.read();
             style_traits::ToCss::to_css_string(media.read_with(&guard))
         };
-        self.media.borrow_mut().push((location.line, location.column, text));
+        self.media
+            .borrow_mut()
+            .push((location.line, location.column, text));
         ServoArc::new(lock.wrap(ImportRule {
             url,
             stylesheet: ImportSheet::new_refused(),
@@ -238,16 +240,24 @@ fn analyze_input(
     )
     .ok_or(StyloError::InvalidConfig)?;
     let lock = SharedRwLock::new();
-    let recorder = ImportRecorder { media: RefCell::new(Vec::new()) };
+    let recorder = ImportRecorder {
+        media: RefCell::new(Vec::new()),
+    };
     let sheet = StylesheetContents::from_str(
         input,
         UrlExtraData::from(url),
         Origin::Author,
         &lock,
-        config.allow_imports.then_some(&recorder as &dyn StylesheetLoader),
+        config
+            .allow_imports
+            .then_some(&recorder as &dyn StylesheetLoader),
         Some(&reporter),
         QuirksMode::NoQuirks,
-        if config.allow_imports { AllowImportRules::Yes } else { AllowImportRules::No },
+        if config.allow_imports {
+            AllowImportRules::Yes
+        } else {
+            AllowImportRules::No
+        },
         None,
     );
     if cancelled() {
@@ -1028,22 +1038,42 @@ mod tests {
         assert_eq!(imports.len(), 2, "{:?}", result.rules);
         assert_eq!(imports[0].import_specifier().as_deref(), Some("./base.css"));
         let qualifiers = imports[0].import_qualifiers().unwrap();
-        assert!(qualifiers.contains("layer(theme)") && qualifiers.contains("supports(") && qualifiers.contains("screen"), "{qualifiers}");
+        assert!(
+            qualifiers.contains("layer(theme)")
+                && qualifiers.contains("supports(")
+                && qualifiers.contains("screen"),
+            "{qualifiers}"
+        );
         assert_eq!(imports[1].import_specifier().as_deref(), Some("other.css"));
         assert_eq!(imports[1].import_qualifiers(), None);
         assert_eq!(imports[0].location.unwrap().line, 0);
         assert_eq!(imports[1].location.unwrap().line, 1);
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-        assert!(result.rules.iter().any(|rule| rule.kind == StyloRuleKind::Style), "rules after imports still parse");
+        assert!(
+            result
+                .rules
+                .iter()
+                .any(|rule| rule.kind == StyloRuleKind::Style),
+            "rules after imports still parse"
+        );
         // The same bytes without permission keep the old behaviour: the rule is rejected.
         let refused = analyze_with_cancel(css.as_bytes(), config(), || false).unwrap();
-        assert!(refused.rules.iter().all(|rule| rule.native_kind != StyloRule::IMPORT_KIND));
+        assert!(
+            refused
+                .rules
+                .iter()
+                .all(|rule| rule.native_kind != StyloRule::IMPORT_KIND)
+        );
         assert!(!refused.diagnostics.is_empty());
         // An import after a style rule is invalid CSS, so it is a diagnostic, not a link.
         let mut late = config();
         late.allow_imports = true;
         let late = analyze_with_cancel(b".a {}\n@import \"./late.css\";", late, || false).unwrap();
-        assert!(late.rules.iter().all(|rule| rule.native_kind != StyloRule::IMPORT_KIND));
+        assert!(
+            late.rules
+                .iter()
+                .all(|rule| rule.native_kind != StyloRule::IMPORT_KIND)
+        );
         assert!(!late.diagnostics.is_empty());
     }
 }

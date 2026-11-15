@@ -45,16 +45,22 @@ pub(in crate::builtin) fn scan_bytes(path: &str, bytes: &[u8]) -> Option<ScanOut
     let Ok(text) = std::str::from_utf8(bytes) else {
         return Some(ScanOutcome::InvalidUtf8);
     };
-    Some(match with_analysis(profile, text, |module| scan_module(path, text, &module)) {
-        Ok(scan) => ScanOutcome::Scanned(scan),
-        Err(_) => ScanOutcome::Unparsed,
-    })
+    Some(
+        match with_analysis(profile, text, |module| scan_module(path, text, &module)) {
+            Ok(scan) => ScanOutcome::Scanned(scan),
+            Err(_) => ScanOutcome::Unparsed,
+        },
+    )
 }
 
 /// PascalCase component name of a single-file component, from its file stem:
 /// `ProductCard.vue` and `product-card.vue` are both `ProductCard`.
 fn vue_component_name(path: &str) -> String {
-    let stem = path.rsplit('/').next().unwrap_or(path).trim_end_matches(".vue");
+    let stem = path
+        .rsplit('/')
+        .next()
+        .unwrap_or(path)
+        .trim_end_matches(".vue");
     if stem.starts_with(|c: char| c.is_ascii_uppercase()) && !stem.contains(['-', '_', '.']) {
         return stem.to_owned();
     }
@@ -62,7 +68,9 @@ fn vue_component_name(path: &str) -> String {
         .filter(|part| !part.is_empty())
         .map(|part| {
             let mut chars = part.chars();
-            chars.next().map_or_else(String::new, |first| first.to_uppercase().chain(chars).collect())
+            chars.next().map_or_else(String::new, |first| {
+                first.to_uppercase().chain(chars).collect()
+            })
         })
         .collect()
 }
@@ -73,10 +81,17 @@ fn vue_component_name(path: &str) -> String {
 /// member is recorded against a synthetic default import of the file itself,
 /// which is how the graph names a module block of the same component.
 fn scan_vue(path: &str, bytes: &[u8]) -> ScanOutcome {
-    let Ok(text) = std::str::from_utf8(bytes) else { return ScanOutcome::InvalidUtf8 };
-    let Ok(container) = backend_frontend_vue::parse(bytes) else { return ScanOutcome::Unparsed };
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return ScanOutcome::InvalidUtf8;
+    };
+    let Ok(container) = backend_frontend_vue::parse(bytes) else {
+        return ScanOutcome::Unparsed;
+    };
     let name = vue_component_name(path);
-    let mut scan = FileScan { path: path.to_owned(), ..FileScan::default() };
+    let mut scan = FileScan {
+        path: path.to_owned(),
+        ..FileScan::default()
+    };
     if name.is_empty() {
         return ScanOutcome::Scanned(scan);
     }
@@ -88,8 +103,15 @@ fn scan_vue(path: &str, bytes: &[u8]) -> ScanOutcome {
         backend_frontend_vue::TemplateScan::Truncated => return ScanOutcome::Limit,
     };
     let mut starts = vec![0usize];
-    starts.extend(text.bytes().enumerate().filter(|(_, byte)| *byte == b'\n').map(|(index, _)| index + 1));
-    let line_at = |offset: usize| u32::try_from(starts.partition_point(|start| *start <= offset)).unwrap_or(u32::MAX);
+    starts.extend(
+        text.bytes()
+            .enumerate()
+            .filter(|(_, byte)| *byte == b'\n')
+            .map(|(index, _)| index + 1),
+    );
+    let line_at = |offset: usize| {
+        u32::try_from(starts.partition_point(|start| *start <= offset)).unwrap_or(u32::MAX)
+    };
     for class in &template.classes {
         scan.class_uses.push(ClassUse {
             token: class.token.clone(),
@@ -135,7 +157,10 @@ pub(in crate::builtin) fn facts_of(scan: &FileScan) -> Vec<CodeFactRow> {
         });
     }
     for (spec, line) in &scan.side_effect_imports {
-        facts.push(CodeFactRow::SideEffectImport { spec: spec.clone(), line: *line });
+        facts.push(CodeFactRow::SideEffectImport {
+            spec: spec.clone(),
+            line: *line,
+        });
     }
     for usage in &scan.class_uses {
         facts.push(CodeFactRow::ClassUse {
@@ -169,10 +194,16 @@ pub(in crate::builtin) fn facts_of(scan: &FileScan) -> Vec<CodeFactRow> {
         });
     }
     for (name, line) in &scan.components {
-        facts.push(CodeFactRow::Component { name: name.clone(), line: *line });
+        facts.push(CodeFactRow::Component {
+            name: name.clone(),
+            line: *line,
+        });
     }
     for (exported, local) in &scan.exports {
-        facts.push(CodeFactRow::Export { exported: exported.clone(), local: local.clone() });
+        facts.push(CodeFactRow::Export {
+            exported: exported.clone(),
+            local: local.clone(),
+        });
     }
     for (exported, (spec, imported)) in &scan.reexports {
         facts.push(CodeFactRow::Reexport {
@@ -185,11 +216,24 @@ pub(in crate::builtin) fn facts_of(scan: &FileScan) -> Vec<CodeFactRow> {
 }
 
 /// Rebuilds the scan a host's facts describe. Inverse of [`facts_of`].
-pub(in crate::builtin) fn scan_from_facts(path: &str, dynamic_class_expressions: u32, facts: &[CodeFactRow]) -> FileScan {
-    let mut scan = FileScan { path: path.to_owned(), dynamic_class_expressions, ..FileScan::default() };
+pub(in crate::builtin) fn scan_from_facts(
+    path: &str,
+    dynamic_class_expressions: u32,
+    facts: &[CodeFactRow],
+) -> FileScan {
+    let mut scan = FileScan {
+        path: path.to_owned(),
+        dynamic_class_expressions,
+        ..FileScan::default()
+    };
     for fact in facts {
         match fact {
-            CodeFactRow::Import { local, spec, imported, line } => scan.imports.push(ImportBinding {
+            CodeFactRow::Import {
+                local,
+                spec,
+                imported,
+                line,
+            } => scan.imports.push(ImportBinding {
                 local: local.clone(),
                 spec: spec.clone(),
                 imported: match imported {
@@ -199,14 +243,26 @@ pub(in crate::builtin) fn scan_from_facts(path: &str, dynamic_class_expressions:
                 },
                 line: *line,
             }),
-            CodeFactRow::SideEffectImport { spec, line } => scan.side_effect_imports.push((spec.clone(), *line)),
-            CodeFactRow::ClassUse { token, line, owner, conditional } => scan.class_uses.push(ClassUse {
+            CodeFactRow::SideEffectImport { spec, line } => {
+                scan.side_effect_imports.push((spec.clone(), *line))
+            }
+            CodeFactRow::ClassUse {
+                token,
+                line,
+                owner,
+                conditional,
+            } => scan.class_uses.push(ClassUse {
                 token: token.clone(),
                 line: *line,
                 owner: owner.clone(),
                 conditional: *conditional,
             }),
-            CodeFactRow::ModuleClassUse { binding, class, line, owner } => scan.module_class_uses.push(ModuleClassUse {
+            CodeFactRow::ModuleClassUse {
+                binding,
+                class,
+                line,
+                owner,
+            } => scan.module_class_uses.push(ModuleClassUse {
                 binding: *binding as usize,
                 class: class.clone(),
                 line: *line,
@@ -217,7 +273,12 @@ pub(in crate::builtin) fn scan_from_facts(path: &str, dynamic_class_expressions:
                 line: *line,
                 owner: owner.clone(),
             }),
-            CodeFactRow::PropertyUse { name, line, owner, writes } => scan.property_uses.push(PropertyUse {
+            CodeFactRow::PropertyUse {
+                name,
+                line,
+                owner,
+                writes,
+            } => scan.property_uses.push(PropertyUse {
                 name: name.clone(),
                 line: *line,
                 owner: owner.clone(),
@@ -229,8 +290,13 @@ pub(in crate::builtin) fn scan_from_facts(path: &str, dynamic_class_expressions:
             CodeFactRow::Export { exported, local } => {
                 scan.exports.insert(exported.clone(), local.clone());
             }
-            CodeFactRow::Reexport { exported, spec, imported } => {
-                scan.reexports.insert(exported.clone(), (spec.clone(), imported.clone()));
+            CodeFactRow::Reexport {
+                exported,
+                spec,
+                imported,
+            } => {
+                scan.reexports
+                    .insert(exported.clone(), (spec.clone(), imported.clone()));
             }
         }
     }
@@ -258,22 +324,47 @@ pub(in crate::builtin) fn host_rows(
         ScanOutcome::Scanned(scan) => {
             let facts = facts_of(&scan);
             if facts.len() > MAX_CODE_FACTS_PER_HOST as usize {
-                (CodeHostState::Unavailable(CodeUnavailable::Limit), Vec::new())
+                (
+                    CodeHostState::Unavailable(CodeUnavailable::Limit),
+                    Vec::new(),
+                )
             } else {
-                (CodeHostState::Scanned { dynamic_class_expressions: scan.dynamic_class_expressions }, facts)
+                (
+                    CodeHostState::Scanned {
+                        dynamic_class_expressions: scan.dynamic_class_expressions,
+                    },
+                    facts,
+                )
             }
         }
         ScanOutcome::Unparsed => (CodeHostState::Unparsed, Vec::new()),
-        ScanOutcome::InvalidUtf8 => (CodeHostState::Unavailable(CodeUnavailable::InvalidUtf8), Vec::new()),
-        ScanOutcome::Limit => (CodeHostState::Unavailable(CodeUnavailable::Limit), Vec::new()),
+        ScanOutcome::InvalidUtf8 => (
+            CodeHostState::Unavailable(CodeUnavailable::InvalidUtf8),
+            Vec::new(),
+        ),
+        ScanOutcome::Limit => (
+            CodeHostState::Unavailable(CodeUnavailable::Limit),
+            Vec::new(),
+        ),
     };
     let mut rows = Vec::with_capacity(facts.len());
     for (ordinal, fact) in facts.into_iter().enumerate() {
-        let ordinal = u32::try_from(ordinal).map_err(|_| "code fact ordinal overflow".to_owned())?;
-        rows.push((code_fact_key(key, ordinal), StyloAnalysisRecord::CodeFact { host: key, ordinal, fact }));
+        let ordinal =
+            u32::try_from(ordinal).map_err(|_| "code fact ordinal overflow".to_owned())?;
+        rows.push((
+            code_fact_key(key, ordinal),
+            StyloAnalysisRecord::CodeFact {
+                host: key,
+                ordinal,
+                fact,
+            },
+        ));
     }
     rows.sort_by_key(|(fact_key, _)| *fact_key);
-    let refs: Vec<_> = rows.iter().map(|(fact_key, row)| (*fact_key, row)).collect();
+    let refs: Vec<_> = rows
+        .iter()
+        .map(|(fact_key, row)| (*fact_key, row))
+        .collect();
     let fact_digest = stylo_rows_digest(&refs)?;
     let host = StyloAnalysisRecord::CodeHost {
         project,
@@ -285,7 +376,11 @@ pub(in crate::builtin) fn host_rows(
         fact_digest,
     };
     host.validate()?;
-    Ok(CodeHostRows { key, host, facts: rows })
+    Ok(CodeHostRows {
+        key,
+        host,
+        facts: rows,
+    })
 }
 
 /// One code host as the selected relation holds it.
@@ -319,7 +414,9 @@ pub(in crate::builtin) fn read_persisted(
         Ok(None) => return Ok(None),
         Err(error) => return Err(format!("code link relation: {}", error.0)),
     };
-    let selection = relation.lookup(&stylo_selection_key(project)).map_err(|e| format!("{e:?}"))?;
+    let selection = relation
+        .lookup(&stylo_selection_key(project))
+        .map_err(|e| format!("{e:?}"))?;
     let Some(StyloAnalysisRecord::Selection { code: Some(_), .. }) = selection else {
         return Ok(None);
     };
@@ -331,7 +428,9 @@ pub(in crate::builtin) fn read_persisted(
         if cancelled() {
             return Err("impact cancelled".to_owned());
         }
-        let page = relation.page(after.as_ref(), CODE_PAGE).map_err(|e| format!("{e:?}"))?;
+        let page = relation
+            .page(after.as_ref(), CODE_PAGE)
+            .map_err(|e| format!("{e:?}"))?;
         let entries = page.entries();
         if entries.is_empty() {
             break;
@@ -339,26 +438,44 @@ pub(in crate::builtin) fn read_persisted(
         for (key, row) in entries {
             after = Some(*key);
             // The budget counts code rows; the stylesheet rows sharing the relation are not ours.
-            if matches!(row, StyloAnalysisRecord::CodeHost { .. } | StyloAnalysisRecord::CodeFact { .. }) {
+            if matches!(
+                row,
+                StyloAnalysisRecord::CodeHost { .. } | StyloAnalysisRecord::CodeFact { .. }
+            ) {
                 scanned += 1;
                 if scanned > MAX_CODE_ROWS {
                     return Err("the code link relation exceeds the impact scan budget".to_owned());
                 }
             }
             match row {
-                StyloAnalysisRecord::CodeHost { project: owner, path, source, byte_length, state, fact_count, fact_digest } if *owner == project => {
+                StyloAnalysisRecord::CodeHost {
+                    project: owner,
+                    path,
+                    source,
+                    byte_length,
+                    state,
+                    fact_count,
+                    fact_digest,
+                } if *owner == project => {
                     hosts.insert(
                         *key,
                         StoredHost {
                             path: path.clone(),
-                            host: PersistedHost { source: *source, byte_length: *byte_length, state: *state, facts: Vec::new() },
+                            host: PersistedHost {
+                                source: *source,
+                                byte_length: *byte_length,
+                                state: *state,
+                                facts: Vec::new(),
+                            },
                             fact_count: *fact_count,
                             fact_digest: *fact_digest,
                             rows: Vec::new(),
                         },
                     );
                 }
-                StyloAnalysisRecord::CodeFact { host, .. } => facts.push((*host, *key, row.clone())),
+                StyloAnalysisRecord::CodeFact { host, .. } => {
+                    facts.push((*host, *key, row.clone()))
+                }
                 _ => {}
             }
         }
@@ -398,16 +515,24 @@ impl StoredHost {
         };
         self.rows.sort_by_key(|(key, _)| *key);
         let refs: Vec<_> = self.rows.iter().map(|(key, row)| (*key, row)).collect();
-        if self.rows.len() != self.fact_count as usize || stylo_rows_digest(&refs) != Ok(self.fact_digest) {
+        if self.rows.len() != self.fact_count as usize
+            || stylo_rows_digest(&refs) != Ok(self.fact_digest)
+        {
             return untrusted(self.host);
         }
         let mut ordered: Vec<(u32, CodeFactRow)> = Vec::with_capacity(self.rows.len());
         for (_, row) in self.rows {
-            let StyloAnalysisRecord::CodeFact { ordinal, fact, .. } = row else { return untrusted(self.host) };
+            let StyloAnalysisRecord::CodeFact { ordinal, fact, .. } = row else {
+                return untrusted(self.host);
+            };
             ordered.push((ordinal, fact));
         }
         ordered.sort_by_key(|(ordinal, _)| *ordinal);
-        if ordered.iter().enumerate().any(|(index, (ordinal, _))| *ordinal as usize != index) {
+        if ordered
+            .iter()
+            .enumerate()
+            .any(|(index, (ordinal, _))| *ordinal as usize != index)
+        {
             return untrusted(self.host);
         }
         self.host.facts = ordered.into_iter().map(|(_, fact)| fact).collect();
@@ -421,7 +546,10 @@ impl StoredHost {
 /// Whether every module-class fact binds an import, counted as the scan counts
 /// them: by position among the leading `Import` facts.
 fn bindings_name_leading_imports(facts: &[CodeFactRow]) -> bool {
-    let leading = facts.iter().take_while(|fact| matches!(fact, CodeFactRow::Import { .. })).count();
+    let leading = facts
+        .iter()
+        .take_while(|fact| matches!(fact, CodeFactRow::Import { .. }))
+        .count();
     facts.iter().all(|fact| match fact {
         CodeFactRow::ModuleClassUse { binding, .. } => (*binding as usize) < leading,
         _ => true,
@@ -457,15 +585,29 @@ export const Inner = () => <span className="shared" />;
         assert!(!scan.module_class_uses.is_empty() && !scan.class_uses.is_empty());
         let facts = facts_of(&scan);
         let back = scan_from_facts("src/Card.tsx", scan.dynamic_class_expressions, &facts);
-        assert_eq!(back, scan, "persisting and reading facts must not change what the graph sees");
+        assert_eq!(
+            back, scan,
+            "persisting and reading facts must not change what the graph sees"
+        );
     }
 
     #[test]
     fn rows_are_keyed_ordered_and_witnessed() {
         let scan = scanned("src/Card.tsx", SOURCE);
-        let rows = host_rows([7; 32], "src/Card.tsx", [9; 32], SOURCE.len() as u64, ScanOutcome::Scanned(scan))
-            .expect("rows");
-        let StyloAnalysisRecord::CodeHost { fact_count, state, .. } = &rows.host else { panic!("host") };
+        let rows = host_rows(
+            [7; 32],
+            "src/Card.tsx",
+            [9; 32],
+            SOURCE.len() as u64,
+            ScanOutcome::Scanned(scan),
+        )
+        .expect("rows");
+        let StyloAnalysisRecord::CodeHost {
+            fact_count, state, ..
+        } = &rows.host
+        else {
+            panic!("host")
+        };
         assert_eq!(*fact_count as usize, rows.facts.len());
         assert!(matches!(state, CodeHostState::Scanned { .. }));
         assert!(rows.facts.windows(2).all(|pair| pair[0].0 < pair[1].0));
@@ -480,12 +622,21 @@ export const Inner = () => <span className="shared" />;
     #[test]
     fn a_vue_component_scans_to_its_template_classes_and_module_members() {
         let source = "<template>\n  <div class=\"card\" :class=\"[$style.title, active && 'on']\" />\n</template>\n<style module>.title { color: red; }</style>\n";
-        let ScanOutcome::Scanned(scan) = scan_bytes("src/product-card.vue", source.as_bytes()).expect("vue path") else {
+        let ScanOutcome::Scanned(scan) =
+            scan_bytes("src/product-card.vue", source.as_bytes()).expect("vue path")
+        else {
             panic!("the component scans");
         };
         assert_eq!(scan.components.keys().collect::<Vec<_>>(), ["ProductCard"]);
-        assert_eq!(scan.exports.get("default").map(String::as_str), Some("ProductCard"));
-        let tokens: Vec<(&str, bool, u32)> = scan.class_uses.iter().map(|u| (u.token.as_str(), u.conditional, u.line)).collect();
+        assert_eq!(
+            scan.exports.get("default").map(String::as_str),
+            Some("ProductCard")
+        );
+        let tokens: Vec<(&str, bool, u32)> = scan
+            .class_uses
+            .iter()
+            .map(|u| (u.token.as_str(), u.conditional, u.line))
+            .collect();
         assert_eq!(tokens, [("card", false, 2), ("on", true, 2)]);
         assert_eq!(scan.module_class_uses.len(), 1);
         assert_eq!(scan.module_class_uses[0].class, "title");
@@ -499,8 +650,14 @@ export const Inner = () => <span className="shared" />;
 
     #[test]
     fn unparsed_and_non_utf8_sources_leave_no_facts() {
-        assert!(matches!(scan_bytes("a.tsx", b"export const = <<<"), Some(ScanOutcome::Unparsed)));
-        assert!(matches!(scan_bytes("a.tsx", &[0xff, 0xfe, 0x00]), Some(ScanOutcome::InvalidUtf8)));
+        assert!(matches!(
+            scan_bytes("a.tsx", b"export const = <<<"),
+            Some(ScanOutcome::Unparsed)
+        ));
+        assert!(matches!(
+            scan_bytes("a.tsx", &[0xff, 0xfe, 0x00]),
+            Some(ScanOutcome::InvalidUtf8)
+        ));
         assert!(scan_bytes("a.css", b".a{}").is_none());
         let rows = host_rows([7; 32], "a.tsx", [9; 32], 3, ScanOutcome::Unparsed).expect("rows");
         assert!(rows.facts.is_empty());
@@ -509,20 +666,48 @@ export const Inner = () => <span className="shared" />;
     #[test]
     fn a_scan_stopped_at_a_budget_publishes_a_limit_host_without_facts() {
         let rows = host_rows([7; 32], "src/big.vue", [9; 32], 3, ScanOutcome::Limit).expect("rows");
-        let StyloAnalysisRecord::CodeHost { state, fact_count, .. } = &rows.host else { panic!("host") };
-        assert!(matches!(state, CodeHostState::Unavailable(CodeUnavailable::Limit)));
+        let StyloAnalysisRecord::CodeHost {
+            state, fact_count, ..
+        } = &rows.host
+        else {
+            panic!("host")
+        };
+        assert!(matches!(
+            state,
+            CodeHostState::Unavailable(CodeUnavailable::Limit)
+        ));
         assert_eq!(*fact_count, 0);
         assert!(rows.facts.is_empty());
     }
 
     fn stored(scan: FileScan) -> StoredHost {
-        let rows = host_rows([7; 32], &scan.path.clone(), [9; 32], 10, ScanOutcome::Scanned(scan)).expect("rows");
-        let StyloAnalysisRecord::CodeHost { source, byte_length, state, fact_count, fact_digest, .. } = &rows.host else {
+        let rows = host_rows(
+            [7; 32],
+            &scan.path.clone(),
+            [9; 32],
+            10,
+            ScanOutcome::Scanned(scan),
+        )
+        .expect("rows");
+        let StyloAnalysisRecord::CodeHost {
+            source,
+            byte_length,
+            state,
+            fact_count,
+            fact_digest,
+            ..
+        } = &rows.host
+        else {
             panic!("host")
         };
         StoredHost {
             path: "src/Card.tsx".to_owned(),
-            host: PersistedHost { source: *source, byte_length: *byte_length, state: *state, facts: Vec::new() },
+            host: PersistedHost {
+                source: *source,
+                byte_length: *byte_length,
+                state: *state,
+                facts: Vec::new(),
+            },
             fact_count: *fact_count,
             fact_digest: *fact_digest,
             rows: rows.facts,
@@ -540,33 +725,65 @@ export const Inner = () => <span className="shared" />;
         let mut missing = stored(scan.clone());
         missing.rows.pop();
         let host = missing.verified();
-        assert!(matches!(host.state, CodeHostState::Unavailable(CodeUnavailable::ReadUnavailable)));
+        assert!(matches!(
+            host.state,
+            CodeHostState::Unavailable(CodeUnavailable::ReadUnavailable)
+        ));
         assert!(host.facts.is_empty());
 
         let mut altered = stored(scan);
-        if let Some((_, StyloAnalysisRecord::CodeFact { fact: CodeFactRow::ClassUse { token, .. }, .. })) =
-            altered.rows.iter_mut().find(|(_, row)| matches!(row, StyloAnalysisRecord::CodeFact { fact: CodeFactRow::ClassUse { .. }, .. }))
-        {
+        if let Some((
+            _,
+            StyloAnalysisRecord::CodeFact {
+                fact: CodeFactRow::ClassUse { token, .. },
+                ..
+            },
+        )) = altered.rows.iter_mut().find(|(_, row)| {
+            matches!(
+                row,
+                StyloAnalysisRecord::CodeFact {
+                    fact: CodeFactRow::ClassUse { .. },
+                    ..
+                }
+            )
+        }) {
             token.push('x');
         }
         let host = altered.verified();
-        assert!(matches!(host.state, CodeHostState::Unavailable(CodeUnavailable::ReadUnavailable)));
+        assert!(matches!(
+            host.state,
+            CodeHostState::Unavailable(CodeUnavailable::ReadUnavailable)
+        ));
     }
 
     #[test]
     fn a_module_class_binding_outside_the_imports_is_not_trusted() {
-        let mut scan = FileScan { path: "src/Card.tsx".to_owned(), ..FileScan::default() };
+        let mut scan = FileScan {
+            path: "src/Card.tsx".to_owned(),
+            ..FileScan::default()
+        };
         scan.imports.push(ImportBinding {
             local: "styles".to_owned(),
             spec: "./Card.module.css".to_owned(),
             imported: Imported::Default,
             line: 1,
         });
-        scan.module_class_uses.push(ModuleClassUse { binding: 0, class: "title".to_owned(), line: 2, owner: None });
-        assert!(matches!(stored(scan.clone()).verified().state, CodeHostState::Scanned { .. }));
+        scan.module_class_uses.push(ModuleClassUse {
+            binding: 0,
+            class: "title".to_owned(),
+            line: 2,
+            owner: None,
+        });
+        assert!(matches!(
+            stored(scan.clone()).verified().state,
+            CodeHostState::Scanned { .. }
+        ));
         scan.module_class_uses[0].binding = 7;
         let host = stored(scan).verified();
-        assert!(matches!(host.state, CodeHostState::Unavailable(CodeUnavailable::ReadUnavailable)));
+        assert!(matches!(
+            host.state,
+            CodeHostState::Unavailable(CodeUnavailable::ReadUnavailable)
+        ));
         assert!(host.facts.is_empty());
     }
 }

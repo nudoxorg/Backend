@@ -82,10 +82,17 @@ pub enum CodeFactRow {
 impl CodeFactRow {
     /// Checks text bounds only; relations between facts are checked by the host.
     pub fn validate(&self) -> Result<(), String> {
-        let ok = |text: &str| !text.is_empty() && text.len() <= MAX_CODE_FACT_TEXT && !text.contains('\0');
+        let ok = |text: &str| {
+            !text.is_empty() && text.len() <= MAX_CODE_FACT_TEXT && !text.contains('\0')
+        };
         let owner_ok = |owner: &Option<String>| owner.as_deref().is_none_or(ok);
         let valid = match self {
-            Self::Import { local, spec, imported, .. } => {
+            Self::Import {
+                local,
+                spec,
+                imported,
+                ..
+            } => {
                 ok(local) && ok(spec) && !matches!(imported, CodeImported::Named(name) if !ok(name))
             }
             Self::SideEffectImport { spec, .. } => ok(spec),
@@ -95,9 +102,17 @@ impl CodeFactRow {
             Self::PropertyUse { name, owner, .. } => ok(name) && owner_ok(owner),
             Self::Component { name, .. } => ok(name),
             Self::Export { exported, local } => ok(exported) && ok(local),
-            Self::Reexport { exported, spec, imported } => ok(exported) && ok(spec) && ok(imported),
+            Self::Reexport {
+                exported,
+                spec,
+                imported,
+            } => ok(exported) && ok(spec) && ok(imported),
         };
-        if valid { Ok(()) } else { Err("invalid code link fact".into()) }
+        if valid {
+            Ok(())
+        } else {
+            Err("invalid code link fact".into())
+        }
     }
 }
 
@@ -141,8 +156,7 @@ pub struct CodeSelection {
 /// Recipe of embedded Unicode fragments (a Vue `<style>` block's content).
 /// Mirrors the frontend constant; a test in the local service, which sees both
 /// crates, pins the two together.
-pub const STYLO_EMBEDDED_RECIPE: &str =
-    "stylo-native-embedded-v1;verbatim-unicode;no-bom-strip;host-offset-map=checked;runtime=not-attempted";
+pub const STYLO_EMBEDDED_RECIPE: &str = "stylo-native-embedded-v1;verbatim-unicode;no-bom-strip;host-offset-map=checked;runtime=not-attempted";
 
 /// Where an embedded stylesheet lives inside its host file. A host row with a
 /// fragment is a `<style>` block of a Vue single-file component: its path is

@@ -280,7 +280,9 @@ pub(super) fn capture_stylo_fragment_host(
         let start = occurrence.start.checked_add(fragment.start);
         let end = occurrence.end.checked_add(fragment.start);
         let (Some(start), Some(end)) = (start, end) else {
-            return Err(StyloCaptureFailure::Invalid("Stylo fragment site overflow".into()));
+            return Err(StyloCaptureFailure::Invalid(
+                "Stylo fragment site overflow".into(),
+            ));
         };
         occurrence.start = start;
         occurrence.end = end;
@@ -358,7 +360,13 @@ pub(super) fn capture_stylo_fragment_host(
     let producer = analysis.support_fingerprint;
     let recipe = analysis.recipe.clone();
     let (proof, encoded_bytes) = witness(
-        host_key, &hostrow, &facts, request_digest, producer, &recipe, artifact,
+        host_key,
+        &hostrow,
+        &facts,
+        request_digest,
+        producer,
+        &recipe,
+        artifact,
     )?;
     if encoded_bytes > remaining_bytes {
         return Err(StyloCaptureFailure::Limit);

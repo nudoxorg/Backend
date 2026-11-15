@@ -418,7 +418,9 @@ fn parse_verified(
 }
 
 mod template;
-pub use template::{TemplateClass, TemplateClasses, TemplateModuleClass, TemplateScan, template_classes};
+pub use template::{
+    TemplateClass, TemplateClasses, TemplateModuleClass, TemplateScan, template_classes,
+};
 
 mod script;
 pub use script::{

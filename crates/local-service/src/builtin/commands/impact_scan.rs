@@ -6,15 +6,23 @@
 //! facts (`code_links`), so it lives apart from the cross-file graph: changing
 //! how the graph is built does not change what a scan says, and only this file
 //! is part of the producer's recipe fingerprint.
-use backend_semantic::ir::TypeScriptSource;
 use backend_frontend_typescript::legacy::{
     ExportExportName, ExportImportName, ExportLocalName, Expression, ImportImportName,
     JSXAttributeName, JSXAttributeValue, JSXElementName, NodeId, ObjectPropertyKind, OxcModule,
 };
+use backend_semantic::ir::TypeScriptSource;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Helper functions whose static string arguments are class names.
-const CLASS_HELPERS: &[&str] = &["clsx", "classnames", "classNames", "cn", "cx", "twMerge", "cva"];
+const CLASS_HELPERS: &[&str] = &[
+    "clsx",
+    "classnames",
+    "classNames",
+    "cn",
+    "cx",
+    "twMerge",
+    "cva",
+];
 /// Attribute names which carry class lists.
 const CLASS_ATTRIBUTES: &[&str] = &["className", "class"];
 
@@ -109,15 +117,23 @@ pub(super) fn is_component_name(name: &str) -> bool {
 
 /// Whitespace-separated tokens of a static class string.
 fn class_tokens(text: &str) -> impl Iterator<Item = &str> {
-    text.split_whitespace().filter(|token| !token.is_empty() && token.len() <= 256)
+    text.split_whitespace()
+        .filter(|token| !token.is_empty() && token.len() <= 256)
 }
 
 /// Scan one parsed module.
-pub(in crate::builtin) fn scan_module(path: &str, source: &str, module: &OxcModule<'_>) -> FileScan {
+pub(in crate::builtin) fn scan_module(
+    path: &str,
+    source: &str,
+    module: &OxcModule<'_>,
+) -> FileScan {
     let semantic = &module.semantic;
     let nodes = semantic.nodes();
     let starts = line_starts(source);
-    let mut scan = FileScan { path: path.to_owned(), ..FileScan::default() };
+    let mut scan = FileScan {
+        path: path.to_owned(),
+        ..FileScan::default()
+    };
 
     // Imports and exports come from the module record.
     let mut bound_specs: BTreeSet<String> = BTreeSet::new();
@@ -145,7 +161,10 @@ pub(in crate::builtin) fn scan_module(path: &str, source: &str, module: &OxcModu
         }
         for request in requests.iter() {
             if request.is_import && !request.is_type {
-                scan.side_effect_imports.push((spec.as_str().to_owned(), line_at(&starts, request.statement_span.start)));
+                scan.side_effect_imports.push((
+                    spec.as_str().to_owned(),
+                    line_at(&starts, request.statement_span.start),
+                ));
             }
         }
     }
@@ -169,9 +188,16 @@ pub(in crate::builtin) fn scan_module(path: &str, source: &str, module: &OxcModu
         if entry.is_type {
             continue;
         }
-        let (Some(request), ExportExportName::Name(exported)) = (&entry.module_request, &entry.export_name) else {
-            if let (Some(request), ExportExportName::Default(_)) = (&entry.module_request, &entry.export_name) {
-                scan.reexports.insert("default".to_owned(), (request.name.as_str().to_owned(), "default".to_owned()));
+        let (Some(request), ExportExportName::Name(exported)) =
+            (&entry.module_request, &entry.export_name)
+        else {
+            if let (Some(request), ExportExportName::Default(_)) =
+                (&entry.module_request, &entry.export_name)
+            {
+                scan.reexports.insert(
+                    "default".to_owned(),
+                    (request.name.as_str().to_owned(), "default".to_owned()),
+                );
             }
             continue;
         };
@@ -179,7 +205,10 @@ pub(in crate::builtin) fn scan_module(path: &str, source: &str, module: &OxcModu
             ExportImportName::Name(name) => name.name.as_str().to_owned(),
             _ => "*".to_owned(),
         };
-        scan.reexports.insert(exported.name.as_str().to_owned(), (request.name.as_str().to_owned(), imported));
+        scan.reexports.insert(
+            exported.name.as_str().to_owned(),
+            (request.name.as_str().to_owned(), imported),
+        );
     }
 
     // Owner of a node: the nearest component-like function, class or variable.
@@ -203,10 +232,14 @@ pub(in crate::builtin) fn scan_module(path: &str, source: &str, module: &OxcModu
                 for _ in 0..3 {
                     let k = nodes.get_node(up).kind();
                     if let Some(declarator) = k.as_variable_declarator() {
-                        found = declarator.id.get_identifier_name().map(|n| n.as_str().to_owned());
+                        found = declarator
+                            .id
+                            .get_identifier_name()
+                            .map(|n| n.as_str().to_owned());
                         break;
                     }
-                    if k.as_call_expression().is_none() && k.as_parenthesized_expression().is_none() {
+                    if k.as_call_expression().is_none() && k.as_parenthesized_expression().is_none()
+                    {
                         break;
                     }
                     up = nodes.parent_id(up);
@@ -226,7 +259,9 @@ pub(in crate::builtin) fn scan_module(path: &str, source: &str, module: &OxcModu
     let module_locals: BTreeSet<String> = scan
         .imports
         .iter()
-        .filter(|binding| binding.spec.ends_with(".module.css") && !matches!(binding.imported, Imported::Named(_)))
+        .filter(|binding| {
+            binding.spec.ends_with(".module.css") && !matches!(binding.imported, Imported::Named(_))
+        })
         .map(|binding| binding.local.clone())
         .collect();
     for node in nodes.iter() {
@@ -236,17 +271,24 @@ pub(in crate::builtin) fn scan_module(path: &str, source: &str, module: &OxcModu
         if let Some(function) = kind.as_function() {
             if let Some(name) = function.id.as_ref().map(|id| id.name.as_str()) {
                 if is_component_name(name) {
-                    scan.components.entry(name.to_owned()).or_insert(line_at(&starts, function.span.start));
+                    scan.components
+                        .entry(name.to_owned())
+                        .or_insert(line_at(&starts, function.span.start));
                 }
             }
         } else if let Some(class) = kind.as_class() {
             if let Some(name) = class.id.as_ref().map(|id| id.name.as_str()) {
                 if is_component_name(name) {
-                    scan.components.entry(name.to_owned()).or_insert(line_at(&starts, class.span.start));
+                    scan.components
+                        .entry(name.to_owned())
+                        .or_insert(line_at(&starts, class.span.start));
                 }
             }
         } else if let Some(declarator) = kind.as_variable_declarator() {
-            if let (Some(name), Some(init)) = (declarator.id.get_identifier_name(), declarator.init.as_ref()) {
+            if let (Some(name), Some(init)) = (
+                declarator.id.get_identifier_name(),
+                declarator.init.as_ref(),
+            ) {
                 let looks_callable = matches!(
                     init,
                     Expression::ArrowFunctionExpression(_)
@@ -254,7 +296,9 @@ pub(in crate::builtin) fn scan_module(path: &str, source: &str, module: &OxcModu
                         | Expression::CallExpression(_)
                 );
                 if looks_callable && is_component_name(name.as_str()) {
-                    scan.components.entry(name.as_str().to_owned()).or_insert(line_at(&starts, declarator.span.start));
+                    scan.components
+                        .entry(name.as_str().to_owned())
+                        .or_insert(line_at(&starts, declarator.span.start));
                 }
             }
         }
@@ -272,15 +316,31 @@ pub(in crate::builtin) fn scan_module(path: &str, source: &str, module: &OxcModu
             match &attribute.value {
                 Some(JSXAttributeValue::StringLiteral(text)) => {
                     for token in class_tokens(text.value.as_str()) {
-                        scan.class_uses.push(ClassUse { token: token.to_owned(), line, owner: owner.clone(), conditional: false });
+                        scan.class_uses.push(ClassUse {
+                            token: token.to_owned(),
+                            line,
+                            owner: owner.clone(),
+                            conditional: false,
+                        });
                     }
                 }
                 Some(JSXAttributeValue::ExpressionContainer(container)) => {
                     if let Some(expression) = container.expression.as_expression() {
                         let mut dynamic = false;
-                        collect_expression(expression, false, &module_locals, &mut |token, conditional| {
-                            scan.class_uses.push(ClassUse { token: token.to_owned(), line, owner: owner.clone(), conditional });
-                        }, &mut dynamic);
+                        collect_expression(
+                            expression,
+                            false,
+                            &module_locals,
+                            &mut |token, conditional| {
+                                scan.class_uses.push(ClassUse {
+                                    token: token.to_owned(),
+                                    line,
+                                    owner: owner.clone(),
+                                    conditional,
+                                });
+                            },
+                            &mut dynamic,
+                        );
                         if dynamic {
                             scan.dynamic_class_expressions += 1;
                         }
@@ -305,16 +365,24 @@ pub(in crate::builtin) fn scan_module(path: &str, source: &str, module: &OxcModu
         // `styles.card` and `styles["card"]`.
         if let Some(member) = kind.as_static_member_expression() {
             if let Expression::Identifier(object) = &member.object {
-                scan.record_module_use(object.name.as_str(), member.property.name.as_str(), line_at(&starts, member.span.start), owner_of(id));
+                scan.record_module_use(
+                    object.name.as_str(),
+                    member.property.name.as_str(),
+                    line_at(&starts, member.span.start),
+                    owner_of(id),
+                );
             }
         }
         if let Some(member) = kind.as_computed_member_expression() {
-            if let (
-                Expression::Identifier(object),
-                Expression::StringLiteral(key),
-            ) = (&member.object, &member.expression)
+            if let (Expression::Identifier(object), Expression::StringLiteral(key)) =
+                (&member.object, &member.expression)
             {
-                scan.record_module_use(object.name.as_str(), key.value.as_str(), line_at(&starts, member.span.start), owner_of(id));
+                scan.record_module_use(
+                    object.name.as_str(),
+                    key.value.as_str(),
+                    line_at(&starts, member.span.start),
+                    owner_of(id),
+                );
             }
         }
         // Custom properties set or read from code.
@@ -363,7 +431,12 @@ impl FileScan {
                 && binding.spec.ends_with(".module.css")
                 && matches!(binding.imported, Imported::Default | Imported::Namespace)
         }) {
-            self.module_class_uses.push(ModuleClassUse { binding: index, class: class.to_owned(), line, owner });
+            self.module_class_uses.push(ModuleClassUse {
+                binding: index,
+                class: class.to_owned(),
+                line,
+                owner,
+            });
         }
     }
 }
@@ -413,13 +486,21 @@ fn collect_expression(
             collect_expression(&branch.consequent, true, module_locals, emit, dynamic);
             collect_expression(&branch.alternate, true, module_locals, emit, dynamic);
         }
-        E::LogicalExpression(logical) => collect_expression(&logical.right, true, module_locals, emit, dynamic),
-        E::ParenthesizedExpression(inner) => collect_expression(&inner.expression, conditional, module_locals, emit, dynamic),
-        E::TSAsExpression(inner) => collect_expression(&inner.expression, conditional, module_locals, emit, dynamic),
+        E::LogicalExpression(logical) => {
+            collect_expression(&logical.right, true, module_locals, emit, dynamic)
+        }
+        E::ParenthesizedExpression(inner) => {
+            collect_expression(&inner.expression, conditional, module_locals, emit, dynamic)
+        }
+        E::TSAsExpression(inner) => {
+            collect_expression(&inner.expression, conditional, module_locals, emit, dynamic)
+        }
         E::ArrayExpression(array) => {
             for element in &array.elements {
                 match element.as_expression() {
-                    Some(inner) => collect_expression(inner, conditional, module_locals, emit, dynamic),
+                    Some(inner) => {
+                        collect_expression(inner, conditional, module_locals, emit, dynamic)
+                    }
                     None => *dynamic = true,
                 }
             }
@@ -429,7 +510,9 @@ fn collect_expression(
             if helper {
                 for argument in &call.arguments {
                     match argument.as_expression() {
-                        Some(inner) => collect_expression(inner, conditional, module_locals, emit, dynamic),
+                        Some(inner) => {
+                            collect_expression(inner, conditional, module_locals, emit, dynamic)
+                        }
                         None => *dynamic = true,
                     }
                 }
@@ -440,16 +523,14 @@ fn collect_expression(
         E::ObjectExpression(object) => {
             for property in &object.properties {
                 match property {
-                    ObjectPropertyKind::ObjectProperty(entry) => {
-                        match entry.key.static_name() {
-                            Some(name) => {
-                                for token in class_tokens(&name) {
-                                    emit(token, true);
-                                }
+                    ObjectPropertyKind::ObjectProperty(entry) => match entry.key.static_name() {
+                        Some(name) => {
+                            for token in class_tokens(&name) {
+                                emit(token, true);
                             }
-                            None => *dynamic = true,
                         }
-                    }
+                        None => *dynamic = true,
+                    },
                     _ => *dynamic = true,
                 }
             }
@@ -460,15 +541,14 @@ fn collect_expression(
             collect_expression(&sum.right, conditional, module_locals, emit, dynamic);
         }
         // `styles.card` is a resolved CSS-module member, not a runtime class.
-        E::StaticMemberExpression(member)
-            if matches!(&member.object, E::Identifier(object) if module_locals.contains(object.name.as_str())) => {}
+        E::StaticMemberExpression(member) if matches!(&member.object, E::Identifier(object) if module_locals.contains(object.name.as_str())) =>
+            {}
         E::ComputedMemberExpression(member)
             if matches!(&member.object, E::Identifier(object) if module_locals.contains(object.name.as_str()))
                 && matches!(&member.expression, E::StringLiteral(_)) => {}
         _ => *dynamic = true,
     }
 }
-
 
 pub(in crate::builtin) fn profile_for(path: &str) -> Option<TypeScriptSource> {
     match path.rsplit('.').next()? {

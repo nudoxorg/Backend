@@ -65,10 +65,14 @@ impl<'de> Deserialize<'de> for SelectedSymbolId {
                 formatter.write_str("64 hexadecimal digits or an array of 32 bytes")
             }
             fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<Self::Value, E> {
-                SelectedSymbolId::from_hex(text)
-                    .ok_or_else(|| E::custom("selected symbol row id is not 64 hex digits or is empty"))
+                SelectedSymbolId::from_hex(text).ok_or_else(|| {
+                    E::custom("selected symbol row id is not 64 hex digits or is empty")
+                })
             }
-            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
                 let mut bytes = [0_u8; 32];
                 for (index, slot) in bytes.iter_mut().enumerate() {
                     *slot = seq
@@ -182,10 +186,18 @@ mod tests {
             serde_json::to_value(id).expect("JSON"),
             serde_json::json!("a5".repeat(32))
         );
-        for spelling in [serde_json::json!("a5".repeat(32)), serde_json::json!(vec![165; 32])] {
-            assert_eq!(serde_json::from_value::<SelectedSymbolId>(spelling).expect("read back"), id);
+        for spelling in [
+            serde_json::json!("a5".repeat(32)),
+            serde_json::json!(vec![165; 32]),
+        ] {
+            assert_eq!(
+                serde_json::from_value::<SelectedSymbolId>(spelling).expect("read back"),
+                id
+            );
         }
-        assert!(serde_json::from_value::<SelectedSymbolId>(serde_json::json!("00".repeat(32))).is_err());
+        assert!(
+            serde_json::from_value::<SelectedSymbolId>(serde_json::json!("00".repeat(32))).is_err()
+        );
         assert!(
             matches!(DeclarationSelector::Selected(id).address(), crate::SymbolAddress::Selected(bytes) if bytes == [165;32])
         );

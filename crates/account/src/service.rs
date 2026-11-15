@@ -218,7 +218,10 @@ impl Service {
             .agent
             .post(format!("{}/v1/usage/record", self.base))
             .header("Authorization", format!("Bearer {}", key.expose()))
-            .send_json(UsageRecord { kind: "tool_call", count })
+            .send_json(UsageRecord {
+                kind: "tool_call",
+                count,
+            })
             .map_err(unreachable)?;
         let status = response.status().as_u16();
         match status {

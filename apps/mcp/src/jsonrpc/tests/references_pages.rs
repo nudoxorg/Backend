@@ -10,7 +10,8 @@ fn listing(count: usize, pad: usize) -> SurfaceReply {
         .map(|index| backend_library::ReferenceRecord {
             site_symbol: None,
             source_policy: Default::default(),
-            site: ProductText::new(format!("pkg::caller_{index}::{}", "x".repeat(pad))).expect("site"),
+            site: ProductText::new(format!("pkg::caller_{index}::{}", "x".repeat(pad)))
+                .expect("site"),
             target: backend_library::SemanticLinkTarget::Local {
                 declaration: backend_library::SemanticDeclarationIdentity {
                     family: [1; 16],
@@ -38,7 +39,11 @@ fn listing(count: usize, pad: usize) -> SurfaceReply {
 
 /// Reads every page of one listing, feeding the owner reply to each call, and
 /// returns the page positions with the span starts seen.
-fn read_all(server: &mut Server<Fake>, reply: &SurfaceReply, first: Value) -> (Vec<Value>, Vec<u64>) {
+fn read_all(
+    server: &mut Server<Fake>,
+    reply: &SurfaceReply,
+    first: Value,
+) -> (Vec<Value>, Vec<u64>) {
     let mut arguments = first;
     let mut pages = Vec::new();
     let mut starts = Vec::new();
@@ -49,7 +54,11 @@ fn read_all(server: &mut Server<Fake>, reply: &SurfaceReply, first: Value) -> (V
         assert_context_bounded(&result);
         let structured = &result["structuredContent"];
         for record in structured["records"].as_array().expect("records") {
-            starts.push(record["reference_details"]["evidence"]["source"]["start"].as_u64().expect("start"));
+            starts.push(
+                record["reference_details"]["evidence"]["source"]["start"]
+                    .as_u64()
+                    .expect("start"),
+            );
         }
         pages.push(structured["references_page"].clone());
         match structured.get("continuation_call") {
@@ -68,19 +77,38 @@ fn references_page_by_limit_and_cursor_until_every_use_is_read() {
         &reply,
         json!({"coordinate": "pkg::semantic::callee", "limit": 3}),
     );
-    assert_eq!(starts, (0..7).collect::<Vec<u64>>(), "every use once, in order");
+    assert_eq!(
+        starts,
+        (0..7).collect::<Vec<u64>>(),
+        "every use once, in order"
+    );
     let positions = pages
         .iter()
-        .map(|page| (page["offset"].as_u64(), page["returned"].as_u64(), page["remaining"].as_u64()))
+        .map(|page| {
+            (
+                page["offset"].as_u64(),
+                page["returned"].as_u64(),
+                page["remaining"].as_u64(),
+            )
+        })
         .collect::<Vec<_>>();
-    assert_eq!(positions, [(Some(0), Some(3), Some(4)), (Some(3), Some(3), Some(1)), (Some(6), Some(1), Some(0))]);
+    assert_eq!(
+        positions,
+        [
+            (Some(0), Some(3), Some(4)),
+            (Some(3), Some(3), Some(1)),
+            (Some(6), Some(1), Some(0))
+        ]
+    );
     assert!(pages.iter().all(|page| page["total"] == 7));
     assert_eq!(server.product.surface_commands.len(), 3);
-    assert!(server
-        .product
-        .surface_commands
-        .iter()
-        .all(|command| matches!(command, SurfaceCommand::References { .. })));
+    assert!(
+        server
+            .product
+            .surface_commands
+            .iter()
+            .all(|command| matches!(command, SurfaceCommand::References { .. }))
+    );
 }
 
 #[test]
@@ -95,8 +123,16 @@ fn the_first_page_says_how_many_uses_remain_and_names_the_continuation() {
     let text = text_of(&result);
     assert!(text.contains("Uses 1-3 of 7; 4 more remain"), "{text}");
     let structured = &result["structuredContent"];
-    assert!(structured["nextCursor"].as_str().is_some_and(|cursor| cursor.starts_with("mcp2-")), "{structured}");
-    assert_eq!(structured["continuation_call"]["name"], "backend.references");
+    assert!(
+        structured["nextCursor"]
+            .as_str()
+            .is_some_and(|cursor| cursor.starts_with("mcp2-")),
+        "{structured}"
+    );
+    assert_eq!(
+        structured["continuation_call"]["name"],
+        "backend.references"
+    );
     assert_eq!(structured["continuation_call"]["arguments"]["limit"], 3);
     assert_eq!(
         structured["continuation_call"]["arguments"]["coordinate"],
@@ -115,10 +151,15 @@ fn a_listing_larger_than_the_response_budget_degrades_to_a_partial_answer() {
     assert_context_bounded(&result);
     let page = &result["structuredContent"]["references_page"];
     let returned = page["returned"].as_u64().expect("returned");
-    assert!(returned >= 1 && returned < 25, "the default page was halved to fit: {page}");
+    assert!(
+        returned >= 1 && returned < 25,
+        "the default page was halved to fit: {page}"
+    );
     assert_eq!(page["remaining"].as_u64(), Some(256 - returned), "{page}");
     assert!(
-        result["structuredContent"]["continuation_call"]["arguments"]["limit"].as_u64().is_some_and(|limit| limit < 25),
+        result["structuredContent"]["continuation_call"]["arguments"]["limit"]
+            .as_u64()
+            .is_some_and(|limit| limit < 25),
         "the continuation keeps the page size that fit"
     );
     let (_, starts) = read_all(&mut server, &reply, first);
@@ -180,7 +221,12 @@ fn the_oversize_advice_names_only_arguments_the_tool_has() {
         &json!({"command": serde_json::to_value(SurfaceCommand::References { target: target() }).expect("command")}),
     );
     assert_eq!(surface["structuredContent"]["cause"], "oversized");
-    let detail = surface["structuredContent"]["detail"].as_str().expect("detail");
+    let detail = surface["structuredContent"]["detail"]
+        .as_str()
+        .expect("detail");
     assert!(!detail.contains("limit"), "{detail}");
-    assert!(!detail.contains("detail=summary"), "already at summary: {detail}");
+    assert!(
+        !detail.contains("detail=summary"),
+        "already at summary: {detail}"
+    );
 }

@@ -131,12 +131,14 @@ impl ProjectCoverageEvidence {
             .filter_map(|profile| {
                 let name = profile.profile.name()?;
                 let semantic = match profile.state {
-                    IndexOperationSemanticProfileState::Published { coverage, .. } => match coverage {
-                        IndexOperationSemanticCoverage::Complete => ProfileSemantic::Complete,
-                        IndexOperationSemanticCoverage::Partial { completed, total } => {
-                            ProfileSemantic::Partial { completed, total }
+                    IndexOperationSemanticProfileState::Published { coverage, .. } => {
+                        match coverage {
+                            IndexOperationSemanticCoverage::Complete => ProfileSemantic::Complete,
+                            IndexOperationSemanticCoverage::Partial { completed, total } => {
+                                ProfileSemantic::Partial { completed, total }
+                            }
                         }
-                    },
+                    }
                     IndexOperationSemanticProfileState::Pending { .. } => ProfileSemantic::Pending,
                     IndexOperationSemanticProfileState::Unavailable { .. } => {
                         ProfileSemantic::Unavailable
@@ -225,7 +227,10 @@ pub(crate) fn read_current_project_profiles(
             }
         };
         let observed = publication_relations(evidence);
-        if relations.replace(observed).is_some_and(|previous| previous != observed) {
+        if relations
+            .replace(observed)
+            .is_some_and(|previous| previous != observed)
+        {
             return BTreeMap::new();
         }
         result.insert(key, evidence.profile_files());
@@ -697,7 +702,12 @@ mod tests {
             advance_after_read: false,
             reads: 0,
         };
-        let profiles = read_current_project_profiles(&mut engine, &snapshot, &revision.health, &BTreeMap::new());
+        let profiles = read_current_project_profiles(
+            &mut engine,
+            &snapshot,
+            &revision.health,
+            &BTreeMap::new(),
+        );
         let shelf = crate::assemble::shelf_from_snapshot_with_health(
             &snapshot,
             crate::KeyTag::from_key(&[64; 32]),
@@ -705,11 +715,24 @@ mod tests {
         )
         .with_profiles(&profiles);
         let entry = &shelf.entries()[0];
-        let phrases = entry.profiles().iter().map(|p| p.phrase()).collect::<Vec<_>>();
-        assert!(phrases.contains(&"typescript 2 file(s)".to_owned()), "{phrases:?}");
-        assert!(phrases.contains(&"csharp 7 file(s) (semantic unavailable)".to_owned()), "{phrases:?}");
+        let phrases = entry
+            .profiles()
+            .iter()
+            .map(|p| p.phrase())
+            .collect::<Vec<_>>();
+        assert!(
+            phrases.contains(&"typescript 2 file(s)".to_owned()),
+            "{phrases:?}"
+        );
+        assert!(
+            phrases.contains(&"csharp 7 file(s) (semantic unavailable)".to_owned()),
+            "{phrases:?}"
+        );
         let rendered = crate::render::markdown::shelf(&shelf);
-        assert!(rendered.contains("csharp 7 file(s) (semantic unavailable)"), "{rendered}");
+        assert!(
+            rendered.contains("csharp 7 file(s) (semantic unavailable)"),
+            "{rendered}"
+        );
         let summary = crate::budget::encode_answer(
             &crate::Answer::Shelf(Box::new(shelf)),
             crate::budget::Detail::Summary,
@@ -736,7 +759,15 @@ mod tests {
             advance_after_read: true,
             reads: 0,
         };
-        assert!(read_current_project_profiles(&mut advancing, &snapshot, &revision.health, &BTreeMap::new()).is_empty());
+        assert!(
+            read_current_project_profiles(
+                &mut advancing,
+                &snapshot,
+                &revision.health,
+                &BTreeMap::new()
+            )
+            .is_empty()
+        );
         Ok(())
     }
 

@@ -104,10 +104,20 @@ fn scan_template(host: &VerifiedSourceExtent<'_>, max_events: usize) -> Template
         syntax.handle(&event, &ctx);
         match event {
             Event::AttribName { start, end } => {
-                current = Some(Attr { directive: false, name: start as usize..end as usize, argument: None, value: None });
+                current = Some(Attr {
+                    directive: false,
+                    name: start as usize..end as usize,
+                    argument: None,
+                    value: None,
+                });
             }
             Event::DirName { start, end } => {
-                current = Some(Attr { directive: true, name: start as usize..end as usize, argument: None, value: None });
+                current = Some(Attr {
+                    directive: true,
+                    name: start as usize..end as usize,
+                    argument: None,
+                    value: None,
+                });
             }
             Event::DirArg { start, end, .. } => {
                 if let Some(attr) = current.as_mut() {
@@ -130,14 +140,24 @@ fn scan_template(host: &VerifiedSourceExtent<'_>, max_events: usize) -> Template
     if events > max_events {
         return TemplateScan::Truncated;
     }
-    let Some(ast) = syntax.template_ast() else { return TemplateScan::Absent };
-    let Some(block) = ast.root.content.as_ref().map(|content| content.start as usize..content.end as usize) else {
+    let Some(ast) = syntax.template_ast() else {
+        return TemplateScan::Absent;
+    };
+    let Some(block) = ast
+        .root
+        .content
+        .as_ref()
+        .map(|content| content.start as usize..content.end as usize)
+    else {
         return TemplateScan::Absent;
     };
     let mut found = TemplateClasses::default();
     for attr in attrs {
         let Some(value) = attr.value else { continue };
-        if source.get(value.clone()).is_none() || attr.name.start < block.start || attr.name.end > block.end {
+        if source.get(value.clone()).is_none()
+            || attr.name.start < block.start
+            || attr.name.end > block.end
+        {
             continue;
         }
         let name = source.get(attr.name.clone()).unwrap_or("");
@@ -152,7 +172,9 @@ fn scan_template(host: &VerifiedSourceExtent<'_>, max_events: usize) -> Template
         }
     }
     found.classes.sort_by_key(|class| class.range.start);
-    found.module_members.sort_by_key(|member| member.range.start);
+    found
+        .module_members
+        .sort_by_key(|member| member.range.start);
     TemplateScan::Scanned(found)
 }
 
@@ -203,13 +225,20 @@ struct Frame {
 fn scan_expression(source: &str, range: Range<usize>, into: &mut TemplateClasses) {
     let text = &source[range.clone()];
     let bytes = text.as_bytes();
-    let mut frames = vec![Frame { object: false, class: true }];
+    let mut frames = vec![Frame {
+        object: false,
+        class: true,
+    }];
     let mut prev = Prev::Open;
     let mut i = 0usize;
     while i < bytes.len() {
-        let frame = frames.last().copied().unwrap_or(Frame { object: false, class: false });
+        let frame = frames.last().copied().unwrap_or(Frame {
+            object: false,
+            class: false,
+        });
         // A value starting here would be a class when the enclosing bracket is.
-        let value_here = frame.class && !frame.object && matches!(prev, Prev::Open | Prev::Comma | Prev::Branch);
+        let value_here =
+            frame.class && !frame.object && matches!(prev, Prev::Open | Prev::Comma | Prev::Branch);
         match bytes[i] {
             quote @ (b'\'' | b'"' | b'`') => {
                 let start = i + 1;
@@ -228,13 +257,17 @@ fn scan_expression(source: &str, range: Range<usize>, into: &mut TemplateClasses
                     // No closing quote: the rest of the binding is inside the literal.
                     return;
                 }
-                let next = bytes[j + 1..].iter().find(|byte| !byte.is_ascii_whitespace()).copied();
+                let next = bytes[j + 1..]
+                    .iter()
+                    .find(|byte| !byte.is_ascii_whitespace())
+                    .copied();
                 let in_position = if frame.object {
                     frame.class && matches!(prev, Prev::Open | Prev::Comma) && next == Some(b':')
                 } else {
                     value_here && matches!(next, None | Some(b',' | b']' | b')' | b'}' | b':'))
                 };
-                if plain && in_position && text.is_char_boundary(start) && text.is_char_boundary(j) {
+                if plain && in_position && text.is_char_boundary(start) && text.is_char_boundary(j)
+                {
                     push_tokens(source, range.start + start..range.start + j, true, into);
                 }
                 prev = Prev::Other;
@@ -243,7 +276,9 @@ fn scan_expression(source: &str, range: Range<usize>, into: &mut TemplateClasses
             b'$' if text[i..].starts_with("$style.") => {
                 let name_start = i + "$style.".len();
                 let len = text[name_start..]
-                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '$'))
+                    .find(|c: char| {
+                        !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '$')
+                    })
                     .unwrap_or(text.len() - name_start);
                 if len > 0 {
                     into.module_members.push(TemplateModuleClass {
@@ -256,7 +291,10 @@ fn scan_expression(source: &str, range: Range<usize>, into: &mut TemplateClasses
             }
             open @ (b'[' | b'(' | b'{') => {
                 // After an operand, `[` indexes and `(` calls: their contents are values.
-                frames.push(Frame { object: open == b'{', class: value_here });
+                frames.push(Frame {
+                    object: open == b'{',
+                    class: value_here,
+                });
                 prev = Prev::Open;
                 i += 1;
             }
@@ -277,9 +315,18 @@ fn scan_expression(source: &str, range: Range<usize>, into: &mut TemplateClasses
             }
             b'?' => {
                 // `?.` is optional chaining, `??` a logical operator, `?` a ternary.
-                let optional_chain = bytes.get(i + 1) == Some(&b'.') && !bytes.get(i + 2).is_some_and(u8::is_ascii_digit);
-                prev = if optional_chain { Prev::Other } else { Prev::Branch };
-                i += if optional_chain || bytes.get(i + 1) == Some(&b'?') { 2 } else { 1 };
+                let optional_chain = bytes.get(i + 1) == Some(&b'.')
+                    && !bytes.get(i + 2).is_some_and(u8::is_ascii_digit);
+                prev = if optional_chain {
+                    Prev::Other
+                } else {
+                    Prev::Branch
+                };
+                i += if optional_chain || bytes.get(i + 1) == Some(&b'?') {
+                    2
+                } else {
+                    1
+                };
             }
             op @ (b'&' | b'|') => {
                 let doubled = bytes.get(i + 1) == Some(&op);
@@ -328,10 +375,24 @@ mod tests {
         for class in &found.classes {
             assert_eq!(&source[class.range.clone()], class.token, "{class:?}");
         }
-        let static_tokens: Vec<&str> = found.classes.iter().filter(|c| !c.conditional).map(|c| c.token.as_str()).collect();
+        let static_tokens: Vec<&str> = found
+            .classes
+            .iter()
+            .filter(|c| !c.conditional)
+            .map(|c| c.token.as_str())
+            .collect();
         assert_eq!(static_tokens, ["card", "big"]);
-        let bound: Vec<&str> = found.classes.iter().filter(|c| c.conditional).map(|c| c.token.as_str()).collect();
-        assert_eq!(bound, ["is-on", "x"], "string literals are linked; bare object keys are not");
+        let bound: Vec<&str> = found
+            .classes
+            .iter()
+            .filter(|c| c.conditional)
+            .map(|c| c.token.as_str())
+            .collect();
+        assert_eq!(
+            bound,
+            ["is-on", "x"],
+            "string literals are linked; bare object keys are not"
+        );
         assert_eq!(found.dynamic_bindings, 2);
         assert_eq!(found.module_members.len(), 1);
         assert_eq!(&source[found.module_members[0].range.clone()], "title");
@@ -353,24 +414,36 @@ mod tests {
     #[test]
     fn comparison_operands_are_not_classes() {
         assert!(bound_classes("{ active: state === 'loading' }").is_empty());
-        assert_eq!(bound_classes("state === 'loading' ? 'busy' : 'idle'"), ["busy", "idle"]);
+        assert_eq!(
+            bound_classes("state === 'loading' ? 'busy' : 'idle'"),
+            ["busy", "idle"]
+        );
         assert!(bound_classes("['a' in flags, kind !== 'b']").is_empty());
         assert_eq!(bound_classes("{ 'is-on': mode == \"dark\" }"), ["is-on"]);
     }
 
     #[test]
     fn call_arguments_and_indexes_are_not_classes() {
-        assert_eq!(bound_classes("[format('padded'), items.includes('x') && 'has-x']"), ["has-x"]);
+        assert_eq!(
+            bound_classes("[format('padded'), items.includes('x') && 'has-x']"),
+            ["has-x"]
+        );
         assert!(bound_classes("theme['dark']").is_empty());
         assert!(bound_classes("{ big: size.startsWith('xl') }").is_empty());
     }
 
     #[test]
     fn class_positions_are_array_elements_ternary_branches_and_logical_results() {
-        assert_eq!(bound_classes("['a', cond ? 'b' : 'c', ok && 'd', alt || 'e', (flag ? 'f' : 'g')]"), ["a", "b", "c", "d", "e", "f", "g"]);
+        assert_eq!(
+            bound_classes("['a', cond ? 'b' : 'c', ok && 'd', alt || 'e', (flag ? 'f' : 'g')]"),
+            ["a", "b", "c", "d", "e", "f", "g"]
+        );
         assert_eq!(bound_classes("'solo'"), ["solo"]);
         assert_eq!(bound_classes("{ 'k1 k2': on, [dyn]: on }"), ["k1", "k2"]);
-        assert!(bound_classes("{ key: 'value' }").is_empty(), "an object value is not a class");
+        assert!(
+            bound_classes("{ key: 'value' }").is_empty(),
+            "an object value is not a class"
+        );
     }
 
     #[test]
@@ -386,6 +459,9 @@ mod tests {
         let verified = VerifiedSourceText::capture(source.as_bytes()).expect("utf-8");
         let host = verified.extent(0..source.len()).expect("host");
         assert_eq!(scan_template(&host, 4), TemplateScan::Truncated);
-        assert!(matches!(scan_template(&host, MAX_TEMPLATE_EVENTS), TemplateScan::Scanned(_)));
+        assert!(matches!(
+            scan_template(&host, MAX_TEMPLATE_EVENTS),
+            TemplateScan::Scanned(_)
+        ));
     }
 }

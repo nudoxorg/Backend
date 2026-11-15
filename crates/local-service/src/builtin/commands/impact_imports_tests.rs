@@ -6,8 +6,14 @@ const TSCONFIG: &str = r#"{"compilerOptions":{"jsx":"preserve","paths":{"@/*":["
 
 fn sources() -> Vec<(&'static str, &'static str)> {
     vec![
-        ("src/components/Button.tsx", "export function Button() { return <button />; }"),
-        ("src/components/Card.tsx", "export default function Card() { return <div />; }"),
+        (
+            "src/components/Button.tsx",
+            "export function Button() { return <button />; }",
+        ),
+        (
+            "src/components/Card.tsx",
+            "export default function Card() { return <div />; }",
+        ),
         (
             "src/components/NavBar.tsx",
             r#"import { Button } from "./Button";
@@ -50,7 +56,8 @@ fn scans() -> BTreeMap<String, FileScan> {
         .into_iter()
         .map(|(path, text)| {
             let profile = profile_for(path).expect("profile");
-            let scan = with_analysis(profile, text, |module| scan_module(path, text, &module)).expect("parse");
+            let scan = with_analysis(profile, text, |module| scan_module(path, text, &module))
+                .expect("parse");
             (path.to_owned(), scan)
         })
         .collect()
@@ -90,20 +97,48 @@ fn consumers_through_tsconfig_paths_are_found_like_relative_ones() {
     .into_iter()
     .map(|(file, name)| (file.to_owned(), name.to_owned()))
     .collect();
-    assert_eq!(renderers_of(&nodes, &edges, "src/components/Button.tsx", "Button"), want);
+    assert_eq!(
+        renderers_of(&nodes, &edges, "src/components/Button.tsx", "Button"),
+        want
+    );
     // The barrel aliased through `@/components` reaches the default export too.
-    assert!(renderers_of(&nodes, &edges, "src/components/Card.tsx", "Card").contains(&("src/app/barrel/page.tsx".to_owned(), "Barrel".to_owned())));
-    assert!(renderers_of(&nodes, &edges, "src/components/NavBar.tsx", "NavBar").contains(&("src/app/page.tsx".to_owned(), "Home".to_owned())));
+    assert!(
+        renderers_of(&nodes, &edges, "src/components/Card.tsx", "Card")
+            .contains(&("src/app/barrel/page.tsx".to_owned(), "Barrel".to_owned()))
+    );
+    assert!(
+        renderers_of(&nodes, &edges, "src/components/NavBar.tsx", "NavBar")
+            .contains(&("src/app/page.tsx".to_owned(), "Home".to_owned()))
+    );
 
     // The one alias no tsconfig entry satisfies is reported, first, with its reason;
     // packages and assets are not.
-    let gap = gaps.iter().find(|gap| gap.facet == "code.unresolved-imports").expect("unresolved import gap");
+    let gap = gaps
+        .iter()
+        .find(|gap| gap.facet == "code.unresolved-imports")
+        .expect("unresolved import gap");
     assert_eq!(gaps[0].facet, "code.unresolved-imports");
     assert_eq!(gap.count, Some(1));
-    assert!(gap.note.contains("src/app/broken/page.tsx") && gap.note.contains("@/widgets/Ghost"), "{}", gap.note);
-    assert!(gap.note.contains("\"@/*\""), "the reason names the paths entry: {}", gap.note);
-    assert!(!gap.note.contains("react") && !gap.note.contains("logo.svg"), "{}", gap.note);
-    assert!(gaps.iter().any(|gap| gap.facet == "code.unresolved-renders"), "the Ghost tag stays an unresolved render");
+    assert!(
+        gap.note.contains("src/app/broken/page.tsx") && gap.note.contains("@/widgets/Ghost"),
+        "{}",
+        gap.note
+    );
+    assert!(
+        gap.note.contains("\"@/*\""),
+        "the reason names the paths entry: {}",
+        gap.note
+    );
+    assert!(
+        !gap.note.contains("react") && !gap.note.contains("logo.svg"),
+        "{}",
+        gap.note
+    );
+    assert!(
+        gaps.iter()
+            .any(|gap| gap.facet == "code.unresolved-renders"),
+        "the Ghost tag stays an unresolved render"
+    );
 }
 
 #[test]
@@ -115,7 +150,10 @@ fn relative_only_lookup_misses_alias_consumers_and_says_so() {
     let (nodes, edges, gaps) = build_graph_with(&scans, &RelativeImports(&indexed));
     let found = renderers_of(&nodes, &edges, "src/components/Button.tsx", "Button");
     assert!(!found.contains(&("src/app/page.tsx".to_owned(), "Home".to_owned())));
-    let gap = gaps.iter().find(|gap| gap.facet == "code.unresolved-imports").expect("gap");
+    let gap = gaps
+        .iter()
+        .find(|gap| gap.facet == "code.unresolved-imports")
+        .expect("gap");
     assert!(gap.count.unwrap_or(0) >= 4, "{gap:?}");
 }
 
@@ -124,11 +162,21 @@ fn a_tsconfig_that_cannot_be_read_is_a_named_failure() {
     let scans = scans();
     let indexed: BTreeSet<String> = scans.keys().cloned().collect();
     let read = |path: &str| {
-        if path == "tsconfig.json" { Err(std::io::Error::other("denied")) } else { Ok(None) }
+        if path == "tsconfig.json" {
+            Err(std::io::Error::other("denied"))
+        } else {
+            Ok(None)
+        }
     };
     let imports = CompilerImports::new(&indexed, &read);
     let (_, _, gaps) = build_graph_with(&scans, &imports);
-    let gap = gaps.iter().find(|gap| gap.facet == "code.unresolved-imports").expect("gap");
-    assert!(gap.count.unwrap_or(0) >= 4 && gap.note.contains("denied"), "{gap:?}");
+    let gap = gaps
+        .iter()
+        .find(|gap| gap.facet == "code.unresolved-imports")
+        .expect("gap");
+    assert!(
+        gap.count.unwrap_or(0) >= 4 && gap.note.contains("denied"),
+        "{gap:?}"
+    );
     assert_eq!(imports.configuration_errors().len(), 1);
 }

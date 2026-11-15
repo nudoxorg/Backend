@@ -240,7 +240,9 @@ pub(super) fn capture<F: FnMut() -> bool>(
                 } if pass == 0 && *owner == project => {
                     hosts.insert(*key);
                     // An embedded sheet's bytes are those of its enclosing file.
-                    let file = fragment.as_ref().map_or_else(|| path.clone(), |fragment| fragment.file.clone());
+                    let file = fragment
+                        .as_ref()
+                        .map_or_else(|| path.clone(), |fragment| fragment.file.clone());
                     source_hosts.push((*key, file, *content, *source, *length));
                     true
                 }

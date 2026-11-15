@@ -304,6 +304,12 @@ fn an_empty_style_block_has_content_of_no_bytes() {
         .map(|(_, block)| block.content.clone())
         .collect();
     assert_eq!(styles.len(), 2);
-    assert!(styles[0].as_ref().is_some_and(std::ops::Range::is_empty), "{styles:?}");
-    assert!(styles[1].as_ref().is_some_and(|range| !range.is_empty()), "{styles:?}");
+    assert!(
+        styles[0].as_ref().is_some_and(std::ops::Range::is_empty),
+        "{styles:?}"
+    );
+    assert!(
+        styles[1].as_ref().is_some_and(|range| !range.is_empty()),
+        "{styles:?}"
+    );
 }

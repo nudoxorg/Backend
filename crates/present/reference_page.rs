@@ -31,7 +31,11 @@ pub(crate) struct ReferenceCursor {
 
 impl ReferenceCursor {
     pub(crate) fn encode(self) -> String {
-        format!("{PREFIX}{:08x}{}", self.offset, backend_library::encode_id(&self.digest))
+        format!(
+            "{PREFIX}{:08x}{}",
+            self.offset,
+            backend_library::encode_id(&self.digest)
+        )
     }
 
     pub(crate) fn parse(token: &str) -> Option<Self> {
@@ -100,7 +104,10 @@ mod tests {
     }
 
     fn operands(view: &ProductView) -> Vec<String> {
-        view.records().iter().filter_map(|record| record.operand().map(str::to_owned)).collect()
+        view.records()
+            .iter()
+            .filter_map(|record| record.operand().map(str::to_owned))
+            .collect()
     }
 
     #[test]
@@ -126,12 +133,17 @@ mod tests {
 
     #[test]
     fn a_page_says_how_many_uses_remain_and_how_to_continue() {
-        let page = listing(7).reference_window(None, 3, CursorTarget::CliOption).expect("page");
+        let page = listing(7)
+            .reference_window(None, 3, CursorTarget::CliOption)
+            .expect("page");
         let note = page.note().expect("note");
         assert!(note.contains("Uses 1-3 of 7; 4 more remain"), "{note}");
         assert!(note.contains("cursor"), "{note}");
         let info = page.reference_page().expect("position");
-        assert_eq!((info.offset, info.returned, info.total, info.remaining), (0, 3, 7, 4));
+        assert_eq!(
+            (info.offset, info.returned, info.total, info.remaining),
+            (0, 3, 7, 4)
+        );
         let rendered = crate::render::markdown::answer(&Answer::Product(Box::new(page)));
         assert!(rendered.contains("rf1-"), "the cursor is shown: {rendered}");
     }
@@ -139,15 +151,22 @@ mod tests {
     #[test]
     fn a_listing_that_fits_is_unchanged_and_carries_no_cursor() {
         let whole = listing(4);
-        let page = whole.reference_window(None, 25, CursorTarget::CliOption).expect("page");
-        assert_eq!(page, whole, "the first page of a short listing is the listing");
+        let page = whole
+            .reference_window(None, 25, CursorTarget::CliOption)
+            .expect("page");
+        assert_eq!(
+            page, whole,
+            "the first page of a short listing is the listing"
+        );
         assert!(page.reference_page().is_none());
         assert!(page.reference_cursor().is_none());
     }
 
     #[test]
     fn a_cursor_of_a_different_listing_is_stale() {
-        let first = listing(7).reference_window(None, 3, CursorTarget::CliOption).expect("page");
+        let first = listing(7)
+            .reference_window(None, 3, CursorTarget::CliOption)
+            .expect("page");
         let token = first.reference_cursor().expect("more").token().to_owned();
         let fault = listing(8)
             .reference_window(Some(&token), 3, CursorTarget::CliOption)
@@ -162,9 +181,13 @@ mod tests {
     #[test]
     fn a_page_size_never_changes_what_a_cursor_means() {
         let whole = listing(9);
-        let first = whole.reference_window(None, 2, CursorTarget::CliOption).expect("page");
+        let first = whole
+            .reference_window(None, 2, CursorTarget::CliOption)
+            .expect("page");
         let token = first.reference_cursor().expect("more").token().to_owned();
-        let wider = whole.reference_window(Some(&token), 6, CursorTarget::CliOption).expect("page");
+        let wider = whole
+            .reference_window(Some(&token), 6, CursorTarget::CliOption)
+            .expect("page");
         assert_eq!(operands(&wider), operands(&whole)[2..8]);
         assert_eq!(wider.reference_page().map(|info| info.remaining), Some(1));
     }
@@ -182,16 +205,32 @@ mod tests {
         let summary = measure(Detail::Summary);
         let (before, after) = (standard.len() / 40, summary.len() / 40);
         println!("references bytes per row: before {before}, after {after}");
-        assert!(after + 50 < before, "summary rows shed the restated prose: {before} -> {after}");
+        assert!(
+            after + 50 < before,
+            "summary rows shed the restated prose: {before} -> {after}"
+        );
         let value: serde_json::Value = serde_json::from_slice(&summary).expect("JSON");
         let row = &value["records"][3];
         assert_eq!(row["site_symbol"], backend_library::encode_id(&[7; 32]));
         assert_eq!(row["reference_details"]["relation"], "type-reference");
-        assert_eq!(row["reference_details"]["evidence"]["confidence"], "compiler");
-        assert_eq!(row["reference_details"]["evidence"]["source"]["file"], "components/Section.tsx");
+        assert_eq!(
+            row["reference_details"]["evidence"]["confidence"],
+            "compiler"
+        );
+        assert_eq!(
+            row["reference_details"]["evidence"]["source"]["file"],
+            "components/Section.tsx"
+        );
         assert_eq!(row["reference_details"]["evidence"]["source"]["start"], 30);
-        assert!(row["operand"].as_str().is_some_and(|operand| operand.ends_with("Caller3")));
+        assert!(
+            row["operand"]
+                .as_str()
+                .is_some_and(|operand| operand.ends_with("Caller3"))
+        );
         let standard: serde_json::Value = serde_json::from_slice(&standard).expect("JSON");
-        assert_eq!(standard["records"][3]["tags"][0], "type reference", "standard keeps the prose");
+        assert_eq!(
+            standard["records"][3]["tags"][0], "type reference",
+            "standard keeps the prose"
+        );
     }
 }

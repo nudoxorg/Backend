@@ -16,11 +16,15 @@ enum ProgressProjection {
 /// The reference an unchanged poll echoes. An operation poll already names its owner ticket
 /// in the observation the caller holds, so the ticket (an owner epoch array and the package
 /// path) is left out: operation key plus fingerprint identify the observation exactly.
-fn compact_reference(reference: &backend_client::IndexProgressReference) -> Result<Value, RpcError> {
+fn compact_reference(
+    reference: &backend_client::IndexProgressReference,
+) -> Result<Value, RpcError> {
     let mut value = serde_json::to_value(reference)
         .map_err(|error| RpcError::tool(format!("progress reference encode failed: {error}")))?;
-    if matches!(reference, backend_client::IndexProgressReference::Operation { .. })
-        && let Some(object) = value.as_object_mut()
+    if matches!(
+        reference,
+        backend_client::IndexProgressReference::Operation { .. }
+    ) && let Some(object) = value.as_object_mut()
     {
         object.remove("ticket");
     }
@@ -70,7 +74,10 @@ impl<P: Product> Server<P> {
         };
         // An operation poll may name the last event it was sent (`after_event`); later polls omit those.
         let events_seen = if operation {
-            arguments.get("after_event").and_then(Value::as_u64).unwrap_or(0)
+            arguments
+                .get("after_event")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
         } else {
             0
         };

@@ -55,7 +55,9 @@ pub(super) fn is_candidate(path: &str) -> bool {
 
 /// The application file an embedded host path names.
 pub(super) fn real_path(virtual_path: &str) -> Option<&str> {
-    virtual_path.strip_suffix(VIRTUAL_SUFFIX).filter(|path| is_candidate(path))
+    virtual_path
+        .strip_suffix(VIRTUAL_SUFFIX)
+        .filter(|path| is_candidate(path))
 }
 
 pub(super) fn virtual_path(real: &str) -> String {
@@ -91,7 +93,9 @@ pub(super) struct Scan {
 impl Scan {
     /// The call whose statement text contains `offset` of the composed document.
     pub(super) fn fragment_at(&self, offset: usize) -> Option<&Fragment> {
-        self.fragments.iter().find(|fragment| offset >= fragment.text_start && offset < fragment.text_end.saturating_add(1))
+        self.fragments.iter().find(|fragment| {
+            offset >= fragment.text_start && offset < fragment.text_end.saturating_add(1)
+        })
     }
 }
 
@@ -136,7 +140,13 @@ fn is_ident_part(byte: u8) -> bool {
 
 impl<'a> Lexer<'a> {
     fn new(text: &'a str, language: Language) -> Self {
-        Self { bytes: text.as_bytes(), text, language, position: 0, tokens: Vec::new() }
+        Self {
+            bytes: text.as_bytes(),
+            text,
+            language,
+            position: 0,
+            tokens: Vec::new(),
+        }
     }
 
     fn peek(&self, ahead: usize) -> Option<u8> {
@@ -150,7 +160,22 @@ impl<'a> Lexer<'a> {
             Some(token) => match token.kind {
                 Kind::Str | Kind::Other => false,
                 Kind::Ident => {
-                    matches!(&self.text[token.start..token.end], "return" | "typeof" | "case" | "in" | "of" | "delete" | "void" | "throw" | "new" | "else" | "do" | "yield" | "await")
+                    matches!(
+                        &self.text[token.start..token.end],
+                        "return"
+                            | "typeof"
+                            | "case"
+                            | "in"
+                            | "of"
+                            | "delete"
+                            | "void"
+                            | "throw"
+                            | "new"
+                            | "else"
+                            | "do"
+                            | "yield"
+                            | "await"
+                    )
                 }
                 Kind::Punct => !matches!(&self.text[token.start..token.end], ")" | "]" | "}"),
             },
@@ -161,8 +186,12 @@ impl<'a> Lexer<'a> {
         while let Some(byte) = self.peek(0) {
             match byte {
                 b' ' | b'\t' | b'\r' | b'\n' | 0x0c => self.position += 1,
-                b'/' if self.language == Language::Script && self.peek(1) == Some(b'/') => self.skip_line(),
-                b'/' if self.language == Language::Script && self.peek(1) == Some(b'*') => self.skip_block(),
+                b'/' if self.language == Language::Script && self.peek(1) == Some(b'/') => {
+                    self.skip_line()
+                }
+                b'/' if self.language == Language::Script && self.peek(1) == Some(b'*') => {
+                    self.skip_block()
+                }
                 b'#' if self.language == Language::Python => self.skip_line(),
                 b'/' if self.language == Language::Script && self.regex_allowed() => self.regex(),
                 b'\'' | b'"' => self.string(self.position, byte, false, false),
@@ -173,7 +202,12 @@ impl<'a> Lexer<'a> {
                     let start = self.position;
                     self.position += 1;
                     // Multi-byte punctuation never matters here; keep one byte.
-                    self.tokens.push(Token { kind: Kind::Punct, start, end: self.position, pieces: None });
+                    self.tokens.push(Token {
+                        kind: Kind::Punct,
+                        start,
+                        end: self.position,
+                        pieces: None,
+                    });
                 }
             }
         }
@@ -227,7 +261,12 @@ impl<'a> Lexer<'a> {
             }
         }
         self.position = self.position.min(self.bytes.len());
-        self.tokens.push(Token { kind: Kind::Other, start, end: self.position, pieces: None });
+        self.tokens.push(Token {
+            kind: Kind::Other,
+            start,
+            end: self.position,
+            pieces: None,
+        });
     }
 
     fn number(&mut self) {
@@ -235,7 +274,12 @@ impl<'a> Lexer<'a> {
         while self.peek(0).is_some_and(|b| is_ident_part(b) || b == b'.') {
             self.position += 1;
         }
-        self.tokens.push(Token { kind: Kind::Other, start, end: self.position, pieces: None });
+        self.tokens.push(Token {
+            kind: Kind::Other,
+            start,
+            end: self.position,
+            pieces: None,
+        });
     }
 
     fn ident(&mut self) {
@@ -246,7 +290,11 @@ impl<'a> Lexer<'a> {
         let word = &self.text[start..self.position];
         if self.language == Language::Python && matches!(self.peek(0), Some(b'\'' | b'"')) {
             let lower = word.to_ascii_lowercase();
-            if lower.len() <= 2 && lower.bytes().all(|b| matches!(b, b'r' | b'b' | b'u' | b'f')) {
+            if lower.len() <= 2
+                && lower
+                    .bytes()
+                    .all(|b| matches!(b, b'r' | b'b' | b'u' | b'f'))
+            {
                 let raw = lower.contains('r');
                 let bytes = lower.contains('b');
                 let formatted = lower.contains('f');
@@ -255,7 +303,12 @@ impl<'a> Lexer<'a> {
                 return;
             }
         }
-        self.tokens.push(Token { kind: Kind::Ident, start, end: self.position, pieces: None });
+        self.tokens.push(Token {
+            kind: Kind::Ident,
+            start,
+            end: self.position,
+            pieces: None,
+        });
     }
 
     fn string(&mut self, start: usize, quote: u8, raw: bool, bytes: bool) {
@@ -274,7 +327,12 @@ impl<'a> Lexer<'a> {
             if byte == quote {
                 text.push_str(&self.text[run..self.position]);
                 self.position += 1;
-                self.tokens.push(Token { kind: Kind::Str, start, end: self.position, pieces: Some(vec![Piece::Text(text)]) });
+                self.tokens.push(Token {
+                    kind: Kind::Str,
+                    start,
+                    end: self.position,
+                    pieces: Some(vec![Piece::Text(text)]),
+                });
                 return;
             }
             if byte == b'\n' {
@@ -290,7 +348,12 @@ impl<'a> Lexer<'a> {
             self.position += 1;
         }
         // Unterminated: stop at the line end; the token is not SQL.
-        self.tokens.push(Token { kind: Kind::Other, start, end: self.position, pieces: None });
+        self.tokens.push(Token {
+            kind: Kind::Other,
+            start,
+            end: self.position,
+            pieces: None,
+        });
     }
 
     /// Decode one escape after its backslash; leaves `position` after it.
@@ -311,10 +374,16 @@ impl<'a> Lexer<'a> {
             b'x' => self.hex(2, out),
             b'u' => {
                 if self.peek(0) == Some(b'{') {
-                    let close = self.bytes[self.position..].iter().position(|b| *b == b'}').map(|n| self.position + n);
+                    let close = self.bytes[self.position..]
+                        .iter()
+                        .position(|b| *b == b'}')
+                        .map(|n| self.position + n);
                     if let Some(close) = close {
                         let digits = &self.text[self.position + 1..close];
-                        if let Some(c) = u32::from_str_radix(digits, 16).ok().and_then(char::from_u32) {
+                        if let Some(c) = u32::from_str_radix(digits, 16)
+                            .ok()
+                            .and_then(char::from_u32)
+                        {
                             out.push(c);
                         }
                         self.position = close + 1;
@@ -339,7 +408,12 @@ impl<'a> Lexer<'a> {
 
     fn hex(&mut self, digits: usize, out: &mut String) {
         let end = self.position + digits;
-        if let Some(c) = self.text.get(self.position..end).and_then(|d| u32::from_str_radix(d, 16).ok()).and_then(char::from_u32) {
+        if let Some(c) = self
+            .text
+            .get(self.position..end)
+            .and_then(|d| u32::from_str_radix(d, 16).ok())
+            .and_then(char::from_u32)
+        {
             out.push(c);
             self.position = end;
         }
@@ -353,16 +427,28 @@ impl<'a> Lexer<'a> {
         let mut run = self.position;
         loop {
             let Some(byte) = self.peek(0) else {
-                self.tokens.push(Token { kind: Kind::Other, start, end: self.position, pieces: None });
+                self.tokens.push(Token {
+                    kind: Kind::Other,
+                    start,
+                    end: self.position,
+                    pieces: None,
+                });
                 return;
             };
-            if byte == quote && (!triple || (self.peek(1) == Some(quote) && self.peek(2) == Some(quote))) {
+            if byte == quote
+                && (!triple || (self.peek(1) == Some(quote) && self.peek(2) == Some(quote)))
+            {
                 text.push_str(&self.text[run..self.position]);
                 self.position += if triple { 3 } else { 1 };
                 break;
             }
             if byte == b'\n' && !triple {
-                self.tokens.push(Token { kind: Kind::Other, start, end: self.position, pieces: None });
+                self.tokens.push(Token {
+                    kind: Kind::Other,
+                    start,
+                    end: self.position,
+                    pieces: None,
+                });
                 return;
             }
             if byte == b'\\' && !raw {
@@ -422,7 +508,12 @@ impl<'a> Lexer<'a> {
         if !text.is_empty() || pieces.is_empty() {
             pieces.push(Piece::Text(text));
         }
-        let token = Token { kind: Kind::Str, start, end: self.position, pieces: if bytes { None } else { Some(pieces) } };
+        let token = Token {
+            kind: Kind::Str,
+            start,
+            end: self.position,
+            pieces: if bytes { None } else { Some(pieces) },
+        };
         self.tokens.push(token);
     }
 
@@ -434,7 +525,12 @@ impl<'a> Lexer<'a> {
         let mut run = self.position;
         loop {
             let Some(byte) = self.peek(0) else {
-                self.tokens.push(Token { kind: Kind::Other, start, end: self.position, pieces: None });
+                self.tokens.push(Token {
+                    kind: Kind::Other,
+                    start,
+                    end: self.position,
+                    pieces: None,
+                });
                 return;
             };
             match byte {
@@ -465,7 +561,12 @@ impl<'a> Lexer<'a> {
         if !text.is_empty() || pieces.is_empty() {
             pieces.push(Piece::Text(text));
         }
-        self.tokens.push(Token { kind: Kind::Str, start, end: self.position, pieces: Some(pieces) });
+        self.tokens.push(Token {
+            kind: Kind::Str,
+            start,
+            end: self.position,
+            pieces: Some(pieces),
+        });
     }
 
     /// Step over the expression of a `${ ... }`, whose opening is consumed.
@@ -508,36 +609,95 @@ impl<'a> Lexer<'a> {
 /// sqlite3 (`run`, `get`, `all`, `each`, `exec`, `prepare`), the Python DB-API
 /// (`execute`, `executemany`, `executescript`), asyncpg/psycopg helpers.
 const CALLS: &[&str] = &[
-    "query", "queryRow", "queryArray", "queryObject", "execute", "executemany", "executescript", "exec", "run", "get", "all",
-    "each", "iterate", "prepare", "raw", "fetch", "fetchrow", "fetchval", "fetchall", "fetchone", "fetchmany", "one", "many",
-    "none", "any", "oneOrNone", "manyOrNone", "unsafe",
+    "query",
+    "queryRow",
+    "queryArray",
+    "queryObject",
+    "execute",
+    "executemany",
+    "executescript",
+    "exec",
+    "run",
+    "get",
+    "all",
+    "each",
+    "iterate",
+    "prepare",
+    "raw",
+    "fetch",
+    "fetchrow",
+    "fetchval",
+    "fetchall",
+    "fetchone",
+    "fetchmany",
+    "one",
+    "many",
+    "none",
+    "any",
+    "oneOrNone",
+    "manyOrNone",
+    "unsafe",
 ];
 
 const LEADING_KEYWORDS: &[&str] = &[
-    "select", "insert", "update", "delete", "with", "create", "alter", "drop", "pragma", "replace", "begin", "commit",
-    "rollback", "savepoint", "release", "vacuum", "explain", "analyze", "attach", "detach", "reindex", "values", "truncate",
+    "select",
+    "insert",
+    "update",
+    "delete",
+    "with",
+    "create",
+    "alter",
+    "drop",
+    "pragma",
+    "replace",
+    "begin",
+    "commit",
+    "rollback",
+    "savepoint",
+    "release",
+    "vacuum",
+    "explain",
+    "analyze",
+    "attach",
+    "detach",
+    "reindex",
+    "values",
+    "truncate",
 ];
 
 fn leading_word(text: &str) -> Option<String> {
     let mut rest = text.trim_start();
     loop {
         if let Some(after) = rest.strip_prefix("--") {
-            rest = after.split_once('\n').map_or("", |(_, tail)| tail).trim_start();
+            rest = after
+                .split_once('\n')
+                .map_or("", |(_, tail)| tail)
+                .trim_start();
         } else if let Some(after) = rest.strip_prefix("/*") {
-            rest = after.split_once("*/").map_or("", |(_, tail)| tail).trim_start();
+            rest = after
+                .split_once("*/")
+                .map_or("", |(_, tail)| tail)
+                .trim_start();
         } else if let Some(after) = rest.strip_prefix('(') {
             rest = after.trim_start();
         } else {
             break;
         }
     }
-    let word: String = rest.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+    let word: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect();
     (!word.is_empty()).then(|| word.to_ascii_lowercase())
 }
 
 fn contains_sql_clause(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
-    [" from ", " into ", " where ", " join ", " set ", "\nfrom ", "\nwhere ", "\njoin "].iter().any(|needle| lower.contains(needle))
+    [
+        " from ", " into ", " where ", " join ", " set ", "\nfrom ", "\nwhere ", "\njoin ",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
         || lower.starts_with("from ")
 }
 
@@ -629,7 +789,9 @@ impl<'a> Scanner<'a> {
                 // Python adjacent literals concatenate implicitly.
                 if self.language == Language::Python {
                     while self.tokens.get(index).is_some_and(|t| t.kind == Kind::Str) {
-                        let Some(literal) = &self.tokens[index].pieces else { return None };
+                        let Some(literal) = &self.tokens[index].pieces else {
+                            return None;
+                        };
                         for piece in literal {
                             if matches!(piece, Piece::Dynamic) {
                                 dynamic = true;
@@ -644,12 +806,19 @@ impl<'a> Scanner<'a> {
                         dynamic = true;
                         index = self.skip_operand(index);
                         last = index.saturating_sub(1);
-                    } else if self.punct(index) == Some(b'.') && self.word(index + 1) == Some("format") {
+                    } else if self.punct(index) == Some(b'.')
+                        && self.word(index + 1) == Some("format")
+                    {
                         dynamic = true;
                         index = self.skip_operand(index);
                         last = index.saturating_sub(1);
                     }
-                } else if self.punct(index) == Some(b'.') && matches!(self.word(index + 1), Some("trim" | "concat" | "replace" | "join" | "toString")) {
+                } else if self.punct(index) == Some(b'.')
+                    && matches!(
+                        self.word(index + 1),
+                        Some("trim" | "concat" | "replace" | "join" | "toString")
+                    )
+                {
                     // `"...".concat(x)`, `.replace(...)`: the text is modified.
                     dynamic = true;
                     index = self.skip_operand(index);
@@ -675,7 +844,13 @@ impl<'a> Scanner<'a> {
                 _ => break,
             }
         }
-        seen.then_some(Operands { pieces, dynamic, next: index, first, last })
+        seen.then_some(Operands {
+            pieces,
+            dynamic,
+            next: index,
+            first,
+            last,
+        })
     }
 
     /// The SQL operand of `{ text: ..., values: [...] }` (node-postgres config).
@@ -690,7 +865,10 @@ impl<'a> Scanner<'a> {
                     let key_here = depth == 1
                         && (self.word(index) == Some("text")
                             || self.tokens.get(index).is_some_and(|t| {
-                                t.kind == Kind::Str && t.pieces.as_deref().is_some_and(|p| matches!(p, [Piece::Text(s)] if s == "text"))
+                                t.kind == Kind::Str
+                                    && t.pieces.as_deref().is_some_and(
+                                        |p| matches!(p, [Piece::Text(s)] if s == "text"),
+                                    )
                             }));
                     if key_here && self.punct(index + 1) == Some(b':') {
                         return Some(index + 2);
@@ -706,7 +884,13 @@ impl<'a> Scanner<'a> {
 /// Byte offsets at which each line of `source` starts.
 fn line_starts_of(source: &[u8]) -> Vec<usize> {
     std::iter::once(0)
-        .chain(source.iter().enumerate().filter(|(_, byte)| **byte == b'\n').map(|(at, _)| at + 1))
+        .chain(
+            source
+                .iter()
+                .enumerate()
+                .filter(|(_, byte)| **byte == b'\n')
+                .map(|(at, _)| at + 1),
+        )
         .collect()
 }
 
@@ -719,17 +903,27 @@ fn line_of(line_starts: &[usize], offset: usize) -> u32 {
 /// case, followed by `(` (or `<` for a TypeScript generic). The scan proper
 /// decides what is a call; this only has to be cheap and never miss one.
 fn names_a_call(source: &[u8]) -> bool {
-    let is_part = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$' || byte >= 0x80;
+    let is_part =
+        |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$' || byte >= 0x80;
     let mut at = 0usize;
     while at < source.len() {
         if !is_part(source[at]) {
             at += 1;
             continue;
         }
-        let end = at + source[at..].iter().take_while(|byte| is_part(**byte)).count();
+        let end = at
+            + source[at..]
+                .iter()
+                .take_while(|byte| is_part(**byte))
+                .count();
         let word = &source[at..end];
-        if CALLS.iter().any(|call| call.as_bytes().eq_ignore_ascii_case(word)) {
-            let next = source[end..].iter().find(|byte| !byte.is_ascii_whitespace());
+        if CALLS
+            .iter()
+            .any(|call| call.as_bytes().eq_ignore_ascii_case(word))
+        {
+            let next = source[end..]
+                .iter()
+                .find(|byte| !byte.is_ascii_whitespace());
             if matches!(next, Some(b'(' | b'<')) {
                 return true;
             }
@@ -741,8 +935,29 @@ fn names_a_call(source: &[u8]) -> bool {
 
 fn dialect_hint(text: &str) -> Option<SqlDialect> {
     let lower = text.to_ascii_lowercase();
-    let sqlite = ["better-sqlite3", "sqlite3", "node:sqlite", "bun:sqlite", "libsql", "aiosqlite", "expo-sqlite"].iter().any(|n| lower.contains(n));
-    let postgres = ["'pg'", "\"pg\"", "pg-promise", "postgres", "psycopg", "asyncpg", "@neondatabase", "@vercel/postgres"].iter().any(|n| lower.contains(n));
+    let sqlite = [
+        "better-sqlite3",
+        "sqlite3",
+        "node:sqlite",
+        "bun:sqlite",
+        "libsql",
+        "aiosqlite",
+        "expo-sqlite",
+    ]
+    .iter()
+    .any(|n| lower.contains(n));
+    let postgres = [
+        "'pg'",
+        "\"pg\"",
+        "pg-promise",
+        "postgres",
+        "psycopg",
+        "asyncpg",
+        "@neondatabase",
+        "@vercel/postgres",
+    ]
+    .iter()
+    .any(|n| lower.contains(n));
     match (sqlite, postgres) {
         (true, false) => Some(SqlDialect::Sqlite),
         (false, true) => Some(SqlDialect::Postgres),
@@ -800,7 +1015,11 @@ pub(super) fn scan(path: &str, source: &[u8]) -> Option<Scan> {
         return None;
     }
     let tokens = Lexer::new(text, language).run();
-    let scanner = Scanner { text, language, tokens };
+    let scanner = Scanner {
+        text,
+        language,
+        tokens,
+    };
     let mut composed = Vec::new();
     let mut fragments = Vec::new();
     let mut dropped = 0usize;
@@ -809,7 +1028,11 @@ pub(super) fn scan(path: &str, source: &[u8]) -> Option<Scan> {
     while index < scanner.tokens.len() {
         let is_call = scanner.punct(index) == Some(b'.')
             || (scanner.punct(index) == Some(b'?') && scanner.punct(index + 1) == Some(b'.'));
-        let name_at = if scanner.punct(index) == Some(b'?') { index + 2 } else { index + 1 };
+        let name_at = if scanner.punct(index) == Some(b'?') {
+            index + 2
+        } else {
+            index + 1
+        };
         let Some(name) = is_call.then(|| scanner.word(name_at)).flatten() else {
             index += 1;
             continue;
@@ -863,16 +1086,37 @@ pub(super) fn scan(path: &str, source: &[u8]) -> Option<Scan> {
             _ => None,
         });
         // A lone keyword is SQL only when it is a complete statement by itself.
-        let bare = |text: &str, word: &str| operands.pieces.len() == 1 && text.trim().trim_end_matches(';').trim().eq_ignore_ascii_case(word);
+        let bare = |text: &str, word: &str| {
+            operands.pieces.len() == 1
+                && text
+                    .trim()
+                    .trim_end_matches(';')
+                    .trim()
+                    .eq_ignore_ascii_case(word)
+        };
         let leads_sql = matches!(operands.pieces.first(), Some(Piece::Text(_)))
             && first_text.is_some_and(|text| {
                 leading_word(text).is_some_and(|word| {
                     LEADING_KEYWORDS.contains(&word.as_str())
-                        && (!bare(text, &word) || matches!(word.as_str(), "begin" | "commit" | "rollback" | "vacuum"))
+                        && (!bare(text, &word)
+                            || matches!(word.as_str(), "begin" | "commit" | "rollback" | "vacuum"))
                 })
             });
-        let joined_static = operands.pieces.iter().filter_map(|p| if let Piece::Text(t) = p { Some(t.as_str()) } else { None }).collect::<Vec<_>>().join(" ");
-        let looks_sql = leads_sql || (matches!(operands.pieces.first(), Some(Piece::Dynamic)) && contains_sql_clause(&joined_static));
+        let joined_static = operands
+            .pieces
+            .iter()
+            .filter_map(|p| {
+                if let Piece::Text(t) = p {
+                    Some(t.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        let looks_sql = leads_sql
+            || (matches!(operands.pieces.first(), Some(Piece::Dynamic))
+                && contains_sql_clause(&joined_static));
         if !looks_sql {
             index = operands.next.max(index + 1);
             continue;
@@ -885,7 +1129,11 @@ pub(super) fn scan(path: &str, source: &[u8]) -> Option<Scan> {
         let mut statement = String::new();
         for piece in &operands.pieces {
             match piece {
-                Piece::Text(text) => statement.push_str(&if language == Language::Python { normalize_placeholders(text) } else { text.clone() }),
+                Piece::Text(text) => statement.push_str(&if language == Language::Python {
+                    normalize_placeholders(text)
+                } else {
+                    text.clone()
+                }),
                 Piece::Dynamic => statement.push_str(DYNAMIC_PLACEHOLDER),
             }
         }
@@ -898,13 +1146,20 @@ pub(super) fn scan(path: &str, source: &[u8]) -> Option<Scan> {
         // A final line holding `--` may end in a line comment, which would swallow
         // the terminator and merge the next call into this one: end it on its own line.
         let last_line = trimmed.rsplit('\n').next().unwrap_or(trimmed);
-        composed.extend_from_slice(if last_line.contains("--") { b"\n;\n" } else { b";\n" });
+        composed.extend_from_slice(if last_line.contains("--") {
+            b"\n;\n"
+        } else {
+            b";\n"
+        });
         let start = scanner.tokens[operands.first].start;
         let end = scanner.tokens[operands.last].end;
         fragments.push(Fragment {
             start,
             end,
-            line: line_of(line_starts.get_or_insert_with(|| line_starts_of(source)), start),
+            line: line_of(
+                line_starts.get_or_insert_with(|| line_starts_of(source)),
+                start,
+            ),
             dynamic: operands.dynamic,
             text_start,
             text_end,
@@ -914,7 +1169,12 @@ pub(super) fn scan(path: &str, source: &[u8]) -> Option<Scan> {
     if fragments.is_empty() {
         return None;
     }
-    Some(Scan { composed, fragments, dialect: dialect_hint(text), dropped })
+    Some(Scan {
+        composed,
+        fragments,
+        dialect: dialect_hint(text),
+        dropped,
+    })
 }
 
 /// The bytes of an embedded host, re-derived from its application file's bytes.
@@ -928,7 +1188,10 @@ mod tests {
 
     fn composed(path: &str, source: &str) -> (String, Vec<bool>) {
         let scan = scan(path, source.as_bytes()).expect("a scan");
-        (String::from_utf8(scan.composed).unwrap(), scan.fragments.iter().map(|f| f.dynamic).collect())
+        (
+            String::from_utf8(scan.composed).unwrap(),
+            scan.fragments.iter().map(|f| f.dynamic).collect(),
+        )
     }
 
     #[test]
@@ -950,7 +1213,10 @@ await pool.query({ text: 'DELETE FROM orders WHERE id = $1', values: [1] });
         assert_eq!(dynamic, vec![false; 4]);
         let scan = scan("app/db.ts", source.as_bytes()).unwrap();
         assert_eq!(scan.dialect, Some(SqlDialect::Sqlite));
-        assert_eq!(&source[scan.fragments[0].start..scan.fragments[0].end], "'SELECT email, balance FROM accounts WHERE id = ?'");
+        assert_eq!(
+            &source[scan.fragments[0].start..scan.fragments[0].end],
+            "'SELECT email, balance FROM accounts WHERE id = ?'"
+        );
         assert_eq!(scan.fragments[0].line, 4);
     }
 
@@ -969,7 +1235,9 @@ await pool.query({ text: 'DELETE FROM orders WHERE id = $1', values: [1] });
     fn lines_are_numbered_from_one_at_each_line_start() {
         let source = b"a\n\nbc\nd";
         let starts = line_starts_of(source);
-        let lines: Vec<u32> = (0..=source.len()).map(|offset| line_of(&starts, offset)).collect();
+        let lines: Vec<u32> = (0..=source.len())
+            .map(|offset| line_of(&starts, offset))
+            .collect();
         assert_eq!(lines, vec![1, 1, 2, 3, 3, 3, 4, 4]);
         assert_eq!(line_of(&starts, 99), 4);
     }
@@ -980,8 +1248,13 @@ await pool.query({ text: 'DELETE FROM orders WHERE id = $1', values: [1] });
         let scan = scan("a.js", source.as_bytes()).unwrap();
         let text = String::from_utf8(scan.composed.clone()).unwrap();
         assert_eq!(text, "SELECT 1 FROM a -- the first\n;\nSELECT 2 FROM b;\n");
-        let [first, second] = &scan.fragments[..] else { panic!("two fragments") };
-        assert_eq!(&text[first.text_start..first.text_end], "SELECT 1 FROM a -- the first");
+        let [first, second] = &scan.fragments[..] else {
+            panic!("two fragments")
+        };
+        assert_eq!(
+            &text[first.text_start..first.text_end],
+            "SELECT 1 FROM a -- the first"
+        );
         assert_eq!(&text[second.text_start..second.text_end], "SELECT 2 FROM b");
     }
 
@@ -1025,7 +1298,10 @@ await pool.query({ text: 'DELETE FROM orders WHERE id = $1', values: [1] });
             "SELECT email FROM accounts WHERE id = ?;\n\n  UPDATE accounts\n  SET balance = 1;\nSELECT * FROM ?;\n\
              SELECT nudox_dynamic FROM accounts;\nSELECT a FROM accounts WHERE n = :n;\n"
         );
-        assert_eq!(scan.fragments.iter().map(|f| f.dynamic).collect::<Vec<_>>(), vec![false, false, true, true, false]);
+        assert_eq!(
+            scan.fragments.iter().map(|f| f.dynamic).collect::<Vec<_>>(),
+            vec![false, false, true, true, false]
+        );
         assert_eq!(scan.dialect, Some(SqlDialect::Sqlite));
     }
 
@@ -1033,11 +1309,28 @@ await pool.query({ text: 'DELETE FROM orders WHERE id = $1', values: [1] });
     fn composition_is_deterministic_and_maps_statements() {
         let source = b"db.prepare('SELECT 1 FROM t'); db.prepare('SELECT 2 FROM u');";
         let first = scan("x.ts", source).unwrap();
-        assert_eq!(composed_for("x.ts#embedded.sql", source), Some(first.composed.clone()));
-        let at = first.composed.windows(6).position(|w| w == b"SELECT").unwrap();
-        assert_eq!(first.fragment_at(at + 5).map(|f| f.start), Some(first.fragments[0].start));
-        let second = first.composed.windows(8).position(|w| w == b"SELECT 2").unwrap();
-        assert_eq!(first.fragment_at(second + 3).map(|f| f.start), Some(first.fragments[1].start));
+        assert_eq!(
+            composed_for("x.ts#embedded.sql", source),
+            Some(first.composed.clone())
+        );
+        let at = first
+            .composed
+            .windows(6)
+            .position(|w| w == b"SELECT")
+            .unwrap();
+        assert_eq!(
+            first.fragment_at(at + 5).map(|f| f.start),
+            Some(first.fragments[0].start)
+        );
+        let second = first
+            .composed
+            .windows(8)
+            .position(|w| w == b"SELECT 2")
+            .unwrap();
+        assert_eq!(
+            first.fragment_at(second + 3).map(|f| f.start),
+            Some(first.fragments[1].start)
+        );
         assert!(composed_for("x.sql#embedded.sql", source).is_none());
         assert!(real_path("x.ts#embedded.sql").is_some() && real_path("x.ts").is_none());
     }

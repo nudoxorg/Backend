@@ -140,9 +140,10 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 // it is frozen as written and that request fails with its own typed error.
                 // Every other language, and every Python project that needs no installed
                 // environment, keeps working.
-                let admitted = match self
-                    .canonical_configured_selection_path(LocalHostVariable::NudoxPython, path.clone())
-                {
+                let admitted = match self.canonical_configured_selection_path(
+                    LocalHostVariable::NudoxPython,
+                    path.clone(),
+                ) {
                     Ok(canonical) => canonical,
                     Err(
                         LocalCompilerHostError::ConfiguredPath { .. }
