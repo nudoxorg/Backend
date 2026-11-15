@@ -2135,6 +2135,24 @@ impl PackageCompilerFailure {
         }
     }
 
+    /// The first unresolved reference of a refused C# compilation, when Roslyn named one.
+    #[must_use]
+    pub fn csharp_unresolved_reference(
+        &self,
+    ) -> Option<&crate::interface::CSharpUnresolvedReferenceFacts> {
+        match &self.cause {
+            PackageCompilerFailureCause::Authority {
+                diagnostic: Some(facts),
+                ..
+            }
+            | PackageCompilerFailureCause::AuthorityAdmission {
+                diagnostic: Some(facts),
+                ..
+            } => facts.csharp_unresolved.as_ref(),
+            _ => None,
+        }
+    }
+
     /// Installed compiler-package evidence; the retained source is request context.
     #[must_use]
     pub fn typescript_compiler_admission(
@@ -2332,7 +2350,8 @@ impl PackageCompilerFailure {
         } = &self.cause
             && (facts.typescript_admission.is_some()
                 || facts.typescript_cause.is_some()
-                || facts.rust_source_scope_failure.is_some())
+                || facts.rust_source_scope_failure.is_some()
+                || facts.csharp_unresolved.is_some())
         {
             let expected = detail_for_package_cause(&self.cause);
             if (self.detail.as_str(), self.detail_truncated) != (expected.0.as_str(), expected.1) {
@@ -2750,6 +2769,25 @@ fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, boo
     if let PackageCompilerFailureCause::Authority {
         diagnostic:
             Some(CompilerAuthorityDiagnosticFacts {
+                csharp_unresolved: Some(reference),
+                ..
+            }),
+        ..
+    }
+    | PackageCompilerFailureCause::AuthorityAdmission {
+        diagnostic:
+            Some(CompilerAuthorityDiagnosticFacts {
+                csharp_unresolved: Some(reference),
+                ..
+            }),
+        ..
+    } = cause
+    {
+        return sanitize_package_compiler_detail(&reference.detail(), false);
+    }
+    if let PackageCompilerFailureCause::Authority {
+        diagnostic:
+            Some(CompilerAuthorityDiagnosticFacts {
                 rust_source_scope_failure: Some(failure),
                 ..
             }),
@@ -2938,6 +2976,9 @@ fn package_cause_is_valid(cause: &PackageCompilerFailureCause) -> bool {
                 && (facts.rust_source_scope_failure.is_none()
                     || (*language == CompilerLanguageFact::Rust
                         && *class == AuthorityClassFact::SourceScope))
+                && (facts.csharp_unresolved.is_none()
+                    || (*language == CompilerLanguageFact::CSharp
+                        && *class == AuthorityClassFact::Type))
         }
         PackageCompilerFailureCause::Authority {
             class,
@@ -2945,7 +2986,8 @@ fn package_cause_is_valid(cause: &PackageCompilerFailureCause) -> bool {
             ..
         } => authority_diagnostic_facts_are_valid(facts)
             && (facts.rust_source_scope_failure.is_none()
-                || *class == AuthorityClassFact::SourceScope),
+                || *class == AuthorityClassFact::SourceScope)
+            && (facts.csharp_unresolved.is_none() || *class == AuthorityClassFact::Type),
         PackageCompilerFailureCause::Authority {
             diagnostic: None, ..
         }
@@ -2961,6 +3003,7 @@ fn authority_diagnostic_facts_are_valid(facts: &CompilerAuthorityDiagnosticFacts
         facts.typescript_failure.is_some(),
         facts.go_failure.is_some(),
         facts.rust_source_scope_failure.is_some(),
+        facts.csharp_unresolved.is_some(),
     ]
     .into_iter()
     .filter(|present| *present)
@@ -7992,6 +8035,107 @@ mod tests {
                 .expect("legacy row reencodes canonically"),
             legacy_bytes
         );
+    }
+
+    #[test]
+    fn csharp_unresolved_reference_survives_the_codec_and_rejects_forgery() {
+        use crate::interface::{
+            AuthorityDiagnosticClass, AuthorityPhase, CSharpRestoreState,
+            CSharpUnresolvedReferenceFacts, CSharpUnresolvedReferenceInput, CompilerAttempt,
+            CompilerCause, CompilerDiagnostic, CompilerTerminal, SourceAuthority,
+        };
+        let reference = CSharpUnresolvedReferenceFacts::new(CSharpUnresolvedReferenceInput {
+            code: 234,
+            symbol: "Microsoft.AspNetCore.Mvc.Testing",
+            path: "tests/Api.Tests/AccountTests.cs",
+            line: 3,
+            project: Some("tests/Api.Tests/Api.Tests.csproj"),
+            restore: CSharpRestoreState::Missing,
+            count: 9,
+            files: 2,
+        })
+        .expect("admitted reference");
+        let terminal = |class, diagnostic| CompilerTerminal::Compile {
+            attempted: CompilerAttempt {
+                source: SourceAuthority {
+                    identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"cs bytes"),
+                    byte_len: 8,
+                },
+                recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"cs recipe"),
+            },
+            cause: CompilerCause::Authority {
+                phase: AuthorityPhase::TypeCheck,
+                class,
+                diagnostic: Some(diagnostic),
+            },
+        };
+        let native = b"/private/checkout/tests/Api.Tests/AccountTests.cs(3,17): error CS0234";
+        let diagnostic = CompilerDiagnostic::from_native(native, native.len(), false)
+            .expect("bounded native text")
+            .with_csharp_unresolved(reference.clone());
+        let failure = PackageCompilerFailure::from_package_terminal(
+            "tests/Api.Tests/AccountTests.cs",
+            &terminal(AuthorityDiagnosticClass::Type, diagnostic),
+        )
+        .expect("C# failure projection")
+        .expect("authority refusal");
+        assert_eq!(failure.kind_tag(), "csharp_unresolved_reference");
+        assert_eq!(failure.csharp_unresolved_reference(), Some(&reference));
+        for expected in [
+            "CS0234",
+            "Microsoft.AspNetCore.Mvc.Testing",
+            "tests/Api.Tests/AccountTests.cs:3",
+            "project tests/Api.Tests/Api.Tests.csproj, which has no usable restore result",
+            "8 more unresolved references in 2 files",
+        ] {
+            assert!(failure.detail().contains(expected), "{}", failure.detail());
+        }
+
+        let encoded = failure.encode_bounded_json().expect("canonical facts");
+        let wire = String::from_utf8(encoded.clone()).expect("JSON UTF-8");
+        assert!(!wire.contains("/private"), "{wire}");
+        let json: serde_json::Value = serde_json::from_slice(&encoded).expect("JSON");
+        assert_eq!(json["cause"]["fault"]["diagnostic"]["csharp_unresolved"]["code"], 234);
+        assert_eq!(json["cause"]["fault"]["diagnostic"]["csharp_unresolved"]["restore"], "missing");
+        let reopened = PackageCompilerFailure::decode_bounded_json(&encoded)
+            .expect("typed reference survives cold decoding");
+        assert_eq!(reopened, failure);
+        assert!(reopened.retained_diagnostic_for_local_debug().is_none());
+
+        // The public sentence is derived from the facts: a rewritten sentence, a symbol
+        // outside the closed alphabet and a non-type class are each refused.
+        let mut forged = json.clone();
+        forged["detail"] = serde_json::json!("C# compilation refused: something else");
+        assert!(
+            PackageCompilerFailure::decode_bounded_json(&serde_json::to_vec(&forged).unwrap())
+                .is_err()
+        );
+        let mut forged = json.clone();
+        forged["cause"]["fault"]["diagnostic"]["csharp_unresolved"]["symbol"] =
+            serde_json::json!("Not A Symbol");
+        assert!(
+            PackageCompilerFailure::decode_bounded_json(&serde_json::to_vec(&forged).unwrap())
+                .is_err()
+        );
+        let mut forged = json;
+        forged["cause"]["fault"]["class"] = serde_json::json!("authority");
+        assert!(
+            PackageCompilerFailure::decode_bounded_json(&serde_json::to_vec(&forged).unwrap())
+                .is_err()
+        );
+
+        // A refusal that named nothing keeps its previous canonical shape.
+        let plain = CompilerDiagnostic::from_native(b"bounded", 7, false).expect("diagnostic");
+        let plain = PackageCompilerFailure::from_package_terminal(
+            "tests/Api.Tests/AccountTests.cs",
+            &terminal(AuthorityDiagnosticClass::Type, plain),
+        )
+        .expect("projection")
+        .expect("authority refusal");
+        assert_eq!(plain.kind_tag(), "authority_type");
+        let plain_bytes = plain.encode_bounded_json().expect("canonical facts");
+        let plain_json: serde_json::Value = serde_json::from_slice(&plain_bytes).expect("JSON");
+        assert!(plain_json["cause"]["fault"]["diagnostic"].get("csharp_unresolved").is_none());
     }
 
     #[test]

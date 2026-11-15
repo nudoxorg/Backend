@@ -216,6 +216,77 @@ mod tests {
     }
 
     #[test]
+    fn csharp_unresolved_reference_reaches_refusal_render_with_restore_advice() {
+        use backend_library::interface::{
+            AuthorityDiagnosticClass, AuthorityPhase, CSharpRestoreState,
+            CSharpUnresolvedReferenceFacts, CSharpUnresolvedReferenceInput, CompilerAttempt,
+            CompilerCause, CompilerDiagnostic, CompilerTerminal, SourceAuthority,
+        };
+        use backend_version::{CompileRecipeDomain, ContentId, SourceFactDomain};
+
+        let render = |restore| {
+            let reference = CSharpUnresolvedReferenceFacts::new(CSharpUnresolvedReferenceInput {
+                code: 246,
+                symbol: "DbContext",
+                path: "src/Api/Data/AppDbContext.cs",
+                line: 15,
+                project: Some("src/Api/Api.csproj"),
+                restore,
+                count: 23,
+                files: 5,
+            })
+            .expect("admitted reference");
+            let terminal = CompilerTerminal::Compile {
+                attempted: CompilerAttempt {
+                    source: SourceAuthority {
+                        identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"cs source"),
+                        byte_len: 9,
+                    },
+                    recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"cs recipe"),
+                },
+                cause: CompilerCause::Authority {
+                    phase: AuthorityPhase::TypeCheck,
+                    class: AuthorityDiagnosticClass::Type,
+                    diagnostic: CompilerDiagnostic::from_native(
+                        b"/private/checkout/src/Api/Data/AppDbContext.cs(15,32): error CS0246",
+                        68,
+                        false,
+                    )
+                    .map(|d| d.with_csharp_unresolved(reference)),
+                },
+            };
+            let failure = PackageCompilerFailure::from_package_terminal(
+                "tests/Api.Tests/AccountTests.cs",
+                &terminal,
+            )
+            .expect("source-bound C# refusal")
+            .expect("authority refusal");
+            let bytes = failure.encode_bounded_json().expect("canonical refusal JSON");
+            let reopened = PackageCompilerFailure::decode_bounded_json(&bytes)
+                .expect("cold compiler-outcome reader");
+            Fault::compiler_refusal(&reopened, Operand::Whole).cause().sentence().to_owned()
+        };
+
+        let restored = render(CSharpRestoreState::Present);
+        for expected in [
+            "first unresolved reference CS0246 DbContext",
+            "src/Api/Data/AppDbContext.cs:15",
+            "project src/Api/Api.csproj, which was restored",
+            "does not supply it",
+        ] {
+            assert!(restored.contains(expected), "{restored}");
+        }
+        assert!(!restored.contains("/private"), "{restored}");
+        assert!(
+            !restored.contains("confirm dotnet and the Roslyn helper"),
+            "a named reference replaces the general instruction: {restored}"
+        );
+        let unrestored = render(CSharpRestoreState::Missing);
+        assert!(unrestored.contains("which has no usable restore result"), "{unrestored}");
+        assert!(unrestored.contains("run dotnet restore for that project"), "{unrestored}");
+    }
+
+    #[test]
     fn rust_scope_details_reach_refusal_render_without_paths() {
         use backend_library::interface::{
             AuthorityDiagnosticClass, AuthorityPhase, CompilerAttempt, CompilerCause,

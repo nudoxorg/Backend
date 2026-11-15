@@ -1054,6 +1054,9 @@ pub struct CompilerDiagnosticFacts {
     pub go_failure: Option<super::GoAuthorityFailureKind>,
     /// Closed Rust source-scope facts; paths and native diagnostic text remain local.
     pub rust_source_scope_failure: Option<RustSourceScopeFailureKind>,
+    /// The first unresolved reference of a refused C# compilation; compiler text and
+    /// absolute paths remain local.
+    pub csharp_unresolved: Option<super::CSharpUnresolvedReferenceFacts>,
     /// Zero-filled storage whose prefix through `byte_len` is the exact diagnostic prefix.
     pub bytes: [u8; MAX_NATIVE_DIAGNOSTIC_BYTES],
 }
@@ -1290,6 +1293,7 @@ impl CompilerDiagnostic {
             typescript_cause: None,
             go_failure: None,
             rust_source_scope_failure: Some(failure),
+            csharp_unresolved: None,
             bytes,
         }))
     }
@@ -1323,6 +1327,7 @@ impl CompilerDiagnostic {
             typescript_cause: None,
             go_failure: None,
             rust_source_scope_failure: None,
+            csharp_unresolved: None,
             bytes: output,
         })))
     }
@@ -1341,6 +1346,7 @@ impl CompilerDiagnostic {
         self.0.typescript_cause = None;
         self.0.go_failure = None;
         self.0.rust_source_scope_failure = None;
+        self.0.csharp_unresolved = None;
         self
     }
 
@@ -1355,6 +1361,7 @@ impl CompilerDiagnostic {
         self.0.typescript_cause = None;
         self.0.go_failure = None;
         self.0.rust_source_scope_failure = None;
+        self.0.csharp_unresolved = None;
         self
     }
 
@@ -1372,6 +1379,7 @@ impl CompilerDiagnostic {
         self.0.python_configuration = None;
         self.0.go_failure = None;
         self.0.rust_source_scope_failure = None;
+        self.0.csharp_unresolved = None;
         self
     }
 
@@ -1404,6 +1412,7 @@ impl CompilerDiagnostic {
         self.0.python_configuration = None;
         self.0.go_failure = None;
         self.0.rust_source_scope_failure = None;
+        self.0.csharp_unresolved = None;
         self
     }
 
@@ -1415,6 +1424,7 @@ impl CompilerDiagnostic {
         if self.0.typescript_failure.is_some() && self.0.typescript_admission.is_none() {
             self.0.typescript_cause = Some(cause);
             self.0.rust_source_scope_failure = None;
+            self.0.csharp_unresolved = None;
         }
         self
     }
@@ -1424,6 +1434,7 @@ impl CompilerDiagnostic {
     pub fn with_go_failure(mut self, failure: super::GoAuthorityFailureKind) -> Self {
         self.0.go_failure = Some(failure);
         self.0.rust_source_scope_failure = None;
+        self.0.csharp_unresolved = None;
         self.0.python_failure = None;
         self.0.python_configuration = None;
         self.0.typescript_failure = None;
@@ -1437,6 +1448,22 @@ impl CompilerDiagnostic {
     #[must_use]
     pub fn with_rust_source_scope_failure(mut self, failure: RustSourceScopeFailureKind) -> Self {
         self.0.rust_source_scope_failure = Some(failure);
+        self.0.csharp_unresolved = None;
+        self.0.python_failure = None;
+        self.0.python_configuration = None;
+        self.0.typescript_failure = None;
+        self.0.typescript_stop_site = None;
+        self.0.typescript_admission = None;
+        self.0.typescript_cause = None;
+        self.0.go_failure = None;
+        self
+    }
+
+    /// Adds the first unresolved C# reference without modifying retained native bytes.
+    #[must_use]
+    pub fn with_csharp_unresolved(mut self, facts: super::CSharpUnresolvedReferenceFacts) -> Self {
+        self.0.csharp_unresolved = Some(facts);
+        self.0.rust_source_scope_failure = None;
         self.0.python_failure = None;
         self.0.python_configuration = None;
         self.0.typescript_failure = None;
