@@ -10082,6 +10082,33 @@ mod profile_tests {
     }
 
     #[test]
+    fn vue_script_declarations_are_filed_in_source_line_order() -> Result<(), String> {
+        let scratch = scratch("vue-line-order")?;
+        fs::create_dir_all(scratch.0.join("src")).map_err(|e| e.to_string())?;
+        // A binding inside a function body comes back from the script parser
+        // after the file's other bindings, not between them.
+        fs::write(
+            scratch.0.join("src/App.vue"),
+            "<script setup>\nimport { ref, onMounted } from 'vue'\n\nconst status = ref('loading')\n\nasync function loadHealth() {\n  const response = await fetch('/api/health')\n  status.value = (await response.json()).status\n}\n\nonMounted(loadHealth)\n</script>\n\n<template>\n  <main>{{ status }}</main>\n</template>\n",
+        )
+        .map_err(|e| e.to_string())?;
+        let indexed = scan(&scratch)?;
+        let record = indexed
+            .files
+            .iter()
+            .find_map(|(_, record)| record.file_fields().filter(|fields| fields.path == "src/App.vue"))
+            .ok_or("the component was not filed")?;
+        let lines = record
+            .declarations
+            .iter()
+            .map(|declaration| (declaration.name().to_owned(), declaration.line()))
+            .collect::<Vec<_>>();
+        assert!(lines.windows(2).all(|pair| pair[0].1 <= pair[1].1), "{lines:?}");
+        assert!(lines.iter().any(|(name, _)| name == "response"), "{lines:?}");
+        Ok(())
+    }
+
+    #[test]
     fn vue_script_inventory_preserves_exclusions_without_compiler_membership()
     -> Result<(), String> {
         let scratch = scratch("unsupported-vue")?;
