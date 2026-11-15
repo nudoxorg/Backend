@@ -17,6 +17,12 @@ use std::sync::Arc;
 
 const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 
+/// Bound on one store-retained transition payload (target manifest, delta or commit).
+/// Each lives in the store as a typed object, and only its length and digest enter the
+/// journal, so it is not held to the journal's record bound: the first index of a large
+/// repository produces a delta well over 64 MiB.
+pub(super) const MAX_TRANSITION_PAYLOAD_BYTES: usize = 512 * 1024 * 1024;
+
 /// Bounded summary bytes of a closure for the journal's prepared record.
 ///
 /// The flat export is a compatibility encoding that only the journal's
@@ -973,12 +979,12 @@ impl PersistedTransition {
     /// # Errors
     ///
     /// Returns a bounded workspace decode error when the stored envelope is
-    /// malformed or exceeds the engine record limit.
+    /// malformed or exceeds the transition payload limit.
     pub fn delta_header(
         &self,
     ) -> Result<backend_version::UntrustedWorkspaceDeltaHeader, backend_version::WorkspaceDecodeError>
     {
-        WorkspaceDelta::decode_persisted_header(&self.delta, MAX_RECORD_BYTES)
+        WorkspaceDelta::decode_persisted_header(&self.delta, MAX_TRANSITION_PAYLOAD_BYTES)
     }
 
     /// Returns the canonical commit bytes for typed admission.
