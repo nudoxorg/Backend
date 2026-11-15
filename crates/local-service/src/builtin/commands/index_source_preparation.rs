@@ -2084,6 +2084,15 @@ mod csharp_project_discovery_tests {
         claim.sources[0].byte_length += 1; assert!(!witness.matches_invocation_claim(&claim, [0x52; 32]));
         claim.sources[0].byte_length -= 1;
         assert!(witness.matches_invocation_claim(&claim, [0x52; 32]));
+        // The members every invocation lists must be exactly the selected sources.
+        let member = claim.members[0].clone();
+        claim.members[0].sha256 = "0".repeat(64); assert!(!witness.matches_invocation_claim(&claim, [0x52; 32]));
+        claim.members[0] = member.clone();
+        claim.members.push(backend_engine::application::CSharpEvidenceMember { path: "Hidden.cs".into(), byte_length: 1, sha256: "1".repeat(64) });
+        assert!(!witness.matches_invocation_claim(&claim, [0x52; 32]));
+        claim.members.clear(); assert!(!witness.matches_invocation_claim(&claim, [0x52; 32]));
+        claim.members.push(member);
+        assert!(witness.matches_invocation_claim(&claim, [0x52; 32]));
         // A selected source Roslyn reported errors in is absent from the claim and
         // accounted for by a gap with the exact selected bytes; nothing else may be.
         let gap = |path, byte_len, fact| UnpublishedCSharpSource { path, byte_len, fact };

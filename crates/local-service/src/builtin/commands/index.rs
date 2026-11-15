@@ -3851,7 +3851,17 @@ impl CapturedCSharpUnitAdmission {
                 && actual.input_content == source.content
                 && actual.source_sha256 == <[u8; 32]>::from(sha2::Sha256::digest(&source.source))) { return false; }
         }
-        missing.is_empty() && claimed.next().is_none() && !self.cancellation.load(Ordering::Acquire)
+        if !(missing.is_empty() && claimed.next().is_none()) { return false; }
+        // Every invocation of the unit lists all of its captured members, the files that
+        // compiled and the files that did not. That list must be exactly the selected
+        // sources, so no member is hidden from the claim and none is invented.
+        let mut expected = self.sources.iter().map(|source| backend_engine::application::CSharpEvidenceMember {
+            path: source.relative_path.clone(),
+            byte_length: source.source.len() as u64,
+            sha256: format!("{:x}", sha2::Sha256::digest(&source.source)),
+        }).collect::<Vec<_>>();
+        expected.sort();
+        claim.members == expected && !self.cancellation.load(Ordering::Acquire)
     }
 
     /// Worker-only: checks the exact still-selected snapshot and original

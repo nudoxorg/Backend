@@ -24,6 +24,15 @@ pub struct CSharpEvidenceSource<'a> {
     pub image_length: u32,
     pub sidecar: &'a [u8],
 }
+/// One captured source the helper compiled together with the others, as every
+/// invocation of the unit lists it: the files that compiled and the files that did not.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct CSharpEvidenceMember {
+    pub path: String,
+    pub byte_length: u64,
+    /// Lower-case hexadecimal SHA-256 of the captured bytes.
+    pub sha256: String,
+}
 /// Bounded decoded claims. They do not establish capture or selection authority.
 pub struct CSharpEvidenceClaim<'a> {
     pub target: [u8; 32],
@@ -32,6 +41,10 @@ pub struct CSharpEvidenceClaim<'a> {
     pub project_path: &'a str,
     pub config: Vec<CSharpEvidenceConfig<'a>>,
     pub sources: Vec<CSharpEvidenceSource<'a>>,
+    /// Every captured member of the unit, in path order. A partial project claims only
+    /// the sources that compiled but every invocation lists all members; the caller
+    /// must join the members to the selected sources and the unit's coverage gaps.
+    pub members: Vec<CSharpEvidenceMember>,
 }
 
 #[derive(serde::Deserialize)]
@@ -309,16 +322,13 @@ pub fn decode_csharp_evidence(bytes: &[u8]) -> Option<CSharpEvidenceClaim<'_>> {
         .collect::<Vec<_>>();
     let config_json = serde_json::to_vec(&config_input).ok()?;
     let config_hash = format!("{:x}", Sha256::digest(&config_json));
-    let source_lookup = sources
-        .iter()
-        .map(|source| (source.path, source))
-        .collect::<std::collections::BTreeMap<_, _>>();
     let is_hex = |value: &str, length: usize| {
         value.len() == length
             && value
                 .bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     };
+    let mut members: Option<Vec<CSharpEvidenceMember>> = None;
     for source in &sources {
         let value: Sidecar = serde_json::from_slice(source.sidecar).ok()?;
         if !matches!((value.format, value.occurrences.is_some()), (1, false) | (2, true))
@@ -363,28 +373,45 @@ pub fn decode_csharp_evidence(bytes: &[u8]) -> Option<CSharpEvidenceClaim<'_>> {
                 target_bytes = target_bytes.checked_add(occurrence.target.len())?;
                 let claim = backend_frontend_csharp::legacy::parse_foreign_source_claim(&occurrence.target)?;
                 let target_path = claim.path()?;
-                let target = source_lookup.get(target_path.as_str())?;
+                // The target is any captured member, including a file that did not compile.
+                let target = value.sources.iter().find(|member| member.path == target_path.as_str())?;
                 if target_bytes > 1024 * 1024 || occurrence.start >= occurrence.end
-                    || occurrence.end > source.byte_length || claim.source_sha256 != target.source_sha256
-                    || claim.declaration_end > target.byte_length || target.path == source.path {
+                    || occurrence.end > source.byte_length || hex_sha(&claim.source_sha256) != target.sha256
+                    || u64::from(claim.declaration_end) > target.length || target.path == source.path {
                     return None;
                 }
                 // Owner is an untrusted NCAI coordinate until the selected caller image admits it.
                 let _native_owner = occurrence.owner;
             }
         }
-        if value.sources.len() != sources.len() {
-            return None;
-        }
-        let mut seen = std::collections::BTreeSet::new();
+        // The invocation lists every captured member. Each claimed source must be listed
+        // with its exact length and digest; the rest are the unit's files that did not
+        // compile, which the caller joins to its gaps. Every invocation lists the same set.
+        let mut listed = std::collections::BTreeSet::new();
+        let mut observed_members = Vec::with_capacity(value.sources.len());
         for observed in &value.sources {
-            let expected = source_lookup.get(observed.path.as_str())?;
-            if !seen.insert(observed.path.as_str())
-                || observed.length != u64::from(expected.byte_length)
-                || observed.sha256 != hex_sha(&expected.source_sha256)
+            if !listed.insert(observed.path.as_str()) {
+                return None;
+            }
+            observed_members.push(CSharpEvidenceMember {
+                path: observed.path.clone(),
+                byte_length: observed.length,
+                sha256: observed.sha256.clone(),
+            });
+        }
+        observed_members.sort();
+        for claimed in &sources {
+            let member = value.sources.iter().find(|member| member.path == claimed.path)?;
+            if member.length != u64::from(claimed.byte_length)
+                || member.sha256 != hex_sha(&claimed.source_sha256)
             {
                 return None;
             }
+        }
+        match &members {
+            None => members = Some(observed_members),
+            Some(first) if *first == observed_members => {}
+            Some(_) => return None,
         }
         if value.references.is_empty() || value.references.len() > 8192 {
             return None;
@@ -412,6 +439,7 @@ pub fn decode_csharp_evidence(bytes: &[u8]) -> Option<CSharpEvidenceClaim<'_>> {
         project_path,
         config,
         sources,
+        members: members?,
     })
 }
 fn hex_sha(bytes: &[u8; 32]) -> String {
@@ -450,6 +478,11 @@ mod tests {
         out.extend_from_slice(value);
     }
     fn fixture() -> Vec<u8> {
+        fixture_with_members(&[])
+    }
+    /// The aggregate for one compiled file whose invocation also lists `extra` captured
+    /// members (path, length, digest): the files of the unit that did not compile.
+    fn fixture_with_members(extra: &[(&str, u64, &str)]) -> Vec<u8> {
         let source = b"class App {}";
         let source_fact = backend_semantic::ir::SourceIdentity::from_bytes(source).unwrap();
         let input_content = backend_compile::VerifiedSourceText::capture(source)
@@ -474,7 +507,9 @@ mod tests {
         let config_hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&config).unwrap()));
         let sidecar = serde_json::to_vec(&serde_json::json!({
             "format":1,"nonce":"0".repeat(32),"sourceBinding":"App.cs", "imageSha256":"a".repeat(64), "imageLength":123,
-            "configSha256":config_hash,"sources":[{"path":"App.cs","length":source.len(),"sha256":hex_sha(&source_sha)}],
+            "configSha256":config_hash,"sources":std::iter::once(serde_json::json!({"path":"App.cs","length":source.len(),"sha256":hex_sha(&source_sha)}))
+                .chain(extra.iter().map(|(path, length, sha)| serde_json::json!({"path":path,"length":length,"sha256":sha})))
+                .collect::<Vec<_>>(),
             "references":[{"Name":"System.Runtime","Length":1,"Sha256":"b".repeat(64)}],
             "assembly":"App","framework":"net10.0","language":"CSharp14","outputKind":"DynamicallyLinkedLibrary",
             "defines":[],"usings":[],"generators":"unknown","inputClosure":"unknown","errors":0
@@ -512,6 +547,28 @@ mod tests {
         frame(&mut output, &5u32.to_be_bytes());
         frame(&mut output, &sidecar);
         output
+    }
+
+    #[test]
+    fn a_partial_project_claims_its_compiled_files_and_lists_every_member() {
+        let broken = "c".repeat(64);
+        let encoded = fixture_with_members(&[("Broken.cs", 41, broken.as_str())]);
+        let claim = decode_csharp_evidence(&encoded).expect("partial claim decodes");
+        assert_eq!(claim.sources.len(), 1, "only the file that compiled is claimed");
+        assert_eq!(claim.sources[0].path, "App.cs");
+        let paths = claim.members.iter().map(|member| member.path.as_str()).collect::<Vec<_>>();
+        assert_eq!(paths, ["App.cs", "Broken.cs"], "every captured member is listed, in path order");
+        assert_eq!(claim.members[1].byte_length, 41);
+        assert_eq!(claim.members[1].sha256, broken);
+        // A complete project lists exactly its claimed file.
+        let complete_bytes = fixture();
+        let complete = decode_csharp_evidence(&complete_bytes).expect("complete claim");
+        assert_eq!(complete.members.len(), 1);
+        // A member listed twice, or the claimed file listed with other bytes, is never admitted.
+        let duplicate = fixture_with_members(&[("Broken.cs", 41, broken.as_str()), ("Broken.cs", 41, broken.as_str())]);
+        assert!(decode_csharp_evidence(&duplicate).is_none());
+        let altered = fixture_with_members(&[("App.cs", 12, broken.as_str())]);
+        assert!(decode_csharp_evidence(&altered).is_none());
     }
 
     #[test]
