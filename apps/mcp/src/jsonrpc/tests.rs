@@ -4151,30 +4151,38 @@ fn index_progress_distinguishes_prior_owner_tickets_and_terminal_refusals() {
 
 #[test]
 fn dependency_refusal_marks_tool_failure_and_keeps_the_exact_requested_package() {
-    let mut server = ready(Fake {
-        surface_reply: Some(SurfaceReply::Dependencies(
-            backend_library::DependencyFacts::Unavailable(
-                backend_library::ProductText::from_static("package is not recorded"),
-            ),
-        )),
-        ..Fake::default()
-    });
-    let result = call(
-        &mut server,
-        "backend.dependencies",
-        &json!({"package": "pkg:npm/react@19.1.0"}),
-    );
-    assert_eq!(result["isError"], true);
-    assert_eq!(result["structuredContent"]["answer"], "product");
-    assert_eq!(
-        result["structuredContent"]["fault"]["operand"],
-        "pkg:npm/react@19.1.0"
-    );
-    assert_eq!(
-        result["structuredContent"]["fault"]["call"]["arguments"]["package"],
-        "pkg:npm/react@19.1.0"
-    );
-    assert!(text_of(&result).contains("package is not recorded"));
+    // A pinned registry release is acquired before its dependencies can be read, so the
+    // refusal offers `add` (backend.index) with the release as its path; a local label is
+    // looked up with `package`. Either way the requested package is the call's operand.
+    for (package, expected_call) in [
+        (
+            "pkg:npm/react@19.1.0",
+            json!({"name": "backend.index", "arguments": {"path": "pkg:npm/react@19.1.0"}}),
+        ),
+        (
+            "serde",
+            json!({"name": "backend.package", "arguments": {"package": "serde"}}),
+        ),
+    ] {
+        let mut server = ready(Fake {
+            surface_reply: Some(SurfaceReply::Dependencies(
+                backend_library::DependencyFacts::Unavailable(
+                    backend_library::ProductText::from_static("package is not recorded"),
+                ),
+            )),
+            ..Fake::default()
+        });
+        let result = call(
+            &mut server,
+            "backend.dependencies",
+            &json!({"package": package}),
+        );
+        assert_eq!(result["isError"], true);
+        assert_eq!(result["structuredContent"]["answer"], "product");
+        assert_eq!(result["structuredContent"]["fault"]["operand"], package);
+        assert_eq!(result["structuredContent"]["fault"]["call"], expected_call);
+        assert!(text_of(&result).contains("package is not recorded"));
+    }
 }
 
 #[test]
@@ -4657,6 +4665,39 @@ fn index_tool_advertises_and_validates_execution_intent() {
             .unwrap_or_default()
             .contains("must be a string")
     );
+}
+
+#[test]
+fn index_tool_acquires_a_version_pinned_release_and_refuses_every_other_non_directory() {
+    // The dependency refusal for an unacquired release offers exactly this call.
+    let mut server = ready(Fake::default());
+    let accepted = call(
+        &mut server,
+        "backend.index",
+        &json!({"path": "pkg:npm/react@19.1.0"}),
+    );
+    assert_eq!(accepted["isError"], false, "{accepted}");
+    assert!(matches!(
+        server.product.surface_commands.as_slice(),
+        [SurfaceCommand::IndexStart { package, .. }] if package.as_str() == "pkg:npm/react@19.1.0"
+    ));
+    for refused in ["pkg:npm/react", "react", "relative/dir", "/no/such/directory"] {
+        let before = server.product.surface_commands.len();
+        let response = request(
+            &mut server,
+            "tools/call",
+            &json!({"name": "backend.index", "arguments": {"path": refused}}),
+        );
+        assert!(
+            response.get("error").is_some() || response["result"]["isError"] == true,
+            "{refused}: {response}"
+        );
+        assert_eq!(
+            server.product.surface_commands.len(),
+            before,
+            "{refused}: no index operation was submitted"
+        );
+    }
 }
 
 #[test]
@@ -8442,7 +8483,8 @@ fn generic_surface_dependency_refusal_keeps_exact_package_action_and_typed_fault
     assert_eq!(fault["operand"], package.as_str());
     assert_eq!(
         fault["call"],
-        json!({"name":"backend.package", "arguments":{"package":package.as_str()}})
+        json!({"name":"backend.index", "arguments":{"path":package.as_str()}}),
+        "a pinned release is acquired with add before its dependencies can be read"
     );
     assert!(text_of(&result).contains(package.as_str()));
     assert_eq!(server.product.surface_commands, [command]);

@@ -1218,11 +1218,17 @@ impl<P: Product> Server<P> {
             // This precedes opener admission, reconnect/startup and the durable
             // caller journal. A bad local operand must not occupy this session
             // while an owner processes a mutation it cannot admit.
+            // A version-pinned registry purl names a release to acquire, not a directory: the
+            // refusals that offer `add` for an unacquired release send exactly this call.
+            let acquires_release = matches!(
+                backend_library::PackageReference::parse(path),
+                Ok(backend_library::PackageReference::Purl(_))
+            );
             let target = std::path::Path::new(path);
-            if !target.is_absolute() || !target.is_dir() {
+            if !acquires_release && (!target.is_absolute() || !target.is_dir()) {
                 return Err(RpcError::from_fault(&Fault::usage(
                     "path",
-                    "backend.index requires an existing absolute directory; correct arguments.path before indexing; no index operation was submitted",
+                    "backend.index requires an existing absolute directory or a version-pinned package URL; correct arguments.path before indexing; no index operation was submitted",
                 )));
             }
         }
