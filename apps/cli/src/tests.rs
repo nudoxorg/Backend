@@ -452,6 +452,18 @@ fn unix_endpoint_path_is_bounded() {
 // surface: the argument grammar, the lowering, and the renderings
 // ---------------------------------------------------------------------------
 
+/// A selected id is written as 64 lowercase hex digits and read back from either spelling.
+fn assert_selected_id_wire(wire: &serde_json::Value, bytes: &[u8; 32]) {
+    let expected: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    assert_eq!(wire, &serde_json::json!(expected));
+    let from_hex: backend_library::SelectedSymbolId =
+        serde_json::from_value(wire.clone()).expect("the hex spelling reads back");
+    let from_array: backend_library::SelectedSymbolId =
+        serde_json::from_value(serde_json::json!(bytes)).expect("the array spelling reads back");
+    assert_eq!(from_hex, from_array);
+    assert_eq!(from_hex.bytes(), bytes);
+}
+
 fn words(line: &str) -> Vec<String> {
     line.split_whitespace().map(ToOwned::to_owned).collect()
 }
@@ -936,12 +948,17 @@ fn cli_resolve_selector_round_trips_into_the_shared_shape_request() {
         serde_json::from_str(&render::json(&answer)).expect("public CLI JSON");
     let selector = &value["records"][0]["identity"]["semantic_data"];
     assert_eq!(selector["kind"], "selected-symbol-id");
-    assert_eq!(selector["value"], serde_json::json!(key.as_bytes()));
+    assert_selected_id_wire(&selector["value"], key.as_bytes());
     let mut operands: serde_json::Value = serde_json::from_str(include_str!(
         "../../../crates/library/fixtures/semantic-shape-read.json"
     ))
     .expect("source operand fixture; no compiler authority claim");
-    operands["symbols"] = serde_json::json!([selector["value"]]);
+    // The shape operand names each symbol by its full key bytes, so the printed hex id is
+    // read back as the selected id and handed over as those bytes.
+    let printed: backend_library::SelectedSymbolId =
+        serde_json::from_value(selector["value"].clone()).expect("printed selected id");
+    assert_eq!(printed.bytes(), key.as_bytes());
+    operands["symbols"] = serde_json::json!([printed.bytes()]);
     let words = vec![
         "semantic-shapes".to_owned(),
         serde_json::to_string(&operands).expect("operand JSON"),
@@ -1081,31 +1098,41 @@ fn a_fault_chooses_the_exit_code_a_script_can_branch_on() {
 
 #[test]
 fn an_admitted_dependency_refusal_keeps_json_evidence_and_a_nonzero_exit() {
-    let package =
-        backend_library::PackageReference::parse("pkg:npm/react@19.1.0").expect("package");
-    let view = backend_present::product_view_for_command(
-        &backend_library::SurfaceCommand::Dependencies {
-            package: package.clone(),
-        },
-        &backend_library::SurfaceReply::Dependencies(
-            backend_library::DependencyFacts::Unavailable(
-                backend_library::ProductText::from_static("package is not recorded"),
-            ),
+    // A pinned registry release is acquired before its dependencies can be read, so the
+    // refusal offers `add` with the release as its path; a local label is looked up with
+    // `package`. Either way the requested package is the refusal's operand and its call's.
+    for (label, expected_call) in [
+        (
+            "pkg:npm/react@19.1.0",
+            serde_json::json!({"name": "backend.index", "arguments": {"path": "pkg:npm/react@19.1.0"}}),
         ),
-    );
-    let answer = Answer::Product(Box::new(view));
-    assert_eq!(
-        render::answer_exit_code(&answer),
-        ExitCode::from(render::EXIT_REFUSED)
-    );
-    let encoded: serde_json::Value =
-        serde_json::from_str(&render::json(&answer)).expect("complete JSON");
-    assert_eq!(encoded["answer"], "product");
-    assert_eq!(encoded["fault"]["operand"], package.as_str());
-    assert_eq!(
-        encoded["fault"]["call"]["arguments"]["package"],
-        package.as_str()
-    );
+        (
+            "serde",
+            serde_json::json!({"name": "backend.package", "arguments": {"package": "serde"}}),
+        ),
+    ] {
+        let package = backend_library::PackageReference::parse(label).expect("package");
+        let view = backend_present::product_view_for_command(
+            &backend_library::SurfaceCommand::Dependencies {
+                package: package.clone(),
+            },
+            &backend_library::SurfaceReply::Dependencies(
+                backend_library::DependencyFacts::Unavailable(
+                    backend_library::ProductText::from_static("package is not recorded"),
+                ),
+            ),
+        );
+        let answer = Answer::Product(Box::new(view));
+        assert_eq!(
+            render::answer_exit_code(&answer),
+            ExitCode::from(render::EXIT_REFUSED)
+        );
+        let encoded: serde_json::Value =
+            serde_json::from_str(&render::json(&answer)).expect("complete JSON");
+        assert_eq!(encoded["answer"], "product");
+        assert_eq!(encoded["fault"]["operand"], package.as_str());
+        assert_eq!(encoded["fault"]["call"], expected_call);
+    }
 }
 
 #[test]
@@ -1463,9 +1490,9 @@ fn page_projection_cli_detail_controls_each_format_without_changing_show_source_
                 let value: serde_json::Value = serde_json::from_str(&rendered).expect("JSON");
                 assert!(value.get("source").is_none());
                 assert!(value.get("source_fault").is_none());
-                assert_eq!(
-                    value["identity"]["semantic_data"]["value"],
-                    serde_json::json!(native.as_bytes())
+                assert_selected_id_wire(
+                    &value["identity"]["semantic_data"]["value"],
+                    native.as_bytes(),
                 );
             }
             for level in [None, Some("standard"), Some("full")] {
@@ -1495,9 +1522,9 @@ fn page_projection_cli_detail_controls_each_format_without_changing_show_source_
                     assert_eq!(value["source"]["path"], "src/entry.ts");
                     assert_eq!(value["source"]["line"], 42);
                     assert_eq!(value["source"]["extent"], "complete");
-                    assert_eq!(
-                        value["identity"]["semantic_data"]["value"],
-                        serde_json::json!(native.as_bytes())
+                    assert_selected_id_wire(
+                        &value["identity"]["semantic_data"]["value"],
+                        native.as_bytes(),
                     );
                 }
             }
@@ -1954,7 +1981,7 @@ fn bounded_outline_cli_arguments_lower_to_the_same_native_page_as_mcp() {
     let (options, rest) = options::split(&words("--limit 5 outline /p")).expect("options");
     let invocation = invoke::parse(&rest, options.limit()).expect("shared page grammar");
     assert!(
-        matches!(lower(&invocation, "/p").expect("native outline"), Request::OutlinePage { path, limit: 5 } if path == "/p")
+        matches!(lower(&invocation, "/p").expect("native outline"), Request::OutlinePage { path, limit: 5, .. } if path == "/p")
     );
     let invocation = invoke::parse(&words("outline /p --limit 5 --cursor pc4-proof"), None)
         .expect("cursor option");
@@ -1975,7 +2002,7 @@ fn bounded_outline_cli_arguments_lower_to_the_same_native_page_as_mcp() {
         assert!(matches!(
             lower(&invocation, "/p").expect("unchanged default credit"),
             Request::ResumeQuery { query, cursor }
-                if matches!(query.as_ref(), Request::OutlinePage { path, limit }
+                if matches!(query.as_ref(), Request::OutlinePage { path, limit, .. }
                     if path == "/p" && *limit == QueryLimit::MAX)
                     && cursor == "pc4-proof"
         ));
@@ -2082,6 +2109,7 @@ fn published_names_search_is_useful_partial_json_with_exact_identity_and_zero_ex
         &backend_present::Request::Search {
             text: "Document".to_owned(),
             limit: 10,
+            declarations_only: false,
         },
         reply,
     )
@@ -2102,9 +2130,9 @@ fn published_names_search_is_useful_partial_json_with_exact_identity_and_zero_ex
         assert_eq!(value["semantic_preparation"]["state"], "pending");
         assert_eq!(value["records"].as_array().expect("useful names").len(), 1);
         assert_eq!(value["records"][0]["identity"]["coordinate"], coordinate);
-        assert_eq!(
-            value["records"][0]["identity"]["semantic_data"]["value"],
-            serde_json::json!(*symbol.as_bytes())
+        assert_selected_id_wire(
+            &value["records"][0]["identity"]["semantic_data"]["value"],
+            symbol.as_bytes(),
         );
     }
     assert_eq!(render::answer_exit_code(&answer), ExitCode::SUCCESS);

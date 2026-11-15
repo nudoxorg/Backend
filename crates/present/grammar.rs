@@ -35,6 +35,8 @@ pub enum ArgumentKind {
     ForgeCoordinate,
     /// Free search or name text.
     Text,
+    /// An explicit Cargo target name.
+    TargetName,
     /// A project folder selected by stable identity or unique name.
     ProjectSelector,
     /// A unique project folder name.
@@ -96,6 +98,7 @@ impl ArgumentKind {
             Self::PackageCoordinate => "PURL",
             Self::ForgeCoordinate => "FORGE",
             Self::Text => "TEXT",
+            Self::TargetName => "NAME",
             Self::ProjectSelector => "PROJECT",
             Self::ProjectName => "NAME",
             Self::LockfilePath => "LOCKFILE",
@@ -715,6 +718,33 @@ const SELECTED_SYMBOL: ArgumentSpec = ArgumentSpec::optional_with_json_name(
     "Full selected row ID from identity.semantic_data: CLI takes 64 hex digits; MCP takes the exact selected-symbol-id object. Optional coordinate asserts the selected row label. Requires current-view membership.",
 );
 
+const DECLARATIONS_ONLY: ArgumentSpec = ArgumentSpec::optional_with_json_name(
+    "declarations-only",
+    "declarations_only",
+    ArgumentKind::Flag,
+    "Leave out import and external rows, so only real declarations come back. The page reports how many it removed (hidden_non_declarations).",
+);
+
+const KIND: ArgumentSpec = ArgumentSpec::optional(
+    "kind",
+    ArgumentKind::Text,
+    "Keep only these declaration kinds, comma-separated (module, class, function, method, interface, type, macro, constant, field, property, constructor, enum, struct, trait, union, variable, import, variant). Members of a removed node move up to its place.",
+);
+
+const EXCLUDE_KIND: ArgumentSpec = ArgumentSpec::optional_with_json_name(
+    "exclude-kind",
+    "exclude_kind",
+    ArgumentKind::Text,
+    "Leave out these declaration kinds, comma-separated; `variable` removes constructor parameters and locals. The page reports how many nodes it removed (filtered_out).",
+);
+
+const TOP_LEVEL: ArgumentSpec = ArgumentSpec::optional_with_json_name(
+    "top-level",
+    "top_level",
+    ArgumentKind::Flag,
+    "Leave out anonymous callables and every declaration inside a function body (locals, parameters, inner functions), keeping what a file, class or module offers. The page reports how many it left out (locals_hidden); omit this to list them.",
+);
+
 const LIMIT: ArgumentSpec = ArgumentSpec::optional(
     "limit",
     ArgumentKind::Limit,
@@ -776,7 +806,7 @@ pub const GRAMMARS: [CommandGrammar; 64] = [
         positional: &[ArgumentSpec::optional(
             "path",
             ArgumentKind::ProjectPath,
-            "Local project directory to index or re-index; use `.` for the current directory.",
+            "Local project directory to index or re-index (`.` for the current directory), or a pinned registry purl such as pkg:pypi/name@1.2.3 to acquire that exact release.",
         )],
         options: &[ArgumentSpec::optional_with_json_name(
             "execution-intent",
@@ -784,10 +814,10 @@ pub const GRAMMARS: [CommandGrammar; 64] = [
             ArgumentKind::ExecutionIntent,
             "Compilation class: interactive protects local latency; background permits bounded remote calibration. Defaults to interactive.",
         ), ArgumentSpec::optional_with_json_name(
-            "cargo-target", "cargo_target", ArgumentKind::Text,
+            "cargo-target", "cargo_target", ArgumentKind::TargetName,
             "Explicit Cargo target name. Index only its compiler-proven source closure; package input provenance is retained. Missing or duplicate target names refuse.",
         )],
-        when: "Pass the absolute local project directory to index or re-index it. The CLI also accepts index as an alias for add. Call it when packages does not list the project, or when its source changed. Use background execution when the request may be calibrated remotely.",
+        when: "Pass the absolute local project directory to index or re-index it. The CLI also accepts index as an alias for add. Call it when packages does not list the project, or when its source changed. Pass a pinned registry purl instead to acquire that exact release's archive under the configured registry policy; only then are its dependencies, README, engine requirements and external API source readable. Use background execution when the request may be calibrated remotely.",
     },
     CommandGrammar {
         name: "remove",
@@ -846,8 +876,8 @@ pub const GRAMMARS: [CommandGrammar; 64] = [
             ArgumentKind::Coordinate,
             "Exact declaration coordinate whose uses are requested. Selected row IDs are not supported by the references protocol.",
         )],
-        options: &[],
-        when: "Use to answer where is this symbol used: every row carries the relation kind, the authority class, and the exact source span that proves the use.",
+        options: &[LIMIT, CURSOR],
+        when: "Use to answer where is this symbol used: every row carries the relation kind, the authority class, and the exact source span that proves the use. A long list is paged: the answer says how many uses remain; use --limit to choose the page size and pass the returned --cursor to read the next page. Give a CSS name instead (.card, #hero, --brand, or .title@src/Header.module.css to narrow it to one stylesheet) to list the components which use that class, id or custom property, each marked exact or candidate.",
     },
     CommandGrammar {
         name: "read",
@@ -889,8 +919,8 @@ pub const GRAMMARS: [CommandGrammar; 64] = [
             ArgumentKind::ProjectPath,
             "Project directory; defaults to the active project.",
         )],
-        options: &[LIMIT, CURSOR],
-        when: "Use to learn a package's shape before searching it, when you do not yet know what to search for.",
+        options: &[LIMIT, CURSOR, KIND, EXCLUDE_KIND, TOP_LEVEL],
+        when: "Use to learn a package's shape before searching it, when you do not yet know what to search for. Pass top_level (--top-level) to leave out anonymous callables and function-local declarations.",
     },
     CommandGrammar {
         name: "resolve",
@@ -913,7 +943,7 @@ pub const GRAMMARS: [CommandGrammar; 64] = [
             ArgumentKind::Text,
             "Text to find in names, signatures, and documentation.",
         )],
-        options: &[LIMIT, CURSOR],
+        options: &[LIMIT, CURSOR, DECLARATIONS_ONLY],
         when: "Search indexed declarations by name, signature, and documentation, then open a coordinate. Start with a distinctive name or term. Natural-language similarity depends on semantic search being available; check the returned semantic_search status. When search_scope is published_names_only, only published names are searched while full search prepares. For CSS classes and custom properties, use stylo-query or backend.stylo_query with the indexed package; for SQL objects and analysis gaps, use sql-query or backend.sql_query; to see what a CSS change affects, use impact or backend.impact. Reported score is a descending order key (u32::MAX - rank, zero-based), not a relevance probability; compare it only within the same query/revision.",
     },
     CommandGrammar {
@@ -925,8 +955,14 @@ pub const GRAMMARS: [CommandGrammar; 64] = [
             ArgumentKind::Coordinate,
             "Exact declaration coordinate to traverse from.",
         )],
-        options: &[SELECTED_SYMBOL, LIMIT, CURSOR],
-        when: "Use to follow one declaration outward along calls and references in its package.",
+        options: &[
+            SELECTED_SYMBOL,
+            ArgumentSpec::optional("component", ArgumentKind::Text, "A component name in TypeScript, TSX or JSX: show the stylesheets, classes and custom properties it relies on, instead of a declaration neighbourhood."),
+            ArgumentSpec::optional("in", ArgumentKind::Text, "Project-relative file which narrows an ambiguous component name."),
+            LIMIT,
+            CURSOR,
+        ],
+        when: "Use to follow one declaration outward along calls and references in its package. With --component NAME it shows that component's stylesheets, classes and custom properties from the style graph.",
     },
     CommandGrammar {
         name: "health",
@@ -1502,7 +1538,7 @@ pub const GRAMMARS: [CommandGrammar; 64] = [
             "Local package path or exact version-pinned package URL.",
         )],
         options: &[
-            ArgumentSpec::optional_with_json_name("cargo-target", "cargo_target", ArgumentKind::Text,
+            ArgumentSpec::optional_with_json_name("cargo-target", "cargo_target", ArgumentKind::TargetName,
                 "Explicit Cargo target name; the selected target replaces the package's previous Rust context."),
             ArgumentSpec::optional_with_json_name(
                 "execution-intent",
@@ -1576,7 +1612,10 @@ pub const GRAMMARS: [CommandGrammar; 64] = [
             ArgumentSpec::optional("name", ArgumentKind::Text, "Exact dialect-normalized name for any, definition or reference, or native model name for relation or output lineage."),
             ArgumentSpec::optional("kind", ArgumentKind::Text, "any, definition or reference only: schema, table, view, column, index, trigger, function, type, or sequence."),
             ArgumentSpec::optional("parent", ArgumentKind::Text, "definition only: the table or view that owns a column, index or trigger."),
-            ArgumentSpec::optional("uses", ArgumentKind::Text, "reference only: mentions bound to this object, written table or table.column."),
+            ArgumentSpec::optional("uses", ArgumentKind::Text, "reference only: mentions bound to this object, written table, table.column or kind:name (view:, index:, function:, trigger:, table:, column:)."),
+            ArgumentSpec::optional_with_json_name("uses-view", "uses_view", ArgumentKind::Text, "reference only: mentions of this view by name; same as uses=view:NAME."),
+            ArgumentSpec::optional_with_json_name("uses-index", "uses_index", ArgumentKind::Text, "reference only: mentions of this index by name; same as uses=index:NAME."),
+            ArgumentSpec::optional_with_json_name("uses-function", "uses_function", ArgumentKind::Text, "reference only: calls of this function by name; same as uses=function:NAME."),
             LIMIT.with_page_limit(PageLimitDomain::new(128, 20)),
             ArgumentSpec::optional("cursor", ArgumentKind::Cursor, "Continuation from the preceding page.").with_continuation_domain(ContinuationDomain::NativeOwnerToken),
             ArgumentSpec::optional_with_json_name("output-bytes", "output_bytes", ArgumentKind::Text, "Maximum native reply bytes, at least 131072."),
@@ -1603,6 +1642,10 @@ pub const GRAMMARS: [CommandGrammar; 64] = [
             ArgumentSpec::optional("component", ArgumentKind::Text, "Component or function name in TypeScript, TSX or JSX."),
             ArgumentSpec::optional_with_json_name("sql-table", "sql_table", ArgumentKind::Text, "SQL table name (needs the SQL impact adapter)."),
             ArgumentSpec::optional_with_json_name("sql-column", "sql_column", ArgumentKind::Text, "SQL column as table.column (needs the SQL impact adapter)."),
+            ArgumentSpec::optional_with_json_name("sql-view", "sql_view", ArgumentKind::Text, "SQL view name (needs the SQL impact adapter)."),
+            ArgumentSpec::optional_with_json_name("sql-index", "sql_index", ArgumentKind::Text, "SQL index name (needs the SQL impact adapter)."),
+            ArgumentSpec::optional_with_json_name("sql-function", "sql_function", ArgumentKind::Text, "SQL function name (needs the SQL impact adapter)."),
+            ArgumentSpec::optional_with_json_name("sql-trigger", "sql_trigger", ArgumentKind::Text, "SQL trigger name (needs the SQL impact adapter)."),
             ArgumentSpec::optional("handle", ArgumentKind::Text, "Handle copied from a previous impact row."),
             ArgumentSpec::optional("in", ArgumentKind::Text, "Project-relative file which narrows an ambiguous name."),
             ArgumentSpec::optional("direction", ArgumentKind::Text, "dependents (default, what is affected) or dependencies (what the seed relies on)."),
@@ -1611,6 +1654,6 @@ pub const GRAMMARS: [CommandGrammar; 64] = [
             LIMIT.with_page_limit(PageLimitDomain::new(200, 40)),
             ArgumentSpec::optional("cursor", ArgumentKind::Cursor, "Continuation from the preceding page.").with_continuation_domain(ContinuationDomain::NativeOwnerToken),
         ],
-        when: "Answer what is affected if you change a CSS selector, class, id, custom property, at-rule, stylesheet or a component. Rows are exact or candidate with the weakest proof on the path, and the reply lists coverage gaps and freshness so an empty result is never read as no impact.",
+        when: "Answer what is affected if you change a CSS selector, class, id, custom property, at-rule, stylesheet, a component, or a SQL table, column, view, index, function or trigger. Rows are exact or candidate with the weakest proof on the path, and the reply lists coverage gaps and freshness so an empty result is never read as no impact.",
     },
 ];

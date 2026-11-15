@@ -110,52 +110,85 @@ pub(crate) fn restore_snapshot_certificate(
     bytes: &[u8],
     cancelled: &AtomicBool,
 ) -> Option<TypeScriptSnapshotReuse> {
+    restore_snapshot_certificate_checked(client, root, profile, input, binding, bytes, cancelled)
+        .ok()
+}
+
+/// Same as [`restore_snapshot_certificate`], naming the first check that declined reuse.
+pub(crate) fn restore_snapshot_certificate_checked(
+    client: &LocalCompilerClient,
+    root: &Path,
+    profile: LanguageProfile,
+    input: [u8; 32],
+    binding: [u8; 32],
+    bytes: &[u8],
+    cancelled: &AtomicBool,
+) -> Result<TypeScriptSnapshotReuse, &'static str> {
     if !client.is_ready() || cancelled.load(Ordering::Acquire) {
-        return None;
+        return Err("the compiler is not ready or the operation was cancelled");
     }
     let capability = client.capabilities().for_profile(profile);
     let current = (
-        capability.toolchain_identity()?,
-        capability.local_authority_fingerprint()?,
-        capability.environment_identity()?,
-        capability.target_platform_identity()?,
+        capability.toolchain_identity(),
+        capability.local_authority_fingerprint(),
+        capability.environment_identity(),
+        capability.target_platform_identity(),
     );
+    let (Some(toolchain), Some(local_authority), Some(environment), Some(platform)) = current
+    else {
+        return Err("the compiler toolchain identity is unavailable");
+    };
+    let current = (toolchain, local_authority, environment, platform);
     if capability.state() != crate::application::LocalCompilerCapabilityState::Ready
         || capability.manifest().is_none()
     {
-        return None;
+        return Err("the compiler is not ready");
     }
-    let certificate = decode_snapshot_certificate(bytes)?;
-    if certificate.root != root
-        || certificate.profile != profile
+    let certificate =
+        decode_snapshot_certificate(bytes).ok_or("the stored read witness cannot be decoded")?;
+    if certificate.root != root {
+        return Err("the stored read witness belongs to another project root");
+    }
+    if certificate.profile != profile
         || certificate.input != input
         || certificate.binding != binding
-        || (
-            certificate.toolchain,
-            certificate.local_authority,
-            certificate.environment,
-            certificate.platform,
-        ) != current
     {
-        return None;
+        return Err("the stored read witness is for a different input or published generation");
     }
-    let host = Arc::new(TypeScriptProjectWitness::decode_native_snapshot(
-        &certificate.host,
-    )?);
+    if (
+        certificate.toolchain,
+        certificate.local_authority,
+        certificate.environment,
+        certificate.platform,
+    ) != current
+    {
+        return Err("the compiler toolchain or its local authority changed");
+    }
+    let host = Arc::new(
+        TypeScriptProjectWitness::decode_native_snapshot(&certificate.host)
+            .ok_or("the stored project host witness cannot be decoded")?,
+    );
     if !host.is_native_for_root(root)
         || certificate.program_environments.len() != certificate.programs.len()
-        || crate::application::typescript_program::native_program_execution_fingerprint(
-            host.native_project_fingerprint()?,
-            certificate
-                .program_environments
-                .iter()
-                .copied()
-                .map(|environment| {
-                    backend_frontend_typescript::TszEnvironmentFingerprint::from_sha256(environment)
-                }),
-        ) != certificate.project_authority
+        || host
+            .native_project_fingerprint()
+            .map(|fingerprint| {
+                crate::application::typescript_program::native_program_execution_fingerprint(
+                    fingerprint,
+                    certificate
+                        .program_environments
+                        .iter()
+                        .copied()
+                        .map(|environment| {
+                            backend_frontend_typescript::TszEnvironmentFingerprint::from_sha256(
+                                environment,
+                            )
+                        }),
+                ) != certificate.project_authority
+            })
+            .unwrap_or(true)
     {
-        return None;
+        return Err("the stored project witness does not match its program authority");
     }
     let mut active = || {
         if !cancelled.load(Ordering::Acquire) {
@@ -164,19 +197,23 @@ pub(crate) fn restore_snapshot_certificate(
             Err(crate::application::typescript_host::TypeScriptProjectHostError::CompilerProgramCancelled)
         }
     };
-    let forest = Arc::new(TypeScriptForestClosureWitness::decode_native_snapshot(
-        certificate.programs,
-        &host,
-        &mut active,
-    )?);
+    let forest = Arc::new(
+        TypeScriptForestClosureWitness::decode_native_snapshot(
+            certificate.programs,
+            &host,
+            &mut active,
+        )
+        .ok_or("the stored program witnesses cannot be decoded")?,
+    );
     if cancelled.load(Ordering::Acquire) || !client.is_ready() {
-        return None;
+        return Err("the compiler is not ready or the operation was cancelled");
     }
     let retained_bytes = host
-        .retained_native_bytes()?
+        .retained_native_bytes()
+        .ok_or("the stored project witness size is unavailable")?
         .saturating_add(forest.retained_bytes());
     if retained_bytes > MAX_RETAINED_BYTES {
-        return None;
+        return Err("the stored read witness exceeds the retained size bound");
     }
     let entry = Arc::new(Entry {
         root: root.to_path_buf(),
@@ -188,7 +225,7 @@ pub(crate) fn restore_snapshot_certificate(
         forest,
         retained_bytes,
     });
-    Some(TypeScriptSnapshotReuse { entry })
+    Ok(TypeScriptSnapshotReuse { entry })
 }
 
 fn encode_snapshot_certificate(certificate: &SnapshotCertificate) -> Option<Vec<u8>> {
@@ -380,25 +417,47 @@ impl LocalCompilerClient {
         binding: [u8; 32],
         cancelled: &AtomicBool,
     ) -> Option<TypeScriptSnapshotReuse> {
+        self.typescript_snapshot_reuse_checked(root, profile, input, binding, cancelled)
+            .ok()
+    }
+
+    /// Same as [`Self::typescript_snapshot_reuse`], naming the first check that declined reuse.
+    pub fn typescript_snapshot_reuse_checked(
+        &self,
+        root: &Path,
+        profile: LanguageProfile,
+        input: [u8; 32],
+        binding: [u8; 32],
+        cancelled: &AtomicBool,
+    ) -> Result<TypeScriptSnapshotReuse, &'static str> {
         let proof = self
             .shared
             .typescript_snapshot
             .lock()
-            .ok()?
+            .map_err(|_| "the retained read witness is unavailable")?
             .entries
             .iter()
             .find(|proof| proof.entry.root == root && proof.entry.profile == profile)
-            .cloned()?;
+            .cloned()
+            .ok_or("this owner holds no read witness for the project")?;
         let entry = &proof.entry;
+        if entry.input != input {
+            return Err("the sources or configuration differ from the last compiled input");
+        }
+        if entry.binding != binding {
+            return Err("the retained read witness is for another published generation");
+        }
         if entry.root != root
             || entry.profile != profile
-            || entry.input != input
-            || entry.binding != binding
             || !Arc::ptr_eq(&entry.alive, &self.shared.alive)
         {
-            return None;
+            return Err("the retained read witness belongs to another compiler session");
         }
-        proof.is_current(Some(cancelled)).then_some(proof)
+        if proof.is_current(Some(cancelled)) {
+            Ok(proof)
+        } else {
+            Err("a file the compiler read has changed since it was compiled")
+        }
     }
 
     /// Reopens a certificate supplied only by the authenticated selected-generation
@@ -413,7 +472,28 @@ impl LocalCompilerClient {
         certificate: &backend_extension_turso::VerifiedTypeScriptSnapshotWitness,
         cancelled: &AtomicBool,
     ) -> Option<TypeScriptSnapshotReuse> {
-        let proof = restore_snapshot_certificate(
+        self.restore_typescript_snapshot_certificate_checked(
+            root,
+            profile,
+            input,
+            binding,
+            certificate,
+            cancelled,
+        )
+        .ok()
+    }
+
+    /// Same as [`Self::restore_typescript_snapshot_certificate`], naming the check that declined.
+    pub fn restore_typescript_snapshot_certificate_checked(
+        &self,
+        root: &Path,
+        profile: LanguageProfile,
+        input: [u8; 32],
+        binding: [u8; 32],
+        certificate: &backend_extension_turso::VerifiedTypeScriptSnapshotWitness,
+        cancelled: &AtomicBool,
+    ) -> Result<TypeScriptSnapshotReuse, &'static str> {
+        let proof = restore_snapshot_certificate_checked(
             self,
             root,
             profile,
@@ -422,7 +502,11 @@ impl LocalCompilerClient {
             certificate.as_bytes(),
             cancelled,
         )?;
-        let mut cache = self.shared.typescript_snapshot.lock().ok()?;
+        let mut cache = self
+            .shared
+            .typescript_snapshot
+            .lock()
+            .map_err(|_| "the retained read witness is unavailable")?;
         cache
             .entries
             .retain(|existing| existing.entry.root != root || existing.entry.profile != profile);
@@ -430,11 +514,14 @@ impl LocalCompilerClient {
             sum.saturating_add(existing.entry.retained_bytes)
         });
         while !fits_retained_budget(total, proof.entry.retained_bytes) {
-            let evicted = cache.entries.pop_front()?;
+            let evicted = cache
+                .entries
+                .pop_front()
+                .ok_or("the stored read witness does not fit the retained size bound")?;
             total = total.saturating_sub(evicted.entry.retained_bytes);
         }
         cache.entries.push_back(proof.clone());
-        Some(proof)
+        Ok(proof)
     }
 
     /// Remembers only an actual native compiler read closure for its exact selected output.

@@ -52,6 +52,18 @@ def main():
         run(missing, ["--authority-image", "--source-binding", str(root / "A.cs"), "--out", str(image)])
         assert struct.unpack_from("<H", image.read_bytes(), 4)[0] == 5
         assert struct.unpack_from("<H", image.read_bytes(), 46)[0] > 0
+        # One file that does not compile must not make its sibling's image incomplete: each
+        # image states the errors located in its own file (and those no file owns).
+        mixed = [{"Path": "A.cs", "Text": "public class Fine { public int Value => 1; }\n"},
+                 {"Path": "B.cs", "Text": "using Missing.Package.Core;\npublic class Broken { public Thing Value; }\n"}]
+        stderr = {}
+        for name in ("A.cs", "B.cs"):
+            done = run(mixed, ["--authority-image", "--source-binding", str(root / name), "--out", str(image)])
+            stderr[name] = done.stderr
+            stated = struct.unpack_from("<H", image.read_bytes(), 46)[0]
+            assert (stated == 0) == (name == "A.cs"), (name, stated, done.stderr)
+        assert "source error:" not in stderr["A.cs"], stderr["A.cs"]
+        assert "CS0246" in stderr["B.cs"].rsplit("source error:", 1)[1], stderr["B.cs"]
         for path in ["../escape.cs", "/absolute.cs", "A.cs"]:
             bad = [sources[0], {"Path": path, "Text": "public class Bad {}"}]
             assert run(bad, check=False).returncode != 0, path

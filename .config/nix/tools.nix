@@ -798,8 +798,10 @@ let
             "DocComments.cs"
             "Extractor.cs"
             "Program.cs"
+            "RestoredPackages.cs"
             "SourceLoader.cs"
             "TypeSigWriter.cs"
+            "UnresolvedReferences.cs"
             "oracle.csproj"
             "packages.lock.json"
           ];

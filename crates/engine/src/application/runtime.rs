@@ -5201,6 +5201,143 @@ mod rust_target_selector_admission_tests {
         client.compile_package_sources(web_request).expect("SDK-observed project publishes under its plane identity");
     }
 
+    /// Run explicitly with NUDOX_TEST_DOTNET and NUDOX_TEST_CSHARP_HELPER, as for the
+    /// complete-project fixture above.
+    #[test]
+    #[ignore = "requires explicitly configured private .NET and Roslyn helper"]
+    fn captured_csharp_partial_project_claims_only_the_files_that_compiled() {
+        use backend_semantic::vocabulary::{CSharpVersion, NativeTool};
+        use std::num::NonZeroUsize;
+        let dotnet =
+            PathBuf::from(std::env::var_os("NUDOX_TEST_DOTNET").expect("private dotnet path"));
+        let helper = PathBuf::from(
+            std::env::var_os("NUDOX_TEST_CSHARP_HELPER").expect("private helper path"),
+        );
+        let version = std::process::Command::new(&dotnet)
+            .arg("--version")
+            .output()
+            .expect("probe dotnet");
+        assert!(version.status.success());
+        let root = std::env::temp_dir().join(format!(
+            "nudox-csharp-partial-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let package = root.join("package");
+        std::fs::create_dir_all(package.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("native")).unwrap();
+        std::fs::write(package.join("src/App.csproj"), "<Project/>").unwrap();
+        // One file compiles; the other names a type no reference supplies.
+        let compiled = "public class App { public static int Answer() => 42; }\n";
+        let broken = "public class Broken { public Missing.Thing Value = null!; }\n";
+        std::fs::write(package.join("src/App.cs"), compiled).unwrap();
+        std::fs::write(package.join("src/Broken.cs"), broken).unwrap();
+        let configuration = LocalCompilerRuntimeConfiguration::new(
+            LocalCompilerRuntimePaths::new(
+                root.join("artifacts"),
+                root.join("journal"),
+                root.join("native"),
+            )
+            .unwrap(),
+            vec![
+                LocalRuntimeToolchain::resolved(NativeTool::CSharpCompiler, dotnet, &version.stdout)
+                    .unwrap(),
+            ]
+            .into_boxed_slice(),
+            Box::new([]),
+            LocalRuntimePackageAuthority {
+                csharp: Some(LocalRuntimeCSharpAuthority {
+                    producer: CSharpOracle::new(helper),
+                    assembly_name: None,
+                    reference_directory: None,
+                    additional_reference_directories: Box::new([]),
+                    define_symbols: Box::new([]),
+                    extra_usings: Box::new([]),
+                    implicit_usings: false,
+                    include_non_public: true,
+                    maximum_source_bytes: 1024 * 1024,
+                }),
+                maximum_image_bytes: Some(NonZeroUsize::new(64 * 1024 * 1024).unwrap()),
+                ..Default::default()
+            },
+            LocalCompilerTimeout::new(Duration::from_secs(300)).unwrap(),
+            PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN).unwrap(),
+            LocalCompilerScratch::with_fragment_capacity(NonZeroUsize::new(16 * 1024 * 1024).unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        let profile = LanguageProfile::CSharp(CSharpVersion::CSharp14);
+        let request = request(profile, "pkg:nuget/csharp-partial-fixture@1.0.0");
+        let target = CompilerPackageTargetV2::new(
+            request.as_ref().clone(),
+            CompilationUnitKeyV2::CSharpProject { project_path: "src/App.csproj".into() },
+        )
+        .unwrap();
+        let claim_source = |path: &str, text: &str| {
+            let bytes = text.as_bytes();
+            let input = backend_compile::VerifiedSourceText::capture(bytes).unwrap().content().to_bytes();
+            let fact = *backend_semantic::ir::SourceIdentity::from_bytes(bytes).unwrap().identity.as_ref();
+            OwnedCSharpSourceClaim::new(path, bytes.len() as u32, input, fact).unwrap()
+        };
+        let claim = OwnedCSharpUnitClaim::new(
+            "src/App.csproj",
+            vec![claim_source("src/App.cs", compiled), claim_source("src/Broken.cs", broken)]
+                .into_boxed_slice(),
+        )
+        .unwrap();
+        let probes = vec![
+            OwnedCSharpConfigProbe::new("src/App.csproj", Some("<Project/>".into())).unwrap(),
+            OwnedCSharpConfigProbe::new("src/Directory.Build.props", None).unwrap(),
+            OwnedCSharpConfigProbe::new("src/Directory.Build.targets", None).unwrap(),
+            OwnedCSharpConfigProbe::new("Directory.Build.props", None).unwrap(),
+            OwnedCSharpConfigProbe::new("Directory.Build.targets", None).unwrap(),
+        ]
+        .into_boxed_slice();
+        let request = OwnedPackageSourceSet::new_for_unit(
+            request,
+            target,
+            package.clone(),
+            vec![
+                OwnedPackageSource::new("src/App.cs", compiled).unwrap(),
+                OwnedPackageSource::new("src/Broken.cs", broken).unwrap(),
+            ]
+            .into_boxed_slice(),
+        )
+        .unwrap()
+        .with_csharp_config(probes)
+        .unwrap()
+        .with_csharp_unit_claim(claim)
+        .unwrap();
+        let client = LocalCompilerClient::start(configuration).unwrap();
+        let staged = client
+            .compile_package_sources_staged(request)
+            .expect("a project with one compiling file still stages");
+        assert_eq!(staged.artifacts().len(), 1);
+        let gaps = staged.coverage_gaps();
+        assert_eq!(gaps.len(), 1, "exactly the file with the unresolved type is a gap");
+        assert_eq!(gaps[0].relative_path(), "src/Broken.cs");
+        assert_eq!(gaps[0].cause(), crate::application::PackageSourceCoverageGapCause::CSharpSourceDoesNotCompile);
+        // The aggregate lists the compiled file only; the consumer joins the rest through the gap.
+        let input_root = *staged.input_witness().input_root();
+        let evidence = staged
+            .csharp_invocation_evidence_object(input_root)
+            .expect("partial project claim");
+        let decoded = crate::application::decode_csharp_evidence(&evidence).expect("decode CSE1");
+        assert_eq!(decoded.project_path, "src/App.csproj");
+        assert_eq!(decoded.sources.len(), 1);
+        assert_eq!(decoded.sources[0].path, "src/App.cs");
+        assert!(decoded.sources.iter().all(|source| source.path != "src/Broken.cs"));
+        // A claim for a different input root is never produced.
+        assert!(staged.csharp_invocation_evidence_object([0x7f; 32]).is_none());
+    }
+
     #[test]
     fn csharp_sdk_probe_claim_requires_complete_ordered_unit_scope() {
         let profile = LanguageProfile::CSharp(backend_semantic::vocabulary::CSharpVersion::CSharp14);

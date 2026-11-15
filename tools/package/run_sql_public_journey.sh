@@ -5,7 +5,8 @@
 #
 #   run_sql_public_journey.sh [BUNDLE_DIR] [OUTPUT_DIR]
 #
-# Development mode: debug builds skip the account gate. Offline; uses the
+# Development mode: the journey skips the release build receipt and clean-checkout
+# checks (release evidence still requires them) and debug builds skip the account gate. Offline; uses the
 # caller's CARGO_TARGET_DIR / CARGO_HOME / toolchain. The worker is built with
 # debug info stripped because the checked launch hashes it on every use.
 set -euo pipefail
@@ -27,4 +28,6 @@ mkdir -p "$bundle"
 for name in backend-locald backend-cli backend-mcp; do cp "$target/debug/$name" "$bundle/$name"; done
 cp "$worker" "$bundle/backend-sqlite-worker"
 chmod 755 "$bundle"/*
-python3 "$here/sql_public_journey.py" --bundle "$bundle" --output "$output"
+# A local build has no release build receipt or certified clean checkout, so the
+# journey runs in its development mode, which says so and is not release evidence.
+python3 "$here/sql_public_journey.py" --bundle "$bundle" --output "$output" --development

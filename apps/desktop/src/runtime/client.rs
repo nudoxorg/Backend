@@ -1494,6 +1494,9 @@ mod tests {
             );
             write_frame(&mut fresh, &serde_json::to_vec(&reply).expect("reply body"), limits)
                 .expect("fresh owner reply");
+            // The answering end stays open until the client has finished: macOS
+            // refuses its next socket option on a closed peer.
+            fresh
         });
 
         let view = super::super::owner::publication_tests::view();
@@ -1525,7 +1528,7 @@ mod tests {
         let fresh = client.execute(&EngineRequest::Root {
             project: None, request: RequestId::new(2), basis, cancel: CancellationToken::new(),
         });
-        server.join().expect("bounded physical socket owner");
+        let _answering = server.join().expect("bounded physical socket owner");
         assert!(matches!(fresh, Err(EngineFault::Failed(error))
             if error.code() == FaultCode::Protocol && error.message().contains("fresh authenticated owner answered")));
         assert_eq!(gate.ready_epoch(), Some(attachment));

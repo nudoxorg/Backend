@@ -122,8 +122,26 @@ fn read_before(
     if matches!(result, Err(ClientError::ResponseFrameTooLarge { .. })) {
         // The body remains unread. Never interpret it as a later frame.
         let _ = stream.shutdown(std::net::Shutdown::Both);
+        discard_queued(stream);
     }
     result
+}
+
+/// Drops whatever the peer had already queued when the stream was shut down.
+/// Some kernels keep queued bytes readable after a shutdown, and those bytes
+/// are the unread body of the oversized frame.
+fn discard_queued(stream: &mut backend_replication::LocalStream) {
+    if stream.set_nonblocking(true).is_err() {
+        return;
+    }
+    let mut sink = [0_u8; 4096];
+    for _ in 0..4096 {
+        match stream.read(&mut sink) {
+            Ok(count) if count > 0 => {}
+            _ => break,
+        }
+    }
+    let _ = stream.set_nonblocking(false);
 }
 
 fn bind_reply_basis(error: ClientError, request: &CommandDto) -> ClientError {

@@ -666,6 +666,47 @@ pub struct RecordListDto {
     /// Semantic ranking is explicitly pending, not queried, or unavailable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_preparation: Option<backend_library::PublishedSemanticReadiness>,
+    /// Import and external rows removed from this page by `declarations_only`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub hidden_non_declarations: usize,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
+}
+
+/// `Option<[u8; 32]>` as 64 lowercase hex digits, reading the older integer array too.
+mod optional_hex_32 {
+    use serde::{Deserialize, Deserializer, Serializer, de};
+
+    pub(super) fn serialize<S: Serializer>(
+        value: &Option<[u8; 32]>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match value {
+            None => serializer.serialize_none(),
+            Some(bytes) => serializer.serialize_str(&backend_library::encode_id(bytes)),
+        }
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Spelling {
+        Hex(String),
+        Bytes([u8; 32]),
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<[u8; 32]>, D::Error> {
+        match Option::<Spelling>::deserialize(deserializer)? {
+            None => Ok(None),
+            Some(Spelling::Bytes(bytes)) => Ok(Some(bytes)),
+            Some(Spelling::Hex(text)) => backend_library::decode_id(&text)
+                .map(Some)
+                .map_err(|_| de::Error::custom("expected 64 hex digits")),
+        }
+    }
 }
 
 impl RecordListDto {
@@ -698,6 +739,7 @@ impl RecordListDto {
                 .coverage()
                 .published_names()
                 .map(|readiness| readiness.semantic),
+            hidden_non_declarations: list.hidden_non_declarations(),
         }
     }
 }
@@ -721,9 +763,34 @@ pub struct ShelfEntryDto {
     pub partial_lanes: Vec<String>,
     /// Per-language declaration counts.
     pub languages: Vec<LanguageCountDto>,
+    /// Source files per language profile with each profile's semantic state, from the
+    /// owner's source receipt. Absent when the receipt was not readable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_profiles: Vec<SourceProfileDto>,
     /// Why the project is not readable, when it failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fault: Option<FaultDto>,
+}
+
+/// One language profile's source files in a project.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SourceProfileDto {
+    /// The closed profile spelling.
+    pub profile: String,
+    /// Source files in the profile's frontier.
+    pub files: u64,
+    /// `complete`, `partial`, `pending`, `unavailable` or `failed`.
+    pub semantic: String,
+}
+
+impl SourceProfileDto {
+    pub(crate) fn new(profile: crate::shelf::ProfileFiles) -> Self {
+        Self {
+            profile: profile.profile().to_owned(),
+            files: profile.files(),
+            semantic: profile.semantic().name().to_owned(),
+        }
+    }
 }
 
 /// One language's contribution to a project.
@@ -759,6 +826,12 @@ impl ShelfEntryDto {
                     language: count.language().name().to_owned(),
                     declarations: count.declarations().get(),
                 })
+                .collect(),
+            source_profiles: entry
+                .profiles()
+                .iter()
+                .copied()
+                .map(SourceProfileDto::new)
                 .collect(),
             fault: entry.readiness().fault().map(FaultDto::new),
         }
@@ -855,6 +928,12 @@ pub struct OutlineDto {
     /// Native paging scope, absent for the legacy plain outline query.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page: Option<OutlinePageDto>,
+    /// Nodes a kind filter removed from this page; absent when none was removed.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub filtered_out: usize,
+    /// Anonymous or function-local nodes `top_level` left out of this page; absent when none.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub locals_hidden: usize,
 }
 
 impl OutlineDto {
@@ -878,6 +957,8 @@ impl OutlineDto {
                 schema: page.basis.schema,
                 sequence: page.sequence,
             }),
+            filtered_out: tree.filtered_out(),
+            locals_hidden: tree.locals_hidden(),
         }
     }
 }
@@ -964,9 +1045,10 @@ pub struct StatusDto {
     pub revision: String,
     /// The readable eight-digit abbreviation of `revision`.
     pub revision_tag: String,
-    /// The exact source object the view is based on.
+    /// The store layout object the view is based on. It is constant across projects and
+    /// edits; the content-sensitive value is `revision`.
     pub source: String,
-    /// The readable eight-digit abbreviation of `source`.
+    /// The readable eight-digit abbreviation of `source`, printed as `store layout`.
     pub source_tag: String,
     /// The owner's subscription sequence position.
     pub sequence: u64,
@@ -1259,6 +1341,10 @@ pub struct ProductDto {
     /// Exact source-only package metadata lookup evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package_discovery: Option<crate::product::PackageDiscoveryProjection>,
+    /// Where this page sits in a complete references listing: how many uses it
+    /// holds, how many exist and how many remain after it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub references_page: Option<crate::ReferencePageInfo>,
 }
 
 /// Copyable CLI and MCP actions for the same admitted index observation.
@@ -1356,8 +1442,9 @@ pub struct ProductIndexSearchPageDto {
 /// One product record.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProductRecordDto {
-    /// Owner-reported occurrence-site symbol, when supplied.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Owner-reported occurrence-site symbol, when supplied: 64 hex digits (older
+    /// 32-integer arrays still decode).
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "optional_hex_32")]
     pub site_symbol: Option<[u8; 32]>,
     /// Typed per-occurrence relation and source evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1434,7 +1521,13 @@ impl ProductDto {
                     extent: record.extent(),
                     title: record.title().to_owned(),
                     operand: record.operand().map(ToOwned::to_owned),
-                    tags: record.tags().to_vec(),
+                    // A use's relation, authority class and span are typed in
+                    // `reference_details`; the tags only restate them as prose.
+                    tags: if detail == Some(Detail::Summary) && record.reference_details().is_some() {
+                        Vec::new()
+                    } else {
+                        record.tags_for(detail).to_vec()
+                    },
                     native_metadata: record.native_metadata().cloned(),
                     source_metadata: record.source_metadata().cloned(),
                     forge: record.forge_details().cloned(),
@@ -1446,7 +1539,7 @@ impl ProductDto {
                     compiler_profile: record.compiler_profile(),
                 })
                 .collect(),
-            note: view.note().map(ToOwned::to_owned),
+            note: view.note_for(detail).map(std::borrow::Cow::into_owned),
             fault: view.fault().map(FaultDto::new),
             partial_publication_warning: view.partial_publication_warning().cloned(),
             declaration_source_range: view.declaration_source_range().cloned(),
@@ -1526,6 +1619,7 @@ impl ProductDto {
                 _ => None,
             },
             package_discovery: view.package_discovery().cloned(),
+            references_page: view.reference_page().copied(),
         }
     }
 }

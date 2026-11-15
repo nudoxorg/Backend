@@ -3449,7 +3449,9 @@ impl LocalDeclarationSearchIndex {
     }
 }
 
-fn is_external_placeholder(row: &Row) -> bool {
+/// A retained external navigation target: a symbol labelled as external which
+/// captured no source.
+pub(in crate::builtin) fn is_external_placeholder(row: &Row) -> bool {
     matches!(row.id, RowId::Symbol(_))
         && row.source.captured().is_none()
         && row.label.contains("::external::symbol:")

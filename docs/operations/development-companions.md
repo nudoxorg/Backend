@@ -48,7 +48,12 @@ bash tools/package/run_sql_public_journey.sh target/sql-development target/sql-j
 The script builds the syntaqlite worker from the standalone lockfile, observes
 its executable identity, compiles that identity into the owner, and stages the
 worker beside the owner under the fixed `backend-sqlite-worker` name. This
-journey builds the CLI, MCP server and owner. For desktop development, the desktop
+journey builds the CLI, MCP server and owner, then runs the journey in its
+development mode: it prints that it skipped the release build receipt and
+clean-checkout checks and pins the bundle's own digests for the run instead. To
+run `tools/package/sql_public_journey.py` as release evidence, pass
+`--build-receipt` and `--source-checkout` instead of `--development`; without
+them (or `--development`) it refuses to start. For desktop development, the desktop
 must also be compiled with the same `NUDOX_BUILD_SQLITE_WORKER_ID` and
 `NUDOX_BUILD_SQLITE_BASIS_JSON` and use the same worker sibling. The platform companion phases `sqlite_linux_development.py` and
 `sqlite_macos_development.py` retain the runtime closure and recheck identity

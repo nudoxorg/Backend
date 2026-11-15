@@ -46,6 +46,8 @@ fn typescript_admission_current_dto_refuses_old28_before_populated_fact_shape()
         typescript_cause: None,
         go_failure: None,
         rust_source_scope_failure: None,
+        csharp_unresolved: None,
+        csharp_host_format: None,
     };
     let populated = serde_json::to_value(&facts)?;
     assert_eq!(
@@ -186,6 +188,8 @@ fn plain_facts() -> CompilerAuthorityDiagnosticFacts {
         typescript_cause: None,
         go_failure: None,
         rust_source_scope_failure: None,
+        csharp_unresolved: None,
+        csharp_host_format: None,
     }
 }
 

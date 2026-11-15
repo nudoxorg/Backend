@@ -15,15 +15,14 @@
 //! * a JSX tag bound by import to a component in an indexed file is an
 //!   **exact** render link; aliases, packages and unresolved barrels are gaps.
 use super::impact_css::{global_class_key, module_class_key, stylesheet_key, custom_property_key};
+use super::impact_imports::{CompilerImports, ImportLookup, Lookup, RelativeImports, is_code_specifier};
 use super::impact_framework::{
     DomainLoad, Edge, FileWitness, ImpactAdapter, ImpactContext, Key, Node, node_key,
 };
-use backend_semantic::ir::TypeScriptSource;
-use backend_frontend_typescript::legacy::{
-    ExportExportName, ExportImportName, ExportLocalName, Expression, ImportImportName,
-    JSXAttributeName, JSXAttributeValue, JSXElementName, NodeId, ObjectPropertyKind, OxcModule,
-    with_analysis,
-};
+use super::impact_scan::{FileScan, ImportBinding, Imported, is_component_name, profile_for, scan_module};
+use super::code_links::PersistedHost;
+use backend_engine::builtin::CodeHostState;
+use backend_frontend_typescript::legacy::with_analysis;
 use backend_library::impact::{
     ImpactDomain, ImpactDomainBasis, ImpactDomainState, ImpactGap, ImpactSeedSpec, ImpactStrength,
 };
@@ -34,461 +33,6 @@ pub(super) struct CodeAdapter;
 const MAX_FILES: usize = 4_000;
 const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_TOTAL_BYTES: usize = 48 * 1024 * 1024;
-/// Helper functions whose static string arguments are class names.
-const CLASS_HELPERS: &[&str] = &["clsx", "classnames", "classNames", "cn", "cx", "twMerge", "cva"];
-/// Attribute names which carry class lists.
-const CLASS_ATTRIBUTES: &[&str] = &["className", "class"];
-
-// ---------------------------------------------------------------------------
-// Per-file facts
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum Imported {
-    Default,
-    Named(String),
-    Namespace,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct ImportBinding {
-    pub local: String,
-    pub spec: String,
-    pub imported: Imported,
-    pub line: u32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct ClassUse {
-    pub token: String,
-    pub line: u32,
-    pub owner: Option<String>,
-    /// Appears in a branch, logical operand or helper object key.
-    pub conditional: bool,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct ModuleClassUse {
-    /// Index into `imports` of the stylesheet binding.
-    pub binding: usize,
-    pub class: String,
-    pub line: u32,
-    pub owner: Option<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct RenderUse {
-    /// Local component name used as a JSX tag.
-    pub local: String,
-    pub line: u32,
-    pub owner: Option<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct PropertyUse {
-    pub name: String,
-    pub line: u32,
-    pub owner: Option<String>,
-    pub writes: bool,
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(super) struct FileScan {
-    pub path: String,
-    pub imports: Vec<ImportBinding>,
-    /// Stylesheet imports without bindings.
-    pub side_effect_imports: Vec<(String, u32)>,
-    pub class_uses: Vec<ClassUse>,
-    pub module_class_uses: Vec<ModuleClassUse>,
-    pub renders: Vec<RenderUse>,
-    pub property_uses: Vec<PropertyUse>,
-    /// Component-like declarations: name and line.
-    pub components: BTreeMap<String, u32>,
-    /// Exported name to local declaration name.
-    pub exports: BTreeMap<String, String>,
-    /// Re-exports: exported name to (specifier, imported name or "*").
-    pub reexports: BTreeMap<String, (String, String)>,
-    pub dynamic_class_expressions: u32,
-}
-
-fn line_starts(source: &str) -> Vec<u32> {
-    let mut starts = vec![0u32];
-    for (index, byte) in source.bytes().enumerate() {
-        if byte == b'\n' {
-            starts.push(u32::try_from(index + 1).unwrap_or(u32::MAX));
-        }
-    }
-    starts
-}
-fn line_at(starts: &[u32], offset: u32) -> u32 {
-    u32::try_from(starts.partition_point(|start| *start <= offset)).unwrap_or(u32::MAX)
-}
-
-fn is_component_name(name: &str) -> bool {
-    name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
-}
-
-/// Whitespace-separated tokens of a static class string.
-fn class_tokens(text: &str) -> impl Iterator<Item = &str> {
-    text.split_whitespace().filter(|token| !token.is_empty() && token.len() <= 256)
-}
-
-/// Scan one parsed module.
-fn scan_module(path: &str, source: &str, module: &OxcModule<'_>) -> FileScan {
-    let semantic = &module.semantic;
-    let nodes = semantic.nodes();
-    let starts = line_starts(source);
-    let mut scan = FileScan { path: path.to_owned(), ..FileScan::default() };
-
-    // Imports and exports come from the module record.
-    let mut bound_specs: BTreeSet<String> = BTreeSet::new();
-    for entry in module.module_record.import_entries.iter() {
-        if entry.is_type {
-            continue;
-        }
-        let spec = entry.module_request.name.as_str().to_owned();
-        bound_specs.insert(spec.clone());
-        let imported = match &entry.import_name {
-            ImportImportName::Name(name) => Imported::Named(name.name.as_str().to_owned()),
-            ImportImportName::NamespaceObject => Imported::Namespace,
-            ImportImportName::Default(_) => Imported::Default,
-        };
-        scan.imports.push(ImportBinding {
-            local: entry.local_name.name.as_str().to_owned(),
-            spec,
-            imported,
-            line: line_at(&starts, entry.statement_span.start),
-        });
-    }
-    for (spec, requests) in module.module_record.requested_modules.iter() {
-        if bound_specs.contains(spec.as_str()) {
-            continue;
-        }
-        for request in requests.iter() {
-            if request.is_import && !request.is_type {
-                scan.side_effect_imports.push((spec.as_str().to_owned(), line_at(&starts, request.statement_span.start)));
-            }
-        }
-    }
-    for entry in module.module_record.local_export_entries.iter() {
-        if entry.is_type {
-            continue;
-        }
-        let exported = match &entry.export_name {
-            ExportExportName::Name(name) => name.name.as_str().to_owned(),
-            ExportExportName::Default(_) => "default".to_owned(),
-            _ => continue,
-        };
-        let local = match &entry.local_name {
-            ExportLocalName::Name(name) => name.name.as_str().to_owned(),
-            ExportLocalName::Default(name) => name.name.as_str().to_owned(),
-            _ => continue,
-        };
-        scan.exports.insert(exported, local);
-    }
-    for entry in module.module_record.indirect_export_entries.iter() {
-        if entry.is_type {
-            continue;
-        }
-        let (Some(request), ExportExportName::Name(exported)) = (&entry.module_request, &entry.export_name) else {
-            if let (Some(request), ExportExportName::Default(_)) = (&entry.module_request, &entry.export_name) {
-                scan.reexports.insert("default".to_owned(), (request.name.as_str().to_owned(), "default".to_owned()));
-            }
-            continue;
-        };
-        let imported = match &entry.import_name {
-            ExportImportName::Name(name) => name.name.as_str().to_owned(),
-            _ => "*".to_owned(),
-        };
-        scan.reexports.insert(exported.name.as_str().to_owned(), (request.name.as_str().to_owned(), imported));
-    }
-
-    // Owner of a node: the nearest component-like function, class or variable.
-    let owner_of = |id: NodeId| -> Option<String> {
-        let mut current = id;
-        loop {
-            let parent = nodes.parent_id(current);
-            if parent == current {
-                return None;
-            }
-            current = parent;
-            let kind = nodes.get_node(current).kind();
-            let name: Option<String> = if let Some(function) = kind.as_function() {
-                function.id.as_ref().map(|id| id.name.as_str().to_owned())
-            } else if let Some(class) = kind.as_class() {
-                class.id.as_ref().map(|id| id.name.as_str().to_owned())
-            } else if kind.as_arrow_function_expression().is_some() {
-                // `const Name = () => ...` or `const Name = memo(() => ...)`.
-                let mut up = nodes.parent_id(current);
-                let mut found = None;
-                for _ in 0..3 {
-                    let k = nodes.get_node(up).kind();
-                    if let Some(declarator) = k.as_variable_declarator() {
-                        found = declarator.id.get_identifier_name().map(|n| n.as_str().to_owned());
-                        break;
-                    }
-                    if k.as_call_expression().is_none() && k.as_parenthesized_expression().is_none() {
-                        break;
-                    }
-                    up = nodes.parent_id(up);
-                }
-                found
-            } else {
-                None
-            };
-            if let Some(name) = name {
-                if is_component_name(&name) {
-                    return Some(name);
-                }
-            }
-        }
-    };
-
-    let module_locals: BTreeSet<String> = scan
-        .imports
-        .iter()
-        .filter(|binding| binding.spec.ends_with(".module.css") && !matches!(binding.imported, Imported::Named(_)))
-        .map(|binding| binding.local.clone())
-        .collect();
-    for node in nodes.iter() {
-        let kind = node.kind();
-        let id = node.id();
-        // Component-like declarations at any depth of the module.
-        if let Some(function) = kind.as_function() {
-            if let Some(name) = function.id.as_ref().map(|id| id.name.as_str()) {
-                if is_component_name(name) {
-                    scan.components.entry(name.to_owned()).or_insert(line_at(&starts, function.span.start));
-                }
-            }
-        } else if let Some(class) = kind.as_class() {
-            if let Some(name) = class.id.as_ref().map(|id| id.name.as_str()) {
-                if is_component_name(name) {
-                    scan.components.entry(name.to_owned()).or_insert(line_at(&starts, class.span.start));
-                }
-            }
-        } else if let Some(declarator) = kind.as_variable_declarator() {
-            if let (Some(name), Some(init)) = (declarator.id.get_identifier_name(), declarator.init.as_ref()) {
-                let looks_callable = matches!(
-                    init,
-                    Expression::ArrowFunctionExpression(_)
-                        | Expression::FunctionExpression(_)
-                        | Expression::CallExpression(_)
-                );
-                if looks_callable && is_component_name(name.as_str()) {
-                    scan.components.entry(name.as_str().to_owned()).or_insert(line_at(&starts, declarator.span.start));
-                }
-            }
-        }
-        // JSX attributes with class lists.
-        if let Some(attribute) = kind.as_jsx_attribute() {
-            let name = match &attribute.name {
-                JSXAttributeName::Identifier(identifier) => identifier.name.as_str(),
-                _ => continue,
-            };
-            if !CLASS_ATTRIBUTES.contains(&name) {
-                continue;
-            }
-            let owner = owner_of(id);
-            let line = line_at(&starts, attribute.span.start);
-            match &attribute.value {
-                Some(JSXAttributeValue::StringLiteral(text)) => {
-                    for token in class_tokens(text.value.as_str()) {
-                        scan.class_uses.push(ClassUse { token: token.to_owned(), line, owner: owner.clone(), conditional: false });
-                    }
-                }
-                Some(JSXAttributeValue::ExpressionContainer(container)) => {
-                    if let Some(expression) = container.expression.as_expression() {
-                        let mut dynamic = false;
-                        collect_expression(expression, false, &module_locals, &mut |token, conditional| {
-                            scan.class_uses.push(ClassUse { token: token.to_owned(), line, owner: owner.clone(), conditional });
-                        }, &mut dynamic);
-                        if dynamic {
-                            scan.dynamic_class_expressions += 1;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        // JSX tags: component renders.
-        if let Some(opening) = kind.as_jsx_opening_element() {
-            if let JSXElementName::IdentifierReference(reference) = &opening.name {
-                let name = reference.name.as_str();
-                if is_component_name(name) {
-                    scan.renders.push(RenderUse {
-                        local: name.to_owned(),
-                        line: line_at(&starts, opening.span.start),
-                        owner: owner_of(id),
-                    });
-                }
-            }
-        }
-        // `styles.card` and `styles["card"]`.
-        if let Some(member) = kind.as_static_member_expression() {
-            if let Expression::Identifier(object) = &member.object {
-                scan.record_module_use(object.name.as_str(), member.property.name.as_str(), line_at(&starts, member.span.start), owner_of(id));
-            }
-        }
-        if let Some(member) = kind.as_computed_member_expression() {
-            if let (
-                Expression::Identifier(object),
-                Expression::StringLiteral(key),
-            ) = (&member.object, &member.expression)
-            {
-                scan.record_module_use(object.name.as_str(), key.value.as_str(), line_at(&starts, member.span.start), owner_of(id));
-            }
-        }
-        // Custom properties set or read from code.
-        if let Some(call) = kind.as_call_expression() {
-            if let Expression::StaticMemberExpression(callee) = &call.callee {
-                let method = callee.property.name.as_str();
-                let writes = match method {
-                    "setProperty" => Some(true),
-                    "getPropertyValue" | "removeProperty" => Some(method == "removeProperty"),
-                    _ => None,
-                };
-                if let (Some(writes), Some(first)) = (writes, call.arguments.first()) {
-                    if let Some(Expression::StringLiteral(name)) = first.as_expression() {
-                        if name.value.as_str().starts_with("--") {
-                            scan.property_uses.push(PropertyUse {
-                                name: name.value.as_str().to_owned(),
-                                line: line_at(&starts, call.span.start),
-                                owner: owner_of(id),
-                                writes,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-        if let Some(property) = kind.as_object_property() {
-            if let Some(name) = property.key.static_name() {
-                if name.starts_with("--") && name.len() > 2 {
-                    scan.property_uses.push(PropertyUse {
-                        name: name.to_string(),
-                        line: line_at(&starts, property.span.start),
-                        owner: owner_of(id),
-                        writes: true,
-                    });
-                }
-            }
-        }
-    }
-    scan
-}
-
-impl FileScan {
-    fn record_module_use(&mut self, local: &str, class: &str, line: u32, owner: Option<String>) {
-        if let Some(index) = self.imports.iter().position(|binding| {
-            binding.local == local
-                && binding.spec.ends_with(".module.css")
-                && matches!(binding.imported, Imported::Default | Imported::Namespace)
-        }) {
-            self.module_class_uses.push(ModuleClassUse { binding: index, class: class.to_owned(), line, owner });
-        }
-    }
-}
-
-/// Collect static class tokens from a class-list expression. `dynamic` becomes
-/// true when any part cannot be read statically.
-fn collect_expression(
-    expression: &Expression<'_>,
-    conditional: bool,
-    module_locals: &BTreeSet<String>,
-    emit: &mut dyn FnMut(&str, bool),
-    dynamic: &mut bool,
-) {
-    use Expression as E;
-    match expression {
-        E::StringLiteral(text) => {
-            for token in class_tokens(text.value.as_str()) {
-                emit(token, conditional);
-            }
-        }
-        E::TemplateLiteral(template) => {
-            // Tokens touching a `${}` boundary are partial words, so only whole
-            // whitespace-delimited tokens inside a quasi are static.
-            let count = template.quasis.len();
-            for (index, quasi) in template.quasis.iter().enumerate() {
-                let text = quasi.value.raw.as_str();
-                let starts_open = index > 0 && !text.starts_with(char::is_whitespace);
-                let ends_open = index + 1 < count && !text.ends_with(char::is_whitespace);
-                let mut tokens: Vec<&str> = class_tokens(text).collect();
-                if ends_open && !tokens.is_empty() {
-                    tokens.pop();
-                    *dynamic = true;
-                }
-                if starts_open && !tokens.is_empty() {
-                    tokens.remove(0);
-                    *dynamic = true;
-                }
-                for token in tokens {
-                    emit(token, conditional);
-                }
-            }
-            if !template.expressions.is_empty() {
-                *dynamic = true;
-            }
-        }
-        E::ConditionalExpression(branch) => {
-            collect_expression(&branch.consequent, true, module_locals, emit, dynamic);
-            collect_expression(&branch.alternate, true, module_locals, emit, dynamic);
-        }
-        E::LogicalExpression(logical) => collect_expression(&logical.right, true, module_locals, emit, dynamic),
-        E::ParenthesizedExpression(inner) => collect_expression(&inner.expression, conditional, module_locals, emit, dynamic),
-        E::TSAsExpression(inner) => collect_expression(&inner.expression, conditional, module_locals, emit, dynamic),
-        E::ArrayExpression(array) => {
-            for element in &array.elements {
-                match element.as_expression() {
-                    Some(inner) => collect_expression(inner, conditional, module_locals, emit, dynamic),
-                    None => *dynamic = true,
-                }
-            }
-        }
-        E::CallExpression(call) => {
-            let helper = matches!(&call.callee, E::Identifier(name) if CLASS_HELPERS.contains(&name.name.as_str()));
-            if helper {
-                for argument in &call.arguments {
-                    match argument.as_expression() {
-                        Some(inner) => collect_expression(inner, conditional, module_locals, emit, dynamic),
-                        None => *dynamic = true,
-                    }
-                }
-            } else {
-                *dynamic = true;
-            }
-        }
-        E::ObjectExpression(object) => {
-            for property in &object.properties {
-                match property {
-                    ObjectPropertyKind::ObjectProperty(entry) => {
-                        match entry.key.static_name() {
-                            Some(name) => {
-                                for token in class_tokens(&name) {
-                                    emit(token, true);
-                                }
-                            }
-                            None => *dynamic = true,
-                        }
-                    }
-                    _ => *dynamic = true,
-                }
-            }
-        }
-        // `a + " b"`: both operands are class text.
-        E::BinaryExpression(sum) if sum.operator.as_str() == "+" => {
-            collect_expression(&sum.left, conditional, module_locals, emit, dynamic);
-            collect_expression(&sum.right, conditional, module_locals, emit, dynamic);
-        }
-        // `styles.card` is a resolved CSS-module member, not a runtime class.
-        E::StaticMemberExpression(member)
-            if matches!(&member.object, E::Identifier(object) if module_locals.contains(object.name.as_str())) => {}
-        E::ComputedMemberExpression(member)
-            if matches!(&member.object, E::Identifier(object) if module_locals.contains(object.name.as_str()))
-                && matches!(&member.expression, E::StringLiteral(_)) => {}
-        _ => *dynamic = true,
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Cross-file graph
@@ -514,30 +58,6 @@ pub(super) fn resolve_relative(file: &str, spec: &str) -> Option<String> {
     Some(parts.join("/"))
 }
 
-const CODE_EXTENSIONS: &[&str] = &["tsx", "ts", "jsx", "js", "mjs", "cjs", "mts", "cts"];
-
-/// The indexed file a relative module specifier names, probing extensions and
-/// index files the way bundlers do.
-fn resolve_module(files: &BTreeSet<String>, from: &str, spec: &str) -> Option<String> {
-    let base = resolve_relative(from, spec)?;
-    if files.contains(&base) {
-        return Some(base);
-    }
-    for extension in CODE_EXTENSIONS {
-        let candidate = format!("{base}.{extension}");
-        if files.contains(&candidate) {
-            return Some(candidate);
-        }
-    }
-    for extension in CODE_EXTENSIONS {
-        let candidate = format!("{base}/index.{extension}");
-        if files.contains(&candidate) {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
 fn component_key(file: &str, name: &str) -> Key {
     node_key(ImpactDomain::Code, "component", file, name)
 }
@@ -547,9 +67,15 @@ fn module_key(file: &str) -> Key {
 
 struct Resolver<'a> {
     scans: &'a BTreeMap<String, FileScan>,
-    files: BTreeSet<String>,
+    lookup: &'a dyn ImportLookup,
 }
 impl Resolver<'_> {
+    fn module(&self, from: &str, spec: &str) -> Option<String> {
+        match self.lookup.lookup(from, spec) {
+            Lookup::File(path) => Some(path),
+            Lookup::Package | Lookup::Unresolved(_) => None,
+        }
+    }
     /// Component key behind `exported` of `file`, following barrels a few hops.
     fn export_target(&self, file: &str, exported: &str, hops: u8) -> Option<Key> {
         let scan = self.scans.get(file)?;
@@ -565,11 +91,11 @@ impl Resolver<'_> {
             return None;
         }
         let (spec, imported) = scan.reexports.get(exported)?;
-        let target = resolve_module(&self.files, file, spec)?;
+        let target = self.module(file, spec)?;
         self.export_target(&target, if imported == "*" { exported } else { imported }, hops - 1)
     }
     fn import_target(&self, file: &str, binding: &ImportBinding) -> Option<Key> {
-        let target = resolve_module(&self.files, file, &binding.spec)?;
+        let target = self.module(file, &binding.spec)?;
         let exported = match &binding.imported {
             Imported::Default => "default".to_owned(),
             Imported::Named(name) => name.clone(),
@@ -582,11 +108,21 @@ impl Resolver<'_> {
 /// Build the code graph from scans. Pure over `scans`, unit-testable.
 pub(super) fn build_graph(scans: &BTreeMap<String, FileScan>) -> (BTreeMap<Key, Node>, Vec<Edge>, Vec<ImpactGap>) {
     let files: BTreeSet<String> = scans.keys().cloned().collect();
-    let resolver = Resolver { scans, files };
+    build_graph_with(scans, &RelativeImports(&files))
+}
+
+/// Build the code graph with import specifiers resolved by `lookup`.
+pub(super) fn build_graph_with(
+    scans: &BTreeMap<String, FileScan>,
+    lookup: &dyn ImportLookup,
+) -> (BTreeMap<Key, Node>, Vec<Edge>, Vec<ImpactGap>) {
+    let resolver = Resolver { scans, lookup };
+    let mut unresolved_imports: Vec<(String, String, String)> = Vec::new();
     let mut nodes: BTreeMap<Key, Node> = BTreeMap::new();
     let mut edges: Vec<Edge> = Vec::new();
     let mut alias_imports = 0u32;
     let mut dynamic = 0u32;
+    let mut dynamic_files: Vec<&str> = Vec::new();
     let mut unresolved_renders = 0u32;
     let mut owner_node = |nodes: &mut BTreeMap<Key, Node>, file: &str, owner: &Option<String>, line: u32| -> Key {
         match owner {
@@ -614,6 +150,9 @@ pub(super) fn build_graph(scans: &BTreeMap<String, FileScan>) -> (BTreeMap<Key, 
     };
     for (file, scan) in scans {
         dynamic += scan.dynamic_class_expressions;
+        if scan.dynamic_class_expressions > 0 {
+            dynamic_files.push(file.as_str());
+        }
         // Declared components exist even when nothing links to them yet.
         for (name, line) in &scan.components {
             nodes.entry(component_key(file, name)).or_insert_with(|| {
@@ -623,16 +162,38 @@ pub(super) fn build_graph(scans: &BTreeMap<String, FileScan>) -> (BTreeMap<Key, 
                 node
             });
         }
-        for binding in &scan.imports {
-            if (binding.spec.starts_with("@/") || binding.spec.starts_with("~/") || binding.spec.starts_with('#'))
-                && resolve_relative(file, &binding.spec).is_none()
-            {
-                alias_imports += 1;
+        // Code imports which name no indexed file are reported, never dropped.
+        // Stylesheet and asset specifiers have their own links and gaps.
+        let reexported = scan.reexports.values().map(|(spec, _)| spec.as_str());
+        let imported = scan.imports.iter().map(|binding| binding.spec.as_str());
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        for spec in imported.chain(reexported).filter(|spec| is_code_specifier(spec)) {
+            if !seen.insert(spec) {
+                continue;
+            }
+            if let Lookup::Unresolved(reason) = lookup.lookup(file, spec) {
+                unresolved_imports.push((file.clone(), spec.to_owned(), reason));
             }
         }
         // Class tokens.
         for usage in &scan.class_uses {
             let to = owner_node(&mut nodes, file, &usage.owner, usage.line);
+            if file.ends_with(".vue") {
+                // A scoped or module `<style>` block of the same component owns
+                // its class names; the token may also name a global class.
+                edges.push(Edge {
+                    from: module_class_key(file, &usage.token),
+                    to,
+                    strength: ImpactStrength::Candidate,
+                    relation: "code.uses-scoped-class",
+                    why: format!(
+                        "{}class \"{}\" in the template at line {}; applies if a scoped or module <style> of this component defines it",
+                        if usage.conditional { "conditional " } else { "" },
+                        usage.token,
+                        usage.line
+                    ),
+                });
+            }
             edges.push(Edge {
                 from: global_class_key(&usage.token),
                 to,
@@ -648,7 +209,8 @@ pub(super) fn build_graph(scans: &BTreeMap<String, FileScan>) -> (BTreeMap<Key, 
         }
         // CSS-module members.
         for usage in &scan.module_class_uses {
-            let binding = &scan.imports[usage.binding];
+            // Stored rows are checked when read; a binding with no import is skipped, never indexed.
+            let Some(binding) = scan.imports.get(usage.binding) else { continue };
             let Some(target) = resolve_relative(file, &binding.spec) else {
                 alias_imports += 1;
                 continue;
@@ -768,15 +330,37 @@ pub(super) fn build_graph(scans: &BTreeMap<String, FileScan>) -> (BTreeMap<Key, 
     if dynamic > 0 {
         gaps.push(ImpactGap {
             facet: "code.dynamic-class".to_owned(),
-            note: "className expressions with runtime parts; only their static tokens are linked".to_owned(),
+            note: format!(
+                "className expressions with runtime parts in {}{}; only their static tokens are linked, and every link from them is a candidate",
+                dynamic_files.iter().take(4).copied().collect::<Vec<_>>().join(", "),
+                if dynamic_files.len() > 4 { format!(" and {} more", dynamic_files.len() - 4) } else { String::new() },
+            ),
             count: Some(dynamic),
         });
     }
     if alias_imports > 0 {
         gaps.push(ImpactGap {
             facet: "code.alias-imports".to_owned(),
-            note: "imports through path aliases or packages are not resolved, so links through them are missing".to_owned(),
+            note: "stylesheet imports through path aliases or packages are not resolved, so style links through them are missing".to_owned(),
             count: Some(alias_imports),
+        });
+    }
+    if !unresolved_imports.is_empty() {
+        let shown = unresolved_imports
+            .iter()
+            .take(3)
+            .map(|(file, spec, reason)| format!("{file} imports \"{spec}\" ({reason})"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let more = unresolved_imports.len().saturating_sub(3);
+        // First, so a truncated gap list still shows that consumers may be missing.
+        gaps.insert(0, ImpactGap {
+            facet: "code.unresolved-imports".to_owned(),
+            note: format!(
+                "import specifiers which name no indexed file, so components and styles reached through them are not followed and consumers may be missing: {shown}{}",
+                if more > 0 { format!("; and {more} more") } else { String::new() }
+            ),
+            count: Some(unresolved_imports.len() as u32),
         });
     }
     if unresolved_renders > 0 {
@@ -786,10 +370,19 @@ pub(super) fn build_graph(scans: &BTreeMap<String, FileScan>) -> (BTreeMap<Key, 
             count: Some(unresolved_renders),
         });
     }
-    gaps.push(ImpactGap {
-        facet: "code.vue".to_owned(),
-        note: "Vue single-file components are not indexed, so their <style> and class usage are not seen".to_owned(),
-        count: None,
+    let vue_files = scans.keys().filter(|file| file.ends_with(".vue")).count();
+    gaps.push(if vue_files > 0 {
+        ImpactGap {
+            facet: "code.vue".to_owned(),
+            note: "Vue templates are read for static class tokens, :class string literals and $style members; the <script>, component renders, slots and v-bind() in <style> are not".to_owned(),
+            count: Some(vue_files as u32),
+        }
+    } else {
+        ImpactGap {
+            facet: "code.vue".to_owned(),
+            note: "no Vue single-file components were indexed with style links, so their <style> blocks and template classes are not seen".to_owned(),
+            count: None,
+        }
     });
     (nodes, edges, gaps)
 }
@@ -804,13 +397,6 @@ struct IndexedFile {
     source: Key,
 }
 
-fn profile_for(path: &str) -> Option<TypeScriptSource> {
-    match path.rsplit('.').next()? {
-        "tsx" | "jsx" | "js" | "mjs" | "cjs" => Some(TypeScriptSource::Tsx),
-        "ts" | "mts" | "cts" => Some(TypeScriptSource::TypeScript),
-        _ => None,
-    }
-}
 
 fn indexed_files(cx: &ImpactContext<'_>) -> Result<Vec<IndexedFile>, String> {
     use backend_engine::builtin::{native_source_evidence_relation_budgeted, native_source_evidence_page_budgeted};
@@ -855,6 +441,52 @@ fn indexed_files(cx: &ImpactContext<'_>) -> Result<Vec<IndexedFile>, String> {
     Ok(out)
 }
 
+/// How a listed file is served from the row the index published for it.
+enum Published<'a> {
+    /// The index scanned these bytes; its facts are the scan.
+    Scanned { host: &'a PersistedHost, dynamic_class_expressions: u32 },
+    /// The index found these bytes do not parse.
+    Unparsed(&'a PersistedHost),
+    /// There is no row for these bytes, or the index could not scan them: the
+    /// source is scanned here, and that scan witnesses the file.
+    ScanHere,
+}
+
+fn published_for<'a>(file: &IndexedFile, host: Option<&'a PersistedHost>) -> Published<'a> {
+    let Some(host) = host else { return Published::ScanHere };
+    let same_bytes = host.source == file.source && file.length.is_none_or(|length| length == host.byte_length);
+    if !same_bytes {
+        return Published::ScanHere;
+    }
+    match host.state {
+        CodeHostState::Scanned { dynamic_class_expressions } => Published::Scanned { host, dynamic_class_expressions },
+        CodeHostState::Unparsed => Published::Unparsed(host),
+        CodeHostState::Unavailable(_) => Published::ScanHere,
+    }
+}
+
+/// Query-time scans spent against the limits. A file the index published
+/// facts for costs nothing, however late it is listed.
+#[derive(Default)]
+struct ScanBudget {
+    scans: u32,
+    bytes: usize,
+    /// Files which needed a scan after the budget was spent.
+    over: u32,
+}
+
+impl ScanBudget {
+    /// Whether one more file may be scanned here; counts it either way.
+    fn admit(&mut self) -> bool {
+        if self.scans as usize >= MAX_FILES || self.bytes >= MAX_TOTAL_BYTES {
+            self.over += 1;
+            return false;
+        }
+        self.scans += 1;
+        true
+    }
+}
+
 impl ImpactAdapter for CodeAdapter {
     fn domain(&self) -> ImpactDomain {
         ImpactDomain::Code
@@ -874,19 +506,54 @@ impl ImpactAdapter for CodeAdapter {
         let mut witnesses = Vec::new();
         let mut gaps = Vec::new();
         let mut reasons = Vec::new();
-        let (mut stale, mut unparsed, mut total) = (Vec::new(), Vec::new(), 0usize);
-        for (index, file) in listed.iter().enumerate() {
+        let (mut stale, mut unparsed) = (Vec::new(), Vec::new());
+        let mut budget = ScanBudget::default();
+        // Links the index published are the graph; a file with no published
+        // facts (older index, budget, no CSS worker) is scanned here instead.
+        let persisted = match super::code_links::read_persisted(cx.snapshot, cx.project, cx.cancelled) {
+            Ok(persisted) => persisted,
+            Err(error) => {
+                if (cx.cancelled)() {
+                    return empty(ImpactDomainState::Unavailable { reason: "cancelled".to_owned() });
+                }
+                reasons.push(format!("the published code links could not be read ({error}); sources were scanned at query time"));
+                None
+            }
+        };
+        let mut from_index = 0u32;
+        for file in &listed {
             if (cx.cancelled)() {
                 return empty(ImpactDomainState::Unavailable { reason: "cancelled".to_owned() });
             }
-            if index >= MAX_FILES || total >= MAX_TOTAL_BYTES {
-                reasons.push(format!("only the first {index} of {} sources were scanned", listed.len()));
-                gaps.push(ImpactGap {
-                    facet: "code.scan-limit".to_owned(),
-                    note: "the source scan budget was reached; later files were not read".to_owned(),
-                    count: Some((listed.len() - index) as u32),
-                });
-                break;
+            match published_for(file, persisted.as_ref().and_then(|code| code.hosts.get(&file.path))) {
+                Published::Scanned { host, dynamic_class_expressions } => {
+                    witnesses.push(FileWitness {
+                        root: root.clone(),
+                        path: file.path.clone(),
+                        length: host.byte_length,
+                        source: file.source,
+                    });
+                    scans.insert(
+                        file.path.clone(),
+                        super::code_links::scan_from_facts(&file.path, dynamic_class_expressions, &host.facts),
+                    );
+                    from_index += 1;
+                    continue;
+                }
+                Published::Unparsed(host) => {
+                    witnesses.push(FileWitness {
+                        root: root.clone(),
+                        path: file.path.clone(),
+                        length: host.byte_length,
+                        source: file.source,
+                    });
+                    unparsed.push(file.path.clone());
+                    continue;
+                }
+                Published::ScanHere => {}
+            }
+            if !budget.admit() {
+                continue;
             }
             let bytes = match super::super::ingest::read_stylo_selected_source(&root, &file.path, MAX_FILE_BYTES) {
                 Ok(bytes) => bytes,
@@ -895,7 +562,7 @@ impl ImpactAdapter for CodeAdapter {
                     continue;
                 }
             };
-            total += bytes.len();
+            budget.bytes += bytes.len();
             let current = *ContentId::<SourceFactDomain>::from_canonical_bytes(&bytes).as_ref();
             witnesses.push(FileWitness {
                 root: root.clone(),
@@ -918,6 +585,59 @@ impl ImpactAdapter for CodeAdapter {
                 Err(_) => unparsed.push(file.path.clone()),
             }
         }
+        // Hosts which only the index can list: single-file components.
+        let indexed: BTreeSet<String> = listed.iter().map(|file| file.path.clone()).collect();
+        let mut extra_known: BTreeSet<String> = BTreeSet::new();
+        let mut no_facts: Vec<String> = Vec::new();
+        if let Some(code) = &persisted {
+            for (path, host) in &code.hosts {
+                if !path.ends_with(".vue") || indexed.contains(path) {
+                    continue;
+                }
+                extra_known.insert(path.clone());
+                witnesses.push(FileWitness {
+                    root: root.clone(),
+                    path: path.clone(),
+                    length: host.byte_length,
+                    source: host.source,
+                });
+                match host.state {
+                    backend_engine::builtin::CodeHostState::Scanned { dynamic_class_expressions } => {
+                        scans.insert(
+                            path.clone(),
+                            super::code_links::scan_from_facts(path, dynamic_class_expressions, &host.facts),
+                        );
+                        from_index += 1;
+                    }
+                    backend_engine::builtin::CodeHostState::Unparsed => unparsed.push(path.clone()),
+                    // Nothing lists these files, so there is no source to scan here instead.
+                    backend_engine::builtin::CodeHostState::Unavailable(_) => no_facts.push(path.clone()),
+                }
+            }
+        }
+        if budget.over > 0 {
+            reasons.push(format!(
+                "only {} of {} sources which needed a query-time scan were read",
+                budget.scans,
+                budget.scans + budget.over
+            ));
+            gaps.push(ImpactGap {
+                facet: "code.scan-limit".to_owned(),
+                note: "the source scan budget was reached; these files were not read".to_owned(),
+                count: Some(budget.over),
+            });
+        }
+        if !no_facts.is_empty() {
+            reasons.push(format!("{} component files have no usable published facts", no_facts.len()));
+            gaps.push(ImpactGap {
+                facet: "code.unavailable-files".to_owned(),
+                note: format!(
+                    "the index could not scan them and nothing else lists them, not scanned: {}",
+                    no_facts.iter().take(4).cloned().collect::<Vec<_>>().join(", ")
+                ),
+                count: Some(no_facts.len() as u32),
+            });
+        }
         if !stale.is_empty() {
             reasons.push(format!("{} source files changed since indexing and were not scanned", stale.len()));
             gaps.push(ImpactGap {
@@ -934,6 +654,16 @@ impl ImpactAdapter for CodeAdapter {
                 count: Some(unparsed.len() as u32),
             });
         }
+        let at_query = budget.scans;
+        if at_query > 0 {
+            gaps.push(ImpactGap {
+                facet: "code.links-unpublished".to_owned(),
+                note: format!(
+                    "the index published style links for {from_index} sources; {at_query} were scanned at query time because no published facts matched their indexed bytes"
+                ),
+                count: Some(at_query),
+            });
+        }
         if listed.is_empty() {
             gaps.push(ImpactGap {
                 facet: "code.no-sources".to_owned(),
@@ -941,8 +671,42 @@ impl ImpactAdapter for CodeAdapter {
                 count: None,
             });
         }
-        let (nodes, edges, graph_gaps) = build_graph(&scans);
+        // Imports are placed by the compiler's resolver over the indexed files
+        // and the project's own tsconfig, not by path arithmetic.
+        let read_project = |relative: &str| match super::super::ingest::read_stylo_selected_source(&root, relative, MAX_FILE_BYTES) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(super::super::ingest::SelectedSourceReadError::Vanished) => Ok(None),
+            Err(error) => Err(std::io::Error::other(format!("{error:?}"))),
+        };
+        let imports = CompilerImports::new(&indexed, &read_project);
+        let (nodes, edges, mut graph_gaps) = build_graph_with(&scans, &imports);
+        for (config, error) in imports.configuration_errors() {
+            reasons.push(format!("{config} could not be used to resolve imports: {error}"));
+            graph_gaps.insert(0, ImpactGap {
+                facet: "code.tsconfig".to_owned(),
+                note: format!("{config} could not be loaded ({error}); imports which need it are reported as unresolved"),
+                count: None,
+            });
+        }
+        if let Some(unresolved) = graph_gaps.iter().find(|gap| gap.facet == "code.unresolved-imports") {
+            reasons.push(format!(
+                "{} import specifiers name no indexed file, so some consumers may be missing",
+                unresolved.count.unwrap_or(0)
+            ));
+        }
         gaps.extend(graph_gaps);
+        // Configuration read to place imports shapes the graph too: editing it
+        // must read as a change to the answer.
+        let mut shaping_paths = BTreeSet::new();
+        for (path, bytes) in imports.files_read() {
+            shaping_paths.insert(path.clone());
+            witnesses.push(FileWitness {
+                root: root.clone(),
+                path,
+                length: bytes.len() as u64,
+                source: *ContentId::<SourceFactDomain>::from_canonical_bytes(&bytes).as_ref(),
+            });
+        }
         let state = if reasons.is_empty() { ImpactDomainState::Analyzed } else { ImpactDomainState::Partial { reasons } };
         DomainLoad {
             nodes,
@@ -950,7 +714,8 @@ impl ImpactAdapter for CodeAdapter {
             gaps,
             basis: ImpactDomainBasis { domain: ImpactDomain::Code, state, files: scans.len() as u32 },
             files: witnesses,
-            known_paths: listed.iter().map(|file| file.path.clone()).collect(),
+            known_paths: indexed.iter().cloned().chain(extra_known).collect(),
+            shaping_paths,
         }
     }
 
@@ -971,6 +736,7 @@ impl ImpactAdapter for CodeAdapter {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::builtin::commands::impact_scan::ModuleClassUse;
 
     fn scan(path: &str, source: &str) -> FileScan {
         let profile = profile_for(path).expect("profile");
@@ -1012,6 +778,60 @@ export const Plain = () => <div className="a b" class="c" />;
         let scan = scan("a.tsx", "export const A = ({s}) => <i className={`btn-${s} x`} />;");
         let tokens: BTreeSet<&str> = scan.class_uses.iter().map(|usage| usage.token.as_str()).collect();
         assert!(tokens.contains("x") && !tokens.contains("btn-"), "{tokens:?}");
+    }
+
+    fn indexed(source: u8, length: Option<u64>) -> IndexedFile {
+        IndexedFile { path: "src/a.tsx".to_owned(), length, source: [source; 32] }
+    }
+
+    fn host(source: u8, length: u64, state: CodeHostState) -> PersistedHost {
+        PersistedHost { source: [source; 32], byte_length: length, state, facts: Vec::new() }
+    }
+
+    #[test]
+    fn published_rows_serve_only_the_bytes_they_describe() {
+        let scanned = host(1, 10, CodeHostState::Scanned { dynamic_class_expressions: 2 });
+        assert!(matches!(
+            published_for(&indexed(1, Some(10)), Some(&scanned)),
+            Published::Scanned { dynamic_class_expressions: 2, .. }
+        ));
+        assert!(matches!(published_for(&indexed(1, None), Some(&scanned)), Published::Scanned { .. }));
+        assert!(matches!(published_for(&indexed(2, Some(10)), Some(&scanned)), Published::ScanHere));
+        assert!(matches!(published_for(&indexed(1, Some(11)), Some(&scanned)), Published::ScanHere));
+        assert!(matches!(published_for(&indexed(1, Some(10)), None), Published::ScanHere));
+        let unparsed = host(1, 10, CodeHostState::Unparsed);
+        assert!(matches!(published_for(&indexed(1, Some(10)), Some(&unparsed)), Published::Unparsed(_)));
+    }
+
+    #[test]
+    fn a_host_the_index_could_not_scan_is_scanned_here_and_witnessed_there() {
+        let unavailable = host(1, 10, CodeHostState::Unavailable(backend_engine::builtin::CodeUnavailable::Limit));
+        assert!(matches!(published_for(&indexed(1, Some(10)), Some(&unavailable)), Published::ScanHere));
+    }
+
+    #[test]
+    fn the_scan_budget_counts_scans_and_never_positions() {
+        let mut budget = ScanBudget::default();
+        for _ in 0..MAX_FILES {
+            assert!(budget.admit());
+        }
+        // Files served from the index never reach the budget, so a late one is
+        // unaffected; the next file which needs a scan is the one refused.
+        assert!(!budget.admit());
+        assert!(!budget.admit());
+        assert_eq!((budget.scans as usize, budget.over), (MAX_FILES, 2));
+        let mut heavy = ScanBudget { bytes: MAX_TOTAL_BYTES, ..ScanBudget::default() };
+        assert!(!heavy.admit());
+        assert_eq!((heavy.scans, heavy.over), (0, 1));
+    }
+
+    #[test]
+    fn a_module_class_use_with_no_import_is_skipped_not_indexed() {
+        let mut broken = FileScan { path: "src/a.tsx".to_owned(), ..FileScan::default() };
+        broken.module_class_uses.push(ModuleClassUse { binding: 3, class: "title".to_owned(), line: 1, owner: None });
+        let scans = BTreeMap::from([("src/a.tsx".to_owned(), broken)]);
+        let (_, edges, _) = build_graph(&scans);
+        assert!(edges.is_empty(), "{edges:?}");
     }
 
     #[test]
@@ -1151,6 +971,7 @@ export default function Page() { return <Button />; }"#,
             basis: ImpactDomainBasis { domain: ImpactDomain::Code, state: ImpactDomainState::Analyzed, files: 2 },
             files: Vec::new(),
             known_paths: BTreeSet::new(),
+            shaping_paths: BTreeSet::new(),
         };
         let seed = |kind: &str, name: &str| {
             ImpactRequest::new(
@@ -1174,6 +995,7 @@ export default function Page() { return <Button />; }"#,
                         basis: ImpactDomainBasis { domain: ImpactDomain::Code, state: ImpactDomainState::Analyzed, files: 2 },
                         files: Vec::new(),
                         known_paths: BTreeSet::new(),
+                        shaping_paths: BTreeSet::new(),
                     }),
                 ],
                 &|spec, node| match node.domain {
@@ -1211,3 +1033,7 @@ export default function Page() { return <Button />; }"#,
         assert!(deps.rows.iter().any(|row| row.node.kind == "rule" && row.node.name == ".btn"), "{deps:?}");
     }
 }
+
+#[cfg(test)]
+#[path = "impact_imports_tests.rs"]
+mod imports_tests;

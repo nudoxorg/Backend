@@ -104,6 +104,60 @@ fn typescript_requires_nse(
         .is_none_or(|project| project.files.is_empty())
 }
 
+/// The coverage sentence for a profile that published only some of its sources.
+///
+/// A C# source is left out of a publication for one reason only: Roslyn reports
+/// errors in that file (an unrestored package or a missing reference is the usual
+/// cause). Say so, so the next step is to restore packages and reindex rather
+/// than to read a bare count.
+fn partial_profile_gap(
+    profile: backend_semantic::vocabulary::LanguageProfile,
+    partial: &backend_engine::builtin::PartialSemanticCoverage,
+) -> String {
+    let (completed, total) = (partial.completed(), partial.total());
+    if matches!(profile, backend_semantic::vocabulary::LanguageProfile::CSharp(_)) {
+        return format!(
+            "{profile:?} profile partial ({completed}/{total}): the other C# files do not compile, usually because packages are not restored, so they have no semantic facts; restore packages and reindex; inspect package_profile"
+        );
+    }
+    format!("{profile:?} profile partial ({completed}/{total}); inspect package_profile")
+}
+
+/// Names the C# files of a partially published project that have no semantic image.
+///
+/// The list is derived, not stored: the project's captured C# files minus the files
+/// the selected C# images were compiled from. Capped so the sentence stays bounded.
+fn csharp_unpublished_files_gap(
+    project_paths: &BTreeSet<String>,
+    images: &[backend_semantic::ir::SemanticImageView<'_>],
+) -> Result<Option<String>, BuiltinModelError> {
+    const SHOWN: usize = 8;
+    let mut published = BTreeSet::new();
+    for image in images {
+        if matches!(
+            image.image_facts().authority,
+            backend_semantic::ir::SemanticImageAuthority::Language(
+                backend_semantic::vocabulary::LanguageProfile::CSharp(_)
+            )
+        ) {
+            published.insert(view_build::compiled_source_path(image)?);
+        }
+    }
+    let missing = project_paths
+        .iter()
+        .filter(|path| path.ends_with(".cs") && !published.contains(*path))
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return Ok(None);
+    }
+    let mut text = format!("C# files without semantic facts ({}): ", missing.len());
+    text.push_str(&missing.iter().take(SHOWN).map(|path| path.as_str()).collect::<Vec<_>>().join(", "));
+    if missing.len() > SHOWN {
+        text.push_str(&format!(", and {} more", missing.len() - SHOWN));
+    }
+    Ok(Some(text))
+}
+
 const OBSERVED_POLICY_GAP: &str = "Source selection was captured from observed inputs; current ignore-policy stability is unknown; reindex and inspect package_profile";
 
 fn restrict_typescript_inventory(
@@ -201,6 +255,14 @@ pub(super) fn execute_semantic_graph(
     };
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let sources = read_package_sources(&snapshot, package)?;
+    // A SQL declaration is bound by the SQL analysis, not a compiler
+    // publication: beside a TypeScript profile whose edges are held back it
+    // must not inherit that profile's observed-policy refusal.
+    if let Some(project) = sources.projects.get(&package.to_bytes()) {
+        if view_build::sql_row_host(&snapshot, &project.label, package, source_id)?.is_some() {
+            return Ok(None);
+        }
+    }
     let available = view_build::SourceAvailability::of(&sources)?;
     let view = library.view();
     let relation = snapshot
@@ -217,7 +279,7 @@ pub(super) fn execute_semantic_graph(
                 gaps.insert(format!("{:?} profile unavailable ({reason}); inspect package_profile", key.profile()));
             }
             ProductSemanticPublicationRecord::Published { coverage: SemanticPublicationCoverage::Partial(partial), .. } => {
-                gaps.insert(format!("{:?} profile partial ({}/{}); inspect package_profile", key.profile(), partial.completed(), partial.total()));
+                gaps.insert(partial_profile_gap(key.profile(), partial));
             }
             ProductSemanticPublicationRecord::Published { .. } => {}
         }
@@ -358,9 +420,13 @@ pub(super) fn execute_semantic_related_page(
             gaps.insert(format!("{:?} profile unavailable; inspect package_profile", key.profile()));
             return Ok(());
         };
-        if matches!(coverage, SemanticPublicationCoverage::Partial(_)) {
+        if let SemanticPublicationCoverage::Partial(partial) = coverage {
             withheld = true;
-            gaps.insert(format!("{:?} profile partial; inspect package_profile", key.profile()));
+            gaps.insert(if matches!(key.profile(), backend_semantic::vocabulary::LanguageProfile::CSharp(_)) {
+                partial_profile_gap(key.profile(), partial)
+            } else {
+                format!("{:?} profile partial; inspect package_profile", key.profile())
+            });
         }
         if matches!(key.profile(), backend_semantic::vocabulary::LanguageProfile::TypeScript(_)) && typescript_requires_nse(&sources, package) {
             withheld = true;
@@ -1890,7 +1956,12 @@ fn execute_observed_native_references(
     let view = library.view();
     let row = view_build::resolve_selected_view_address(view, target.as_str())
         .declaration()
-        .map_err(|failure| BuiltinModelError(failure.to_string()))?
+        .map_err(|failure| {
+            BuiltinModelError(match failure {
+                backend_library::CommandFailure::InvalidQuery(message) => message,
+                other => other.to_string(),
+            })
+        })?
         .ok_or_else(|| BuiltinModelError("references target is absent from the selected view".to_owned()))?;
     let backend_engine::RowId::Symbol(target_symbol) = row.id else {
         return Err(BuiltinModelError("references target is not a declaration row".to_owned()));
@@ -3070,7 +3141,17 @@ pub(super) fn execute_references(
                 })
             })?
             .ok_or_else(|| {
-                BuiltinModelError("references target is absent from the selected view".to_owned())
+                BuiltinModelError(match view.row_by_label(target.as_str()) {
+                    // A library symbol the project uses (a DOM or runtime API) is retained as a
+                    // navigation target, not a declaration, so it has no indexed uses to list.
+                    Some(row) if super::super::discovery_search::is_external_placeholder(row) => {
+                        "references target is declared outside the project, in a library it uses; \
+                         uses of external symbols are not indexed as references, so search the \
+                         source text for its name"
+                            .to_owned()
+                    }
+                    _ => "references target is absent from the selected view".to_owned(),
+                })
             })?;
         let target_symbol = match target_row.id {
             backend_engine::RowId::Symbol(symbol) => symbol,
@@ -3106,6 +3187,7 @@ pub(super) fn execute_references(
     let mut activations = Vec::new();
     let mut publication_found = false;
     let mut typescript_publication_found = false;
+    let mut csharp_partial = false;
     let mut profile_scopes = std::collections::BTreeMap::new();
     let mut coverage_gaps = BTreeSet::new();
     for_package_publications(&relation, package, &sources, "references", |key, record| {
@@ -3119,7 +3201,8 @@ pub(super) fn execute_references(
                 coverage_gaps.insert(format!("{:?} profile unavailable ({reason}); inspect package_profile{guidance}", key.profile()));
             }
             ProductSemanticPublicationRecord::Published { coverage: SemanticPublicationCoverage::Partial(partial), .. } => {
-                coverage_gaps.insert(format!("{:?} profile partial ({}/{}); inspect package_profile", key.profile(), partial.completed(), partial.total()));
+                csharp_partial |= matches!(key.profile(), backend_semantic::vocabulary::LanguageProfile::CSharp(_));
+                coverage_gaps.insert(partial_profile_gap(key.profile(), partial));
             }
             ProductSemanticPublicationRecord::Published { .. } => {}
         }
@@ -3181,6 +3264,11 @@ pub(super) fn execute_references(
             opened.push(image.reopen().map_err(|error| {
                 BuiltinModelError(format!("reopen semantic references image: {error}"))
             })?);
+        }
+    }
+    if csharp_partial {
+        if let Some(gap) = csharp_unpublished_files_gap(&project_paths_for_package(&sources, package), &opened)? {
+            coverage_gaps.insert(gap);
         }
     }
     let retargeting_scopes = available.retargeting_scopes(package, &profile_scopes);

@@ -235,10 +235,15 @@ pub(super) fn capture<F: FnMut() -> bool>(
                     source: Some(source),
                     byte_length: Some(length),
                     terminal: backend_engine::builtin::StyloTerminal::Parsed(_),
+                    fragment,
                     ..
                 } if pass == 0 && *owner == project => {
                     hosts.insert(*key);
-                    source_hosts.push((*key, path.clone(), *content, *source, *length));
+                    // An embedded sheet's bytes are those of its enclosing file.
+                    let file = fragment
+                        .as_ref()
+                        .map_or_else(|| path.clone(), |fragment| fragment.file.clone());
+                    source_hosts.push((*key, file, *content, *source, *length));
                     true
                 }
                 StyloAnalysisRecord::Host { project: owner, .. }

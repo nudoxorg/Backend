@@ -178,6 +178,9 @@ fn records_with_cursor(
 ) -> String {
     let mut lines = Lines::new();
     lines.push(coverage(list.coverage(), theme));
+    if list.hidden_non_declarations() > 0 {
+        lines.push(format!("{} import/external row(s) on this page left out by --declarations-only", list.hidden_non_declarations()));
+    }
     if let Some(gap) = list.graph_gap() {
         lines.push(format!("graph relations incomplete: {gap}"));
     }
@@ -507,6 +510,7 @@ fn push_shelf_entry(lines: &mut Lines, entry: &ShelfEntry, theme: Theme) {
             language.declarations().get()
         ));
     }
+    tags.extend(entry.profiles().iter().map(|profile| profile.phrase()));
     let _ = write!(head, "  {}", theme.paint(Style::Dim, &tags.join(" · ")));
     lines.push(head);
     lines.push(format!(
@@ -539,6 +543,16 @@ pub fn outline(tree: &OutlineTree, theme: Theme) -> String {
     summary.push_str(" (outline pagination only; analysis coverage is not certified)");
     if tree.unresolved() > 0 {
         let _ = write!(summary, " · {} unnamed", tree.unresolved());
+    }
+    if tree.filtered_out() > 0 {
+        let _ = write!(summary, " · {} left out by the kind filter", tree.filtered_out());
+    }
+    if tree.locals_hidden() > 0 {
+        let _ = write!(
+            summary,
+            " · {} anonymous or function-local left out (omit top_level to list them)",
+            tree.locals_hidden()
+        );
     }
     lines.push(theme.paint(Style::Dim, &summary));
     if let Some(page) = tree.page().filter(|page| page.continuation.is_some()) {
@@ -589,7 +603,7 @@ pub fn status(status: &Status, theme: Theme) -> String {
         theme.paint(
             Style::Dim,
             &format!(
-                "· {} row(s) · revision {} · source {} · sequence {}",
+                "· {} row(s) · revision {} · store layout {} · sequence {}",
                 status.rows(),
                 status.revision(),
                 status.source(),
@@ -672,9 +686,15 @@ fn product_projection(view: &ProductView, theme: Theme, detail: Detail) -> Strin
             return lines.finish();
         }
     }
-    if let Some(note) = view.note() {
+    if let Some(note) = view.note_for(Some(detail)) {
         lines.push(format!("  {note}"));
         if view.records().is_empty() {
+            if view.is_references_result() {
+                lines.push(theme.paint(
+                    Style::Dim,
+                    "  no reference records captured at this revision",
+                ));
+            }
             index_search_page_footer(view, &mut lines);
             index_job_footer(view, &mut lines, theme);
             return lines.finish();
@@ -698,11 +718,11 @@ fn product_projection(view: &ProductView, theme: Theme, detail: Detail) -> Strin
             theme.paint(Style::Ready, "●"),
             theme.paint(Style::Name, record.title())
         );
-        if !record.tags().is_empty() {
+        if !record.tags_for(Some(detail)).is_empty() {
             let _ = write!(
                 head,
                 "  {}",
-                theme.paint(Style::Dim, &record.tags().join(" · "))
+                theme.paint(Style::Dim, &record.tags_for(Some(detail)).join(" · "))
             );
         }
         lines.push(head);
@@ -727,6 +747,9 @@ fn product_projection(view: &ProductView, theme: Theme, detail: Detail) -> Strin
         lines.push(format!("Continue: {command}"));
     }
     index_search_page_footer(view, &mut lines);
+    if let Some(cursor) = view.reference_cursor() {
+        lines.push(format!("  next cursor (pass --cursor): {}", cursor.token()));
+    }
     index_job_footer(view, &mut lines, theme);
     lines.finish()
 }

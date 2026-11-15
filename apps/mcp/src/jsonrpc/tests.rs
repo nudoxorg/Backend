@@ -37,6 +37,8 @@ mod package_compiler_outcomes;
 mod package_graph_budget;
 #[path = "tests/record_budget_pages.rs"]
 mod record_budget_pages;
+#[path = "tests/references_pages.rs"]
+mod references_pages;
 #[path = "tests/document_section_pages.rs"]
 mod document_section_pages;
 #[path = "tests/semantic_selection.rs"]
@@ -55,6 +57,8 @@ mod stylo_transport;
 mod token_outline;
 #[path = "tests/typescript_admission.rs"]
 mod typescript_admission;
+#[path = "tests/usage_argument_names.rs"]
+mod usage_argument_names;
 
 const PROJECT: &str = "/abs/polyglot";
 const MODULE: &str = "/abs/polyglot::src/lib.rs";
@@ -2391,6 +2395,29 @@ fn semantic_shapes_jsonrpc_refuses_oversized_view_without_dropping_required_fact
     }
 }
 
+/// A selected id is written as 64 lowercase hex digits and read back from either spelling.
+fn selected_id_hex(wire: &Value) -> String {
+    let text = wire
+        .as_str()
+        .expect("a selected id is written as 64 hex digits");
+    assert!(
+        text.len() == 64 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
+        "{text}"
+    );
+    let from_hex: backend_library::SelectedSymbolId =
+        serde_json::from_value(wire.clone()).expect("the hex spelling reads back");
+    let from_array: backend_library::SelectedSymbolId =
+        serde_json::from_value(json!(from_hex.bytes())).expect("the array spelling reads back");
+    assert_eq!(from_hex, from_array);
+    text.to_owned()
+}
+
+/// The wire spelling of `bytes` as a selected id: exactly their 64 hex digits.
+fn assert_selected_id_wire(wire: &Value, bytes: &[u8; 32]) {
+    let expected: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    assert_eq!(selected_id_hex(wire), expected);
+}
+
 fn text_of(result: &Value) -> String {
     result["content"][0]["text"]
         .as_str()
@@ -4147,30 +4174,38 @@ fn index_progress_distinguishes_prior_owner_tickets_and_terminal_refusals() {
 
 #[test]
 fn dependency_refusal_marks_tool_failure_and_keeps_the_exact_requested_package() {
-    let mut server = ready(Fake {
-        surface_reply: Some(SurfaceReply::Dependencies(
-            backend_library::DependencyFacts::Unavailable(
-                backend_library::ProductText::from_static("package is not recorded"),
-            ),
-        )),
-        ..Fake::default()
-    });
-    let result = call(
-        &mut server,
-        "backend.dependencies",
-        &json!({"package": "pkg:npm/react@19.1.0"}),
-    );
-    assert_eq!(result["isError"], true);
-    assert_eq!(result["structuredContent"]["answer"], "product");
-    assert_eq!(
-        result["structuredContent"]["fault"]["operand"],
-        "pkg:npm/react@19.1.0"
-    );
-    assert_eq!(
-        result["structuredContent"]["fault"]["call"]["arguments"]["package"],
-        "pkg:npm/react@19.1.0"
-    );
-    assert!(text_of(&result).contains("package is not recorded"));
+    // A pinned registry release is acquired before its dependencies can be read, so the
+    // refusal offers `add` (backend.index) with the release as its path; a local label is
+    // looked up with `package`. Either way the requested package is the call's operand.
+    for (package, expected_call) in [
+        (
+            "pkg:npm/react@19.1.0",
+            json!({"name": "backend.index", "arguments": {"path": "pkg:npm/react@19.1.0"}}),
+        ),
+        (
+            "serde",
+            json!({"name": "backend.package", "arguments": {"package": "serde"}}),
+        ),
+    ] {
+        let mut server = ready(Fake {
+            surface_reply: Some(SurfaceReply::Dependencies(
+                backend_library::DependencyFacts::Unavailable(
+                    backend_library::ProductText::from_static("package is not recorded"),
+                ),
+            )),
+            ..Fake::default()
+        });
+        let result = call(
+            &mut server,
+            "backend.dependencies",
+            &json!({"package": package}),
+        );
+        assert_eq!(result["isError"], true);
+        assert_eq!(result["structuredContent"]["answer"], "product");
+        assert_eq!(result["structuredContent"]["fault"]["operand"], package);
+        assert_eq!(result["structuredContent"]["fault"]["call"], expected_call);
+        assert!(text_of(&result).contains("package is not recorded"));
+    }
 }
 
 #[test]
@@ -4653,6 +4688,39 @@ fn index_tool_advertises_and_validates_execution_intent() {
             .unwrap_or_default()
             .contains("must be a string")
     );
+}
+
+#[test]
+fn index_tool_acquires_a_version_pinned_release_and_refuses_every_other_non_directory() {
+    // The dependency refusal for an unacquired release offers exactly this call.
+    let mut server = ready(Fake::default());
+    let accepted = call(
+        &mut server,
+        "backend.index",
+        &json!({"path": "pkg:npm/react@19.1.0"}),
+    );
+    assert_eq!(accepted["isError"], false, "{accepted}");
+    assert!(matches!(
+        server.product.surface_commands.as_slice(),
+        [SurfaceCommand::IndexStart { package, .. }] if package.as_str() == "pkg:npm/react@19.1.0"
+    ));
+    for refused in ["pkg:npm/react", "react", "relative/dir", "/no/such/directory"] {
+        let before = server.product.surface_commands.len();
+        let response = request(
+            &mut server,
+            "tools/call",
+            &json!({"name": "backend.index", "arguments": {"path": refused}}),
+        );
+        assert!(
+            response.get("error").is_some() || response["result"]["isError"] == true,
+            "{refused}: {response}"
+        );
+        assert_eq!(
+            server.product.surface_commands.len(),
+            before,
+            "{refused}: no index operation was submitted"
+        );
+    }
 }
 
 #[test]
@@ -5217,9 +5285,9 @@ fn page_projection_mcp_combined_summary_retains_real_faults_and_section_notes() 
         result["structuredContent"]["identity"]["coordinate"],
         DECLARATION
     );
-    assert_eq!(
-        result["structuredContent"]["identity"]["semantic_data"]["value"],
-        json!(native.as_bytes())
+    assert_selected_id_wire(
+        &result["structuredContent"]["identity"]["semantic_data"]["value"],
+        native.as_bytes(),
     );
     assert_eq!(
         result["structuredContent"]["signature"],
@@ -5345,6 +5413,7 @@ fn standard_mcp_preview_retains_every_structured_coordinate_and_the_cli_projecti
         &Request::Search {
             text: "ferris".to_owned(),
             limit: 25,
+            declarations_only: false,
         },
     )
     .expect("fixture search answer");
@@ -5377,9 +5446,9 @@ fn standard_mcp_preview_retains_every_structured_coordinate_and_the_cli_projecti
             text.lines().any(|line| line == format!("  `{coordinate}`")),
             "{text}"
         );
-        assert_eq!(
-            row["identity"]["semantic_data"]["value"],
-            json!(symbol_key(coordinate).as_bytes())
+        assert_selected_id_wire(
+            &row["identity"]["semantic_data"]["value"],
+            symbol_key(coordinate).as_bytes(),
         );
     }
     assert!(text.contains("showing 1 exact coordinate(s); 0 omitted from text preview"));
@@ -5518,6 +5587,49 @@ fn positive_default_fake_members_pages_preserve_credit_cursor_family_and_overrid
     assert_eq!(page.terminal, PageTerminal::Complete, "override has no fabricated children");
     overridden.omit_document_override_member = true;
     assert!(overridden.members_page(&selected, 1, None).is_err(), "the missing selected owner remains a refusal");
+}
+
+#[test]
+fn an_outline_kind_filter_must_be_a_string_of_kinds() {
+    let mut server = ready(Fake::default());
+    let accepted = call(&mut server, "backend.outline", &json!({"kind":"function"}));
+    assert_ne!(accepted["isError"], true, "{accepted}");
+    for (name, mistyped) in [("kind", json!(5)), ("exclude_kind", json!(["function"]))] {
+        let arguments = Map::from_iter([(name.to_owned(), mistyped)]);
+        let reply = request(
+            &mut server,
+            "tools/call",
+            &json!({"name":"backend.outline","arguments":arguments}),
+        );
+        assert!(
+            reply.get("error").is_some() || reply["result"]["isError"] == true,
+            "a {name} that is not a string is refused, not read as no filter: {reply}"
+        );
+    }
+}
+
+#[test]
+fn an_outline_top_level_option_is_a_boolean_and_keeps_top_level_declarations() {
+    let mut server = ready(Fake::default());
+    for value in [true, false] {
+        let result = call(&mut server, "backend.outline", &json!({"top_level": value}));
+        assert_ne!(result["isError"], true, "{result}");
+        let text = text_of(&result);
+        assert!(text.contains("  ƒ ferris"), "a declaration of the module stays listed: {text}");
+        assert!(result["structuredContent"].get("locals_hidden").is_none(), "nothing local to count");
+    }
+    let reply = request(
+        &mut server,
+        "tools/call",
+        &json!({"name":"backend.outline","arguments":{"top_level":"yes"}}),
+    );
+    assert!(
+        reply.get("error").is_some() || reply["result"]["isError"] == true,
+        "a top_level that is not a boolean is refused: {reply}"
+    );
+    let listed = request(&mut server, "tools/list", &json!({}));
+    let outline = tool_named(&listed["result"]["tools"], "backend.outline");
+    assert_eq!(outline["inputSchema"]["properties"]["top_level"]["type"], "boolean");
 }
 
 #[test]
@@ -8394,7 +8506,8 @@ fn generic_surface_dependency_refusal_keeps_exact_package_action_and_typed_fault
     assert_eq!(fault["operand"], package.as_str());
     assert_eq!(
         fault["call"],
-        json!({"name":"backend.package", "arguments":{"package":package.as_str()}})
+        json!({"name":"backend.index", "arguments":{"path":package.as_str()}}),
+        "a pinned release is acquired with add before its dependencies can be read"
     );
     assert!(text_of(&result).contains(package.as_str()));
     assert_eq!(server.product.surface_commands, [command]);
@@ -9713,14 +9826,31 @@ mod conditional_progress_tests {
             );
             assert_eq!(full["isError"], false);
             assert!(text_of(&full).contains("profile 2/3"));
-            assert_eq!(
-                full["structuredContent"]["surface"]["index_job"],
-                serde_json::to_value(backend_present::IndexJobProjection::Progress(
-                    backend_library::IndexJobObservation::Pending(page.clone())
-                ))
-                .expect("existing progress DTO")
-            );
+            let mut expected_job = serde_json::to_value(
+                backend_present::IndexJobProjection::Progress(
+                    backend_library::IndexJobObservation::Pending(page.clone()),
+                ),
+            )
+            .expect("existing progress DTO");
+            if detail == "summary" {
+                // A summary poll of an operation names the job ticket once, in the page; the
+                // events it carries leave out their copy of it.
+                let events = expected_job
+                    .pointer_mut("/value/detail/events")
+                    .and_then(Value::as_array_mut)
+                    .expect("page events");
+                assert_eq!(events.len(), 1);
+                for event in events {
+                    assert!(event.as_object_mut().expect("event").remove("ticket").is_some());
+                }
+            }
+            assert_eq!(full["structuredContent"]["surface"]["index_job"], expected_job);
             let action = full["structuredContent"]["index_poll"]["call"].clone();
+            assert_eq!(
+                action["arguments"].get("after_event").cloned(),
+                (detail == "summary").then(|| json!(3)),
+                "only a summary poll names the last event it reached"
+            );
             assert_eq!(
                 action["arguments"]["operation_key"],
                 json!(status.operation_key)
@@ -9758,6 +9888,198 @@ mod conditional_progress_tests {
             assert_context_bounded(&unchanged);
             assert_context_bounded(&changed);
         }
+    }
+
+    #[test]
+    fn a_changed_summary_poll_names_the_job_ticket_once_and_keeps_it_elsewhere() {
+        // Every progress event repeated the full ticket, and a poll repeated the CLI line.
+        use backend_library::{
+            IndexJobProgressEvent, IndexJobProgressKind, IndexOperationObservation,
+            IndexOperationState, IndexProgressPage, SemanticLanguageProfile,
+        };
+        let active = phases().remove(1);
+        let SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(status)) = &active
+        else {
+            panic!("active status")
+        };
+        let IndexOperationState::Active { ticket, stage } = &status.state else {
+            panic!("active ticket")
+        };
+        let event = |sequence| IndexJobProgressEvent {
+            ticket: ticket.clone(),
+            sequence,
+            kind: IndexJobProgressKind::ProfileAdmitted {
+                profile: SemanticLanguageProfile::from_name("typescript").expect("profile"),
+                ordinal: 2,
+                total: 3,
+            },
+        };
+        let page = |sequence| IndexProgressPage {
+            ticket: ticket.clone(),
+            stage: *stage,
+            events: vec![event(sequence), event(sequence + 1)].into_boxed_slice(),
+            next_sequence: sequence + 1,
+            truncated: false,
+            has_more: false,
+        };
+        let context = backend_present::StartupRecoveryContext::new(
+            PROJECT.to_owned(),
+            "/private/owner.sock".to_owned(),
+            "/observed/bundle/backend-cli".to_owned(),
+            backend_present::StartupRecoveryCommand::Status,
+            backend_present::StartupRecoveryMode::Active,
+            backend_present::StartupRecoveryWorkspace::Explicit("/private/workspace".to_owned()),
+        );
+        let mut sizes = Vec::new();
+        for (detail, compact) in [("summary", true), ("standard", false)] {
+            // With an installed CLI the poll could carry its shell line; only the standard one does.
+            let mut server = ready(Fake {
+                surface_reply: Some(active.clone()),
+                profile_progress_reply: Some(page(3)),
+                cli_context: Some(context.clone()),
+                ..Fake::default()
+            });
+            // The observation the caller holds covers the events the owner has reported so far.
+            let mut arguments = active_arguments();
+            arguments["after_observation"] = json!(
+                backend_client::IndexObservationFingerprint::active_with_profile_progress(
+                    status,
+                    Some(&page(3))
+                )
+                .expect("full fingerprint of the observed history")
+                .expect("active")
+            );
+            arguments["detail"] = json!(detail);
+            arguments["wait_millis"] = json!(0);
+            let unchanged = call(&mut server, INDEX_PROGRESS_TOOL, &arguments);
+            assert_eq!(unchanged["structuredContent"]["surface"]["data"]["state"], "pending-unchanged");
+            server.product.surface_reply = Some(active.clone());
+            server.product.profile_progress_reply = Some(page(5));
+            let changed = call(&mut server, INDEX_PROGRESS_TOOL, &arguments);
+            assert_eq!(changed["isError"], false);
+            let job = &changed["structuredContent"]["surface"]["index_job"]["value"]["detail"];
+            assert!(job["ticket"].is_object(), "the page still names its ticket once: {job}");
+            let events = job["events"].as_array().expect("events");
+            assert_eq!(events.len(), 2);
+            for event in events {
+                assert_eq!(event.get("ticket").is_none(), compact, "{detail}: {event}");
+            }
+            assert_eq!(
+                changed["structuredContent"]["index_poll"].get("shell").is_none(),
+                compact
+            );
+            sizes.push(serde_json::to_vec(&changed).expect("result").len());
+        }
+        assert!(sizes[0] < sizes[1], "summary polls are smaller: {sizes:?}");
+    }
+
+    #[test]
+    fn a_later_operation_poll_carries_only_events_after_the_last_one_it_was_sent() {
+        use backend_library::{
+            IndexJobProgressEvent, IndexJobProgressKind, IndexOperationObservation,
+            IndexOperationState, IndexProgressPage, SemanticLanguageProfile,
+        };
+        let active = phases().remove(1);
+        let SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(status)) = &active
+        else {
+            panic!("active status")
+        };
+        let IndexOperationState::Active { ticket, stage } = &status.state else {
+            panic!("active ticket")
+        };
+        let history = |through: u64| IndexProgressPage {
+            ticket: ticket.clone(),
+            stage: *stage,
+            events: (1..=through)
+                .map(|sequence| IndexJobProgressEvent {
+                    ticket: ticket.clone(),
+                    sequence,
+                    kind: IndexJobProgressKind::ProfileAdmitted {
+                        profile: SemanticLanguageProfile::from_name("typescript").expect("profile"),
+                        ordinal: 2,
+                        total: 3,
+                    },
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            next_sequence: through,
+            truncated: false,
+            has_more: false,
+        };
+        let mut server = ready(Fake {
+            surface_reply: Some(active.clone()),
+            profile_progress_reply: Some(history(5)),
+            ..Fake::default()
+        });
+        let first = call(
+            &mut server,
+            INDEX_PROGRESS_TOOL,
+            &json!({"operation_key": status.operation_key, "detail": "summary"}),
+        );
+        assert_eq!(first["isError"], false);
+        let events = |result: &Value| {
+            result["structuredContent"]["surface"]["index_job"]["value"]["detail"]["events"]
+                .as_array()
+                .expect("events")
+                .iter()
+                .map(|event| event["sequence"].as_u64().expect("sequence"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(events(&first), [1, 2, 3, 4, 5], "the first poll has the whole history");
+        let next = first["structuredContent"]["index_poll"]["call"].clone();
+        assert_eq!(next["arguments"]["after_event"], 5, "the call names the last event reached");
+        assert!(next["arguments"].get("after_sequence").is_none(), "after_sequence stays a ticket option");
+
+        // Two more events happen; the owner still replays its history from the start.
+        server.product.surface_reply = Some(active.clone());
+        server.product.profile_progress_reply = Some(history(7));
+        let mut arguments = next["arguments"].clone();
+        arguments["wait_millis"] = json!(0);
+        let resumed = call(&mut server, INDEX_PROGRESS_TOOL, &arguments);
+        assert_eq!(resumed["isError"], false, "{resumed}");
+        assert_eq!(events(&resumed), [6, 7], "only the new events");
+        let detail = &resumed["structuredContent"]["surface"]["index_job"]["value"]["detail"];
+        assert_eq!(detail["events_not_repeated"], 5);
+        assert_eq!(detail["next_sequence"], 7, "the position and the stage stay");
+        assert!(detail["stage"].is_string(), "{detail}");
+        assert_eq!(
+            resumed["structuredContent"]["index_poll"]["call"]["arguments"]["after_event"],
+            7
+        );
+        assert_eq!(
+            resumed["structuredContent"]["index_poll"]["call"]["arguments"]["operation_key"],
+            next["arguments"]["operation_key"]
+        );
+
+        // The same state read without the position replays everything.
+        server.product.surface_reply = Some(active.clone());
+        arguments.as_object_mut().expect("arguments").remove("after_event");
+        let replayed = call(&mut server, INDEX_PROGRESS_TOOL, &arguments);
+        assert_eq!(events(&replayed), [1, 2, 3, 4, 5, 6, 7]);
+        let (before, after) = (
+            serde_json::to_vec(&replayed).expect("result").len(),
+            serde_json::to_vec(&resumed).expect("result").len(),
+        );
+        println!("index_progress poll bytes: before {before}, after {after}");
+        assert!(after < before, "{after} < {before}");
+        assert_context_bounded(&resumed);
+
+        // An unchanged poll keeps the position for the next one.
+        server.product.surface_reply = Some(active.clone());
+        let mut again = resumed["structuredContent"]["index_poll"]["call"]["arguments"].clone();
+        again["wait_millis"] = json!(0);
+        let unchanged = call(&mut server, INDEX_PROGRESS_TOOL, &again);
+        assert_eq!(unchanged["structuredContent"]["surface"]["data"]["state"], "pending-unchanged");
+        assert_eq!(unchanged["structuredContent"]["index_poll"]["call"]["arguments"]["after_event"], 7);
+        // The ticket route has its own position and refuses the operation one.
+        let mut ticket_poll = ready(Fake::default());
+        let refused = call(
+            &mut ticket_poll,
+            INDEX_PROGRESS_TOOL,
+            &json!({"ticket": ticket_value(&index_job_ticket()), "after_event": 3}),
+        );
+        assert_eq!(refused["isError"], true);
+        assert!(ticket_poll.product.surface_commands.is_empty());
     }
 
     #[test]
@@ -10046,10 +10368,13 @@ mod conditional_progress_tests {
                 reference["after_observation"],
                 arguments["after_observation"]
             );
-            assert_eq!(
-                reference["ticket"],
-                serde_json::to_value(&active).expect("exact status")["data"]["detail"]["state"]["detail"]
-                    ["ticket"]
+            assert!(
+                reference.get("ticket").is_none(),
+                "the observation the caller holds already names its ticket"
+            );
+            assert!(
+                body["index_poll"].get("shell").is_none(),
+                "a poll repeats a call the caller already made"
             );
             assert_eq!(
                 body["index_poll"]["call"]["arguments"]["wait_millis"],
@@ -10062,7 +10387,7 @@ mod conditional_progress_tests {
                 serde_json::to_vec(&unchanged)
                     .expect("complete result")
                     .len()
-                    < 2200
+                    < 1500
             );
             assert_context_bounded(&unchanged);
             server.product.surface_reply = Some(active.clone());
@@ -10114,7 +10439,12 @@ mod conditional_progress_tests {
                 next["arguments"]["after_observation"],
                 arguments["after_observation"]
             );
-            assert!(text_of(&pending).contains(&next.to_string()));
+            // The poll names its next call once, in `index_poll.call`, and does not repeat it in text.
+            assert_eq!(
+                text_of(&pending),
+                "Operation remains pending; the referenced observation is unchanged. Poll again with `index_poll.call`, or omit the conditional options to read the complete current receipt."
+            );
+            assert!(!text_of(&pending).contains(&next.to_string()));
             let failed = call(
                 &mut server,
                 next["name"].as_str().expect("same tool"),
@@ -10475,8 +10805,11 @@ fn index_poll_cli_advice_is_optional_and_preserves_installed_attachment_key_and_
                 poll["call"],
                 json!({"name":"backend.index_progress","arguments":{"operation_key":key,"detail":detail}})
             );
-            assert_eq!(poll.get("shell").is_some(), installed);
-            if installed {
+            // A summary poll of an operation repeats a call the caller already made, so the
+            // CLI line is left to the first reply; the other details still carry it.
+            let carries_shell = installed && detail != "summary";
+            assert_eq!(poll.get("shell").is_some(), carries_shell);
+            if carries_shell {
                 let expected =
                     backend_present::Affordance::PollIndexOperation { operation_key: key }
                         .poll_shell_in_context(&context, backend_present::Detail::parse(detail));
@@ -10601,9 +10934,9 @@ fn search_published_names_preserves_useful_records_and_explicit_pending_scope() 
         assert_eq!(page["semantic_preparation"]["state"], "pending");
         assert_eq!(page["records"].as_array().expect("useful rows").len(), 1);
         assert_eq!(page["records"][0]["identity"]["coordinate"], DECLARATION);
-        assert_eq!(
-            page["records"][0]["identity"]["semantic_data"]["value"],
-            json!(*symbol_key(DECLARATION).as_bytes())
+        assert_selected_id_wire(
+            &page["records"][0]["identity"]["semantic_data"]["value"],
+            symbol_key(DECLARATION).as_bytes(),
         );
         assert!(
             result["content"]
@@ -10721,4 +11054,52 @@ fn related_first_page_caps_delivery_without_reducing_issued_credit() {
     assert_eq!(second["isError"], false, "{second}");
     assert_eq!(second["structuredContent"]["edges"].as_array().expect("edges").len(), 8);
     assert_eq!(server.product.page_limits, vec![100, 100]);
+}
+
+#[test]
+fn large_page_cursors_are_parked_under_a_short_signed_bounded_handle() {
+    // nextCursor was 2470 of 3575 bytes at limit 1 because it carried the owner's
+    // whole portable proof.
+    let mut server = ready(Fake::default());
+    let context = b"backend.search|project|args";
+    let owner = format!("pc2-{}", "ab".repeat(1200));
+    let inline = server.sign_cursor_token(&owner, context).expect("inline cursor");
+    let token = server.issue_page_cursor(&owner, context).expect("handle cursor");
+    assert!(token.starts_with("mcp3-"), "{token}");
+    assert!(token.len() < 100 && token.len() * 20 < inline.len(), "{} vs {}", token.len(), inline.len());
+    assert_eq!(
+        server.verify_cursor_token(&token, context).expect("verify").as_deref(),
+        Some(owner.as_str())
+    );
+    // Bound to the exact call: another tool, project or argument set cannot resume it.
+    assert_eq!(server.verify_cursor_token(&token, b"backend.search|project|other").expect("verify"), None);
+    // Any edit to the token is refused.
+    let mut forged = token.clone();
+    forged.replace_range(forged.len() - 1.., if token.ends_with('0') { "1" } else { "0" });
+    assert_eq!(server.verify_cursor_token(&forged, context).expect("verify"), None);
+    // A small owner cursor stays inline and stateless.
+    assert!(server.issue_page_cursor("pc2-abcd", context).expect("small").starts_with("mcp2-"));
+
+    // Bounded: only the newest handles are kept, and an evicted one says so.
+    for index in 0..CURSOR_HANDLE_CAPACITY {
+        let other = format!("pc2-{}", format!("{index:02x}").repeat(200));
+        server.issue_page_cursor(&other, context).expect("another handle");
+    }
+    assert_eq!(server.verify_cursor_token(&token, context).expect("verify"), None, "evicted");
+    let arguments = json!({"cursor": token}).as_object().expect("arguments").clone();
+    let error = server.continuation(&arguments, context).expect_err("evicted handle is refused");
+    let detail = error.detail.clone().unwrap_or_default();
+    assert!(detail.contains("short-lived") && detail.contains("without a cursor"), "{detail}");
+
+    // Expiring: a handle past its expiry no longer resolves, even if it is still stored.
+    let fresh = server.issue_page_cursor(&owner, context).expect("fresh handle");
+    assert!(server.verify_cursor_token(&fresh, context).expect("verify").is_some());
+    server
+        .cursor_handles
+        .lock()
+        .expect("handles")
+        .entries
+        .iter_mut()
+        .for_each(|entry| entry.1 = 1);
+    assert_eq!(server.verify_cursor_token(&fresh, context).expect("verify"), None, "expired");
 }

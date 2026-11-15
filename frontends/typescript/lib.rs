@@ -7,6 +7,7 @@ mod native_identity;
 pub use native_identity::TSZ_NATIVE_AUTHORITY_IDENTITY;
 
 pub mod native_project;
+pub mod project_resolver;
 
 mod authority;
 mod coordinate;

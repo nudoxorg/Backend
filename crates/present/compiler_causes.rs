@@ -216,6 +216,142 @@ mod tests {
     }
 
     #[test]
+    fn csharp_unresolved_reference_reaches_refusal_render_with_restore_advice() {
+        use backend_library::interface::{
+            AuthorityDiagnosticClass, AuthorityPhase, CSharpRestoreState,
+            CSharpUnresolvedReferenceFacts, CSharpUnresolvedReferenceInput, CompilerAttempt,
+            CompilerCause, CompilerDiagnostic, CompilerTerminal, SourceAuthority,
+        };
+        use backend_version::{CompileRecipeDomain, ContentId, SourceFactDomain};
+
+        let render = |restore| {
+            let reference = CSharpUnresolvedReferenceFacts::new(CSharpUnresolvedReferenceInput {
+                code: 246,
+                symbol: "DbContext",
+                path: "src/Api/Data/AppDbContext.cs",
+                line: 15,
+                project: Some("src/Api/Api.csproj"),
+                restore,
+                count: 23,
+                files: 5,
+            })
+            .expect("admitted reference");
+            let terminal = CompilerTerminal::Compile {
+                attempted: CompilerAttempt {
+                    source: SourceAuthority {
+                        identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"cs source"),
+                        byte_len: 9,
+                    },
+                    recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"cs recipe"),
+                },
+                cause: CompilerCause::Authority {
+                    phase: AuthorityPhase::TypeCheck,
+                    class: AuthorityDiagnosticClass::Type,
+                    diagnostic: CompilerDiagnostic::from_native(
+                        b"/private/checkout/src/Api/Data/AppDbContext.cs(15,32): error CS0246",
+                        68,
+                        false,
+                    )
+                    .map(|d| d.with_csharp_unresolved(reference)),
+                },
+            };
+            let failure = PackageCompilerFailure::from_package_terminal(
+                "tests/Api.Tests/AccountTests.cs",
+                &terminal,
+            )
+            .expect("source-bound C# refusal")
+            .expect("authority refusal");
+            let bytes = failure
+                .encode_bounded_json()
+                .expect("canonical refusal JSON");
+            let reopened = PackageCompilerFailure::decode_bounded_json(&bytes)
+                .expect("cold compiler-outcome reader");
+            Fault::compiler_refusal(&reopened, Operand::Whole)
+                .cause()
+                .sentence()
+                .to_owned()
+        };
+
+        let restored = render(CSharpRestoreState::Present);
+        for expected in [
+            "first unresolved reference CS0246 DbContext",
+            "src/Api/Data/AppDbContext.cs:15",
+            "project src/Api/Api.csproj, which was restored",
+            "does not supply it",
+        ] {
+            assert!(restored.contains(expected), "{restored}");
+        }
+        assert!(!restored.contains("/private"), "{restored}");
+        assert!(
+            !restored.contains("confirm dotnet and the Roslyn helper"),
+            "a named reference replaces the general instruction: {restored}"
+        );
+        let unrestored = render(CSharpRestoreState::Missing);
+        assert!(
+            unrestored.contains("which has no usable restore result"),
+            "{unrestored}"
+        );
+        assert!(
+            unrestored.contains("run dotnet restore for that project"),
+            "{unrestored}"
+        );
+    }
+
+    #[test]
+    fn csharp_launcher_script_host_reaches_refusal_render_with_the_configuration_fix() {
+        use backend_library::interface::{
+            AuthorityDiagnosticClass, AuthorityPhase, CSharpHostFormatFailure, CompilerAttempt,
+            CompilerCause, CompilerDiagnostic, CompilerTerminal, SourceAuthority,
+        };
+        use backend_version::{CompileRecipeDomain, ContentId, SourceFactDomain};
+
+        let terminal = CompilerTerminal::Compile {
+            attempted: CompilerAttempt {
+                source: SourceAuthority {
+                    identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"cs source"),
+                    byte_len: 9,
+                },
+                recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"cs recipe"),
+            },
+            cause: CompilerCause::Authority {
+                phase: AuthorityPhase::TypeCheck,
+                class: AuthorityDiagnosticClass::Authority,
+                diagnostic: CompilerDiagnostic::from_native(
+                    b"/nix/store/x-dotnet-wrapper/bin/dotnet is a launcher script",
+                    60,
+                    false,
+                )
+                .map(|d| d.with_csharp_host_format(CSharpHostFormatFailure::LauncherScript)),
+            },
+        };
+        let failure = PackageCompilerFailure::from_package_terminal("src/App.cs", &terminal)
+            .expect("source-bound C# refusal")
+            .expect("authority refusal");
+        let bytes = failure
+            .encode_bounded_json()
+            .expect("canonical refusal JSON");
+        let reopened = PackageCompilerFailure::decode_bounded_json(&bytes)
+            .expect("cold compiler-outcome reader");
+        let rendered = Fault::compiler_refusal(&reopened, Operand::Whole)
+            .cause()
+            .sentence()
+            .to_owned();
+        assert!(
+            rendered.contains("configured dotnet is a launcher script"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("point NUDOX_DOTNET at the real dotnet executable"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("/nix/store"), "{rendered}");
+        assert!(
+            !rendered.contains("confirm dotnet and the Roslyn helper"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
     fn rust_scope_details_reach_refusal_render_without_paths() {
         use backend_library::interface::{
             AuthorityDiagnosticClass, AuthorityPhase, CompilerAttempt, CompilerCause,
@@ -413,6 +549,13 @@ mod tests {
         }
         fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
             self.surfaces += 1;
+            if matches!(command, SurfaceCommand::PackageCoverageCurrent { .. }) {
+                // This fixture records no source receipt; the shelf must treat that as
+                // "no language evidence", never as a failure.
+                return Err(ClientError::Protocol(
+                    "no source receipt recorded".to_owned(),
+                ));
+            }
             let SurfaceCommand::PackageProfile {
                 package,
                 compiler_outcome: Some(read),
@@ -558,7 +701,15 @@ mod tests {
             }
             assert_eq!((engine.surfaces, engine.package_reads), (0, 0));
             let _ = crate::answer(&mut engine, &crate::Request::Shelf).expect("shelf");
-            assert_eq!(engine.surfaces, 0);
+            // `packages` reads one source receipt per ready local project to name its
+            // languages; a project that is still loading is not read, and no
+            // compiler-cause read is made for any of these. The shelf itself takes one
+            // packages probe.
+            assert_eq!(
+                engine.surfaces,
+                usize::from(matches!(state, RowState::Ready))
+            );
+            assert_eq!(engine.package_reads, 1);
         }
     }
 

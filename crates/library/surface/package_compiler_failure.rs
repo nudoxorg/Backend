@@ -309,6 +309,38 @@ impl PackageCompilerFailureCause {
                     }),
                 ..
             } => "rust_source_scope_failure",
+            Self::Authority {
+                diagnostic:
+                    Some(CompilerAuthorityDiagnosticFacts {
+                        csharp_unresolved: Some(_),
+                        ..
+                    }),
+                ..
+            }
+            | Self::AuthorityAdmission {
+                diagnostic:
+                    Some(CompilerAuthorityDiagnosticFacts {
+                        csharp_unresolved: Some(_),
+                        ..
+                    }),
+                ..
+            } => "csharp_unresolved_reference",
+            Self::Authority {
+                diagnostic:
+                    Some(CompilerAuthorityDiagnosticFacts {
+                        csharp_host_format: Some(failure),
+                        ..
+                    }),
+                ..
+            }
+            | Self::AuthorityAdmission {
+                diagnostic:
+                    Some(CompilerAuthorityDiagnosticFacts {
+                        csharp_host_format: Some(failure),
+                        ..
+                    }),
+                ..
+            } => failure.kind_tag(),
             Self::Authority { class, .. } | Self::AuthorityAdmission { class, .. } => match class {
                 AuthorityClassFact::Syntax => "authority_syntax",
                 AuthorityClassFact::Binding => "authority_binding",
@@ -514,6 +546,13 @@ pub struct CompilerAuthorityDiagnosticFacts {
     /// Exact path-free Rust source-scope kind and bounded authority counts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rust_source_scope_failure: Option<crate::interface::RustSourceScopeFailureKind>,
+    /// The first unresolved reference of a refused C# compilation: Roslyn code, symbol,
+    /// project-relative file and line, owning project and its restore state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub csharp_unresolved: Option<crate::interface::CSharpUnresolvedReferenceFacts>,
+    /// Why the configured dotnet file cannot run the C# compiler stage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub csharp_host_format: Option<crate::interface::CSharpHostFormatFailure>,
 }
 
 /// Closed compact-lowering cause, with exact TypeScript projection operands
@@ -2220,6 +2259,8 @@ pub(crate) fn package_failure_from_terminal(
                         typescript_cause: diagnostic.typescript_cause.clone(),
                         go_failure: diagnostic.go_failure,
                         rust_source_scope_failure: diagnostic.rust_source_scope_failure,
+                        csharp_unresolved: diagnostic.csharp_unresolved.clone(),
+                        csharp_host_format: diagnostic.csharp_host_format,
                     }
                 }),
             },
@@ -2267,6 +2308,8 @@ pub(crate) fn package_failure_from_terminal(
                         typescript_cause: diagnostic.typescript_cause.clone(),
                         go_failure: diagnostic.go_failure,
                         rust_source_scope_failure: diagnostic.rust_source_scope_failure,
+                        csharp_unresolved: diagnostic.csharp_unresolved.clone(),
+                        csharp_host_format: diagnostic.csharp_host_format,
                     }
                 }),
             },

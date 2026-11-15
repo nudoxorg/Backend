@@ -11,7 +11,7 @@ import time
 import unittest
 from unittest import mock
 
-from sql_journey_safety import OwnedProcesses, _retire_spawned_group, remove_private_root, verified_build
+from sql_journey_safety import OwnedProcesses, _retire_spawned_group, development_build, remove_private_root, verified_build
 
 
 class OwnedProcessTests(unittest.TestCase):
@@ -33,6 +33,38 @@ class OwnedProcessTests(unittest.TestCase):
                 after = verified_build(bundle / 'receipt.json', checkout, bundle, checkout / 'tools/package/sql_public_journey.py')
             self.assertEqual(before, after)
             self.assertEqual(json.loads(json.dumps(before))['source']['path'], str(checkout))
+
+    def test_development_build_says_it_is_not_release_evidence_and_pins_bytes(self):
+        with tempfile.TemporaryDirectory() as base:
+            bundle = Path(base)
+            (bundle / 'backend-locald').write_bytes(b'owner')
+            (bundle / 'backend-sqlite-worker').write_bytes(b'worker')
+            before = development_build(bundle)
+            self.assertEqual(before['mode'], 'development')
+            self.assertFalse(before['release_evidence'])
+            self.assertEqual(set(before['artifacts']), {'backend-locald', 'backend-sqlite-worker'})
+            self.assertEqual(before, development_build(bundle))
+            (bundle / 'backend-locald').write_bytes(b'changed')
+            self.assertNotEqual(before, development_build(bundle))
+
+    def test_development_build_refuses_an_empty_bundle(self):
+        with tempfile.TemporaryDirectory() as base:
+            with self.assertRaisesRegex(RuntimeError, 'no backend binaries'):
+                development_build(base)
+
+    def test_public_journey_requires_receipts_unless_development(self):
+        script = Path(__file__).resolve().parent / 'sql_public_journey.py'
+        with tempfile.TemporaryDirectory() as base:
+            def run(*extra):
+                return subprocess.run([sys.executable, str(script), '--bundle', base, '--output', str(Path(base) / 'o'), *extra],
+                                      capture_output=True, text=True)
+            missing = run()
+            self.assertEqual(missing.returncode, 2)
+            self.assertIn('--build-receipt', missing.stderr)
+            self.assertIn('--development', missing.stderr)
+            mixed = run('--development', '--build-receipt', 'r', '--source-checkout', 'c')
+            self.assertEqual(mixed.returncode, 2)
+            self.assertIn('cannot be combined', mixed.stderr)
 
     def test_run_collects_output_and_retires_owned_child(self):
         owner = OwnedProcesses()

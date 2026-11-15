@@ -91,6 +91,131 @@ impl OutlineEntry {
     }
 }
 
+/// Which declaration kinds an outline keeps: the closed names `include` lists (every kind
+/// when it is empty), minus the names `exclude` lists.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct KindFilter {
+    include: Vec<DeclarationKind>,
+    exclude: Vec<DeclarationKind>,
+    top_level: bool,
+}
+
+impl KindFilter {
+    /// Every closed kind name a filter accepts.
+    pub const NAMES: [&'static str; 18] = [
+        "module", "class", "function", "method", "interface", "type", "macro", "constant",
+        "field", "property", "constructor", "enum", "struct", "trait", "union", "variable",
+        "import", "variant",
+    ];
+
+    /// Parses two comma-separated kind lists.
+    ///
+    /// # Errors
+    /// Names the first spelling that is not one of [`Self::NAMES`].
+    pub fn parse(include: Option<&str>, exclude: Option<&str>) -> Result<Self, String> {
+        fn list(text: Option<&str>, option: &str) -> Result<Vec<DeclarationKind>, String> {
+            let mut kinds = Vec::new();
+            for name in text.into_iter().flat_map(|text| text.split(',')) {
+                let name = name.trim();
+                if name.is_empty() {
+                    continue;
+                }
+                if !KindFilter::NAMES.contains(&name) {
+                    return Err(format!(
+                        "{option} does not name a declaration kind: `{name}`; the kinds are {}",
+                        KindFilter::NAMES.join(", ")
+                    ));
+                }
+                let kind = DeclarationKind::from_name(name);
+                if !kinds.contains(&kind) {
+                    kinds.push(kind);
+                }
+            }
+            Ok(kinds)
+        }
+        Ok(Self {
+            include: list(include, "kind")?,
+            exclude: list(exclude, "exclude-kind")?,
+            top_level: false,
+        })
+    }
+
+    /// Also leaves out anonymous callables and everything declared inside a function body,
+    /// keeping the declarations a file, class or module offers.
+    #[must_use]
+    pub fn with_top_level(mut self, top_level: bool) -> Self {
+        self.top_level = top_level;
+        self
+    }
+
+    /// Returns whether this filter keeps every node.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.include.is_empty() && self.exclude.is_empty() && !self.top_level
+    }
+
+    fn keeps(&self, kind: Option<DeclarationKind>) -> bool {
+        match kind {
+            // A node whose row did not resolve has no kind to judge; it stays visible.
+            None => true,
+            Some(kind) => {
+                (self.include.is_empty() || self.include.contains(&kind))
+                    && !self.exclude.contains(&kind)
+            }
+        }
+    }
+}
+
+/// The name an unnamed function expression or arrow carries.
+const ANONYMOUS_CALLABLE: &str = "<anonymous callable>";
+
+/// Whether members of a node of this kind are declared inside a body, not offered by it.
+const fn has_body(kind: Option<DeclarationKind>) -> bool {
+    matches!(
+        kind,
+        Some(DeclarationKind::Function | DeclarationKind::Method | DeclarationKind::Constructor)
+    )
+}
+
+fn filter_entries(
+    entries: &[OutlineEntry],
+    filter: &KindFilter,
+    dropped: &mut usize,
+    local: &mut usize,
+    inside_body: bool,
+) -> Vec<OutlineEntry> {
+    let mut kept = Vec::new();
+    for entry in entries {
+        let hidden_local = filter.top_level
+            && (inside_body
+                || entry.identity.as_ref().is_some_and(|identity| identity.name() == ANONYMOUS_CALLABLE));
+        let children = filter_entries(
+            &entry.children,
+            filter,
+            dropped,
+            local,
+            inside_body || has_body(entry.kind),
+        );
+        if hidden_local {
+            // Whatever is declared inside a local is itself local, so nothing moves up.
+            *local = local.saturating_add(1);
+            kept.extend(children);
+        } else if filter.keeps(entry.kind) {
+            kept.push(OutlineEntry {
+                identity: entry.identity.clone(),
+                tag: entry.tag,
+                kind: entry.kind,
+                children: children.into_boxed_slice(),
+            });
+        } else {
+            // A removed node never takes its members with it: they move up to its place.
+            *dropped = dropped.saturating_add(1);
+            kept.extend(children);
+        }
+    }
+    kept
+}
+
 /// One package outline, resolved to names.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OutlineTree {
@@ -98,6 +223,38 @@ pub struct OutlineTree {
     roots: Box<[OutlineEntry]>,
     truncation: Truncation,
     page: Option<OutlinePageState>,
+    filtered_out: usize,
+    locals_hidden: usize,
+}
+
+impl OutlineTree {
+    /// Keeps only the nodes the filter admits and counts those it removed. Members of a
+    /// removed node move up to its place; the page scope and continuation are unchanged.
+    #[must_use]
+    pub fn filtered(mut self, filter: &KindFilter) -> Self {
+        if filter.is_empty() {
+            return self;
+        }
+        let mut dropped = 0_usize;
+        let mut local = 0_usize;
+        self.roots =
+            filter_entries(&self.roots, filter, &mut dropped, &mut local, false).into_boxed_slice();
+        self.filtered_out = self.filtered_out.saturating_add(dropped);
+        self.locals_hidden = self.locals_hidden.saturating_add(local);
+        self
+    }
+
+    /// Returns how many anonymous or function-local nodes `top_level` removed from this page.
+    #[must_use]
+    pub const fn locals_hidden(&self) -> usize {
+        self.locals_hidden
+    }
+
+    /// Returns how many nodes a kind filter removed from this page.
+    #[must_use]
+    pub const fn filtered_out(&self) -> usize {
+        self.filtered_out
+    }
 }
 
 impl OutlineTree {
@@ -112,6 +269,8 @@ impl OutlineTree {
             package,
             roots: roots.into(),
             page: None,
+            filtered_out: 0,
+            locals_hidden: 0,
             truncation: match extent {
                 OutlineExtent::Complete => Truncation::Complete,
                 OutlineExtent::Truncated => Truncation::Truncated,
@@ -217,6 +376,28 @@ pub fn row_resolver(
                     row.kind,
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod kind_name_tests {
+    use super::KindFilter;
+
+    #[test]
+    fn outline_help_lists_exactly_the_kinds_a_filter_accepts() {
+        let grammar = crate::grammar_for("outline").expect("outline grammar");
+        let help = grammar
+            .options()
+            .iter()
+            .find(|spec| spec.name() == "kind")
+            .expect("kind option")
+            .help();
+        let listed = help
+            .split_once('(')
+            .and_then(|(_, rest)| rest.split_once(')'))
+            .map(|(list, _)| list)
+            .expect("the help lists the kinds in parentheses");
+        assert_eq!(listed.split(", ").collect::<Vec<_>>(), KindFilter::NAMES);
     }
 }
 
@@ -646,4 +827,183 @@ mod page_scope_tests {
         assert_eq!(flatten(&legacy), prefix, "default bounded tree uses the same preorder prefix");
     }
 
+}
+
+#[cfg(test)]
+mod kind_filter_tests {
+    use super::*;
+    use backend_library::OutlineExtent;
+
+    fn entry(name: &str, kind: DeclarationKind, children: Vec<OutlineEntry>) -> OutlineEntry {
+        let label = format!("/workspace/ts::api.ts:1::{name}");
+        OutlineEntry {
+            identity: Some(Identity::parse(&label)),
+            tag: KeyTag::from_key(&[kind as u8; 32]),
+            kind: Some(kind),
+            children: children.into_boxed_slice(),
+        }
+    }
+
+    fn tree() -> OutlineTree {
+        // class ApiError { constructor(status, message) ; field status }
+        let constructor = entry(
+            "constructor",
+            DeclarationKind::Constructor,
+            vec![
+                entry("status", DeclarationKind::Variable, vec![]),
+                entry("message", DeclarationKind::Variable, vec![]),
+            ],
+        );
+        let class = entry(
+            "ApiError",
+            DeclarationKind::Class,
+            vec![constructor, entry("status", DeclarationKind::Field, vec![])],
+        );
+        OutlineTree::new(
+            Identity::parse("/workspace/ts"),
+            vec![class, entry("Page", DeclarationKind::Function, vec![])],
+            OutlineExtent::Complete,
+        )
+    }
+
+    fn names(entries: &[OutlineEntry]) -> Vec<String> {
+        entries
+            .iter()
+            .flat_map(|e| {
+                let mut out = vec![format!("{}:{}", e.name(), e.kind().map_or("?", |k| k.name()))];
+                out.extend(names(e.children()).into_iter().map(|n| format!("  {n}")));
+                out
+            })
+            .collect()
+    }
+
+    #[test]
+    fn excluding_variables_removes_constructor_parameters_and_counts_them() {
+        // Constructor parameters are outline children of kind variable, so the
+        // filter removes them and counts them.
+        let before = tree();
+        assert_eq!(before.count(), 6);
+        let filter = KindFilter::parse(None, Some("variable")).expect("closed kind");
+        let after = tree().filtered(&filter);
+        assert_eq!(after.count(), 4, "{:?}", names(after.roots()));
+        assert_eq!(after.filtered_out(), 2);
+        assert!(!names(after.roots()).iter().any(|n| n.ends_with(":variable")));
+    }
+
+    #[test]
+    fn an_include_list_keeps_only_those_kinds_and_promotes_members_of_removed_nodes() {
+        let filter = KindFilter::parse(Some("field, function"), None).expect("closed kinds");
+        let after = tree().filtered(&filter);
+        // The class and constructor and both parameters are gone; the field moves up to the root.
+        assert_eq!(
+            names(after.roots()),
+            ["status:field", "Page:function"],
+            "{:?}",
+            names(after.roots())
+        );
+        assert_eq!(after.filtered_out(), 4);
+    }
+
+    fn component_tree() -> OutlineTree {
+        let anonymous = |children| entry("<anonymous callable>", DeclarationKind::Function, children);
+        let home = entry(
+            "Home",
+            DeclarationKind::Function,
+            vec![
+                entry("dpr", DeclarationKind::Variable, vec![]),
+                entry(
+                    "listener",
+                    DeclarationKind::Constant,
+                    vec![anonymous(vec![entry("t", DeclarationKind::Variable, vec![])])],
+                ),
+            ],
+        );
+        let card = entry(
+            "Card",
+            DeclarationKind::Class,
+            vec![entry(
+                "render",
+                DeclarationKind::Method,
+                vec![entry("view", DeclarationKind::Variable, vec![])],
+            )],
+        );
+        let config = entry("Config", DeclarationKind::Constant, vec![anonymous(vec![])]);
+        let props = entry(
+            "Props",
+            DeclarationKind::Interface,
+            vec![entry("speed", DeclarationKind::Field, vec![])],
+        );
+        OutlineTree::new(
+            Identity::parse("/workspace/ts"),
+            vec![entry("page.tsx", DeclarationKind::Module, vec![home, card, config, props])],
+            OutlineExtent::Complete,
+        )
+    }
+
+    #[test]
+    fn top_level_leaves_out_anonymous_callables_and_function_locals_and_counts_them() {
+        assert_eq!(component_tree().count(), 13);
+        let whole = component_tree().filtered(&KindFilter::default());
+        assert_eq!(whole.count(), 13, "without the option every row is listed");
+        assert_eq!(whole.locals_hidden(), 0);
+
+        let after = component_tree().filtered(&KindFilter::default().with_top_level(true));
+        assert_eq!(
+            names(after.roots()),
+            [
+                "page.tsx:module",
+                "  Home:function",
+                "  Card:class",
+                "    render:method",
+                "  Config:constant",
+                "  Props:interface",
+                "    speed:field",
+            ],
+            "the type's field and the method stay; locals, parameters and callbacks go"
+        );
+        assert_eq!(after.locals_hidden(), 6);
+        assert_eq!(after.filtered_out(), 0, "the kind filter counted nothing");
+        assert_eq!(after.count() + after.locals_hidden(), 13, "every row is either listed or counted");
+    }
+
+    #[test]
+    fn the_hidden_locals_are_reported_in_json_and_text_and_the_option_names_the_way_back() {
+        let after = component_tree().filtered(&KindFilter::default().with_top_level(true));
+        let dto = crate::dto::OutlineDto::new(&after);
+        assert_eq!(dto.locals_hidden, 6);
+        assert_eq!(serde_json::to_value(&dto).expect("JSON")["locals_hidden"], 6);
+        assert!(serde_json::to_value(crate::dto::OutlineDto::new(&component_tree()))
+            .expect("JSON")
+            .get("locals_hidden")
+            .is_none());
+        let answer = crate::Answer::Outline(Box::new(after));
+        for rendered in [
+            crate::render::markdown::answer(&answer),
+            crate::render::text::answer(&answer, crate::render::Theme::plain()),
+        ] {
+            assert!(
+                rendered.contains("6 anonymous or function-local left out (omit top_level to list them)"),
+                "{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn top_level_composes_with_a_kind_filter_and_each_counts_its_own() {
+        let filter = KindFilter::parse(None, Some("field")).expect("kind").with_top_level(true);
+        let after = component_tree().filtered(&filter);
+        assert_eq!(after.filtered_out(), 1);
+        assert_eq!(after.locals_hidden(), 6);
+        assert!(!filter.is_empty());
+        assert!(!KindFilter::default().with_top_level(true).is_empty());
+    }
+
+    #[test]
+    fn an_empty_filter_changes_nothing_and_an_unknown_kind_is_refused_with_the_closed_list() {
+        assert!(KindFilter::parse(None, None).expect("empty").is_empty());
+        let same = tree().filtered(&KindFilter::default());
+        assert_eq!(same, tree());
+        let error = KindFilter::parse(Some("klass"), None).expect_err("not a kind");
+        assert!(error.contains("`klass`") && error.contains("variable"), "{error}");
+    }
 }

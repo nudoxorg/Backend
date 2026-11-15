@@ -1794,6 +1794,53 @@ impl BuiltinIntent {
         Ok(self)
     }
 
+    /// Retire the selected SQL rows and receipt index row of the source Project
+    /// this intent deletes. The owner recomputes the exact retirement from the
+    /// selected base; nothing is captured and no receipt is issued.
+    pub(super) fn with_sql_retirement(
+        mut self,
+        base: &WorkspaceSnapshot,
+        cancellation: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<Self, BuiltinModelError> {
+        if self.sql_extension.is_some()
+            || self.sql_proof.is_some()
+            || self.operation != BuiltinIntentOperation::Remove
+            || !self
+                .changes
+                .iter()
+                .any(|change| change.key == self.package.to_bytes() && change.after.is_none())
+        {
+            return Err(BuiltinModelError("SQL retirement requires source Project deletion".into()));
+        }
+        let project = self.package.to_bytes();
+        let changes = super::sql_admission::plan_sql_retirement(base, project, cancellation.as_ref())
+            .map_err(BuiltinModelError)?;
+        if changes.is_empty() {
+            return Ok(self);
+        }
+        let basis = super::sql_admission::sql_basis_for_snapshot(base).map_err(BuiltinModelError)?;
+        let extension = super::sql_intent::SqlIntentExtension { basis, changes };
+        extension.encode().map_err(BuiltinModelError)?;
+        self.sql_extension = Some(extension);
+        let label = self.label.clone();
+        self.sql_proof = Some(SqlLiveProofRef(Arc::new(super::sql_admission::SqlLiveProof::retirement(project, &label, cancellation))));
+        self.encoding_version = Self::SQL_VERSION;
+        Ok(self)
+    }
+
+    /// The cancellation token the SQL live proof is bound to, which staging must reuse.
+    pub(super) fn sql_proof_cancellation(&self) -> Option<Arc<std::sync::atomic::AtomicBool>> {
+        self.sql_proof.as_ref().map(|proof| Arc::clone(&proof.0.cancellation))
+    }
+
+    /// Whether this intent only retires a deleted project's SQL rows. That proof
+    /// reads no source, so it can commit on the owner without the publication worker.
+    pub(super) fn is_sql_retirement(&self) -> bool {
+        self.encoding_version == Self::SQL_VERSION
+            && self.operation == BuiltinIntentOperation::Remove
+            && self.sql_proof.as_ref().is_some_and(|proof| proof.0.is_retirement())
+    }
+
     pub(super) fn stylo_only(
         package: backend_engine::PackageKey,
         label: &str,
@@ -2038,7 +2085,7 @@ impl BuiltinIntent {
     ) -> Result<Self, BuiltinModelError> {
         if self.sql_extension.is_some() || self.sql_proof.is_some()
             || self.operation != BuiltinIntentOperation::Index
-            || proof.capture.project() != self.package.to_bytes()
+            || proof.project() != self.package.to_bytes()
         {
             return Err(BuiltinModelError("invalid SQL capture attachment".into()));
         }
@@ -2068,7 +2115,12 @@ impl BuiltinIntent {
         self.encoding_version == Self::NATIVE_EVIDENCE_VERSION
             || (matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION) && self.native_evidence_basis.is_some())
     }
-    /// SQL proof hydration and source revalidation must run on the worker.
+    /// Whether this is an SQL-analysis intent, as opposed to another v14
+    /// carrier. Only these can take the owner's receipt authority to commit.
+    pub(super) fn is_sql_intent(&self) -> bool {
+        self.encoding_version == Self::SQL_VERSION
+    }
+    /// Whether the intent carries SQL claims or the live proof they were built from.
     pub(super) fn has_sql_evidence(&self) -> bool {
         matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION) && (self.sql_proof.is_some() || self.sql_extension.is_some())
     }
@@ -2080,10 +2132,23 @@ impl BuiltinIntent {
                 .any(|row| !matches!(row, backend_engine::builtin::SqlAnalysisRecord::Attempt { .. }))
         }))
     }
-    /// A staged v14 carrier can shed its sections and private proof. Refuse
-    /// synchronous hydration based on its durable version, not in-memory data.
+    /// A staged v14 carrier can shed its sections and private proof, so the
+    /// durable version decides, not in-memory data. A v14 intent commits off
+    /// the publication worker only as an SQL intent with the owner's receipt
+    /// authority, or as a bare SQL retirement.
     pub(super) fn requires_v14_worker(&self) -> bool {
         matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION)
+    }
+
+    /// A bare v14 carrier of the given kind, for exercising the commit routes.
+    #[cfg(test)]
+    pub(in crate::builtin) fn v14_carrier_for_test(csharp: bool, label: &str) -> Self {
+        let package = backend_engine::PackageKey::from_value(label);
+        let version = if csharp { Self::CSHARP_VERSION } else { Self::SQL_VERSION };
+        Self::new_with_version(
+            version, BuiltinIntentOperation::Index, package, label,
+            vec![], vec![], None, None, None, vec![], vec![], vec![],
+        ).expect("v14 carrier")
     }
 
     pub(super) fn validate_native_stage_cancellation(
@@ -4256,7 +4321,12 @@ fn prepare_transition_with_owner_context(
             relation.lookup(&intent.package.to_bytes()).map_err(|error| BuiltinModelError(format!("read SQL owning project: {error}")))?
         };
         let validated = super::sql_admission::validate_sql_live(base, proof, extension.basis, &extension.changes, after_project.as_ref()).map_err(BuiltinModelError)?;
-        if intent.replaces_sql_project() {
+        if validated.is_retirement() {
+            // The project is deleted: its rows and its receipt index row go with
+            // it, and nothing new is issued.
+            let retired = super::sql_receipt_index::prepare_receipt_index_retirement(base, validated.project(), proof.cancellation.as_ref())?;
+            (super::sql_admission::prepare_sql_relation_update(&validated).map_err(BuiltinModelError)?, retired)
+        } else if intent.replaces_sql_project() {
             let owner = owner_context.ok_or_else(|| BuiltinModelError("SQL receipt owner context missing".into()))?;
             // Workspace root is independent of the later SQL receipt closure,
             // so it can identify the actual PUBLISHED issuance without a cycle.
@@ -4360,7 +4430,7 @@ fn prepare_transition_with_owner_context(
             sql_pointer: sql_update.pointer.as_ref(),
             sql_receipt_index_objects: receipt_update.as_ref().map_or(&[], |update| update.node_objects.as_slice()),
             sql_receipt_index_pointer: receipt_update.as_ref().map(|update| &update.pointer),
-            sql_receipt: receipt_update.as_ref().map(|update| &update.receipt),
+            sql_receipt: receipt_update.as_ref().and_then(|update| update.receipt.as_ref()),
         },
     )?;
     if let Some(pointer) = stylo_update.pointer.as_ref() {
@@ -4401,7 +4471,7 @@ fn prepare_transition_with_owner_context(
     if let Some(receipt) = &receipt_update {
         let root = receipt.node_objects.iter().find(|object| receipt.pointer.bytes() == object.version())
             .ok_or_else(|| BuiltinModelError("SQL receipt index target root missing".into()))?;
-        for object in [&receipt.pointer, root, &receipt.receipt] {
+        for object in [Some(&receipt.pointer), Some(root), receipt.receipt.as_ref()].into_iter().flatten() {
             if !closure.contains(object.id()).map_err(|error| BuiltinModelError(format!("prove SQL receipt selection: {error:?}")))? {
                 return Err(BuiltinModelError("SQL receipt target outside closure".into()));
             }
@@ -5788,6 +5858,16 @@ fn reopen_staged_intent(
     super::staged_transport::StagedIntent::decode(bytes, store, closure).map_err(|cause| {
         staged_reopen_recovery_message(store.root().parent().unwrap_or(store.root()), &cause)
     })
+}
+
+/// Whether `message` is a refusal to reopen staged state whose cause is the
+/// content of the staged evidence (it did not authenticate, or a member is
+/// missing), as opposed to a file-system failure that a retry may clear.
+pub(super) fn is_unauthenticated_staged_state(message: &str) -> bool {
+    message.contains("persisted staged state at ")
+        && message.contains(" could not be reopened: ")
+        && !message.contains("Io(")
+        && !message.contains("TemporaryIo(")
 }
 
 fn staged_reopen_recovery_message(
@@ -7277,7 +7357,7 @@ fn validate_persisted_stylo(
             .stylo_changes
             .iter()
             .all(|change| change.after.is_none());
-        let selection_remains = rows.iter().any(|(_, row)| matches!(row, StyloAnalysisRecord::Selection { project, .. } | StyloAnalysisRecord::Attempt { project, .. } | StyloAnalysisRecord::Host { project, .. } if *project == intent.package.to_bytes()));
+        let selection_remains = rows.iter().any(|(_, row)| matches!(row, StyloAnalysisRecord::Selection { project, .. } | StyloAnalysisRecord::Attempt { project, .. } | StyloAnalysisRecord::Host { project, .. } | StyloAnalysisRecord::CodeHost { project, .. } if *project == intent.package.to_bytes()));
         if !source_deleted || !exact_retirement || selection_remains {
             return Err(BuiltinModelError(
                 "native Stylo source removal requires exact retirement".into(),
@@ -7287,7 +7367,7 @@ fn validate_persisted_stylo(
     // All modified rows must belong to this project or one of its before/after hosts.
     let mut hosts = std::collections::BTreeSet::new();
     for (key, row) in &rows {
-        if matches!(row, StyloAnalysisRecord::Host { project, .. } if *project == intent.package.to_bytes())
+        if matches!(row, StyloAnalysisRecord::Host { project, .. } | StyloAnalysisRecord::CodeHost { project, .. } if *project == intent.package.to_bytes())
         {
             hosts.insert(*key);
         }
@@ -7297,7 +7377,7 @@ fn validate_persisted_stylo(
             .into_iter()
             .flatten()
         {
-            if matches!(row, StyloAnalysisRecord::Host { project, .. } if *project == intent.package.to_bytes())
+            if matches!(row, StyloAnalysisRecord::Host { project, .. } | StyloAnalysisRecord::CodeHost { project, .. } if *project == intent.package.to_bytes())
             {
                 hosts.insert(change.key);
             }
@@ -7311,10 +7391,12 @@ fn validate_persisted_stylo(
             let owned = match row {
                 StyloAnalysisRecord::Selection { project, .. }
                 | StyloAnalysisRecord::Attempt { project, .. }
-                | StyloAnalysisRecord::Host { project, .. } => {
+                | StyloAnalysisRecord::Host { project, .. }
+                | StyloAnalysisRecord::CodeHost { project, .. } => {
                     *project == intent.package.to_bytes()
                 }
-                StyloAnalysisRecord::Fact { host, .. } => hosts.contains(host),
+                StyloAnalysisRecord::Fact { host, .. }
+                | StyloAnalysisRecord::CodeFact { host, .. } => hosts.contains(host),
             };
             if !owned {
                 return Err(BuiltinModelError(
@@ -8453,6 +8535,7 @@ mod persisted_intent_tests {
             terminal: StyloTerminal::Unavailable(StyloUnavailable::ReadUnavailable),
             fact_count: 0,
             fact_digest: backend_engine::builtin::stylo_rows_digest(&[]).expect("empty digest"),
+            fragment: None,
         };
         let key = backend_engine::builtin::stylo_host_key(project, "site.css").expect("host key");
         let mut intent = BuiltinIntent::new_with_version(

@@ -3525,7 +3525,7 @@ while True:
     if delay_mode == "slow":
         time.sleep(1)
     elif delay_mode == "multi-batch":
-        time.sleep(1.25)
+        time.sleep(3.25)
     fault = open(fault_file).read().strip() if fault_file and os.path.exists(fault_file) else ""
     if fault == "partial" and items:
         items = items[:-1]
@@ -4040,11 +4040,17 @@ while True:
             ),
             ("PATH".into(), crate::tests::required_python_path()),
         ])?;
-        let (root, _, runtime) = activate_fixture(
+        // The request deadline is wide against the worker's per-microbatch delay
+        // (3.25 s each, 6.5 s in all): the second microbatch must start well inside
+        // the deadline on a loaded host, and the two together must never fit.
+        let limits = ProcessLimits::new(256, 64, Duration::from_secs(6), 256)?
+            .with_input_bytes_limit(2_048)?;
+        let (root, _, runtime) = activate_fixture_with_limits(
             root,
             program,
             vec!["--persistent-bem2-v1".into()],
             environment,
+            limits,
         )?;
         // With a 2,048-byte request cap, eleven 128-byte inputs fit and twelve do not;
         // the model therefore needs exactly two API microbatches.

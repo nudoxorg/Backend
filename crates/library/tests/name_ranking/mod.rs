@@ -470,3 +470,58 @@ fn unscoped_relative_members_cannot_borrow_an_owner_from_another_project_root() 
         .expect("legacy unqualified lookup");
     assert_eq!(ordered_ids(&direct), [RowId::Symbol(member)]);
 }
+
+#[test]
+fn a_file_module_is_named_by_its_stem_and_its_exact_case_precedes_a_folded_variable() {
+    // `resolve App` must list `App.vue` before a Python `app` variable, the way `search` does.
+    let (root, object) = source();
+    let basis = Basis::new(root, object);
+    let variable = RowId::Symbol(symbol_key("python-app"));
+    let module = RowId::Symbol(symbol_key("vue-module"));
+    let partial = RowId::Symbol(symbol_key("app-shell"));
+    for round in 0..8 {
+        let original = projection(vec![
+            Row::new(variable, basis, "project::app")
+                .with_kind(DeclarationKind::Variable)
+                .with_source(SourceLocation::new("backend/main.py", 3).expect("variable site")),
+            Row::new(module, basis, "project::App.vue")
+                .with_kind(DeclarationKind::Module)
+                .with_source(SourceLocation::new("App.vue", 1).expect("module site")),
+            Row::new(partial, basis, "project::AppShell")
+                .with_kind(DeclarationKind::Class)
+                .with_source(SourceLocation::new("shell.py", 1).expect("class site")),
+        ]);
+        let query = NameQuery::new("App", original.revision_root(), QueryLimit::new(5 + round).unwrap());
+        let page = original.names(&query).expect("name page");
+        assert_eq!(ordered_ids(&page), [module, variable, partial], "round {round}");
+    }
+}
+
+#[test]
+fn a_file_module_labelled_by_its_project_path_is_named_by_its_stem() {
+    // A component's row is labelled `frontend/src/App.vue`, not `App.vue`.
+    let (root, object) = source();
+    let basis = Basis::new(root, object);
+    let variable = RowId::Symbol(symbol_key("python-app"));
+    let module = RowId::Symbol(symbol_key("vue-module"));
+    let nested = RowId::Symbol(symbol_key("nested-declaration"));
+    let original = projection(vec![
+        Row::new(variable, basis, "project::app")
+            .with_kind(DeclarationKind::Variable)
+            .with_source(SourceLocation::new("backend/main.py", 3).expect("variable site")),
+        Row::new(module, basis, "project::frontend/src/App.vue")
+            .with_kind(DeclarationKind::Module)
+            .with_source(SourceLocation::new("frontend/src/App.vue", 1).expect("module site")),
+        Row::new(nested, basis, "project::frontend/src/App.vue::App")
+            .with_kind(DeclarationKind::Function)
+            .with_source(SourceLocation::new("frontend/src/App.vue", 4).expect("declaration site")),
+    ]);
+    let query = NameQuery::new("App", original.revision_root(), QueryLimit::new(5).unwrap());
+    let page = original.names(&query).expect("name page");
+    // A declaration spelled `App` inside the file is an exact name too; the module is
+    // never ranked behind the case-folded variable.
+    let order = ordered_ids(&page);
+    let module_at = order.iter().position(|id| *id == module).expect("module listed");
+    let variable_at = order.iter().position(|id| *id == variable).expect("variable listed");
+    assert!(module_at < variable_at, "{order:?}");
+}

@@ -566,6 +566,11 @@ fn index_progress_tool() -> Value {
                     "default": 0,
                     "description": "Return only progress events after this sequence. Reuse next_sequence from the previous pending observation."
                 },
+                "after_event": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "With operation_key: leave out progress events up to this sequence, which an earlier reply already carried. index_poll.call sets it; omit it to read the whole event history."
+                },
                 "after_observation": {
                     "type": "string", "pattern": "^[0-9a-f]{64}$",
                     "description": "Exact full active observation fingerprint returned in index_poll.call; requires operation_key. Changes of owner, state, request or source capture cannot be represented as unchanged."
@@ -581,7 +586,7 @@ fn index_progress_tool() -> Value {
                 "detail": detail_property(INDEX_PROGRESS_TOOL)
             },
             "oneOf": [
-                {"required": ["ticket"], "not": {"anyOf": [{"required": ["operation_key"]}, {"required": ["after_observation"]}]}},
+                {"required": ["ticket"], "not": {"anyOf": [{"required": ["operation_key"]}, {"required": ["after_observation"]}, {"required": ["after_event"]}]}},
                 {"required": ["operation_key"], "not": {"anyOf": [{"required": ["ticket"]}, {"required": ["after_sequence"]}]}}
             ],
             "allOf": [{
@@ -730,7 +735,7 @@ fn index_progress_output_schema() -> Value {
             "operation_key":{"type":"string", "pattern":"^[0-9a-f]{64}$"},
             "ticket":ticket_schema()["oneOf"][0],
             "after_observation":{"type":"string", "pattern":"^[0-9a-f]{64}$"}
-        }, "required":["identity", "operation_key", "ticket", "after_observation"], "additionalProperties":false},
+        }, "required":["identity", "operation_key", "after_observation"], "additionalProperties":false},
         {"type":"object", "properties": {
             "identity":{"const":"ticket"},
             "ticket":ticket_schema()["oneOf"][0],
@@ -951,7 +956,10 @@ fn property(spec: ArgumentSpec) -> Value {
     if spec.kind() == ArgumentKind::SelectedSymbol {
         return json!({"type":"object", "properties": {
             "kind":{"const":"selected-symbol-id"},
-            "value":{"type":"array", "items":{"type":"integer", "minimum":0, "maximum":255}, "minItems":32, "maxItems":32, "contains":{"type":"integer","minimum":1,"maximum":255}}
+            "value":{"oneOf":[
+                {"type":"string", "pattern":"^[0-9a-f]{64}$", "description":"the 64 hex digits returned in identity.semantic_data.value"},
+                {"type":"array", "items":{"type":"integer", "minimum":0, "maximum":255}, "minItems":32, "maxItems":32, "contains":{"type":"integer","minimum":1,"maximum":255}}
+            ]}
         }, "required":["kind","value"], "additionalProperties":false, "description":spec.help()});
     }
     if spec.kind() == ArgumentKind::SemanticShapeRequest {

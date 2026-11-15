@@ -12,6 +12,7 @@ use super::impact_framework::{
     DomainLoad, Edge, FileWitness, ImpactAdapter, ImpactContext, Key, Node,
 };
 use crate::builtin::sql_catalog::{ProjectSql, load_project};
+use crate::builtin::sql_embedded;
 use backend_engine::builtin::SqlHostTerminal;
 use backend_library::impact::{
     ImpactDomain, ImpactDomainBasis, ImpactDomainState, ImpactGap, ImpactSeedSpec, ImpactStrength,
@@ -46,20 +47,6 @@ fn statement_key(host: &[u8; 32], ordinal: u32) -> Key {
     hash.update(host);
     hash.update(&ordinal.to_le_bytes());
     *hash.finalize().as_bytes()
-}
-
-fn kind_str(kind: SqlObjectKind) -> &'static str {
-    match kind {
-        SqlObjectKind::Schema => "schema",
-        SqlObjectKind::Table => "table",
-        SqlObjectKind::View => "view",
-        SqlObjectKind::Column => "column",
-        SqlObjectKind::Index => "index",
-        SqlObjectKind::Trigger => "trigger",
-        SqlObjectKind::Function => "function",
-        SqlObjectKind::Type => "type",
-        SqlObjectKind::Sequence => "sequence",
-    }
 }
 
 /// Zero-based byte offset to one-based line, from the file's own newlines.
@@ -110,21 +97,52 @@ impl ImpactAdapter for SqlAdapter {
 
 fn build(loaded: ProjectSql) -> DomainLoad {
     let root = PathBuf::from(&loaded.root);
-    // Lines, once per file; the project capture bounds the total size.
-    let mut lines: Vec<Option<Lines>> = Vec::with_capacity(loaded.hosts.len());
-    for host in &loaded.hosts {
-        let bytes = host.length.and_then(|length| {
-            crate::builtin::ingest::read_stylo_selected_source(
-                &root,
-                &host.path,
-                usize::try_from(length).unwrap_or(usize::MAX).min(8 * 1024 * 1024),
-            )
-            .ok()
-            .filter(|bytes| bytes.len() as u64 == length)
-        });
-        lines.push(bytes.as_deref().map(Lines::of));
+    // Lines, once per file; the project capture bounds the total size. An
+    // embedded host (SQL in application code) maps its statements back to the
+    // calls that issued them.
+    enum HostLines {
+        Unread,
+        File(Lines),
+        Embedded(sql_embedded::Scan),
     }
-    let line_of = |host: usize, offset: u32| lines.get(host).and_then(|l| l.as_ref()).map(|l| l.line(offset));
+    let mut lines: Vec<HostLines> = Vec::with_capacity(loaded.hosts.len());
+    for host in &loaded.hosts {
+        let read = |path: &str, bound: usize| {
+            crate::builtin::ingest::read_stylo_selected_source(&root, path, bound).ok()
+        };
+        let entry = match sql_embedded::real_path(&host.path) {
+            Some(real) => read(real, sql_embedded::MAX_SCAN_BYTES)
+                .and_then(|bytes| {
+                    let scan = sql_embedded::scan(real, &bytes)?;
+                    (host.length == Some(scan.composed.len() as u64)).then(|| HostLines::Embedded(scan))
+                })
+                .unwrap_or(HostLines::Unread),
+            None => host
+                .length
+                .and_then(|length| {
+                    read(&host.path, usize::try_from(length).unwrap_or(usize::MAX).min(8 * 1024 * 1024))
+                        .filter(|bytes| bytes.len() as u64 == length)
+                })
+                .map_or(HostLines::Unread, |bytes| HostLines::File(Lines::of(&bytes))),
+        };
+        lines.push(entry);
+    }
+    let line_of = |host: usize, offset: u32| match lines.get(host) {
+        Some(HostLines::File(l)) => Some(l.line(offset)),
+        Some(HostLines::Embedded(scan)) => scan.fragment_at(offset as usize).map(|fragment| fragment.line),
+        _ => None,
+    };
+    // Whether the call behind a statement builds its text at run time. An
+    // embedded host which could not be mapped is treated as built, never exact.
+    let dynamic_at = |host: usize, offset: u32| match lines.get(host) {
+        Some(HostLines::Embedded(scan)) => scan.fragment_at(offset as usize).is_none_or(|fragment| fragment.dynamic),
+        _ => sql_embedded::real_path(&loaded.hosts[host].path).is_some(),
+    };
+    // What a user reads: the application file for an embedded host.
+    let shown_path = |host: usize| {
+        let path = &loaded.hosts[host].path;
+        sql_embedded::real_path(path).unwrap_or(path).to_owned()
+    };
 
     // Pass 1: entities by the definition that created them.
     #[derive(Clone)]
@@ -161,7 +179,7 @@ fn build(loaded: ProjectSql) -> DomainLoad {
         } else {
             (name.clone(), definition.schema.clone().unwrap_or_default())
         };
-        let kind = kind_str(definition.kind);
+        let kind = definition.kind.as_str();
         let key = entity_key(&entity_ref);
         let mut node = Node::new(DOMAIN, kind, &scope, &display);
         node.seedable = definition.live_at_head;
@@ -213,6 +231,9 @@ fn build(loaded: ProjectSql) -> DomainLoad {
     }
     for (host, _, fact) in &loaded.facts {
         let SqlFact::Reference(reference) = fact else { continue };
+        let embedded_dynamic = statement_extent
+            .get(&(*host, reference.statement))
+            .is_some_and(|offset| dynamic_at(*host, *offset));
         let targets: Vec<(&SqlEntityRef, ImpactStrength)> = match &reference.resolution {
             SqlResolution::Resolved { target, .. } => vec![(target, ImpactStrength::Exact)],
             SqlResolution::Expands { targets } => targets.iter().map(|t| (t, ImpactStrength::Exact)).collect(),
@@ -225,7 +246,9 @@ fn build(loaded: ProjectSql) -> DomainLoad {
             SqlResolution::Unresolved { .. } => {
                 // Function calls to builtins and CTE-local names are expected to
                 // be unbound; real objects the project never defines are a gap.
-                if matches!(reference.kind, SqlRefKind::Relation | SqlRefKind::Column) {
+                if matches!(reference.kind, SqlRefKind::Relation | SqlRefKind::Column)
+                    && !(embedded_dynamic && reference.name == sql_embedded::DYNAMIC_PLACEHOLDER)
+                {
                     unresolved += 1;
                 }
                 continue;
@@ -247,10 +270,10 @@ fn build(loaded: ProjectSql) -> DomainLoad {
                         SqlObjectKind::Table => "sql.constrains",
                         _ => "sql.used-by",
                     };
-                    (kind_str(object.kind), object.name.clone(), String::new(), relation)
+                    (object.kind.as_str(), object.name.clone(), String::new(), relation)
                 }
                 _ => {
-                    let path = &loaded.hosts[*host].path;
+                    let path = &shown_path(*host);
                     let relation_name = match (class, reference.role) {
                         (SqlStatementKind::AlterTable | SqlStatementKind::Drop, _) => "sql.altered-by",
                         (_, backend_semantic::sql_analysis::SqlRefRole::Write) => "sql.written-by",
@@ -265,7 +288,7 @@ fn build(loaded: ProjectSql) -> DomainLoad {
                         .get(&(*host, reference.statement))
                         .and_then(|offset| line_of(*host, *offset))
                         .unwrap_or(0);
-                    (kind, format!("{path}:{line}"), path.clone(), relation_name)
+                    (kind, format!("{path}:{line}"), loaded.hosts[*host].path.clone(), relation_name)
                 }
             };
         let owner_key = reference.in_object.as_ref()
@@ -290,9 +313,11 @@ fn build(loaded: ProjectSql) -> DomainLoad {
             if reference.role == backend_semantic::sql_analysis::SqlRefRole::Write { "writes" } else { "mentions" },
             reference.kind,
             reference.qualifier.as_ref().map_or_else(|| reference.name.clone(), |q| format!("{q}.{}", reference.name)),
-            loaded.hosts[*host].path
+            shown_path(*host)
         );
+        let why = if embedded_dynamic { format!("{why} (SQL built at run time: candidate only)") } else { why };
         for (target, strength) in targets {
+            let strength = if embedded_dynamic { ImpactStrength::Candidate } else { strength };
             let Some(entity) = entities.get(target) else { continue };
             // A table's own column list/primary key is containment, not a
             // dependency from the column to every other column and table use.
@@ -350,9 +375,16 @@ fn build(loaded: ProjectSql) -> DomainLoad {
             count: Some(unresolved),
         });
     }
+    let embedded_hosts = loaded.hosts.iter().filter(|host| sql_embedded::real_path(&host.path).is_some()).count();
+    // The number of analysed files goes in the note: `count` is for sites the gap touches.
+    let analysed_note = match embedded_hosts {
+        0 => String::new(),
+        1 => "1 application file was analysed. ".to_owned(),
+        many => format!("{many} application files were analysed. "),
+    };
     gaps.push(ImpactGap {
         facet: "sql.embedded-sql".into(),
-        note: "SQL written inside application code (query strings, ORM models, query builders) is not analysed".into(),
+        note: format!("{analysed_note}SQL in string literals passed to query calls in TypeScript, JavaScript and Python files is analysed (exact where the text is static, candidate where it is built); SQL assembled elsewhere and passed as a variable, tagged templates, ORM models, query builders, application files over 1 MiB and projects with an explicit .nudox/sql.json are not"),
         count: None,
     });
     gaps.push(ImpactGap {
@@ -400,6 +432,7 @@ fn build(loaded: ProjectSql) -> DomainLoad {
         },
         known_paths: loaded.hosts.iter().map(|host| host.path.clone()).collect(),
         files,
+        shaping_paths: BTreeSet::new(),
     }
 }
 
@@ -427,6 +460,23 @@ mod sql_impact_regression_tests {
         };
         let result = build(loaded);
         assert!(result.gaps.iter().any(|gap| gap.facet == "sql.candidate-limit" && gap.count == Some(1)));
+    }
+
+    #[test]
+    fn analysed_embedded_hosts_are_named_in_the_note_not_counted() {
+        let host = |path: &str| SqlHost { key: [1; 32], path: path.into(), dialect: SqlDialect::Sqlite,
+            input: Some([2; 32]), source: Some([3; 32]), producer: Some([4; 32]), settings: Some([5; 32]), fact_digest: [6; 32], length: Some(1),
+            terminal: SqlHostTerminal::Parsed { source: SqlCoverage::Partial, contextual: SqlCoverage::Partial, sqlite_lineage: None } };
+        let gap_of = |hosts: Vec<SqlHost>| {
+            let loaded = ProjectSql { root: "/".into(), inventory_complete: true, implicit: true, gaps: Default::default(), hosts, facts: vec![] };
+            build(loaded).gaps.into_iter().find(|gap| gap.facet == "sql.embedded-sql").expect("the embedded-sql disclosure")
+        };
+        let gap = gap_of(vec![host("a.ts#embedded.sql"), host("b.py#embedded.sql"), host("query.sql")]);
+        assert_eq!(gap.count, None);
+        assert!(gap.note.starts_with("2 application files were analysed. "), "{}", gap.note);
+        let gap = gap_of(vec![host("query.sql")]);
+        assert_eq!(gap.count, None);
+        assert!(gap.note.starts_with("SQL in string literals"), "{}", gap.note);
     }
 
     #[test]

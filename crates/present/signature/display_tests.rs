@@ -65,7 +65,8 @@ fn declaration_list_preview_folds_layout_before_the_existing_character_cap() {
 
     assert!(old_preview.chars().count() <= 240);
     assert!(preview.chars().count() <= 240);
-    assert!(!old_preview.contains("value_10: string"));
+    // The plain preview folds layout newlines too, so both reach the same parameter.
+    assert!(old_preview.contains("value_10: string"));
     assert!(preview.starts_with("export function load(value_0: string, value_1: string,"));
     assert!(preview.contains("value_10: string"));
     assert!(preview.ends_with('…'));

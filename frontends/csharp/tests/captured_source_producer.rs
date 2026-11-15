@@ -149,7 +149,9 @@ fn captured_members_bind_cross_file_symbols_and_retain_incomplete_diagnostics()
         ))
         .expect_err("unbound source must not be published as complete");
     match error {
-        CSharpAuthorityError::CompilationIncomplete { count, diagnostic } => {
+        CSharpAuthorityError::CompilationIncomplete {
+            count, diagnostic, ..
+        } => {
             assert!(count > 0);
             assert!(diagnostic.contains("CS0103"), "{diagnostic}");
         }

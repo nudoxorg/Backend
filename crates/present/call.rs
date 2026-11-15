@@ -143,6 +143,8 @@ impl Invocation {
             .any(|spec| spec.kind() == ArgumentKind::SelectedSymbol)
             && self.at(0).is_none()
             && self.option("selected-id").is_none()
+            // `graph --component` starts from a component name, not a declaration.
+            && !(self.grammar.name() == "graph" && self.option("component").is_some())
         {
             return Err(Fault::usage(
                 self.grammar.name(),
@@ -363,6 +365,8 @@ pub enum Request {
         text: String,
         /// Page bound.
         limit: u16,
+        /// Drop import and external rows from the page; they are counted, never silent.
+        declarations_only: bool,
     },
     /// A bounded name resolution page.
     Resolve {
@@ -380,6 +384,9 @@ pub enum Request {
         path: String,
         /// Owner query limit, retained unchanged by every continuation.
         limit: u16,
+        /// Declaration kinds the page keeps; empty keeps everything. Applied to the
+        /// owner's page, with the removed count reported.
+        kinds: crate::outline::KindFilter,
     },
     /// One durable product operation.
     Surface(Box<SurfaceCommand>),
@@ -529,14 +536,58 @@ pub fn lower_with_opener(
         }
         CommandId::Source => declaration_request(invocation, DeclarationRead::Source),
         CommandId::Related => declaration_request(invocation, DeclarationRead::Related),
+        CommandId::Graph | CommandId::GraphQuery if invocation.option("component").is_some() => {
+            // The neighbourhood of a component in the style graph: what it relies on.
+            // It starts from the name alone, so a declaration or a page position
+            // would be ignored; refuse them rather than answer something else.
+            if invocation.at(0).is_some()
+                || invocation.option("selected-id").is_some()
+                || invocation.option("cursor").is_some()
+            {
+                return Err(Fault::usage(
+                    "component",
+                    "--component starts from a component name; drop the coordinate, --selected-id and --cursor",
+                ));
+            }
+            let name = invocation.option("component").unwrap_or_default();
+            let seed = backend_library::impact::ImpactSeedSpec {
+                domain: backend_library::impact::ImpactDomain::Code,
+                kind: "component".to_owned(),
+                name: name.to_owned(),
+                path: invocation.option("in").map(str::to_owned),
+            };
+            style_graph_request(
+                project,
+                seed,
+                backend_library::impact::ImpactDirection::Dependencies,
+                2,
+                limit(invocation)?,
+            )
+        }
         CommandId::Graph | CommandId::GraphQuery => {
             declaration_request(invocation, DeclarationRead::Graph)
+        }
+        CommandId::References
+            if invocation.at(0).and_then(css_reference_seed).is_some() =>
+        {
+            // A CSS name as the target: the components which use it.
+            let seed = invocation.at(0).and_then(css_reference_seed).ok_or_else(|| {
+                Fault::usage("coordinate", "expected a CSS class, id or custom property")
+            })?;
+            style_graph_request(
+                project,
+                seed,
+                backend_library::impact::ImpactDirection::Dependents,
+                1,
+                200,
+            )
         }
         CommandId::Search => query_cursor(
             invocation,
             Request::Search {
                 text: invocation.require(0)?.to_owned(),
                 limit: limit(invocation)?,
+                declarations_only: invocation.flag("declarations-only"),
             },
         ),
         CommandId::Resolve | CommandId::Name => query_cursor(
@@ -556,12 +607,22 @@ pub fn lower_with_opener(
             } else {
                 path
             };
-            if invocation.option("limit").is_some() || invocation.option("cursor").is_some() {
+            let kinds = crate::outline::KindFilter::parse(
+                invocation.option("kind"),
+                invocation.option("exclude-kind"),
+            )
+            .map_err(|message| Fault::usage("kind", message))?
+            .with_top_level(invocation.flag("top-level"));
+            if invocation.option("limit").is_some()
+                || invocation.option("cursor").is_some()
+                || !kinds.is_empty()
+            {
                 query_cursor(
                     invocation,
                     Request::OutlinePage {
                         path,
                         limit: limit(invocation)?,
+                        kinds,
                     },
                 )
             } else {
@@ -614,6 +675,64 @@ pub fn lower_with_opener(
             surface(invocation, spec.id, opener).map(|command| Request::Surface(Box::new(command)))
         }
     }
+}
+
+/// A CSS name written where `references` expects a coordinate: `.card`,
+/// `#hero` or `--brand`, optionally narrowed to one stylesheet as
+/// `.title@src/Header.module.css`. Declaration coordinates never begin with
+/// these, so nothing that named a symbol before names a CSS target now.
+pub(crate) fn css_reference_seed(target: &str) -> Option<backend_library::impact::ImpactSeedSpec> {
+    use backend_library::impact::{ImpactDomain, ImpactSeedSpec};
+    let (name, path) = match target.split_once('@') {
+        Some((name, path)) if !path.is_empty() => (name, Some(path.to_owned())),
+        Some(_) => return None,
+        None => (target, None),
+    };
+    let ident = |text: &str| {
+        !text.is_empty()
+            && text.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_') || !c.is_ascii())
+            && !text.starts_with(|c: char| c.is_ascii_digit())
+    };
+    let (kind, name) = if let Some(rest) = name.strip_prefix("--") {
+        ("custom-property", format!("--{rest}"), ident(rest))
+    } else if let Some(rest) = name.strip_prefix('.') {
+        ("class", rest.to_owned(), ident(rest))
+    } else if let Some(rest) = name.strip_prefix('#') {
+        ("id", rest.to_owned(), ident(rest))
+    } else {
+        return None;
+    }
+    .into_valid()?;
+    Some(ImpactSeedSpec { domain: ImpactDomain::Css, kind: kind.to_owned(), name, path })
+}
+
+trait IntoValid<A, B> {
+    fn into_valid(self) -> Option<(A, B)>;
+}
+impl<A, B> IntoValid<A, B> for (A, B, bool) {
+    fn into_valid(self) -> Option<(A, B)> {
+        self.2.then_some((self.0, self.1))
+    }
+}
+
+fn style_graph_request(
+    project: &str,
+    seed: backend_library::impact::ImpactSeedSpec,
+    direction: backend_library::impact::ImpactDirection,
+    depth: u8,
+    page_rows: u16,
+) -> Result<Request, Fault> {
+    use backend_library::impact::{ImpactRequest, ImpactSeed};
+    let package = PackageReference::parse(project)
+        .map_err(|error| Fault::admission(error, Operand::Argument(project.to_owned())))?;
+    let mut request = ImpactRequest::new(package, ImpactSeed::Named(seed));
+    request.direction = direction;
+    request.depth = depth;
+    request.page_rows = page_rows;
+    request
+        .admit()
+        .map_err(|error| Fault::usage("request", error.to_string()))?;
+    Ok(Request::Surface(Box::new(SurfaceCommand::Impact { request })))
 }
 
 /// Lowers the JSON escape hatch, which takes one tagged surface object.
@@ -1127,7 +1246,7 @@ fn surface(
                 ImpactCursor, ImpactDirection, ImpactDomain, ImpactHandle, ImpactRequest,
                 ImpactSeed, ImpactSeedSpec, ImpactStrengthFilter, IMPACT_DEFAULT_DEPTH,
             };
-            const SEEDS: [(&str, ImpactDomain, &str); 9] = [
+            const SEEDS: [(&str, ImpactDomain, &str); 13] = [
                 ("class", ImpactDomain::Css, "class"),
                 ("id", ImpactDomain::Css, "id"),
                 ("selector", ImpactDomain::Css, "selector"),
@@ -1137,6 +1256,10 @@ fn surface(
                 ("component", ImpactDomain::Code, "component"),
                 ("sql-table", ImpactDomain::Sql, "table"),
                 ("sql-column", ImpactDomain::Sql, "column"),
+                ("sql-view", ImpactDomain::Sql, "view"),
+                ("sql-index", ImpactDomain::Sql, "index"),
+                ("sql-function", ImpactDomain::Sql, "function"),
+                ("sql-trigger", ImpactDomain::Sql, "trigger"),
             ];
             let named: Vec<_> = SEEDS
                 .iter()
@@ -1159,7 +1282,7 @@ fn surface(
                 _ => {
                     return Err(Fault::usage(
                         "seed",
-                        "name exactly one thing to change: --class, --id, --selector, --custom-property, --at-rule, --stylesheet, --component, or --handle",
+                        "name exactly one thing to change: --class, --id, --selector, --custom-property, --at-rule, --stylesheet, --component, --sql-table, --sql-column, --sql-view, --sql-index, --sql-function, --sql-trigger, or --handle",
                     ));
                 }
             };
@@ -1198,11 +1321,20 @@ fn surface(
         },
         CommandId::SqlQuery => {
             use backend_library::sql_query::{SqlObjectKind, SqlQueryCursor, SqlQueryRequest, SqlQueryRole};
+            // `--uses-view NAME` and friends are seeds: who mentions this object.
+            let typed_uses: Vec<String> = [("view", "uses-view"), ("index", "uses-index"), ("function", "uses-function")]
+                .iter()
+                .filter_map(|(kind, option)| invocation.option(option).map(|name| format!("{kind}:{name}")))
+                .collect();
+            if typed_uses.len() + usize::from(invocation.option("uses").is_some()) > 1 {
+                return Err(Fault::usage("uses", "name at most one of --uses, --uses-view, --uses-index, --uses-function"));
+            }
+            let uses = typed_uses.into_iter().next().or_else(|| invocation.option("uses").map(str::to_owned));
             // Without `--role`, the filters say which fact family is meant:
-            // `--uses` is a reference-only filter and `--parent` a definition-only
-            // one. A bare `--name` / `--kind` asks for every definition and
-            // mention of that object, which is the `any` role.
-            let implied_role = if invocation.option("uses").is_some() {
+            // a uses filter (`--uses` or a typed seed) is reference-only and
+            // `--parent` a definition-only one. A bare `--name` / `--kind` asks
+            // for every definition and mention of that object, which is `any`.
+            let implied_role = if uses.is_some() {
                 "reference"
             } else if invocation.option("parent").is_some() {
                 "definition"
@@ -1219,12 +1351,9 @@ fn surface(
             };
             let kind = match invocation.option("kind") {
                 None => None,
-                Some(value) => Some(match value {
-                    "schema" => SqlObjectKind::Schema, "table" => SqlObjectKind::Table, "view" => SqlObjectKind::View,
-                    "column" => SqlObjectKind::Column, "index" => SqlObjectKind::Index, "trigger" => SqlObjectKind::Trigger,
-                    "function" => SqlObjectKind::Function, "type" => SqlObjectKind::Type, "sequence" => SqlObjectKind::Sequence,
-                    _ => return Err(Fault::usage("kind", "expected schema, table, view, column, index, trigger, function, type, or sequence")),
-                }),
+                Some(value) => Some(SqlObjectKind::parse(value).ok_or_else(|| {
+                    Fault::usage("kind", "expected schema, table, view, column, index, trigger, function, type, or sequence")
+                })?),
             };
             let number = |key: &str, default: u32| -> Result<u32, Fault> {
                 invocation.option(key).map_or(Ok(default), |value| value.parse::<u32>()
@@ -1233,7 +1362,7 @@ fn surface(
             let request = SqlQueryRequest { package: package(invocation, 0)?, role,
                 name: invocation.option("name").map(str::to_owned), kind,
                 parent: invocation.option("parent").map(str::to_owned),
-                uses: invocation.option("uses").map(str::to_owned), page_rows: limit(invocation)?,
+                uses, page_rows: limit(invocation)?,
                 output_bytes: number("output-bytes", 131_072)?, scan_rows: number("scan-rows", 65_536)?,
                 scan_bytes: number("scan-bytes", 33_554_432)?,
                 continuation: invocation.option("cursor").map(|value| SqlQueryCursor::parse(value.to_owned()))

@@ -133,17 +133,18 @@ fn compact_catalog_reads_preserve_typed_operands_refusals_and_semantic_data() {
         original["structuredContent"]["fault"]["cause"]
     );
     let advice = &result["structuredContent"]["fault"]["call"];
+    // A pinned registry release is acquired before its dependencies can be read.
     assert_eq!(
         advice,
-        &json!({"name": CALL_TOOL, "arguments": {"name": "backend.package", "arguments": {"package": package}}})
+        &json!({"name": CALL_TOOL, "arguments": {"name": "backend.index", "arguments": {"path": package}}})
     );
     assert!(text_of(&result).contains("backend.call"));
-    assert!(!text_of(&result).contains("→ `backend.package("));
-    compact.product.surface_reply = Some(SurfaceReply::Package(Box::new([])));
+    assert!(!text_of(&result).contains("→ `backend.index("));
     let advice_result = request(&mut compact, "tools/call", advice);
-    assert!(advice_result.get("error").is_none());
+    assert!(advice_result.get("error").is_none(), "{advice_result}");
+    assert_eq!(advice_result["result"]["isError"], false, "{advice_result}");
     assert!(
-        matches!(compact.product.surface_commands.last(), Some(SurfaceCommand::Package { package: actual }) if actual.as_str() == package)
+        matches!(compact.product.surface_commands.last(), Some(SurfaceCommand::IndexStart { package: actual, .. }) if actual.as_str() == package)
     );
     compact.product.surface_commands.pop();
     assert_eq!(

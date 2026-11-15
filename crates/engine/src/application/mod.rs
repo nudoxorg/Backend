@@ -7,7 +7,7 @@ mod cluster_coordinator;
 mod compiler;
 mod csharp_evidence;
 mod csharp_sdk_options;
-pub use csharp_evidence::{decode_csharp_evidence, CSharpEvidenceClaim, CSharpEvidenceConfig, CSharpEvidenceSource};
+pub use csharp_evidence::{decode_csharp_evidence, CSharpEvidenceClaim, CSharpEvidenceConfig, CSharpEvidenceMember, CSharpEvidenceSource};
 mod compiler_terminal_text;
 mod compiler_typescript_failure;
 mod compiler_typescript_observation;

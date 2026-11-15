@@ -4483,6 +4483,23 @@ enum NativeCallableScopeEvent {
     },
 }
 
+/// The generic declaration an applied reference instantiates.
+///
+/// A reference to a generic class that omits its defaulted type arguments
+/// reaches the lowering either as the application `C<A, B>` or as the bare
+/// declaration, depending on which file the shared checker visited first. Both
+/// name the same declaration and the same members, so a member lookup follows
+/// the base of an application instead of depending on that visiting order.
+fn native_tsz_applied_base(checker: &TszCheckerState<'_>, mut type_id: TszTypeId) -> TszTypeId {
+    for _ in 0..8 {
+        let Some(TypeData::Application(application)) = checker.ctx.types.lookup(type_id) else {
+            break;
+        };
+        type_id = checker.ctx.types.type_application(application).base;
+    }
+    type_id
+}
+
 /// Resolves a property name through an exact namespace import or the receiver's
 /// checker type and member table. Namespace exports retain their terminal file
 /// owner because raw symbol IDs are binder-relative. No project-wide name scan
@@ -4514,7 +4531,14 @@ fn native_tsz_member_symbol(
     } else {
         receiver_type
     };
-    let owner_symbol = checker.ctx.resolve_type_to_symbol_id(receiver_type)?;
+    let owner_symbol = checker
+        .ctx
+        .resolve_type_to_symbol_id(receiver_type)
+        .or_else(|| {
+            checker
+                .ctx
+                .resolve_type_to_symbol_id(native_tsz_applied_base(checker, receiver_type))
+        })?;
     // A receiver's class symbol may belong to a different project file than
     // the call site (for example, a field initialized with Angular's
     // `inject(Service)`). Symbol ids are binder-relative, so looking the id
@@ -10978,6 +11002,15 @@ fn intern_native_tsz_type<'source>(
             record.nominal = Some(NominalRef::Local(EntityId::new(target)));
             return intern_native_tsz_row(registry, facts, record, owner, &[]);
         }
+        // The recursion closes on an alias declared in another file (React's
+        // `ReactNode` reached through an arrow component, a function expression
+        // or a `React.ReactNode` namespace use). No authored local binding names
+        // that body here, so no nominal is minted for it; the foreign content is
+        // an explicit external type gap, exactly like an unresolved import. A
+        // recursion inside the current file still refuses the whole file.
+        if native_tsz_foreign_lazy_alias(checker, database, type_id) {
+            return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
+        }
         return Err(computed_fault(
             registry,
             owner,
@@ -11000,6 +11033,20 @@ fn intern_native_tsz_type<'source>(
     );
     active.remove(&resolved_type_id);
     result
+}
+
+/// Whether `type_id` is a lazy handle to a definition declared in a file other
+/// than the one being projected (a definition-store file id that is real and
+/// differs from the checker's current file).
+fn native_tsz_foreign_lazy_alias(
+    checker: &TszCheckerState<'_>,
+    database: &dyn TszTypeDatabase,
+    type_id: TszTypeId,
+) -> bool {
+    let Some(TypeData::Lazy(def_id)) = database.lookup(type_id) else { return false; };
+    let Some(info) = checker.ctx.definition_store.get(def_id) else { return false; };
+    info.file_id
+        .is_some_and(|file| file != u32::MAX && Some(file as usize) != Some(checker.ctx.current_file_idx))
 }
 
 /// Emits a bounded, opt-in view of the exact TSZ row that closed a projection
@@ -13980,6 +14027,61 @@ mod lane_tests {
                 }),
             "spec call must name the exact controller declaration: {spec_targets:?}"
         );
+        Ok(())
+    }
+
+    /// Which class a member call resolves to must not depend on which of the
+    /// two files the checker visited first. A reference that omits its
+    /// defaulted type arguments is handed to the lowering as an application
+    /// when its user is checked before its owner and as the bare declaration
+    /// otherwise; the member lookup used to understand only the second form,
+    /// so the same sources published a different set of resolved calls.
+    #[test]
+    fn native_tsz_member_calls_through_defaulted_generic_references_do_not_depend_on_check_order()
+    -> Result<(), LaneError> {
+        let owner = "export class Box<T = number> {\n  private value!: T;\n  read(): T { return this.value; }\n}\n";
+        let user = concat!(
+            "import { Box } from './box.js';\n",
+            "type Holder = { box: Box };\n",
+            "export function use(holder: Holder) { return holder.box.read(); }\n",
+        );
+        let method_start = u32::try_from(
+            owner
+                .find("read()")
+                .ok_or(LaneError::Missing("defaulted generic method source"))?,
+        )?;
+        // The checker visits files in path order: the first layout checks the
+        // owner before its user, the second layout the user before its owner.
+        for (owner_path, user_path) in [
+            ("src/a_box.ts", "src/z_use.ts"),
+            ("src/z_box.ts", "src/a_use.ts"),
+        ] {
+            let resolutions = [module_resolution(
+                user_path,
+                "./box.js",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File {
+                    path: owner_path.to_owned(),
+                },
+            )];
+            let authority = native_tsz_project_with_resolutions(
+                &[(owner_path, owner), (user_path, user)],
+                &resolutions,
+            )?;
+            let project = authority
+                .project()
+                .ok_or(LaneError::Missing("defaulted generic TSZ project"))?;
+            let facts = collect_native_tsz_file(project, user_path, user)?;
+            let targets = staged_tsz_coordinates(&facts)?;
+            assert!(
+                targets.iter().any(|(kind, path, _, _, name, _)| {
+                    *kind == ReferenceKind::MethodCall
+                        && path == owner_path
+                        && *name == method_start
+                }),
+                "{user_path} (owner {owner_path}): the call must name the exact class member whichever file is checked first: {targets:?}"
+            );
+        }
         Ok(())
     }
 
@@ -18208,6 +18310,77 @@ class Named { run({ active }: { active: { id: number } }) { return active.id; } 
             assert_exact_imported_alias(&facts, "react.ts", b"ReactNode")?;
             assert!(facts.names[..facts.len()].iter().any(|name| *name == b"children"), "{path}");
         }
+        Ok(())
+    }
+
+    /// The component shapes a real React project writes besides the function
+    /// declaration. Each takes `children` from a recursive imported `ReactNode`;
+    /// each must project (no whole-file refusal) and keep the exact local import.
+    #[test]
+    fn native_tsz_react_component_shapes_keep_exact_local_alias() -> Result<(), LaneError> {
+        let react = r#"export type ReactNode = string | number | null | ReactElement | Iterable<ReactNode>;
+            export interface ReactElement { props: { children: ReactNode }; }
+            export interface Iterable<T> { next: () => T; }
+            export type FC<P = {}> = (props: P) => ReactNode;"#;
+        let cases = [
+            ("arrow.tsx", "import { ReactNode } from './react'; export const Arrow = ({ children }: { children: ReactNode }) => children;"),
+            ("expression.tsx", "import { ReactNode } from './react'; export const Expression = function ({ children }: { children: ReactNode }) { return children; };"),
+            ("fc.tsx", "import { FC, ReactNode } from './react'; interface P { children: ReactNode } export const Fc: FC<P> = ({ children }) => children;"),
+            ("namespace.tsx", "import * as React from './react'; export function Namespaced({ children }: { children: React.ReactNode }) { return children; }"),
+        ];
+        let mut refused = Vec::new();
+        for (path, source) in cases {
+            let resolution = module_resolution(path, "./react", TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File { path: "react.ts".to_owned() });
+            let authority = native_tsz_project_with_resolutions(&[("react.ts", react), (path, source)], &[resolution])?;
+            let project = authority.project().ok_or(LaneError::Missing("React shape project"))?;
+            let mut facts = FactSet::new();
+            if let Err(error) = super::collect_with_tsz_unmetered_for_test(
+                TypeScriptSource::Tsx, source.as_bytes(), project, path, &mut facts) {
+                refused.push(format!("{path}: {error:?}"));
+                continue;
+            }
+            // The foreign recursive body is either bound to the exact local import or an
+            // explicit gap; never an unproved foreign nominal.
+            for record in facts.type_records[..facts.len()].iter().chain(&facts.computed_records[..facts.computed_rows]) {
+                assert!(!matches!(record.nominal, Some(NominalRef::External(_) | NominalRef::Stable(_))), "{path}");
+            }
+            assert!(facts.names[..facts.len()].iter().any(|name| *name == b"children"), "{path}: children binding kept");
+        }
+        assert!(refused.is_empty(), "React component shapes refused: {refused:#?}");
+        Ok(())
+    }
+
+    /// `import type` through a barrel resolves to the terminal declaration exactly like a
+    /// value import does, so the declaration's consumers include the importer.
+    #[test]
+    fn native_tsz_type_only_import_through_a_barrel_keeps_the_terminal_declaration() -> Result<(), LaneError> {
+        let util = "export type SharedShape = { id: string };\nexport function barrelTarget(n: number): number { return n + 3; }\n";
+        let barrel = "export { barrelTarget } from './util';\nexport type { SharedShape } from './util';\n";
+        let caller = "import { barrelTarget } from './lib';\nimport type { SharedShape } from './lib';\nexport const viaBarrel = barrelTarget(1);\nexport const shape: SharedShape = { id: 'a' };\n";
+        let resolutions = [
+            module_resolution("lib.ts", "./util", TszProjectModuleRequestKind::EsmReExport,
+                TszProjectModuleResolutionTarget::File { path: "util.ts".to_owned() }),
+            module_resolution("caller.ts", "./lib", TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File { path: "lib.ts".to_owned() }),
+        ];
+        let authority = native_tsz_project_with_resolutions(
+            &[("util.ts", util), ("lib.ts", barrel), ("caller.ts", caller)], &resolutions)?;
+        let project = authority.project().ok_or(LaneError::Missing("barrel project"))?;
+        let facts = collect_native_tsz_file(project, "caller.ts", caller)?;
+        let coordinates = staged_tsz_coordinates(&facts)?;
+        let mut missing = Vec::new();
+        for name in ["barrelTarget", "SharedShape"] {
+            let imported = coordinates.iter().any(|(kind, path, _, _, _, owner)|
+                *kind == ReferenceKind::Import && path == "util.ts"
+                    && facts.names.get(*owner as usize).copied() == Some(name.as_bytes()));
+            if !imported { missing.push(format!("import edge {name} -> util.ts")); }
+            let used = coordinates.iter().any(|(kind, path, _, _, _, _)|
+                path == "util.ts" && *kind != ReferenceKind::Import
+                    && match name { "barrelTarget" => *kind == ReferenceKind::FunctionCall, _ => *kind == ReferenceKind::TypeReference });
+            if !used { missing.push(format!("use of {name} -> util.ts")); }
+        }
+        assert!(missing.is_empty(), "barrel targets lost: {missing:?}; all coordinates: {coordinates:?}");
         Ok(())
     }
 

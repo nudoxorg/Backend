@@ -94,3 +94,77 @@ fn explicit_role_still_wins_over_the_implied_one() {
     cli.set("uses", "members");
     assert!(lower(&cli, PROJECT).is_err(), "--uses is reference-only and says so");
 }
+
+#[test]
+fn view_index_and_function_seeds_lower_identically_from_cli_and_mcp() {
+    use backend_library::impact::{ImpactDomain, ImpactSeed};
+    let grammar = grammar_for("impact").expect("impact grammar");
+    for (option, json_name, kind) in [
+        ("sql-view", "sql_view", "view"),
+        ("sql-index", "sql_index", "index"),
+        ("sql-function", "sql_function", "function"),
+        ("sql-trigger", "sql_trigger", "trigger"),
+        ("sql-table", "sql_table", "table"),
+        ("sql-column", "sql_column", "column"),
+    ] {
+        let mut cli = Invocation::new(grammar);
+        cli.push(PROJECT);
+        cli.set(option, "account_spend");
+        let json = serde_json::json!({"package": PROJECT, json_name: "account_spend"});
+        let mcp = Invocation::from_json(grammar, json.as_object().unwrap()).expect("MCP input");
+        let extract = |call: &Invocation| {
+            let Request::Surface(command) = lower(call, PROJECT).expect("impact request") else {
+                panic!("surface")
+            };
+            let backend_library::SurfaceCommand::Impact { request } = *command else {
+                panic!("impact")
+            };
+            request
+        };
+        let left = extract(&cli);
+        assert_eq!(left, extract(&mcp), "{option}");
+        let ImpactSeed::Named(spec) = &left.seed else { panic!("named seed for {option}") };
+        assert_eq!((spec.domain, spec.kind.as_str(), spec.name.as_str()), (ImpactDomain::Sql, kind, "account_spend"));
+    }
+    // Two seeds are still refused, now naming the SQL ones.
+    let mut both = Invocation::new(grammar);
+    both.push(PROJECT);
+    both.set("sql-view", "a");
+    both.set("sql-index", "b");
+    assert!(lower(&both, PROJECT).is_err());
+}
+
+#[test]
+fn typed_uses_seeds_lower_to_a_kind_qualified_reference_query() {
+    let grammar = grammar_for("sql-query").expect("SQL grammar");
+    for (option, json_name, expected) in [
+        ("uses-view", "uses_view", "view:account_spend"),
+        ("uses-index", "uses_index", "index:account_spend"),
+        ("uses-function", "uses_function", "function:account_spend"),
+    ] {
+        let mut cli = Invocation::new(grammar);
+        cli.push(PROJECT);
+        cli.set(option, "account_spend");
+        let json = serde_json::json!({"package": PROJECT, json_name: "account_spend"});
+        let mcp = Invocation::from_json(grammar, json.as_object().unwrap()).expect("MCP input");
+        let extract = |call: &Invocation| {
+            let Request::Surface(command) = lower(call, PROJECT).expect("SQL request") else {
+                panic!("surface")
+            };
+            let backend_library::SurfaceCommand::SqlQuery { request } = *command else {
+                panic!("SQL query")
+            };
+            request
+        };
+        let left = extract(&cli);
+        assert_eq!(left, extract(&mcp), "{option}");
+        // A seed means "who mentions this", so the role defaults to references.
+        assert_eq!(left.role, SqlQueryRole::Reference);
+        assert_eq!(left.uses.as_deref(), Some(expected));
+    }
+    let mut two = Invocation::new(grammar);
+    two.push(PROJECT);
+    two.set("uses-view", "a");
+    two.set("uses", "b");
+    assert!(lower(&two, PROJECT).is_err());
+}

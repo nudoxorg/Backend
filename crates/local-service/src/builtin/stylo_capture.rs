@@ -205,6 +205,7 @@ pub(super) fn capture_stylo_host(
         terminal: StyloTerminal::Parsed(analysis.coverage),
         fact_count: u32::try_from(facts.len()).map_err(|_| StyloCaptureFailure::Limit)?,
         fact_digest,
+        fragment: None,
     };
     let request_digest = run.request_digest();
     let producer = analysis.support_fingerprint;
@@ -224,6 +225,155 @@ pub(super) fn capture_stylo_host(
     Ok(StyloHostCapture {
         host_key,
         host,
+        facts,
+        request_digest,
+        producer,
+        recipe,
+        artifact,
+        proof,
+        encoded_bytes,
+    })
+}
+
+/// Runs Stylo over one embedded stylesheet (a Vue `<style>` block) and seals the
+/// exact native claims. The verified host is the enclosing file; the worker sees
+/// the whole file and the checked region, and every authored site returned is
+/// rewritten to a byte range of that file before it is projected, so a reader
+/// never needs the block's own coordinates. Budgets are charged like a
+/// standalone host.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn capture_stylo_fragment_host(
+    permit: &StyloWorkerPermit,
+    cwd: PathBuf,
+    project: [u8; 32],
+    fragment: &backend_engine::builtin::StyloFragment,
+    host: &backend_compile::VerifiedSourceExtent<'_>,
+    config: &StyloParseConfig,
+    wall_time: Duration,
+    memory_limit: Option<usize>,
+    remaining_bytes: usize,
+    remaining_records: usize,
+    cancellation: &AtomicBool,
+) -> Result<StyloHostCapture, StyloCaptureFailure> {
+    if remaining_bytes == 0 || remaining_records == 0 {
+        return Err(StyloCaptureFailure::Limit);
+    }
+    let path = fragment.host_path();
+    let host_key = stylo_host_key(project, &path).map_err(StyloCaptureFailure::Invalid)?;
+    let region = usize::try_from(fragment.start)
+        .and_then(|start| usize::try_from(fragment.end).map(|end| start..end))
+        .map_err(|_| StyloCaptureFailure::Invalid("Stylo fragment range overflow".into()))?;
+    let run = super::stylo_worker::run_stylo_fragment_worker(
+        permit,
+        cwd,
+        host,
+        region.clone(),
+        config,
+        wall_time,
+        memory_limit,
+        cancellation,
+    )
+    .map_err(StyloCaptureFailure::Worker)?;
+    let mut analysis = run.analysis().analysis().clone();
+    let text = host.text();
+    for occurrence in &mut analysis.occurrences {
+        let start = occurrence.start.checked_add(fragment.start);
+        let end = occurrence.end.checked_add(fragment.start);
+        let (Some(start), Some(end)) = (start, end) else {
+            return Err(StyloCaptureFailure::Invalid(
+                "Stylo fragment site overflow".into(),
+            ));
+        };
+        occurrence.start = start;
+        occurrence.end = end;
+        let slice = usize::try_from(start)
+            .and_then(|start| usize::try_from(end).map(|end| start..end))
+            .ok()
+            .and_then(|range| text.get(range));
+        if slice != Some(occurrence.raw.as_str()) {
+            return Err(StyloCaptureFailure::Invalid(
+                "Stylo fragment site does not match the enclosing file bytes".into(),
+            ));
+        }
+    }
+    let artifact = run.artifact().identity().to_bytes();
+    let content = host.content().to_bytes();
+    let source = *host.source().as_ref();
+    let byte_length = u64::try_from(text.len()).map_err(|_| StyloCaptureFailure::Limit)?;
+    let basis = StyloProjectionBasis {
+        project,
+        path: &path,
+        content,
+        source,
+        byte_length,
+        producer: analysis.support_fingerprint,
+        worker_artifact: artifact,
+        adapter: super::stylo_admission::stylo_adapter_fingerprint(),
+        worker_policy: run.policy(),
+    };
+    let (analysis_basis, projected) =
+        project_stylo_facts(&basis, &analysis).map_err(StyloCaptureFailure::Invalid)?;
+    if projected.len().saturating_add(1) > remaining_records {
+        return Err(StyloCaptureFailure::Limit);
+    }
+    let facts: Vec<_> = projected
+        .into_iter()
+        .map(|row| {
+            (
+                row.key,
+                StyloAnalysisRecord::Fact {
+                    host: host_key,
+                    ordinal: row.ordinal,
+                    subordinal: row.subordinal,
+                    fact: row.fact,
+                },
+            )
+        })
+        .collect();
+    let fact_refs: Vec<_> = facts.iter().map(|(key, row)| (*key, row)).collect();
+    let fact_digest = stylo_rows_digest(&fact_refs).map_err(StyloCaptureFailure::Invalid)?;
+    let hostrow = StyloAnalysisRecord::Host {
+        project,
+        path,
+        content: Some(content),
+        source: Some(source),
+        byte_length: Some(byte_length),
+        utf8_bom_removed: Some(analysis.utf8_bom_removed),
+        config: Some(analysis.config.clone()),
+        configuration: Some(
+            stylo_parser_configuration_id(&analysis.recipe, &analysis.config)
+                .map_err(StyloCaptureFailure::Invalid)?,
+        ),
+        preferences: Some(analysis.preferences.clone()),
+        preference_stability: Some(analysis.preference_stability),
+        analysis_basis: Some(analysis_basis),
+        worker_policy: Some(run.policy().clone()),
+        source_coverage: Some(analysis.source_coverage),
+        source_gaps: analysis.source_gaps.clone(),
+        source_observer_recipe: Some(analysis.source_observer_recipe.clone()),
+        terminal: StyloTerminal::Parsed(analysis.coverage),
+        fact_count: u32::try_from(facts.len()).map_err(|_| StyloCaptureFailure::Limit)?,
+        fact_digest,
+        fragment: Some(fragment.clone()),
+    };
+    let request_digest = run.request_digest();
+    let producer = analysis.support_fingerprint;
+    let recipe = analysis.recipe.clone();
+    let (proof, encoded_bytes) = witness(
+        host_key,
+        &hostrow,
+        &facts,
+        request_digest,
+        producer,
+        &recipe,
+        artifact,
+    )?;
+    if encoded_bytes > remaining_bytes {
+        return Err(StyloCaptureFailure::Limit);
+    }
+    Ok(StyloHostCapture {
+        host_key,
+        host: hostrow,
         facts,
         request_digest,
         producer,

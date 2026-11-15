@@ -1038,19 +1038,6 @@ impl RustWorkspace {
         let Some(facts) = self.cargo_workspace_facts.as_deref() else {
             return (None, RustCargoTargetResolution::MetadataUnavailable);
         };
-        let Some(package_id) = facts.selected_package_id.as_deref() else {
-            return (None, RustCargoTargetResolution::SelectedPackageUnavailable);
-        };
-        let Some(package) = facts
-            .workspace_packages
-            .iter()
-            .find(|package| package.package_id.as_ref() == package_id)
-        else {
-            return (None, RustCargoTargetResolution::SelectedPackageUnavailable);
-        };
-        if package.manifest_path != self.root.join("Cargo.toml") {
-            return (None, RustCargoTargetResolution::ManifestMismatch);
-        }
         let selected = if source_path.is_absolute() {
             source_path.to_path_buf()
         } else {
@@ -1059,7 +1046,51 @@ impl RustWorkspace {
             }
             self.root.join(source_path)
         };
-        self.cargo_target_lookup_for_absolute_source_path(&selected, package)
+        let selected_package = facts.selected_package_id.as_deref().and_then(|package_id| {
+            facts
+                .workspace_packages
+                .iter()
+                .find(|package| package.package_id.as_ref() == package_id)
+        });
+        let resolution = match selected_package {
+            None => RustCargoTargetResolution::SelectedPackageUnavailable,
+            Some(package) if package.manifest_path != self.root.join("Cargo.toml") => {
+                RustCargoTargetResolution::ManifestMismatch
+            }
+            Some(package) => {
+                let lookup = self.cargo_target_lookup_for_absolute_source_path(&selected, package);
+                if lookup.1 != RustCargoTargetResolution::NoExactTarget {
+                    return lookup;
+                }
+                lookup.1
+            }
+        };
+        // Every other workspace member owns its own targets too. An integration
+        // test that a sibling test also declares with `mod` is still the exact
+        // root of its own test target, and that root identifies the target even
+        // though target names repeat across packages. A root is one file, so a
+        // second member target at the same path is refused as a duplicate.
+        let mut member_target = None;
+        for package in facts.workspace_packages.iter() {
+            if selected_package.is_some_and(|selected| std::ptr::eq(selected, package)) {
+                continue;
+            }
+            match self.cargo_target_lookup_for_absolute_source_path(&selected, package) {
+                (Some(target), RustCargoTargetResolution::ExactCargoTarget) => {
+                    if member_target.replace(target).is_some() {
+                        return (None, RustCargoTargetResolution::DuplicateExactTarget);
+                    }
+                }
+                (_, RustCargoTargetResolution::DuplicateExactTarget) => {
+                    return (None, RustCargoTargetResolution::DuplicateExactTarget);
+                }
+                _ => {}
+            }
+        }
+        match member_target {
+            Some(target) => (Some(target), RustCargoTargetResolution::ExactCargoTarget),
+            None => (None, resolution),
+        }
     }
 
     fn cargo_target_lookup_for_absolute_source_path<'workspace>(
@@ -2736,10 +2767,17 @@ impl RustWorkspace {
             if target.name.is_empty() || !is_normalized_relative_path(target.root) {
                 return Err(RustAuthorityError::CargoTargetMetadataMismatch);
             }
+            // A selected-package target is admitted by its name; a target of
+            // another workspace member by its exact root, because names repeat
+            // across packages and roots do not.
             let admitted = self
                 .cargo_target_for_name(target.name)
-                .ok_or(RustAuthorityError::CargoTargetMetadataMismatch)?;
-            if admitted.root != target.root {
+                .filter(|admitted| admitted.root == target.root)
+                .or_else(|| {
+                    self.cargo_target_for_source_path(target.root)
+                        .filter(|admitted| admitted.name == target.name)
+                });
+            if admitted.is_none() {
                 return Err(RustAuthorityError::CargoTargetMetadataMismatch);
             }
         }
@@ -6567,6 +6605,124 @@ mod read_frontier_budget_tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn workspace_member_test_root_shared_by_a_sibling_test_selects_its_own_target() {
+        use super::{
+            RustAnalysisControl, RustAuthorityError, RustCargoMetadataPolicy,
+            RustCargoTargetResolution, RustFeatureControl, RustToolchain, RustWorkspace,
+            SourceByteLimit,
+        };
+        use backend_semantic::vocabulary::RustEdition;
+        use std::sync::atomic::AtomicBool;
+        use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+        // The root manifest is both a binary package with a build script and
+        // the workspace. The member's `tests/simple.rs` is its own integration
+        // test target and is also declared with `mod simple;` by a sibling test.
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after the epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "backend-rust-member-test-root-{}-{nonce}",
+            std::process::id()
+        ));
+        let member = root.join("crates/tree");
+        std::fs::create_dir_all(root.join("src")).expect("fixture source directory");
+        std::fs::create_dir_all(member.join("src")).expect("fixture member source directory");
+        std::fs::create_dir_all(member.join("tests")).expect("fixture member test directory");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            concat!(
+                "[package]\n",
+                "name = \"editor\"\n",
+                "version = \"0.1.0\"\n",
+                "edition = \"2021\"\n",
+                "[workspace]\n",
+                "members = [\"crates/tree\"]\n",
+                "[dependencies]\n",
+                "tree = { path = \"crates/tree\" }\n",
+            ),
+        )
+        .expect("fixture root manifest");
+        std::fs::write(
+            member.join("Cargo.toml"),
+            "[package]\nname = \"tree\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .expect("fixture member manifest");
+        let main = b"fn main() { tree::grow(); }\n";
+        let build_script = b"fn main() {}\n";
+        let library = b"pub fn grow() {}\n";
+        let simple = b"#[test]\nfn grows() { tree::grow(); }\n";
+        let property = b"mod simple;\n#[test]\nfn grows_twice() { tree::grow(); }\n";
+        std::fs::write(root.join("src/main.rs"), main).expect("fixture main");
+        std::fs::write(root.join("build.rs"), build_script).expect("fixture build script");
+        std::fs::write(member.join("src/lib.rs"), library).expect("fixture member library");
+        std::fs::write(member.join("tests/simple.rs"), simple).expect("fixture simple test");
+        std::fs::write(member.join("tests/property.rs"), property).expect("fixture sibling test");
+        let tool = std::env::var_os("RUSTC")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("rustc"));
+        let toolchain = RustToolchain::discover(tool).expect("selected Rust toolchain");
+        let cancelled = AtomicBool::new(false);
+        let control = || RustAnalysisControl {
+            cancelled: &cancelled,
+            maximum_source_bytes: SourceByteLimit::from(1024 * 1024),
+            deadline: Instant::now() + std::time::Duration::from_secs(60),
+        };
+        let mut workspace = RustWorkspace::open_with_features_and_metadata_policy(
+            &root,
+            &toolchain,
+            RustEdition::Rust2021,
+            RustFeatureControl {
+                all_features: false,
+                no_default_features: false,
+                features: &[],
+            },
+            RustCargoMetadataPolicy::Offline,
+            control(),
+        )
+        .expect("complete Cargo graph for a root package workspace");
+
+        let simple_path = member.join("tests/simple.rs");
+        let target = workspace
+            .cargo_target_for_source_path(&simple_path)
+            .expect("the member test root names its own target");
+        assert_eq!(target.name, "simple");
+        assert_eq!(target.root, std::path::Path::new("crates/tree/tests/simple.rs"));
+        workspace
+            .analyze_source_with_cargo_target_fallback(&simple_path, simple, control(), |_| Ok(()))
+            .expect("the member test root is owned by its own test target");
+        assert!(
+            matches!(
+                workspace.analyze_source(&simple_path, simple, control(), |_| Ok(())),
+                Err(RustAuthorityError::AmbiguousSourceOwner {
+                    definition_count: 2,
+                    target_resolution: RustCargoTargetResolution::NotRequested,
+                    ..
+                })
+            ),
+            "unscoped analysis still sees both owners of the shared file"
+        );
+        workspace
+            .analyze_source_with_cargo_target_fallback(
+                root.join("build.rs"),
+                build_script,
+                control(),
+                |_| Ok(()),
+            )
+            .expect("the root package build script keeps its exact target");
+        workspace
+            .analyze_source_with_cargo_target_fallback(
+                member.join("src/lib.rs"),
+                library,
+                control(),
+                |_| Ok(()),
+            )
+            .expect("the member library root keeps its single owner");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

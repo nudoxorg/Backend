@@ -91,17 +91,7 @@ pub(super) fn projection(
     let mut display = String::with_capacity(display_len);
     if let Some(parent) = column_parent { display.push_str(parent); display.push('.'); }
     display.push_str(name);
-    let kind = match definition.kind {
-        SqlObjectKind::Column => "column",
-        SqlObjectKind::Table => "table",
-        SqlObjectKind::View => "view",
-        SqlObjectKind::Index => "index",
-        SqlObjectKind::Trigger => "trigger",
-        SqlObjectKind::Function => "function",
-        SqlObjectKind::Schema => "schema",
-        SqlObjectKind::Type => "type",
-        SqlObjectKind::Sequence => "sequence",
-    };
+    let kind = definition.kind.as_str();
     let coordinate_len = label.len().checked_add(path.len()).and_then(|n| n.checked_add(name.len()))
         .and_then(|n| n.checked_add(4))
         .and_then(|n| n.checked_add(column_parent.map_or(0, |p| p.len().saturating_add(2))))
@@ -118,6 +108,90 @@ pub(super) fn projection(
     Ok((coordinate, preimage, display, kind))
 }
 
+/// Where a renamed declaration is filed. A migration that renames a column or
+/// table changes its name; the declaration a reader meets as of the latest
+/// migration is the renamed one, so it is filed under the file of the last
+/// rename, and says where it was created and under which name.
+struct RenameHome<'a> {
+    /// The creating statement's file and fact ordinal, which name the entity.
+    created_path: &'a str,
+    created_ordinal: u32,
+    /// The last rename's host (index into the project's hosts) and fact ordinal.
+    host: usize,
+    ordinal: u32,
+}
+
+/// The renamed declarations of one project, found by their creating statement.
+struct RenameHomes<'a> {
+    entries: Vec<RenameHome<'a>>,
+}
+
+/// Where one projected declaration lives.
+struct Home<'a> {
+    host: usize,
+    ordinal: u32,
+    /// The creating file, when the declaration is filed under a later rename.
+    created_in: Option<&'a str>,
+    /// How the creating statement wrote the name, when a rename changed it.
+    created_as: Option<&'a str>,
+}
+
+impl<'a> RenameHomes<'a> {
+    fn new(facts: impl Iterator<Item = &'a (usize, u32, SqlFact)> + Clone) -> Result<Self, BuiltinModelError> {
+        let renames = |fact: &'a (usize, u32, SqlFact)| match &fact.2 {
+            SqlFact::Definition(definition) if matches!(definition.action, SqlDefinitionAction::Rename { .. }) => {
+                definition.entity.as_ref().map(|entity| (fact.0, fact.1, entity))
+            }
+            _ => None,
+        };
+        let count = facts.clone().filter_map(renames).count();
+        let mut entries = Vec::new();
+        entries.try_reserve_exact(count).map_err(|_| BuiltinModelError("SQL rename index allocation failed".into()))?;
+        for (host, ordinal, entity) in facts.filter_map(renames) {
+            entries.push(RenameHome { created_path: entity.path.as_str(), created_ordinal: entity.ordinal, host, ordinal });
+        }
+        entries.sort_unstable_by(|a, b| {
+            (a.created_path, a.created_ordinal, a.host, a.ordinal).cmp(&(b.created_path, b.created_ordinal, b.host, b.ordinal))
+        });
+        Ok(Self { entries })
+    }
+
+    /// Bytes this index holds, charged beside the rows it serves.
+    fn bytes(&self) -> usize {
+        self.entries.capacity().saturating_mul(std::mem::size_of::<RenameHome<'_>>())
+            .saturating_add(SQL_ALLOCATION_QUOTA_PER_ALLOCATION)
+    }
+
+    /// The home of the declaration created by fact `ordinal` of host
+    /// `created_host`, whose file is `created_path` and which the creating
+    /// statement wrote as `name`. The last rename in source order wins.
+    fn home_of<'b>(&self, created_host: usize, created_path: &'b str, ordinal: u32, name: &'b str) -> Home<'b> {
+        let end = self.entries.partition_point(|entry| (entry.created_path, entry.created_ordinal) <= (created_path, ordinal));
+        match end.checked_sub(1).map(|last| &self.entries[last]) {
+            Some(last) if (last.created_path, last.created_ordinal) == (created_path, ordinal) => {
+                if last.host == created_host {
+                    // Renamed where it was created: the creating statement is still its home.
+                    Home { host: created_host, ordinal, created_in: None, created_as: Some(name) }
+                } else {
+                    Home { host: last.host, ordinal: last.ordinal, created_in: Some(created_path), created_as: Some(name) }
+                }
+            }
+            _ => Home { host: created_host, ordinal, created_in: None, created_as: None },
+        }
+    }
+}
+
+/// The document line of one projected declaration: the file it is filed under
+/// and, for a renamed one, its lineage back to the creating statement.
+fn declaration_document(kind: &str, path: &str, head_name: &str, home: &Home<'_>) -> String {
+    const TAIL: &str = "use sql-query for binding, migration history and checked source";
+    match (home.created_as.filter(|written| *written != head_name), home.created_in) {
+        (Some(written), Some(created)) => format!("SQL {kind} in {path}; renamed from {written}, created in {created}; {TAIL}"),
+        (Some(written), None) => format!("SQL {kind} in {path}; renamed from {written}; {TAIL}"),
+        _ => format!("SQL {kind} in {path}; {TAIL}"),
+    }
+}
+
 /// Identity preimage of one projected SQL declaration, matching the rows built
 /// by [`append`] and [`append_query`].
 fn identity_text(label: &str, path: &str, parent: Option<&str>, name: &str, ordinal: u32) -> String {
@@ -131,7 +205,7 @@ fn identity_text(label: &str, path: &str, parent: Option<&str>, name: &str, ordi
 fn entity_definition<'a>(
     sql: &'a super::super::sql_catalog::BoundedProjectSql,
     entity: &backend_semantic::sql_analysis::SqlEntityRef,
-) -> Option<&'a backend_semantic::sql_analysis::SqlDefinition> {
+) -> Option<(usize, &'a backend_semantic::sql_analysis::SqlDefinition)> {
     // Hosts are ordered by path and facts by (host, ordinal).
     let (mut low, mut high) = (0, sql.hosts.len());
     let mut host = None;
@@ -156,7 +230,7 @@ fn entity_definition<'a>(
             std::cmp::Ordering::Greater => high = mid,
             std::cmp::Ordering::Equal => {
                 return match fact {
-                    SqlFact::Definition(definition) => Some(definition),
+                    SqlFact::Definition(definition) => Some((host, definition)),
                     _ => None,
                 };
             }
@@ -172,11 +246,12 @@ fn parent_symbol(
     sql: &super::super::sql_catalog::BoundedProjectSql,
     label: &str,
     owner: &backend_semantic::sql_analysis::SqlEntityRef,
+    homes: &RenameHomes<'_>,
     budget: &mut super::super::row_admission::RequestedLayoutBudget,
     catalog_bytes: usize,
 ) -> Result<Option<backend_engine::SymbolKey>, BuiltinModelError> {
     use super::super::row_admission::ExactText;
-    let Some(definition) = entity_definition(sql, owner) else { return Ok(None) };
+    let Some((owner_host, definition)) = entity_definition(sql, owner) else { return Ok(None) };
     if definition.kind == SqlObjectKind::Column
         || !definition.live_at_head
         || !matches!(definition.action, SqlDefinitionAction::Create | SqlDefinitionAction::AddColumn)
@@ -184,13 +259,15 @@ fn parent_symbol(
         return Ok(None);
     }
     let name = definition.head_name.as_deref().unwrap_or(&definition.name);
-    let plan = ExactText::measure(format_args!("{label}::{}::{name}\0sql:{}", owner.path, owner.ordinal))
+    let home = homes.home_of(owner_host, owner.path.as_str(), owner.ordinal, &definition.name);
+    let (home_path, home_ordinal) = (sql.hosts[home.host].path.as_str(), home.ordinal);
+    let plan = ExactText::measure(format_args!("{label}::{home_path}::{name}\0sql:{home_ordinal}"))
         .map_err(|e| BuiltinModelError(e.into()))?;
     budget
         .retain(plan.len().saturating_add(SQL_ALLOCATION_QUOTA_PER_ALLOCATION), catalog_bytes)
         .map_err(|e| BuiltinModelError(e.into()))?;
     let identity = plan
-        .allocate(format_args!("{label}::{}::{name}\0sql:{}", owner.path, owner.ordinal))
+        .allocate(format_args!("{label}::{home_path}::{name}\0sql:{home_ordinal}"))
         .map_err(|e| BuiltinModelError(e.into()))?;
     backend_library::symbol_key_borrowed(&identity)
         .map(Some)
@@ -225,6 +302,7 @@ pub(in crate::builtin) fn locate_row(
     else {
         return Ok(None);
     };
+    let homes = RenameHomes::new(sql.facts.iter())?;
     for (host, ordinal, fact) in &sql.facts {
         let SqlFact::Definition(definition) = fact else { continue };
         if !definition.live_at_head
@@ -238,8 +316,9 @@ pub(in crate::builtin) fn locate_row(
         } else {
             None
         };
-        let host = &sql.hosts[*host];
-        let identity = identity_text(project_label, &host.path, parent, name, *ordinal);
+        let home = homes.home_of(*host, &sql.hosts[*host].path, *ordinal, &definition.name);
+        let host = &sql.hosts[home.host];
+        let identity = identity_text(project_label, &host.path, parent, name, home.ordinal);
         let key = backend_library::symbol_key_borrowed(&identity).map_err(|e| BuiltinModelError(e.to_string()))?;
         if key == wanted {
             return Ok(Some(SqlRowHost {
@@ -292,11 +371,14 @@ pub(super) fn append(
     }
     for (project, indexed) in &sources.projects {
         let Some(sql) = selected.get(project) else { continue; };
+        let homes = RenameHomes::new(sql.facts.iter())?;
+        budget.retain(homes.bytes(), catalog_bytes).map_err(|e| BuiltinModelError(e.into()))?;
         let mut parent_cache: Option<(backend_semantic::sql_analysis::SqlEntityRef, Option<backend_engine::SymbolKey>)> = None;
         for (host, ordinal, fact) in &sql.facts {
             let SqlFact::Definition(definition) = fact else { continue; };
             if !definition.live_at_head || !matches!(definition.action, SqlDefinitionAction::Create | SqlDefinitionAction::AddColumn) { continue; }
-            let path = &sql.hosts[*host].path;
+            let home = homes.home_of(*host, &sql.hosts[*host].path, *ordinal, &definition.name);
+            let (path, ordinal) = (&sql.hosts[home.host].path, &home.ordinal);
             let name = definition.head_name.as_deref().unwrap_or(&definition.name);
             let parent = if definition.kind == SqlObjectKind::Column {
                 definition.head_parent.as_deref().or(definition.parent.as_deref())
@@ -304,15 +386,12 @@ pub(super) fn append(
             let prefix = parent.unwrap_or("");
             let coordinate_sep = if parent.is_some() { "::" } else { "" };
             let display_sep = if parent.is_some() { "." } else { "" };
-            let kind = match definition.kind {
-                SqlObjectKind::Column => "column", SqlObjectKind::Table => "table", SqlObjectKind::View => "view",
-                SqlObjectKind::Index => "index", SqlObjectKind::Trigger => "trigger", SqlObjectKind::Function => "function",
-                SqlObjectKind::Schema => "schema", SqlObjectKind::Type => "type", SqlObjectKind::Sequence => "sequence",
-            };
+            let kind = definition.kind.as_str();
             let label = ExactText::measure(format_args!("{}::{path}::{prefix}{coordinate_sep}{name}", indexed.label)).map_err(|e| BuiltinModelError(e.into()))?;
             let identity = ExactText::measure(format_args!("{}::{path}::{prefix}{coordinate_sep}{name}\0sql:{ordinal}", indexed.label)).map_err(|e| BuiltinModelError(e.into()))?;
             let signature = ExactText::measure(format_args!("SQL {kind} {prefix}{display_sep}{name}")).map_err(|e| BuiltinModelError(e.into()))?;
-            let document = ExactText::measure(format_args!("SQL {kind} in {path}; use sql-query for binding, migration history and checked source")).map_err(|e| BuiltinModelError(e.into()))?;
+            let document_text = declaration_document(kind, path, name, &home);
+            let document = ExactText::measure(format_args!("{document_text}")).map_err(|e| BuiltinModelError(e.into()))?;
             let plan = ProjectedRowPlan::new(label.len(), identity.len(), signature.len(), document.len())
                 .map_err(|e| BuiltinModelError(e.into()))?;
             let retained = plan.retained_payload_requested_bytes().checked_add(
@@ -323,7 +402,7 @@ pub(super) fn append(
             let label = label.allocate(format_args!("{}::{path}::{prefix}{coordinate_sep}{name}", indexed.label)).map_err(|e| BuiltinModelError(e.into()))?;
             let identity = identity.allocate(format_args!("{}::{path}::{prefix}{coordinate_sep}{name}\0sql:{ordinal}", indexed.label)).map_err(|e| BuiltinModelError(e.into()))?;
             let signature = signature.allocate(format_args!("SQL {kind} {prefix}{display_sep}{name}")).map_err(|e| BuiltinModelError(e.into()))?;
-            let document = document.allocate(format_args!("SQL {kind} in {path}; use sql-query for binding, migration history and checked source")).map_err(|e| BuiltinModelError(e.into()))?;
+            let document = document.allocate(format_args!("{document_text}")).map_err(|e| BuiltinModelError(e.into()))?;
             let id = RowId::Symbol(backend_library::symbol_key_borrowed(&identity)
                 .map_err(|e| BuiltinModelError(e.to_string()))?);
             let mut row = plan.build(id, initial.basis(), indexed.package,
@@ -336,7 +415,7 @@ pub(super) fn append(
             {
                 let same = parent_cache.as_ref().is_some_and(|(cached, _)| cached == owner);
                 if !same {
-                    let key = parent_symbol(sql, &indexed.label, owner, &mut budget, catalog_bytes)?;
+                    let key = parent_symbol(sql, &indexed.label, owner, &homes, &mut budget, catalog_bytes)?;
                     parent_cache = Some((owner.clone(), key));
                 }
                 row.parent = parent_cache.as_ref().and_then(|(_, key)| *key);
@@ -418,6 +497,9 @@ pub(super) fn append_query(
         let Some(sql) = selected.get(project) else {
             continue;
         };
+        let homes = RenameHomes::new(sql.facts.iter())?;
+        projected_bytes = projected_bytes.checked_add(homes.bytes()).filter(|n| *n <= available)
+            .ok_or_else(|| BuiltinModelError("SQL query facts exceed byte bound".into()))?;
         for (host_index, ordinal, fact) in &sql.facts {
             super::super::check_search_preparation(cancelled, "sql-query-fact")?;
             let SqlFact::Definition(definition) = fact else {
@@ -434,7 +516,9 @@ pub(super) fn append_query(
             if facts.len() >= MAX_REBUILD_PACKAGES {
                 return Err(BuiltinModelError("SQL query facts exceed row bound".into()));
             }
-            let host = &sql.hosts[*host_index];
+            let home = homes.home_of(*host_index, &sql.hosts[*host_index].path, *ordinal, &definition.name);
+            let host = &sql.hosts[home.host];
+            let ordinal = &home.ordinal;
             let (Some(input), Some(source), Some(producer), Some(settings)) =
                 (host.input, host.source, host.producer, host.settings)
             else {
@@ -458,16 +542,13 @@ pub(super) fn append_query(
             let prefix = parent.unwrap_or("");
             let coordinate_sep = if parent.is_some() { "::" } else { "" };
             let display_sep = if parent.is_some() { "." } else { "" };
-            let kind = match definition.kind {
-                SqlObjectKind::Column => "column", SqlObjectKind::Table => "table", SqlObjectKind::View => "view",
-                SqlObjectKind::Index => "index", SqlObjectKind::Trigger => "trigger", SqlObjectKind::Function => "function",
-                SqlObjectKind::Schema => "schema", SqlObjectKind::Type => "type", SqlObjectKind::Sequence => "sequence",
-            };
+            let kind = definition.kind.as_str();
             let row_kind = declaration_kind(definition.kind).name();
             let coordinate = ExactText::measure(format_args!("{}::{}::{prefix}{coordinate_sep}{name}", indexed.label, host.path)).map_err(|e| BuiltinModelError(e.into()))?;
             let identity = ExactText::measure(format_args!("{}::{}::{prefix}{coordinate_sep}{name}\0sql:{ordinal}", indexed.label, host.path)).map_err(|e| BuiltinModelError(e.into()))?;
             let signature = ExactText::measure(format_args!("SQL {kind} {prefix}{display_sep}{name}")).map_err(|e| BuiltinModelError(e.into()))?;
-            let document = ExactText::measure(format_args!("SQL {kind} in {}; use sql-query for binding, migration history and checked source", host.path)).map_err(|e| BuiltinModelError(e.into()))?;
+            let document_text = declaration_document(kind, &host.path, name, &home);
+            let document = ExactText::measure(format_args!("{document_text}")).map_err(|e| BuiltinModelError(e.into()))?;
             let name_plan = ExactText::measure(format_args!("{name}")).map_err(|e| BuiltinModelError(e.into()))?;
             let kind_plan = ExactText::measure(format_args!("{row_kind}")).map_err(|e| BuiltinModelError(e.into()))?;
             // Both wire admission and retained requested strings are charged.
@@ -481,7 +562,7 @@ pub(super) fn append_query(
             let coordinate = coordinate.allocate(format_args!("{}::{}::{prefix}{coordinate_sep}{name}", indexed.label, host.path)).map_err(|e| BuiltinModelError(e.into()))?;
             let preimage = identity.allocate(format_args!("{}::{}::{prefix}{coordinate_sep}{name}\0sql:{ordinal}", indexed.label, host.path)).map_err(|e| BuiltinModelError(e.into()))?;
             let signature = signature.allocate(format_args!("SQL {kind} {prefix}{display_sep}{name}")).map_err(|e| BuiltinModelError(e.into()))?;
-            let documentation = document.allocate(format_args!("SQL {kind} in {}; use sql-query for binding, migration history and checked source", host.path)).map_err(|e| BuiltinModelError(e.into()))?;
+            let documentation = document.allocate(format_args!("{document_text}")).map_err(|e| BuiltinModelError(e.into()))?;
             let name = name_plan.allocate(format_args!("{name}")).map_err(|e| BuiltinModelError(e.into()))?;
             let row_kind = kind_plan.allocate(format_args!("{row_kind}")).map_err(|e| BuiltinModelError(e.into()))?;
             let symbol = backend_library::symbol_key_borrowed(&preimage)

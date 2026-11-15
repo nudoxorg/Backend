@@ -1325,11 +1325,20 @@ impl CommandAdapter {
             }
             return Ok(Executed::Deferred);
         }
-        if let Command::Surface(surface) = &request.command
-            && let backend_library::SurfaceCommand::Package {
-                package: backend_library::PackageReference::Purl(package),
-            } = surface
-        {
+        let metadata_lookup = match &request.command {
+            Command::Surface(
+                surface @ backend_library::SurfaceCommand::Package {
+                    package: backend_library::PackageReference::Purl(package),
+                },
+            ) => Some((surface, package, false)),
+            Command::Surface(
+                surface @ backend_library::SurfaceCommand::PackageVersions {
+                    package: backend_library::PackageReference::Purl(package),
+                },
+            ) => Some((surface, package, true)),
+            _ => None,
+        };
+        if let Some((surface, package, versions_of_package)) = metadata_lookup {
             let acquired = self
                 .registry
                 .as_mut()
@@ -1337,10 +1346,21 @@ impl CommandAdapter {
                 .transpose()
                 .map_err(BuiltinModelError)?
                 .is_some_and(|catalog| {
-                    catalog
-                        .records
-                        .iter()
-                        .any(|record| record.coordinate.as_str() == package.as_str())
+                    catalog.records.iter().any(|record| {
+                        if versions_of_package {
+                            // Any acquired release of the package answers
+                            // `package-versions` from the catalog itself.
+                            matches!(
+                                &record.coordinate,
+                                backend_library::PackageReference::Purl(held)
+                                    if held.package_type() == package.package_type()
+                                        && held.namespace() == package.namespace()
+                                        && held.name() == package.name()
+                            )
+                        } else {
+                            record.coordinate.as_str() == package.as_str()
+                        }
+                    })
                 });
             let forge = self.forge.search_records().map_err(BuiltinModelError)?;
             let forged = !super::super::forge_gateway::find_package_versions(&forge, package)
@@ -1357,10 +1377,11 @@ impl CommandAdapter {
                 && !installed
                 && let Some(discovery) = self.discovery.as_ref()
                 && let crate::discovery::package_metadata::PackageMetadataPreparation::Fetch(
-                    metadata,
+                    mut metadata,
                 ) =
                     discovery.prepare_package(package, self.index_owner_epoch, request.request_id)
             {
+                metadata.versions_requested = versions_of_package;
                 return match self.browse_lane.submit_metadata(
                     transport_ticket,
                     request.request_id,
@@ -4377,6 +4398,7 @@ impl CommandAdapter {
         for (ticket, request_id, admitted_owner, advisory, terminal) in self.browse_lane.drain() {
             if let BrowseTerminal::Metadata(fetched, permit) = terminal {
                 let package = fetched.request.package.clone();
+                let versions_requested = fetched.request.versions_requested;
                 let observation = if fetched.request.owner_epoch != self.index_owner_epoch
                     || fetched.request.request_id != request_id
                 {
@@ -4396,13 +4418,23 @@ impl CommandAdapter {
                 let reply = self
                     .surface(
                         daemon,
-                        backend_library::SurfaceCommand::Package {
-                            package: backend_library::PackageReference::Purl(package.clone()),
+                        if versions_requested {
+                            backend_library::SurfaceCommand::PackageVersions {
+                                package: backend_library::PackageReference::Purl(package.clone()),
+                            }
+                        } else {
+                            backend_library::SurfaceCommand::Package {
+                                package: backend_library::PackageReference::Purl(package.clone()),
+                            }
                         },
                         request_id,
                     )
                     .map(|(reply, _)| reply);
-                let mut reply = package_metadata_completion_reply(package, reply, observation);
+                let mut reply = if versions_requested {
+                    package_versions_completion_reply(reply, observation)
+                } else {
+                    package_metadata_completion_reply(package, reply, observation)
+                };
                 if let CommandReply::Surface(backend_library::SurfaceReply::PackageDiscovery {
                     package, advisory, ..
                 }) = &mut reply {
@@ -4776,21 +4808,31 @@ impl CommandAdapter {
         if prepared_intent.as_ref().is_some_and(BuiltinIntent::has_native_ts_evidence) {
             return Err(BuiltinModelError("native TypeScript evidence requires the publication worker".into()).into());
         }
-        if prepared_intent.as_ref().is_some_and(BuiltinIntent::requires_v14_worker) {
+        // SQL custody needs the owner's receipt authority, which the owner holds
+        // for every workspace it opened; without it only the worker can commit.
+        // Only SQL intents may take that route; any other v14 carrier (C#) stays
+        // with the worker whether or not the owner holds the authority.
+        let sql_custody = prepared_intent.as_ref().is_some_and(BuiltinIntent::is_sql_intent);
+        let v14 = prepared_intent.as_ref().is_some_and(BuiltinIntent::requires_v14_worker);
+        if v14 && !(sql_custody && self.receipt_context.is_some()) {
             return Err(BuiltinModelError("v14 native sections require the publication worker".into()).into());
         }
         let intent = match (prepared_intent.clone(), operation_key) {
             (Some(intent), Some(operation_key)) => Some(intent.with_operation_key(operation_key)?),
             (intent, _) => intent,
         };
+        let owner_context = self.receipt_context.clone();
         let prepared_intent = intent
             .as_ref()
             .map(|intent| {
-                prepare_builtin_intent_at(
-                    daemon,
+                // Staging is bound to the SQL proof's own cancellation token.
+                let staging = intent.sql_proof_cancellation().unwrap_or_else(|| Arc::clone(&cancellation));
+                prepare_builtin_intent_with_owner_at_snapshot(
+                    &daemon.engine().daemon().owner().snapshot(),
                     intent,
                     revision_fence.as_ref().map(|fence| fence.canonical_root()),
-                    Arc::clone(&cancellation),
+                    staging,
+                    owner_context.as_deref(),
                 )
             })
             .transpose()?;
@@ -4861,7 +4903,7 @@ impl CommandAdapter {
                     prepared_intent
                         .map(|prepared| {
                             let intent = prepared.intent.clone();
-                            commit_prepared_builtin_intent(daemon, request_id, prepared).map_err(
+                            commit_prepared_builtin_intent_inner(daemon, request_id, prepared, sql_custody).map_err(
                                 |error| {
                                     BuiltinModelError(format!(
                                         "commit product source intent: {error}"
@@ -5499,6 +5541,16 @@ impl CommandAdapter {
                 &mut self.semantic_authority,
                 self.owner_cluster.as_deref(),
                 self.pending_stored_acks.as_ref(),
+                {
+                    #[cfg(test)]
+                    {
+                        self.sql_test_workers.clone()
+                    }
+                    #[cfg(not(test))]
+                    {
+                        None
+                    }
+                },
             ) {
                 Ok(prepared) => prepared.unwrap_or(PreparedProductSelection {
                     native_noop_expectation: None,
@@ -5727,6 +5779,9 @@ impl CommandAdapter {
             // separately retained excerpt may be truncated and is redundant.
             document.excerpt = backend_library::SourceExcerpt::NotCaptured;
             document.source_range = Some(range);
+        } else if row.package.is_none() && super::super::discovery_search::is_external_placeholder(row) {
+            // A retained external navigation target names no indexed package and
+            // captured no source, so there are no indexed bytes to verify or present.
         } else {
             match self.indexed_source_matches(daemon, row) {
                 Some(true) => {}
@@ -5822,7 +5877,14 @@ impl CommandAdapter {
         let root = admitted_project_source_root(package, &project.label, workspace).ok_or_else(unavailable)?;
         let Some(evidence) = view_build::admitted_native_evidence(
             &sources, &snapshot, &self.compiler, package, row.id, &mut self.generations,
-        ).map_err(|_| unavailable())? else { return Err(unavailable()) };
+        ).map_err(|_| unavailable())? else {
+            // A SQL declaration beside a native TypeScript publication has no
+            // native evidence by nature; its freshness is the SQL file's own.
+            if view_build::sql_row_host(&snapshot, &project.label, package, row.id).ok().flatten().is_some() {
+                return Ok(None);
+            }
+            return Err(unavailable());
+        };
         let authority = self.semantic_authority.product_statement_authority().map_err(|_| unavailable())?;
         let qualification = issue_observed_native_source_policy(
             &snapshot, selection, &evidence, &root, authority, source_budget,
@@ -6152,6 +6214,9 @@ impl CommandAdapter {
         let requested_package = package;
         let (package, label) = canonical_local_package(package, label)?;
         self.recover_orphaned_package_label(daemon, &label, request_id)?;
+        // A workspace which holds SQL analysis must carry its receipts through
+        // every transaction, so the deletion commits with the owner's custody.
+        let owner = self.receipt_context.clone();
         let committed = if let Some(intent) =
             remove_project_intent(daemon, package, &label, &mut self.semantic_authority)?
         {
@@ -6162,7 +6227,7 @@ impl CommandAdapter {
                 Vec::new(),
                 removals,
                 || {
-                    commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
+                    commit_builtin_intent_with_owner(daemon, request_id, &intent, owner.as_deref()).map_err(|error| {
                         BuiltinModelError(format!("commit product source intent: {error}"))
                     })
                 },
@@ -8207,6 +8272,28 @@ pub(in crate::builtin) fn commit_builtin_intent(
     commit_prepared_builtin_intent(daemon, request_id, prepared)
 }
 
+/// Commit on the owner with the receipt authority a workspace holding SQL
+/// analysis requires for every transaction. Only intents which read no source
+/// (a project deletion, with or without SQL retirement) may commit this way;
+/// an intent that needs the publication worker is refused.
+pub(in crate::builtin) fn commit_builtin_intent_with_owner(
+    daemon: &mut ProductDaemon,
+    request_id: u64,
+    intent: &BuiltinIntent,
+    owner: Option<&super::super::owner_receipt_context::OwnerReceiptContext>,
+) -> Result<(), BuiltinModelError> {
+    if intent.has_native_ts_evidence() || (intent.requires_v14_worker() && !intent.is_sql_retirement()) {
+        return Err(BuiltinModelError("this intent requires the publication worker".into()));
+    }
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    // Staging must be bound to the proof's own cancellation token.
+    let cancellation = intent
+        .sql_proof_cancellation()
+        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let prepared = prepare_builtin_intent_with_owner_at_snapshot(&snapshot, intent, None, cancellation, owner)?;
+    commit_prepared_builtin_intent_inner(daemon, request_id, prepared, intent.is_sql_retirement())
+}
+
 /// A canonical intent together with the selected base against which any
 /// capture basis was prepared. Its private fields prevent callers from
 /// changing the intent after deriving the request identity.
@@ -8239,10 +8326,19 @@ pub(in crate::builtin) fn commit_prepared_builtin_intent(
     request_id: u64,
     prepared: PreparedBuiltinIntent,
 ) -> Result<(), BuiltinModelError> {
+    commit_prepared_builtin_intent_inner(daemon, request_id, prepared, false)
+}
+
+fn commit_prepared_builtin_intent_inner(
+    daemon: &mut ProductDaemon,
+    request_id: u64,
+    prepared: PreparedBuiltinIntent,
+    owner_may_commit_sql: bool,
+) -> Result<(), BuiltinModelError> {
     if prepared.intent.has_native_ts_evidence() {
         return Err(BuiltinModelError("native TypeScript evidence requires the publication worker".into()));
     }
-    if prepared.intent.requires_v14_worker() {
+    if prepared.intent.requires_v14_worker() && !owner_may_commit_sql {
         return Err(BuiltinModelError("v14 native sections require the publication worker".into()));
     }
     let owner = daemon.engine().daemon().owner();
@@ -8607,6 +8703,42 @@ fn package_metadata_completion_reply(
         }
         (Ok(reply), _) => reply,
         (Err(error), _) => CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
+            error.to_string(),
+        )),
+    }
+}
+
+/// The version list a metadata lookup produced, or the typed reason it could
+/// not produce one. A failed or empty lookup never becomes a `package` reply:
+/// the caller asked for versions, so the refusal says what the lookup found.
+fn package_versions_completion_reply(
+    reply: Result<CommandReply, BuiltinModelError>,
+    observation: Option<backend_library::RegistryPackageDiscoveryObservation>,
+) -> CommandReply {
+    let lookup = observation.map(|observation| match observation {
+        backend_library::RegistryPackageDiscoveryObservation::Missing { .. } => {
+            "the registry reports no such package".to_owned()
+        }
+        backend_library::RegistryPackageDiscoveryObservation::Unavailable { reason, .. } => {
+            reason.as_str().to_owned()
+        }
+        backend_library::RegistryPackageDiscoveryObservation::Observed { .. } => {
+            "the registry metadata was observed".to_owned()
+        }
+    });
+    match (reply, lookup) {
+        (Ok(CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(detail))), Some(lookup)) => {
+            CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(format!(
+                "{detail}; registry metadata lookup: {lookup}"
+            )))
+        }
+        (Err(error), Some(lookup)) => {
+            CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(format!(
+                "{error}; registry metadata lookup: {lookup}"
+            )))
+        }
+        (Ok(reply), _) => reply,
+        (Err(error), None) => CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
             error.to_string(),
         )),
     }
@@ -9181,6 +9313,54 @@ mod tests {
     #[cfg(unix)]
     #[path = "stylo_process.rs"]
     mod stylo_process_tests;
+
+    #[test]
+    fn only_sql_intents_commit_v14_on_the_owner() {
+        let root = TempTree::new();
+        let profile = profile_descriptor(BuiltinProfile::Product).expect("product profile");
+        let dispatcher =
+            builtin_dispatcher(Some(ECHO_AUTHORITY_SECRET), profile, 60_000).expect("dispatcher");
+        let registry = crate::builtin::product_relation_registry().expect("registry");
+        let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
+            &root.0,
+            BuiltinModel,
+            genesis().expect("genesis"),
+            dispatcher,
+            backend_engine::DaemonConfig::default(),
+            registry,
+        )
+        .expect("fresh daemon");
+        let (root_bytes, sequence) = {
+            let head = daemon.engine().daemon().owner().head();
+            (*head.root().as_bytes(), head.sequence())
+        };
+        for csharp in [true, false] {
+            let intent = BuiltinIntent::v14_carrier_for_test(csharp, "/tmp/v14-owner-route");
+            assert!(intent.requires_v14_worker());
+            assert_eq!(intent.is_sql_intent(), !csharp);
+            // The finish_add route passes exactly this flag.
+            let owner_may_commit_sql = intent.is_sql_intent();
+            let prepared = super::PreparedBuiltinIntent {
+                request_identity: [0; 32],
+                base_workspace_root: root_bytes,
+                base_workspace_sequence: sequence,
+                base_closure_id: [0; 32],
+                intent,
+            };
+            let message = super::commit_prepared_builtin_intent_inner(
+                &mut daemon, 1, prepared, owner_may_commit_sql,
+            )
+            .expect_err("a bare carrier never commits")
+            .to_string();
+            // The C# carrier stops at the worker guard; the SQL one passes it
+            // and stops on the closure it was not prepared against.
+            assert_eq!(
+                message.contains("require the publication worker"),
+                csharp,
+                "{message}"
+            );
+        }
+    }
 
     #[test]
     fn owned_intent_preparation_moves_facts_and_preserves_bound_canonical_identity() {

@@ -3310,6 +3310,43 @@ mod tests {
     }
 
     #[test]
+    fn an_unusable_explicit_python_interpreter_does_not_stop_the_installed_capture() {
+        // A bad NUDOX_PYTHON used to fail owner startup, taking health, status
+        // and add down with it. The spelling is now frozen and only a project that asks for
+        // an installed interpreter meets the failure.
+        let (root, environment) = installed_fixture("unusable-explicit-python", false);
+        let regular = root.join("a-regular-file");
+        fs::write(&regular, b"not an executable interpreter").unwrap();
+        for unusable in [
+            root.join("absent/python3"),
+            regular.join("python3"),
+            root.join("lib"),
+        ] {
+            let mut environment = environment.clone();
+            environment.set(LocalHostVariable::NudoxPython, &unusable);
+            let selection = LocalCompilerHost::new(environment, LocalHostDiscovery::InstalledTools)
+                .capture_installed_selection()
+                .unwrap_or_else(|error| panic!("{unusable:?} must not stop capture: {error}"));
+            assert_eq!(
+                selection.snapshot().path(LocalHostVariable::NudoxPython),
+                Some(unusable.as_path())
+            );
+            // No ambient interpreter was chosen in its place.
+            assert!(
+                super::super::python_environment::INSTALLED_PYTHON_ROLES
+                    .into_iter()
+                    .all(|role| selection.snapshot().path(role).is_none())
+            );
+            let decoded = super::super::ClosedLocalHostEnvironmentSnapshot::parse(
+                &selection.snapshot().encode().unwrap(),
+            )
+            .unwrap();
+            assert_eq!(decoded, *selection.snapshot());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn cold_go_cache_capture_survives_ordinary_dependency_setup() {
         let (root, mut environment) = installed_fixture("cold-go-cache", false);
         environment.go_module_cache = None;

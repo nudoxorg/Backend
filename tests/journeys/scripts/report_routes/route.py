@@ -266,7 +266,7 @@ class RetirementUnproved(RuntimeError):
 class Route:
     """One private HOME, one owner, any number of CLI and MCP calls."""
 
-    def __init__(self, bin_dir, out, auto_start=False, path_extra=None, extra_env=None):
+    def __init__(self, bin_dir, out, auto_start=False, path_extra=None, extra_env=None, owner_env=None, owner_args=None):
         self.bin = pathlib.Path(bin_dir)
         self.out = pathlib.Path(out)
         self.out.mkdir(parents=True, exist_ok=True)
@@ -283,6 +283,8 @@ class Route:
         self.autostart_owners = {}
         self.pending = bytearray()
         self.auto_start = auto_start
+        self.registry = None
+        self.owner_args = list(owner_args or [])
         base_path = os.environ.get("PATH", "/usr/bin:/bin")
         env = {k: os.environ[k] for k in ("LANG", "LC_ALL", "TZ") if k in os.environ}
         env["PATH"] = path_extra if path_extra is not None else base_path
@@ -296,22 +298,38 @@ class Route:
             env["NUDOX_ACCOUNT_GATE"] = os.environ["NUDOX_ACCOUNT_GATE"]
         env.update(extra_env or {})
         self.env = env
+        # Environment only the owner process sees (CLI and MCP keep `env`).
+        self.owner_env = dict(owner_env or {})
         self.workspace = self.root / "state"
         self.workspace.mkdir(mode=0o700)
         self.endpoint = self.root / "owner.sock"
 
     # ---- owner ---------------------------------------------------------------------
-    def start_owner(self, cwd):
+    def start_owner(self, cwd, registry=None):
+        """Starts the owner. With `registry` (a loopback fixture from registry_fixture.py)
+        registry metadata and acquisition are online against that fixture only; without it
+        every registry path is offline, as in the original probes."""
         if self.auto_start:
             return
         secret = self.workspace / "authority.secret"
         self._ensure_authority_secret(secret)
-        env = dict(self.env, BACKEND_LOCALD_AUTHORITY_SECRET_FILE=str(secret))
+        self.registry = registry
+        env = dict(self.env)
+        env["BACKEND_LOCALD_AUTHORITY_SECRET_FILE"] = str(secret)
+        env.update(self.owner_env)
+        if registry is None:
+            registry_flags = ["--registry-offline", "--registry-discovery-offline", "--advisory-offline",
+                              "--forge-offline"]
+        else:
+            registry_flags = []
+            for ecosystem in ("npm", "pypi"):
+                registry_flags += ["--registry-discovery-source", registry.source(ecosystem),
+                                   "--registry-source", registry.source(ecosystem)]
+            registry_flags += ["--advisory-offline", "--forge-offline"]
         with open(self.out / "owner-stderr.log", "wb") as log:
             self.owner = subprocess.Popen(
                 [str(self.bin / "backend-locald"), "--endpoint", str(self.endpoint), "--workspace",
-                 str(self.workspace), "--authority-secret-file", str(secret), "--registry-offline",
-                 "--registry-discovery-offline", "--advisory-offline", "--forge-offline"],
+                 str(self.workspace), "--authority-secret-file", str(secret)] + registry_flags + self.owner_args,
                 cwd=cwd, env=env, stdout=subprocess.DEVNULL, stderr=log, start_new_session=True)
         self._remember_spawned_process(self.owner)
         deadline = time.monotonic() + 420
@@ -419,6 +437,16 @@ class Route:
             except (OSError, RuntimeError):
                 identity["unproved"] = True
         self.spawned_processes[proc.pid] = identity
+
+    def restart_owner(self, cwd):
+        """Retire the owner with proof, then start a new one on the same workspace, credential
+        and registry fixture (or lack of one)."""
+        if self.auto_start or self.owner is None:
+            raise RuntimeError("restart_owner needs an owner started by start_owner")
+        self.retire_for_reopen()
+        if self.endpoint.exists():
+            self.endpoint.unlink()
+        self.start_owner(cwd, registry=self.registry)
 
     def save_records(self):
         (self.out / "records.json").write_text(json.dumps(self.records, indent=1))

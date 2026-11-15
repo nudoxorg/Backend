@@ -63,7 +63,9 @@ pub fn parse(args: &[String], default_limit: Option<&str>) -> Result<Invocation,
     // Bare outline starts with the native maximum credit. Adding only its
     // cursor must retain that ceiling rather than use the generic query default.
     if grammar.name() == "outline"
-        && invocation.option("cursor").is_some()
+        && (invocation.option("cursor").is_some()
+            || invocation.option("kind").is_some()
+            || invocation.option("exclude-kind").is_some())
         && invocation.option("limit").is_none()
     {
         invocation.set("limit", backend_library::QueryLimit::MAX.to_string());

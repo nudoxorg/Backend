@@ -118,7 +118,8 @@ fn page_limit_domains_preserve_defaults_and_admit_exact_engine_boundaries() {
                         backend_library::QueryLimit::MAX,
                         backend_library::DEFAULT_SEMANTIC_VERSIONS_LIMIT,
                     ),
-                    "stylo-query" => (128, 20),
+                    "stylo-query" | "sql-query" => (128, 20),
+                    "impact" => (200, 40),
                     _ => (200, DEFAULT_LIMIT),
                 };
                 assert_eq!(
@@ -473,7 +474,7 @@ fn selected_symbol_operand_uses_retained_row_bytes_and_preserves_key_families() 
         assert_eq!(
             identity["semantic_data"],
             serde_json::json!({
-                "kind":"selected-symbol-id", "value":key.as_bytes(),
+                "kind":"selected-symbol-id", "value":backend_library::encode_id(key.as_bytes()),
             })
         );
         assert_ne!(
@@ -2656,13 +2657,13 @@ fn outline_projection_preserves_exact_selectors_for_colliding_coordinates() {
         assert_eq!(
             root["semantic_data"],
             serde_json::json!({
-                "kind": "selected-symbol-id", "value": first.as_bytes(),
+                "kind": "selected-symbol-id", "value": backend_library::encode_id(first.as_bytes()),
             })
         );
         assert_eq!(
             child["semantic_data"],
             serde_json::json!({
-                "kind": "selected-symbol-id", "value": second.as_bytes(),
+                "kind": "selected-symbol-id", "value": backend_library::encode_id(second.as_bytes()),
             })
         );
         assert_ne!(root["semantic_data"], child["semantic_data"]);
@@ -2720,4 +2721,79 @@ fn related_paging_keeps_selected_identity_and_coordinate_assertion() {
     assert!(matches!(lower(&invocation, PROJECT), Ok(Request::RelatedPage {
         selector: backend_library::DeclarationSelector::SelectedAt { coordinate, .. }, limit: 11, cursor: None
     }) if coordinate == "@/src/main.ts:1::main"));
+}
+
+#[test]
+fn declarations_only_and_outline_kind_options_reach_the_request() {
+    let mut search = Invocation::new(grammar_for("search").expect("search grammar"));
+    search.push("request");
+    assert!(matches!(
+        lower(&search, PROJECT).expect("plain search"),
+        Request::Search { declarations_only: false, .. }
+    ));
+    search.raise("declarations-only");
+    assert!(matches!(
+        lower(&search, PROJECT).expect("declarations-only search"),
+        Request::Search { declarations_only: true, .. }
+    ));
+    // The MCP spelling reaches the same flag.
+    let grammar = grammar_for("search").expect("search grammar");
+    let json = serde_json::json!({"query": "request", "declarations_only": true});
+    let invocation = Invocation::from_json(grammar, json.as_object().expect("arguments"))
+        .expect("declarations_only is an accepted MCP argument");
+    assert!(matches!(
+        lower(&invocation, PROJECT).expect("lowers"),
+        Request::Search { declarations_only: true, .. }
+    ));
+
+    let mut outline = Invocation::new(grammar_for("outline").expect("outline grammar"));
+    assert!(matches!(lower(&outline, PROJECT).expect("bare outline"), Request::Outline(_)));
+    outline.set("exclude-kind", "variable");
+    let Request::OutlinePage { kinds, .. } = lower(&outline, PROJECT).expect("filtered outline") else {
+        panic!("a kind filter selects the bounded outline page");
+    };
+    assert!(!kinds.is_empty());
+    outline.set("kind", "klass");
+    assert_eq!(
+        lower(&outline, PROJECT).expect_err("unknown kind").slug(),
+        FaultSlug::Usage
+    );
+}
+
+#[test]
+fn selected_symbol_ids_and_site_symbols_are_hex_and_old_arrays_still_read() {
+    // Every row identity carried a 32-integer array.
+    let id = backend_library::SelectedSymbolId::new([0xab; 32]).expect("nonzero");
+    let encoded = serde_json::to_value(IdentitySemanticData::SelectedSymbolId(id)).expect("encode");
+    assert_eq!(
+        encoded,
+        serde_json::json!({"kind":"selected-symbol-id","value":"ab".repeat(32)})
+    );
+    assert!(serde_json::to_vec(&encoded).expect("bytes").len() < 110);
+    for spelling in [
+        encoded.clone(),
+        serde_json::json!({"kind":"selected-symbol-id","value":vec![0xab_u8; 32]}),
+    ] {
+        let decoded: IdentitySemanticData = serde_json::from_value(spelling).expect("both spellings read");
+        let IdentitySemanticData::SelectedSymbolId(decoded) = decoded;
+        assert_eq!(decoded.bytes(), id.bytes());
+    }
+    assert!(serde_json::from_value::<IdentitySemanticData>(
+        serde_json::json!({"kind":"selected-symbol-id","value":"00".repeat(32)})
+    )
+    .is_err(), "an all-zero id is refused in either spelling");
+
+    let record = ProductRecordDto {
+        site_symbol: Some([0x5a; 32]),
+        ..serde_json::from_value(serde_json::json!({"title":"t","tags":[]})).expect("sparse record")
+    };
+    let value = serde_json::to_value(&record).expect("encode");
+    assert_eq!(value["site_symbol"], serde_json::json!("5a".repeat(32)));
+    let again: ProductRecordDto = serde_json::from_value(value).expect("hex site symbol decodes");
+    assert_eq!(again.site_symbol, Some([0x5a; 32]));
+    let legacy: ProductRecordDto = serde_json::from_value(
+        serde_json::json!({"title":"t","tags":[],"site_symbol":vec![0x5a_u8; 32]}),
+    )
+    .expect("array site symbol decodes");
+    assert_eq!(legacy.site_symbol, Some([0x5a; 32]));
 }

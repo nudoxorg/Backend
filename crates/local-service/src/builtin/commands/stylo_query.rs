@@ -58,6 +58,7 @@ fn failure(reason: backend_engine::builtin::StyloUnavailable) -> StyloFailure {
         U::Deadline => StyloFailure::Deadline,
         U::WorkerFailure => StyloFailure::WorkerFailure,
         U::PreferencesChanged => StyloFailure::PreferencesChanged,
+        U::UnsupportedSyntax => StyloFailure::UnsupportedSyntax,
     }
 }
 struct Work {
@@ -800,7 +801,7 @@ mod tests {
         use backend_engine::builtin::{StyloAnalysisProfile, StyloAttemptArtifact, StyloAttemptOutcome, StyloInventory, StyloWorkerPolicy, stylo_rows_digest, stylo_selection_key};
         use backend_library::stylo_query::{StyloAttemptState, StyloFailure, StyloWorkerCapability};
         let project = [1; 32];
-        let selection = StyloAnalysisRecord::Selection { project, source_root: "/project".into(), profile: StyloAnalysisProfile::StyloStandaloneV1, recipe: "fixture".into(), producer: [2; 32], worker_artifact: [3; 32], adapter: [4; 32], discovery: [5; 32], policy_complete: false, max_worker_attempts: None, inventory: StyloInventory::Incomplete, inventory_digest: [6; 32], inventory_count: 0, host_count: 0, host_digest: [7; 32] };
+        let selection = StyloAnalysisRecord::Selection { project, source_root: "/project".into(), profile: StyloAnalysisProfile::StyloStandaloneV1, recipe: "fixture".into(), producer: [2; 32], worker_artifact: [3; 32], adapter: [4; 32], discovery: [5; 32], policy_complete: false, max_worker_attempts: None, inventory: StyloInventory::Incomplete, inventory_digest: [6; 32], inventory_count: 0, host_count: 0, host_digest: [7; 32], code: None };
         let digest = stylo_rows_digest(&[(stylo_selection_key(project), &selection)]).unwrap();
         let mut attempt = StyloAnalysisRecord::Attempt { project, source_root: "/project".into(), profile: StyloAnalysisProfile::StyloStandaloneV1, scope_policy: [8; 32], discovery: Some([5; 32]), policy_complete: false, max_worker_attempts: None, inventory: Some(StyloInventory::Incomplete), inventory_digest: Some([6; 32]), inventory_count: Some(0), expected_producer: Some([2; 32]), expected_recipe: Some("fixture".into()), adapter: [4; 32], worker_artifact: StyloAttemptArtifact::Admitted([3; 32]), requested_policy: StyloWorkerPolicy { wall_time_nanos: 1, input_bytes: 1024, stdout_bytes: 1024, stderr_bytes: 64, output_bytes: 2048, memory_bytes: None }, outcome: StyloAttemptOutcome::Observed, served_selection: Some(digest) };
         assert!(attempt.validate().is_ok());
@@ -840,6 +841,7 @@ mod tests {
             terminal: StyloTerminal::Unavailable(StyloUnavailable::Limit),
             fact_count: 0,
             fact_digest: [0; 32],
+            fragment: None,
         };
         let first = native_key(&selection, &host([8; 32]), &[0], StyloRecordKind::Rule, 0).unwrap();
         let second =
@@ -941,11 +943,14 @@ pub(super) fn read_site(
         source: Some(source_identity),
         byte_length: Some(length),
         terminal: backend_engine::builtin::StyloTerminal::Parsed(_),
+        fragment,
         ..
     }) = host
     else {
         return Ok(StyloSourceRead::Expired);
     };
+    // An embedded stylesheet's sites are byte ranges of its enclosing file.
+    let path = fragment.map_or(path, |fragment| fragment.file);
     if project != claims.project {
         return Err(error("source host has another project owner"));
     }

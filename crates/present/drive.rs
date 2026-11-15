@@ -33,7 +33,7 @@ use crate::identity::{Coordinate, Identity, KeyTag};
 use crate::outline::OutlineTree;
 use crate::page::Page;
 use crate::product::{ProductRecord, ProductView};
-use crate::project_coverage::read_current_project_coverage;
+use crate::project_coverage::{read_current_project_coverage, read_current_project_profiles};
 use crate::record::RecordList;
 use crate::shelf::Shelf;
 use crate::status::Status;
@@ -57,6 +57,8 @@ pub enum ContinuationCursor {
     IndexSearch(IndexSearchCursor),
     /// Root-bound native compiler-generation discovery cursor.
     SemanticVersions(backend_library::SemanticVersionsCursor),
+    /// A window over a complete references reply, bound to that exact listing.
+    ReferencePage(String),
 }
 
 /// Rows fetched for one page's members and relations.
@@ -410,7 +412,11 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
             coordinate,
             incoming,
         } => neighbourhood(engine, coordinate, *incoming),
-        Request::Search { text, limit } => {
+        Request::Search {
+            text,
+            limit,
+            declarations_only,
+        } => {
             let reply = read(
                 engine,
                 Probe::Search {
@@ -419,7 +425,7 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
                 },
             )?;
             let (snapshot, semantic_search, published_names) = search_snapshot(reply, "search")?;
-            let list = record_list(text, &snapshot);
+            let list = search_view(record_list(text, &snapshot), *declarations_only);
             let list = if let Some(status) = semantic_search {
                 list.with_semantic_search_status(status)
             } else {
@@ -430,7 +436,10 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
             } else {
                 list
             };
-            let list = if list.is_empty() {
+            let list = if list.is_empty() && list.hidden_non_declarations() > 0 {
+                let reason = hidden_only_reason(list.hidden_non_declarations(), list.has_more());
+                list.with_empty_reason(reason)
+            } else if list.is_empty() {
                 list.with_empty_reason(empty_search_reason(published_names.is_some(), text))
             } else {
                 list
@@ -459,10 +468,34 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
     }
 }
 
+/// Explains a page whose every row was an import or an external reference.
+fn hidden_only_reason(hidden: usize, more: bool) -> String {
+    let mut reason = format!(
+        "all {hidden} row(s) on this page were imports or external references, which declarations_only leaves out"
+    );
+    reason.push_str(if more {
+        "; later pages may hold declarations, so continue with the cursor, or drop declarations_only to see these rows"
+    } else {
+        "; drop declarations_only to see them"
+    });
+    reason
+}
+
+/// Applies the caller's `declarations_only` choice to one search page.
+fn search_view(list: RecordList, declarations_only: bool) -> RecordList {
+    if declarations_only {
+        list.declarations_only_view()
+    } else {
+        list
+    }
+}
+
 /// Explains an empty search without implying the project has no such text.
 ///
 /// An empty answer is only about the published index: files edited on disk after the last
-/// index are not searchable, and a phrase is matched as one piece of text, not as words.
+/// index are not searchable, dependencies are indexed only when added, and a phrase is
+/// matched as one piece of text, not as words. The note about a file type is given only
+/// when the query itself names that type, so a project without it never reads about it.
 #[must_use]
 pub fn empty_search_reason(published_names_only: bool, text: &str) -> String {
     let mut reason = if published_names_only {
@@ -477,8 +510,24 @@ pub fn empty_search_reason(published_names_only: bool, text: &str) -> String {
         );
     }
     reason.push_str(
-        "; the index reflects files as of the last index, so code edited or added on disk since then is not searchable until it is re-indexed (nudox add), and files of a type no frontend claims are not indexed. Inline script blocks in .vue single-file components have partial native syntax coverage; template, style, external script and complete Vue framework semantics are unavailable (`status` counts hosts with unavailable inline scripts). For CSS classes and custom properties, use stylo-query or backend.stylo_query with the indexed package; for SQL objects and analysis gaps, use sql-query or backend.sql_query",
+        "; the index reflects files as of the last index, so code edited or added on disk since then is not searchable until it is re-indexed (nudox add, backend.index). Dependencies (node_modules, registry packages) are not indexed unless added: acquire one release with `nudox add <pinned purl>` (backend.index with the pinned purl as path), and find its purl with `index-search <name>` (backend.index_search)",
     );
+    let lowered = text.to_ascii_lowercase();
+    if text.starts_with(['.', '#']) || text.starts_with("--") || lowered.contains(".css") {
+        reason.push_str(
+            ". For CSS classes and custom properties, use stylo-query or backend.stylo_query with the indexed package",
+        );
+    }
+    if lowered.contains(".sql") {
+        reason.push_str(
+            ". For SQL objects and analysis gaps, use sql-query or backend.sql_query",
+        );
+    }
+    if lowered.contains(".vue") {
+        reason.push_str(
+            ". Inline script blocks in .vue single-file components have partial native syntax coverage; template, style, external script and complete Vue framework semantics are unavailable (`status` counts hosts with unavailable inline scripts)",
+        );
+    }
     reason
 }
 
@@ -489,9 +538,13 @@ pub fn empty_search_reason(published_names_only: bool, text: &str) -> String {
 /// Returns the existing catalog projection fault for a changed reply shape or failed command.
 pub fn catalog_page_answer(request: &Request, reply: ReplyDto) -> Result<Answer, Fault> {
     match request {
-        Request::Search { text, .. } => {
+        Request::Search {
+            text,
+            declarations_only,
+            ..
+        } => {
             let (snapshot, semantic_search, published_names) = search_snapshot(reply, "search")?;
-            let list = record_list(text, &snapshot);
+            let list = search_view(record_list(text, &snapshot), *declarations_only);
             let list = if let Some(status) = semantic_search {
                 list.with_semantic_search_status(status)
             } else {
@@ -502,7 +555,10 @@ pub fn catalog_page_answer(request: &Request, reply: ReplyDto) -> Result<Answer,
             } else {
                 list
             };
-            let list = if list.is_empty() {
+            let list = if list.is_empty() && list.hidden_non_declarations() > 0 {
+                let reason = hidden_only_reason(list.hidden_non_declarations(), list.has_more());
+                list.with_empty_reason(reason)
+            } else if list.is_empty() {
                 list.with_empty_reason(empty_search_reason(published_names.is_some(), text))
             } else {
                 list
@@ -543,7 +599,7 @@ pub fn catalog_page_answer(request: &Request, reply: ReplyDto) -> Result<Answer,
             }
             Ok(Answer::Records(Box::new(records)))
         }
-        Request::OutlinePage { path, limit } => {
+        Request::OutlinePage { path, limit, kinds } => {
             let CommandReply::ProjectionPage(page) = reply.reply else {
                 return Err(shape("outline-page"));
             };
@@ -562,6 +618,7 @@ pub fn catalog_page_answer(request: &Request, reply: ReplyDto) -> Result<Answer,
                 .as_ref()
                 .ok_or_else(|| shape("outline-page order"))?;
             crate::outline::page_tree(path, &page.snapshot, *limit, order)
+                .map(|tree| tree.filtered(kinds))
                 .map(Box::new)
                 .map(Answer::Outline)
                 .map_err(|error| Fault::from_client_error(&error, Operand::Path(path.clone())))
@@ -578,7 +635,11 @@ pub fn answer_paged(
     continuation: Option<PageContinuation>,
 ) -> Result<Answer, Fault> {
     match request {
-        Request::Search { text, limit } => {
+        Request::Search {
+            text,
+            limit,
+            declarations_only,
+        } => {
             let reply = read_page(
                 engine,
                 Probe::Search {
@@ -588,7 +649,7 @@ pub fn answer_paged(
                 continuation,
             )?;
             let (snapshot, semantic_search, published_names) = search_snapshot(reply, "search")?;
-            let list = record_list(text, &snapshot);
+            let list = search_view(record_list(text, &snapshot), *declarations_only);
             let list = if let Some(status) = semantic_search {
                 list.with_semantic_search_status(status)
             } else {
@@ -599,14 +660,11 @@ pub fn answer_paged(
             } else {
                 list
             };
-            let list = if list.is_empty() {
-                list.with_empty_reason(
-                    if published_names.is_some() {
-                        "no current declaration names matched; full lexical search has not been queried in this result stage. For CSS classes and custom properties, use stylo-query or backend.stylo_query with the indexed package; for SQL objects and analysis gaps, use sql-query or backend.sql_query"
-                    } else {
-                        "no indexed declarations matched this query text; try a declaration name, signature fragment, or documentation keyword. For CSS classes and custom properties, use stylo-query or backend.stylo_query with the indexed package; for SQL objects and analysis gaps, use sql-query or backend.sql_query"
-                    },
-                )
+            let list = if list.is_empty() && list.hidden_non_declarations() > 0 {
+                let reason = hidden_only_reason(list.hidden_non_declarations(), list.has_more());
+                list.with_empty_reason(reason)
+            } else if list.is_empty() {
+                list.with_empty_reason(empty_search_reason(published_names.is_some(), text))
             } else {
                 list
             };
@@ -656,7 +714,7 @@ pub fn answer_paged(
                 reply,
             )
         }
-        Request::OutlinePage { path, limit } => {
+        Request::OutlinePage { path, limit, .. } => {
             let reply = read_page(
                 engine,
                 Probe::OutlinePage {
@@ -693,7 +751,10 @@ fn shelf(engine: &mut dyn Engine) -> Result<Answer, Fault> {
     let shelf = match health.as_ref() {
         Some(health) => {
             let project_coverage = read_current_project_coverage(engine, &snapshot, health);
+            let profiles =
+                read_current_project_profiles(engine, &snapshot, health, &project_coverage);
             shelf_from_snapshot_with_project_coverage(&snapshot, tag, health, &project_coverage)
+                .with_profiles(&profiles)
         }
         None => shelf_from_snapshot(&snapshot, tag),
     };
@@ -1313,7 +1374,11 @@ fn probe_relation_rows(
                 ));
                 return RelationRows { rows: Vec::new(), graph_relations: None };
             }
-            let reason = graph_relation_gap(&snapshot);
+            // A retained external target is navigation, not a local declaration:
+            // the local package's relation publication makes no claim about it,
+            // so a gap in that publication is not a failure of this page.
+            let reason = graph_relation_gap(&snapshot)
+                .filter(|_| !is_admitted_external_target(coordinate, document));
             if let Some(reason) = reason {
                 notes.push(Fault::new(
                     crate::FaultSlug::LaneUnavailable,
@@ -1353,6 +1418,28 @@ fn probe_relation_rows(
     }
 }
 
+/// Whether `coordinate` is an external navigation target that the document's own
+/// selection proves, rather than a declaration of the local package named in its
+/// scoped display address.
+fn is_admitted_external_target(coordinate: &str, document: &backend_library::Document) -> bool {
+    let identity = Identity::parse(coordinate);
+    let Some(project) = identity.project() else {
+        return false;
+    };
+    identity.shape() == crate::identity::IdentityShape::External
+        && coordinate.starts_with(&format!(
+            "{}::external::{}::",
+            project.root(),
+            backend_library::RowId::Symbol(document.symbol).stable_key(),
+        ))
+        && document.selection.as_ref().is_some_and(|selection| {
+            selection.coordinate() == coordinate
+                && selection.symbol() == document.symbol
+                && selection.source().root == document.basis
+                && document.source_basis() == Some(selection.source())
+        })
+}
+
 /// Fetches the owning package's flat outline so members can be named.
 fn probe_members(
     engine: &mut dyn Engine,
@@ -1368,19 +1455,7 @@ fn probe_members(
     // ownership by the local package named in its scoped display address.
     // Its document selection proves the target; a local outline cannot prove
     // that foreign declaration's members or source availability.
-    if identity.shape() == crate::identity::IdentityShape::External
-        && coordinate.starts_with(&format!(
-            "{}::external::{}::",
-            project.root(),
-            backend_library::RowId::Symbol(document.symbol).stable_key(),
-        ))
-        && document.selection.as_ref().is_some_and(|selection| {
-            selection.coordinate() == coordinate
-                && selection.symbol() == document.symbol
-                && selection.source().root == document.basis
-                && document.source_basis() == Some(selection.source())
-        })
-    {
+    if is_admitted_external_target(coordinate, document) {
         return Vec::new();
     }
     match document_member_rows(engine, project.root(), document) {
@@ -2484,6 +2559,74 @@ mod declaration_resolution_controls {
         let names: Vec<_> = list.records().iter().map(|record| (record.identity().name().to_owned(), record.kind())).collect();
         assert_eq!(names, [("request".to_owned(), Some(DeclarationKind::Function))]);
     }
+    fn search_page(labels: &[(&str, DeclarationKind)]) -> ReplyDto {
+        let basis = Basis::new(view_state_root(&[]), object_version(b"search noise control"));
+        let package = package_key("/workspace/ts");
+        let rows = labels
+            .iter()
+            .map(|(suffix, kind)| {
+                let label = format!("/workspace/ts::{suffix}");
+                Row::in_package(RowId::Symbol(symbol_key(&label)), basis, package, label)
+                    .with_kind(*kind)
+            })
+            .collect::<Vec<_>>();
+        let root = ViewRoot::new_incomplete(
+            view_key(b"search noise"),
+            basis,
+            Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 1),
+            rows,
+            vec![],
+        )
+        .expect("rows");
+        ReplyDto::new(
+            1,
+            CommandReply::Search(ViewSnapshot {
+                root,
+                freshness: Freshness::Current,
+                next: None,
+                graph_relations: None,
+                rich_graph: None,
+            }),
+        )
+    }
+    #[test]
+    fn declarations_only_search_leaves_out_imports_and_externals_and_counts_them() {
+        // A declarations-only search leaves imports and externals out, and the
+        // reply counts what it left out.
+        let rows = [
+            ("api.ts:3::request", DeclarationKind::Function),
+            ("page.tsx:1::request", DeclarationKind::Import),
+            ("external::lib.dom::request", DeclarationKind::Function),
+        ];
+        let search = |declarations_only| Request::Search {
+            text: "request".to_owned(),
+            limit: 10,
+            declarations_only,
+        };
+        let Answer::Records(all) = catalog_page_answer(&search(false), search_page(&rows)).expect("all rows") else {
+            panic!("records");
+        };
+        assert_eq!(all.records().len(), 3);
+        assert_eq!(all.hidden_non_declarations(), 0);
+        let Answer::Records(only) = catalog_page_answer(&search(true), search_page(&rows)).expect("filtered") else {
+            panic!("records");
+        };
+        let kept: Vec<_> = only.records().iter().map(|r| r.identity().name().to_owned()).collect();
+        assert_eq!(kept, ["request"], "only the declaration remains");
+        assert_eq!(only.records()[0].kind(), Some(DeclarationKind::Function));
+        assert_eq!(only.hidden_non_declarations(), 2);
+        let json = crate::dto::RecordListDto::new(&only);
+        assert_eq!(json.hidden_non_declarations, 2);
+
+        // A page made only of imports says why it is empty and where the rows went.
+        let only_imports = [("page.tsx:1::request", DeclarationKind::Import)];
+        let Answer::Records(empty) = catalog_page_answer(&search(true), search_page(&only_imports)).expect("filtered") else {
+            panic!("records");
+        };
+        assert!(empty.records().is_empty());
+        let reason = empty.empty_reason().expect("an explained empty page");
+        assert!(reason.contains("declarations_only") && reason.contains("1 row"), "{reason}");
+    }
     #[test]
     fn a_continuation_prevents_a_false_unique_result() {
         let mut reader = reader(&[("api.go", 3, "Parse")], true);
@@ -2516,9 +2659,34 @@ mod empty_search_reason_controls {
             let reason = empty_search_reason(published_only, "brandNewHelper");
             assert!(reason.contains("not searchable until it is re-indexed"), "{reason}");
             assert!(reason.contains("nudox add"), "{reason}");
-            assert!(reason.contains(".vue single-file components"), "{reason}");
             assert!(!reason.contains("several words"), "a single name needs no phrase advice: {reason}");
         }
+    }
+
+    #[test]
+    fn an_empty_search_says_dependencies_are_not_indexed_and_how_to_add_one() {
+        let reason = empty_search_reason(false, "computeLayoutParams");
+        assert!(reason.contains("node_modules"), "{reason}");
+        assert!(reason.contains("not indexed unless added"), "{reason}");
+        assert!(reason.contains("nudox add <pinned purl>"), "{reason}");
+        assert!(reason.contains("backend.index"), "{reason}");
+        assert!(reason.contains("backend.index_search"), "{reason}");
+    }
+
+    #[test]
+    fn an_empty_search_names_a_file_type_only_when_the_query_names_it() {
+        let plain = empty_search_reason(false, "PageShell");
+        for absent in ["Vue", ".vue", "CSS", "SQL", "stylo"] {
+            assert!(!plain.contains(absent), "{absent} does not apply to a plain name: {plain}");
+        }
+        assert!(empty_search_reason(false, ".panel").contains("backend.stylo_query"));
+        assert!(empty_search_reason(false, "--accent").contains("backend.stylo_query"));
+        assert!(empty_search_reason(false, "schema.sql").contains("backend.sql_query"));
+        assert!(empty_search_reason(false, "App.vue").contains(".vue single-file components"));
+        assert!(
+            empty_search_reason(false, "plain").len() < 700,
+            "the unconditional message stays short"
+        );
     }
 
     #[test]

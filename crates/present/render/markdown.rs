@@ -715,6 +715,9 @@ fn records_with_cursor(
 ) -> String {
     let mut lines = Lines::new();
     lines.push(coverage(list.coverage()));
+    if list.hidden_non_declarations() > 0 {
+        lines.push(format!("{} import/external row(s) on this page left out by declarations_only", list.hidden_non_declarations()));
+    }
     if let Some(gap) = list.graph_gap() {
         lines.push(format!("graph relations incomplete: {gap}"));
     }
@@ -807,6 +810,9 @@ pub fn shelf(shelf: &Shelf) -> String {
                 language.declarations().get()
             );
         }
+        for profile in entry.profiles() {
+            let _ = write!(head, " · {}", profile.phrase());
+        }
         lines.push(head);
         lines.push(format!("`{}`", entry.identity().coordinate()));
         if let Some(reason) = entry.readiness().fault() {
@@ -848,6 +854,16 @@ pub fn outline(tree: &OutlineTree) -> String {
     if tree.unresolved() > 0 {
         let _ = write!(summary, " · {} unnamed", tree.unresolved());
     }
+    if tree.filtered_out() > 0 {
+        let _ = write!(summary, " · {} left out by the kind filter", tree.filtered_out());
+    }
+    if tree.locals_hidden() > 0 {
+        let _ = write!(
+            summary,
+            " · {} anonymous or function-local left out (omit top_level to list them)",
+            tree.locals_hidden()
+        );
+    }
     lines.push(summary);
     if let Some(page) = tree.page().filter(|page| page.continuation.is_some()) {
         lines.push(format!("More declarations remain beyond this bounded prefix. Continue outline with --limit {} and the next cursor.", page.limit));
@@ -881,7 +897,7 @@ fn push_outline_entry(
 pub fn status(status: &Status) -> String {
     let mut lines = Lines::new();
     lines.push(format!(
-        "owner {} · publication {} · lanes {} · {} row(s) · revision {} · source {} · sequence {}",
+        "owner {} · publication {} · lanes {} · {} row(s) · revision {} · store layout {} · sequence {}",
         status.availability(),
         status.publication_state().name(),
         status.readiness(),
@@ -971,9 +987,12 @@ fn product_projection(
             return lines.finish();
         }
     }
-    if let Some(note) = view.note() {
-        lines.push(note);
+    if let Some(note) = view.note_for(detail) {
+        lines.push(note.into_owned());
         if view.records().is_empty() {
+            if view.is_references_result() {
+                lines.push("no reference records captured at this revision".to_owned());
+            }
             semantic_source_footer(view, &mut lines, target);
             index_search_page_footer(view, &mut lines, target);
             index_job_footer(view, detail, &mut lines);
@@ -1001,8 +1020,8 @@ fn product_projection(
     let mut shown_coverage_continuation = false;
     for record in readable_records.as_ref() {
         let mut head = record.title().to_owned();
-        if !record.tags().is_empty() {
-            let _ = write!(head, "  ·  {}", record.tags().join(" · "));
+        if !record.tags_for(detail).is_empty() {
+            let _ = write!(head, "  ·  {}", record.tags_for(detail).join(" · "));
         }
         lines.push(head);
         if let Some(note) = crate::product::source_policy_note(record.source_policy()) {
@@ -1045,6 +1064,12 @@ fn product_projection(
         lines.push(format!("Continue: `{command}`"));
     }
     index_search_page_footer(view, &mut lines, target);
+    if let Some(cursor) = view.reference_cursor() {
+        lines.push(continuation_note(
+            target.unwrap_or(ContinuationTarget::CliOption),
+            cursor.token(),
+        ));
+    }
     index_job_footer(view, detail, &mut lines);
     lines.finish()
 }

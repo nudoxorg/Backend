@@ -297,6 +297,8 @@ pub struct CSharpSourceExecutionLeases {
     charged_bytes: usize,
     retained_snapshot_bytes: usize,
     retained_snapshot_nodes: usize,
+    /// Distinct snapshots already charged; sources that share one are charged once.
+    snapshots: Vec<CSharpExecutionLease>,
 }
 
 impl CSharpSourceExecutionLeases {
@@ -360,19 +362,31 @@ impl CSharpSourceExecutionLeases {
             .and_then(|n| self.charged_bytes.checked_add(n))
             .filter(|n| *n <= 32 * 1024 * 1024)
             .ok_or(CSharpAuthorityError::Configuration)?;
+        let shared = self
+            .snapshots
+            .iter()
+            .any(|charged| charged.same_snapshot(execution));
+        let (new_bytes, new_nodes) = if shared {
+            (0, 0)
+        } else {
+            (execution.copied_bytes(), execution.output_nodes())
+        };
         let retained_snapshot_bytes = self
             .retained_snapshot_bytes
-            .checked_add(execution.copied_bytes())
+            .checked_add(new_bytes)
             .filter(|n| *n <= MAX_RETAINED_EXECUTION_BYTES)
             .ok_or(CSharpAuthorityError::Configuration)?;
         let retained_snapshot_nodes = self
             .retained_snapshot_nodes
-            .checked_add(execution.output_nodes())
+            .checked_add(new_nodes)
             .filter(|n| *n <= MAX_RETAINED_EXECUTION_NODES)
             .ok_or(CSharpAuthorityError::Configuration)?;
         self.entries
             .try_reserve(1)
             .map_err(|_| CSharpAuthorityError::Configuration)?;
+        if !shared {
+            self.snapshots.push(execution.clone());
+        }
         self.paths.insert(path.into(), self.entries.len());
         self.entries.push(CSharpSourceExecutionLease {
             path: path.into(),
@@ -848,6 +862,7 @@ fn snapshot_execution(
                 path: toolchain.to_path_buf().into_boxed_path(),
                 length: tool_bytes.len(),
                 leading: describe_leading_bytes(&tool_bytes),
+                launcher_script: tool_bytes.starts_with(b"#!"),
             });
         }
         // External loader files are bound for identity and the post-copy
@@ -1367,10 +1382,20 @@ impl Write for ManifestWriter {
     }
 }
 
+/// A weakly held snapshot and the canonical host it was taken from.
+#[derive(Debug)]
+struct SharedExecution {
+    toolchain: PathBuf,
+    snapshot: std::sync::Weak<CSharpExecutionSnapshot>,
+}
+
 /// Configured producer for the vendored Roslyn authority helper.
 #[derive(Clone, Debug)]
 pub struct CSharpOracle {
     oracle: PathBuf,
+    /// The most recent private runtime snapshot, while any lease still holds it, so the
+    /// sources of one package attempt share one copy of the runtime and helper.
+    shared_execution: Arc<Mutex<Option<SharedExecution>>>,
     /// Maximum bytes accepted from stdout or stderr.
     pub output_limit: usize,
     /// Maximum image bytes retained after the bounded child completes.
@@ -1487,9 +1512,46 @@ impl CSharpOracle {
     pub fn new(oracle: PathBuf) -> Self {
         Self {
             oracle,
+            shared_execution: Arc::new(Mutex::new(None)),
             output_limit: DEFAULT_OUTPUT_LIMIT,
             image_limit: DEFAULT_IMAGE_LIMIT,
         }
+    }
+
+    /// The private runtime snapshot for one invocation: the live one this producer already
+    /// holds for the same host, or a fresh copy.
+    ///
+    /// Every invocation of a package attempt reads the same immutable copy of the runtime and
+    /// helper, so copying them once per source (about a hundred megabytes each) is not needed
+    /// to keep them private. The snapshot lives while any source lease holds it; once the last
+    /// lease is dropped its directory is removed and the next attempt copies again. The
+    /// producer still re-checks the original host and helper digests after every run.
+    fn execution_snapshot(
+        &self,
+        toolchain: &Path,
+        control: CSharpAuthorityControl<'_>,
+    ) -> Result<Arc<CSharpExecutionSnapshot>, CSharpAuthorityError> {
+        let canonical =
+            fs::canonicalize(toolchain).map_err(|_| CSharpAuthorityError::Configuration)?;
+        // The lock is held across the copy so concurrent invocations wait for one snapshot.
+        let mut slot = self
+            .shared_execution
+            .lock()
+            .map_err(|_| CSharpAuthorityError::ExecutionSnapshotCapacity)?;
+        if let Some(shared) = slot.as_ref()
+            && shared.toolchain == canonical
+            && let Some(live) = shared.snapshot.upgrade()
+            && live.toolchain.is_file()
+            && live.oracle.is_file()
+        {
+            return Ok(live);
+        }
+        let fresh = Arc::new(snapshot_execution(&canonical, &self.oracle, control)?);
+        *slot = Some(SharedExecution {
+            toolchain: canonical,
+            snapshot: Arc::downgrade(&fresh),
+        });
+        Ok(fresh)
     }
 
     /// Returns the exact helper assembly path this producer will execute.
@@ -1745,11 +1807,7 @@ impl CSharpOracle {
             })
             .transpose()?;
         checkpoint(request.control, CSharpAuthorityPhase::Spawn)?;
-        let execution = Arc::new(snapshot_execution(
-            request.toolchain,
-            &self.oracle,
-            request.control,
-        )?);
+        let execution = self.execution_snapshot(request.toolchain, request.control)?;
         let execution_digest = execution.digest;
         let mut command = Command::new(&execution.toolchain);
         isolate_authority_environment(&mut command);
@@ -1907,6 +1965,9 @@ impl CSharpOracle {
             return Err(CSharpAuthorityError::CompilationIncomplete {
                 count: image.compilation_errors(),
                 diagnostic,
+                unresolved: crate::legacy::unresolved::CSharpUnresolvedReference::from_stderr(
+                    &result.stderr,
+                ),
             });
         }
         let evidence = if let Some((path, nonce, config_hash)) = evidence_request {
@@ -2239,6 +2300,9 @@ pub enum CSharpAuthorityError {
         length: usize,
         /// What the file's first bytes say it is.
         leading: String,
+        /// Whether the file starts with an interpreter line (`#!`): a launcher script
+        /// that execs the real host, as package managers install.
+        launcher_script: bool,
     },
     /// Process-wide execution snapshot credits are unavailable.
     #[error("C# execution snapshot capacity is exhausted or unavailable")]
@@ -2258,6 +2322,8 @@ pub enum CSharpAuthorityError {
         count: u16,
         /// Bounded compiler diagnostic tail, without manifest contents.
         diagnostic: String,
+        /// The earliest unresolved reference over every error, when one exists.
+        unresolved: Option<crate::legacy::unresolved::CSharpUnresolvedReference>,
     },
     /// Bounded platform process capture failed, including cleanup failures.
     #[error("C# authority process capture failed: {detail}")]
@@ -2832,6 +2898,21 @@ mod tests {
         assert!(!first_root.exists());
         assert!(!second_root.exists());
 
+        // Sources that share one snapshot are charged for it once, so a package with many
+        // sources keeps within the retained budget while each source still names its owner.
+        let (shared, _) = fixture([7; 32], 150 * 1024 * 1024, 100);
+        let mut many = CSharpSourceExecutionLeases::default();
+        for index in 0..40_u8 {
+            assert!(many.ensure_capacity_for_next().is_ok(), "source {index}");
+            many.retain(&format!("src/File{index}.cs"), [index; 32], &shared)
+                .unwrap();
+        }
+        assert_eq!(many.entries().len(), 40);
+        assert_eq!(many.retained_snapshot_bytes(), 150 * 1024 * 1024);
+        assert_eq!(many.retained_snapshot_nodes(), 100);
+        assert!(many.get("src/File39.cs", [39; 32]).unwrap().same_snapshot(&shared));
+        drop(many);
+
         let (large_a, _) = fixture([9; 32], 400 * 1024 * 1024, 1);
         let (large_b, _) = fixture([9; 32], 200 * 1024 * 1024, 1);
         let (would_overflow, _) = fixture([9; 32], MAX_EXECUTION_SNAPSHOT_BYTES, 1);
@@ -3061,6 +3142,29 @@ mod tests {
         assert_eq!(fs::read(copied.join("lib/net8.0/Nested.dll")).expect("nested copy"), b"nested");
         assert!(!copied.join("Nested.dll").exists());
         assert_eq!(fs::read(&snapshot.oracle).expect("oracle copy"), b"oracle");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn one_producer_shares_a_live_snapshot_and_copies_again_after_the_last_lease() {
+        let (_directory, host, oracle) = snapshot_fixture();
+        let producer = CSharpOracle::new(oracle);
+        let cancelled = AtomicBool::new(false);
+        let control = || CSharpAuthorityControl {
+            deadline: Instant::now() + std::time::Duration::from_secs(30),
+            cancelled: &cancelled,
+        };
+        let first = producer.execution_snapshot(&host, control()).expect("first copy");
+        let second = producer.execution_snapshot(&host, control()).expect("shared copy");
+        assert!(Arc::ptr_eq(&first, &second), "sources of one attempt share one runtime copy");
+        let clone = producer.clone();
+        let third = clone.execution_snapshot(&host, control()).expect("clone shares");
+        assert!(Arc::ptr_eq(&first, &third));
+        let old_root = first.oracle.parent().expect("snapshot root").to_owned();
+        drop((first, second, third));
+        assert!(!old_root.exists(), "the last lease removes the private copy");
+        let fresh = producer.execution_snapshot(&host, control()).expect("new copy");
+        assert!(fresh.oracle.is_file());
     }
 
     #[cfg(target_os = "linux")]

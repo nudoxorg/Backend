@@ -114,6 +114,7 @@ pub(super) fn index_project_intent_with_cluster_and_intent(
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
     owner_cluster: Option<&super::super::cluster_dispatch::OwnerCompilerClusterRuntime>,
     pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
+    sql_workers: Option<crate::builtin::sql_index::SqlWorkers>,
 ) -> Result<Option<PreparedProductSelection>, BuiltinModelError> {
     index_project_intent_at_with_cluster_and_intent(
         daemon,
@@ -127,6 +128,7 @@ pub(super) fn index_project_intent_with_cluster_and_intent(
         semantic_authority,
         owner_cluster,
         pending_stored_acks,
+        sql_workers,
     )
 }
 
@@ -157,6 +159,7 @@ pub(super) fn prepare_index_project(
         None,
         None,
         true,
+        None,
     )
 }
 
@@ -208,6 +211,7 @@ fn index_project_intent_at_with_cluster(
         semantic_authority,
         owner_cluster,
         pending_stored_acks,
+        None,
     )
 }
 
@@ -223,6 +227,7 @@ fn index_project_intent_at_with_cluster_and_intent(
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
     owner_cluster: Option<&super::super::cluster_dispatch::OwnerCompilerClusterRuntime>,
     pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
+    sql_workers: Option<crate::builtin::sql_index::SqlWorkers>,
 ) -> Result<Option<PreparedProductSelection>, BuiltinModelError> {
     match prepare_index_project_at(
         daemon,
@@ -237,6 +242,7 @@ fn index_project_intent_at_with_cluster_and_intent(
         owner_cluster,
         pending_stored_acks,
         false,
+        sql_workers,
     )? {
         PreparedIndex::Ready(prepared) => Ok(prepared.into_option()),
         PreparedIndex::Compile(_) | PreparedIndex::Cluster(_) | PreparedIndex::CSharpParked(..) => Err(BuiltinModelError(
@@ -259,6 +265,7 @@ fn prepare_index_project_at(
     owner_cluster: Option<&super::super::cluster_dispatch::OwnerCompilerClusterRuntime>,
     pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
     defer: bool,
+    sql_workers: Option<crate::builtin::sql_index::SqlWorkers>,
 ) -> Result<PreparedIndex, BuiltinModelError> {
     let mut work = capture_index_scan(
         daemon,
@@ -272,9 +279,15 @@ fn prepare_index_project_at(
         Arc::new(AtomicBool::new(false)),
         compiler.python_interpreter_admission(),
     )?;
-    // The synchronous route commits without the publication worker, which SQL
-    // receipt custody requires; the owned index operation is the SQL route.
-    work.capture_sql = false;
+    // A local project added on the synchronous route carries SQL custody too:
+    // the owner stages and commits it with its own receipt authority (see
+    // `finish_add`), so `add` analyses SQL however it is reached. A registry
+    // archive is a dependency, not the project's own SQL, and a deferred compile
+    // is committed by the publication worker.
+    work.capture_sql = coordinate.is_none() && !defer;
+    if let Some(workers) = sql_workers {
+        work.sql_workers = workers;
+    }
     let mut committed_captures = BTreeMap::new();
     let result = finish_index_scan(
         daemon,
@@ -3306,6 +3319,14 @@ fn prepare_terminal_profile_partition_for_snapshot(
                 ));
             }
             matched_refusals += 1;
+            // The compiler refused this profile, so it was rejected, even when its
+            // capture holds no source: a profile whose every source lies outside the
+            // active Cargo targets captures none, yet carries this typed refusal.
+            if let ProductSemanticCaptureOutcome::Unavailable { reason }
+            | ProductSemanticCaptureOutcome::Failed { reason, .. } = &mut change.outcome
+            {
+                *reason = backend_engine::builtin::SemanticUnavailableReason::Rejected;
+            }
             change.compiler_failure = Some(failure.clone());
         }
     }
@@ -3701,6 +3722,14 @@ impl ResolvedCSharpProject {
     }
 }
 
+/// A selected C# source that Roslyn reported errors in, so no image was
+/// staged for it and the invocation claim does not list it.
+struct UnpublishedCSharpSource<'a> {
+    path: &'a str,
+    byte_len: usize,
+    fact: backend_version::ContentId<backend_version::SourceFactDomain>,
+}
+
 /// Private pre-compiler custody minted only from an owned same-scan plan and
 /// the selected durable source snapshot. It is not itself a unit fence.
 pub(in crate::builtin) struct CapturedCSharpUnitAdmission {
@@ -3773,25 +3802,66 @@ impl CapturedCSharpUnitAdmission {
         let Some(bytes) = staged.csharp_invocation_evidence_object(input) else { return false; };
         if self.cancellation.load(Ordering::Acquire) { return false; }
         let Some(claim) = backend_engine::application::decode_csharp_evidence(&bytes) else { return false; };
-        self.matches_invocation_claim(&claim, input)
+        // Only files Roslyn reported errors in may be absent from the claim.
+        let Some(gaps) = staged.coverage_gaps().iter().map(|gap| {
+            (gap.cause() == backend_engine::application::PackageSourceCoverageGapCause::CSharpSourceDoesNotCompile)
+                .then(|| UnpublishedCSharpSource {
+                    path: gap.relative_path(),
+                    byte_len: gap.source().byte_len as usize,
+                    fact: gap.source().identity,
+                })
+        }).collect::<Option<Vec<_>>>() else { return false; };
+        self.matches_invocation_claim_with_gaps(&claim, input, &gaps)
     }
 
     fn matches_invocation_claim(&self, claim: &backend_engine::application::CSharpEvidenceClaim<'_>, input: [u8; 32]) -> bool {
+        self.matches_invocation_claim_with_gaps(claim, input, &[])
+    }
+
+    /// The claim lists the sources that compiled. Every other selected source
+    /// must be one of `gaps`, with the exact selected bytes; nothing else may
+    /// be absent and nothing may be both claimed and absent.
+    fn matches_invocation_claim_with_gaps(
+        &self,
+        claim: &backend_engine::application::CSharpEvidenceClaim<'_>,
+        input: [u8; 32],
+        gaps: &[UnpublishedCSharpSource<'_>],
+    ) -> bool {
         use sha2::Digest;
         if self.cancellation.load(Ordering::Acquire) { return false; }
         if claim.target != *self.target.target().as_ref() || claim.input != input
             || claim.profile != self.key.profile() || claim.project_path != self.project.project_path
-            || claim.sources.len() != self.sources.len() { return false; }
+            || claim.sources.len().checked_add(gaps.len()) != Some(self.sources.len()) { return false; }
         let probes = self.project.config.probes().collect::<Vec<_>>();
         if claim.config.len() != probes.len() || claim.config.iter().zip(probes).any(|(actual, (path, text))| {
             actual.path != path || actual.text.map(str::as_bytes) != text
         }) { return false; }
-        claim.sources.iter().zip(&self.sources).all(|(actual, source)| {
-            !self.cancellation.load(Ordering::Acquire) && actual.path == source.relative_path && actual.byte_length as usize == source.source.len()
+        let mut claimed = claim.sources.iter();
+        let mut missing = gaps.iter().map(|gap| (gap.path, gap)).collect::<BTreeMap<_, _>>();
+        if missing.len() != gaps.len() { return false; }
+        for source in &self.sources {
+            if self.cancellation.load(Ordering::Acquire) { return false; }
+            if let Some(gap) = missing.remove(source.relative_path.as_str()) {
+                if gap.byte_len != source.source.len() || gap.fact != source.source_fact_identity { return false; }
+                continue;
+            }
+            let Some(actual) = claimed.next() else { return false; };
+            if !(actual.path == source.relative_path && actual.byte_length as usize == source.source.len()
                 && actual.source_fact == *source.source_fact_identity.as_ref()
                 && actual.input_content == source.content
-                && actual.source_sha256 == <[u8; 32]>::from(sha2::Sha256::digest(&source.source))
-        }) && !self.cancellation.load(Ordering::Acquire)
+                && actual.source_sha256 == <[u8; 32]>::from(sha2::Sha256::digest(&source.source))) { return false; }
+        }
+        if !(missing.is_empty() && claimed.next().is_none()) { return false; }
+        // Every invocation of the unit lists all of its captured members, the files that
+        // compiled and the files that did not. That list must be exactly the selected
+        // sources, so no member is hidden from the claim and none is invented.
+        let mut expected = self.sources.iter().map(|source| backend_engine::application::CSharpEvidenceMember {
+            path: source.relative_path.clone(),
+            byte_length: source.source.len() as u64,
+            sha256: format!("{:x}", sha2::Sha256::digest(&source.source)),
+        }).collect::<Vec<_>>();
+        expected.sort();
+        claim.members == expected && !self.cancellation.load(Ordering::Acquire)
     }
 
     /// Worker-only: checks the exact still-selected snapshot and original
@@ -5282,10 +5352,11 @@ fn admit_local_compile(
     } else {
         for gap in staged.coverage_gaps() {
             eprintln!(
-                "locald semantic source scope gap: path={} source={:?} bytes={} cause={:?}",
+                "locald semantic source scope gap: path={} source={:?} bytes={} cause={:?} ({})",
                 gap.relative_path(),
                 gap.source().identity,
                 gap.source().byte_len,
+                gap.cause(),
                 gap.cause(),
             );
             if let Some(status) = gap.python_source_status() {
@@ -8040,7 +8111,8 @@ pub(super) fn remove_project_intent(
         BuiltinIntent::remove_project(package, label, &files, &membership_pages, semantic_changes)?;
     let cancellation = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     intent
-        .with_stylo_retirement(&snapshot, cancellation)
+        .with_stylo_retirement(&snapshot, std::sync::Arc::clone(&cancellation))?
+        .with_sql_retirement(&snapshot, cancellation)
         .map(Some)
 }
 

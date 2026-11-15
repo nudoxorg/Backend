@@ -159,6 +159,10 @@ pub(super) struct SqlWalkEvidence {
     root: PathBuf,
     files: Vec<CompilerFileRevision>,
     inventory_complete: bool,
+    /// Application sources (TypeScript, JavaScript, Python) of the same walk
+    /// which may hold SQL string literals; scanned only at capture.
+    embedded: Vec<CompilerFileRevision>,
+    embedded_complete: bool,
 }
 impl SqlWalkEvidence {
     pub(super) fn root(&self) -> &Path { &self.root }
@@ -166,11 +170,17 @@ impl SqlWalkEvidence {
     pub(super) fn file_count(&self) -> usize { self.files.len() }
     /// Whether the bounded walk saw every candidate `.sql` file.
     pub(super) fn inventory_complete(&self) -> bool { self.inventory_complete }
+    /// Whether the walk listed every application source which may embed SQL.
+    pub(super) fn embedded_complete(&self) -> bool { self.embedded_complete }
+    /// Number of application sources which may embed SQL.
+    pub(super) fn embedded_candidates(&self) -> usize { self.embedded.len() }
     pub(super) fn checked_retained_bytes(&self) -> Option<usize> {
         let mut total = std::mem::size_of::<Self>();
         sql_charge_allocation(&mut total, self.root.capacity())?;
         sql_charge_allocation(&mut total, self.files.capacity().checked_mul(std::mem::size_of::<CompilerFileRevision>())?)?;
         for file in &self.files { sql_charge_allocation(&mut total, file.relative_path.capacity())?; }
+        sql_charge_allocation(&mut total, self.embedded.capacity().checked_mul(std::mem::size_of::<CompilerFileRevision>())?)?;
+        for file in &self.embedded { sql_charge_allocation(&mut total, file.relative_path.capacity())?; }
         Some(total)
     }
 }
@@ -449,6 +459,25 @@ pub(super) struct NativeTsCapture {
     source_policy: SourceAdmissionPolicy,
     project_source_version: Option<[u8; 32]>,
     cancellation: Option<Arc<AtomicBool>>,
+    /// Digest of the ambient ignore inputs the discovery walk consulted, together
+    /// with the walked directories whose repository excludes it read. Present only
+    /// when every input was read, and folded into the project source version.
+    ambient_ignore: Option<AmbientIgnoreWitness>,
+}
+
+/// The ambient ignore inputs one native walk consulted, by digest.
+#[derive(Clone)]
+struct AmbientIgnoreWitness {
+    digest: [u8; 32],
+    directories: Vec<PathBuf>,
+}
+
+impl AmbientIgnoreWitness {
+    /// Reads the inputs again; `None` when any cannot be read as a bounded file.
+    fn observe(root: &Path, policy: &DiscoveryPolicy, directories: Vec<PathBuf>) -> Option<Self> {
+        let inputs = policy.ambient_ignore_inputs(root, &directories)?;
+        Some(Self { digest: *blake3::hash(&inputs.canonical_bytes()).as_bytes(), directories })
+    }
 }
 
 /// A fresh positive-source rewalk of the original private capture. It carries
@@ -523,10 +552,19 @@ impl RevalidatedNativeTsCapture {
 }
 
 impl IndexSnapshot {
-    /// Native-only discovery has unwitnessed global/ancestor ignore inputs.
-    /// Its source digest cannot independently establish a current program.
+    /// Native-only discovery never claims a complete inventory.
     pub(super) fn native_typescript_discovery_incomplete(&self) -> bool {
         self.native_typescript_capture.is_some()
+    }
+
+    /// Whether the native walk's global and ancestor ignore inputs were read,
+    /// bracketed around the walk and folded into the source version. Without
+    /// that, a repeated source digest cannot stand for the same selection rules
+    /// and may not authorize an old TypeScript program.
+    pub(super) fn native_typescript_ambient_ignore_witnessed(&self) -> bool {
+        self.native_typescript_capture
+            .as_ref()
+            .is_some_and(|capture| capture.ambient_ignore.is_some())
     }
 }
 
@@ -643,8 +681,8 @@ impl NativeTsCapture {
 
     /// Rewalks the original discovery policy and rereads exact TS inputs under
     /// the original root/configuration fence. This proves only the observed
-    /// positives at this check: ambient ignore inputs remain unwitnessed and
-    /// inventory completeness remains unknown. The caller must charge the
+    /// positives at this check, and that the ambient ignore inputs it recorded
+    /// are unchanged; inventory completeness remains unknown. The caller must charge the
     /// returned read work and recheck the fence before final publication.
     pub(super) fn revalidate(
         &self,
@@ -656,6 +694,14 @@ impl NativeTsCapture {
         }
         if !compiler_revision_is_current_with_cancellation(&self.revision_fence, cancellation)? {
             return Err("native TypeScript capture fence changed".into());
+        }
+        if let Some(ambient) = &self.ambient_ignore {
+            let current = AmbientIgnoreWitness::observe(
+                &self.canonical_root, &source_selection_policy(), ambient.directories.clone(),
+            );
+            if current.is_none_or(|current| current.digest != ambient.digest) {
+                return Err("native TypeScript ambient ignore inputs changed".into());
+            }
         }
         let root = self.revision_fence.open_bound_root(&self.revision_fence.requested_root)?;
         let walk = project_paths_with_policy(
@@ -833,13 +879,15 @@ fn capture_native_typescript_sources(
         source_policy: policy,
         project_source_version: None,
         cancellation: None,
+        ambient_ignore: None,
     })
 }
 
 /// Locally observed discovery-policy inputs for native TS source-version
-/// composition. The discovery walker can also consult ancestor and global Git
-/// excludes, which this digest does not witness. It must not be used as proof
-/// of a complete inventory or as a substitute for a fresh publication walk.
+/// composition. The discovery walker also consults ancestor and global Git
+/// excludes; those are witnessed separately by [`AmbientIgnoreWitness`], and this
+/// digest is not proof of a complete inventory without it. It is not a substitute
+/// for a fresh publication walk.
 /// Missing or unreadable local policy files refuse the native scan.
 fn native_typescript_discovery_basis(
     walk: &StyloWalkEvidence,
@@ -993,13 +1041,22 @@ pub(super) enum SelectedSourceReadError {
     Invalid,
 }
 
+/// Most application sources one walk lists as possible SQL hosts.
+const MAX_EMBEDDED_SQL_CANDIDATES: usize = 100_000;
+/// Largest SQL host, read or composed, one capture selects and re-reads.
+const MAX_SQL_HOST_BYTES: usize = 512 * 1024;
+/// Most host bytes one SQL project capture holds in all.
+const MAX_SQL_PROJECT_BYTES: usize = 16 * 1024 * 1024;
+/// Most bytes of application source one capture reads while looking for SQL.
+const MAX_EMBEDDED_SQL_SCAN_BYTES: usize = 64 * 1024 * 1024;
+
 pub(super) fn read_stylo_selected_source(
     root: &Path,
     relative: &str,
     maximum_bytes: usize,
 ) -> Result<Vec<u8>, SelectedSourceReadError> {
     let root = ProjectRoot::open(root).map_err(|_| SelectedSourceReadError::Unavailable)?;
-    root.read(Path::new(relative), maximum_bytes).map_err(|fault| match fault {
+    root.read_host(relative, maximum_bytes).map_err(|fault| match fault {
         SourceFault::Vanished => SelectedSourceReadError::Vanished,
         SourceFault::Unavailable(SourceUnavailableReason::TooLarge)
         | SourceFault::UnavailableRead(SourceUnavailableReason::TooLarge, _) => {
@@ -1100,6 +1157,20 @@ impl ProjectRoot {
         )
         .map(fs::File::from)
         .map_err(|error| SourceFault::from_open(error.kind()))
+    }
+
+    /// Read a selected SQL host: a file, or the SQL embedded in an application
+    /// file, which is composed from that file's bytes (see `sql_embedded`).
+    fn read_host(&self, relative: &str, maximum_bytes: usize) -> Result<Vec<u8>, SourceFault> {
+        let Some(real) = super::sql_embedded::real_path(relative) else {
+            return self.read(Path::new(relative), maximum_bytes);
+        };
+        let bytes = self.read(Path::new(real), super::sql_embedded::MAX_SCAN_BYTES)?;
+        match super::sql_embedded::composed_for(relative, &bytes) {
+            Some(composed) if composed.len() <= maximum_bytes => Ok(composed),
+            Some(_) => Err(SourceFault::Unavailable(SourceUnavailableReason::TooLarge)),
+            None => Err(SourceFault::Vanished),
+        }
     }
 
     fn read(&self, relative: &Path, maximum_bytes: usize) -> Result<Vec<u8>, SourceFault> {
@@ -3244,9 +3315,10 @@ const NATIVE_TS_MIXED_REFUSAL: &str = "native TypeScript scan cannot admit mixed
 /// TypeScript. A walk with a TypeScript path and any other supported source
 /// language (Rust, Python, Go, Java, C#, C or C++) is rescanned in the legacy
 /// structural lane, which indexes every language exactly as it does without
-/// TypeScript routing. A project that already has selected native evidence
-/// cannot make that move here, so it refuses and says why instead of
-/// publishing a partial or empty result.
+/// TypeScript routing. That holds when the project already has selected native
+/// evidence too: a workspace that gains a second language is never refused.
+/// The structural result states its own coverage, and the earlier native rows
+/// stop being served because the publication that selected them is replaced.
 pub(super) fn scan_project_with_native_typescript_auto(
     coordinate: &str,
     project: [u8; 32],
@@ -3260,19 +3332,8 @@ pub(super) fn scan_project_with_native_typescript_auto(
     let mut snapshot = scan_project_with_configuration_policy_attempt(
         coordinate, project, reusable, source_selection_policy(), true, true,
         Some(cancellation.as_ref()), policy, interpreter, None, observation,
-        if force_native { NativeTsScanMode::Native } else { NativeTsScanMode::Auto },
-    )
-    .map_err(|error| {
-        if force_native && error == NATIVE_TS_MIXED_REFUSAL {
-            format!(
-                "{error}: this project already has selected native TypeScript evidence and also \
-                 contains another supported source language; nothing was indexed or dropped, and \
-                 the workspace is unchanged"
-            )
-        } else {
-            error
-        }
-    })?;
+        if force_native { NativeTsScanMode::Retained } else { NativeTsScanMode::Auto },
+    )?;
     if let Some(capture) = snapshot.native_typescript_capture.as_mut() {
         capture.cancellation = Some(cancellation);
     }
@@ -3345,6 +3406,10 @@ enum NativeTsScanMode {
     Native,
     /// Native when TypeScript is the only supported language, else legacy.
     Auto,
+    /// The project has prior selected native evidence: native even when its
+    /// last TypeScript path is gone, and legacy when another supported
+    /// language appears beside it.
+    Retained,
 }
 
 fn scan_project_with_configuration_policy_attempt(
@@ -3379,6 +3444,10 @@ fn scan_project_with_configuration_policy_attempt(
     if let Some(observed) = observation {
         observed.begin_source_attempt();
     }
+    // The walk consults ancestor and global ignore files that nothing else
+    // pins, so they are read before it and again after, and a change between
+    // the two refuses the scan.
+    let ambient_before = AmbientIgnoreWitness::observe(&root, &discovery, Vec::new());
     let mut project_paths = project_paths_with_policy(
         &root,
         &root_capability,
@@ -3394,7 +3463,7 @@ fn scan_project_with_configuration_policy_attempt(
     native_paths.sort();
     let native_typescript = match mode {
         NativeTsScanMode::Legacy => false,
-        NativeTsScanMode::Native => true,
+        NativeTsScanMode::Native | NativeTsScanMode::Retained => true,
         NativeTsScanMode::Auto => !native_paths.is_empty(),
     };
     if static_discovery && !native_typescript {
@@ -3403,7 +3472,7 @@ fn scan_project_with_configuration_policy_attempt(
     let frontends = selected_frontends;
     let frontier_policy_allowed = !native_typescript && discovery == source_selection_policy();
     if native_typescript && (!paths.is_empty() || !project_paths.vue_paths.is_empty()) {
-        if matches!(mode, NativeTsScanMode::Auto) {
+        if matches!(mode, NativeTsScanMode::Auto | NativeTsScanMode::Retained) {
             // Native evidence cannot carry a second language (the v13 intent
             // admits no structural rows), and dropping those files would hide
             // them. The legacy lane covers every language, TypeScript
@@ -3563,7 +3632,16 @@ fn scan_project_with_configuration_policy_attempt(
         sql_files.push(CompilerFileRevision { relative_path, metadata: project_paths.file_revisions.get(path).copied().flatten() });
     }
     sql_files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-    let sql_walk = SqlWalkEvidence { project, root: root.clone(), files: sql_files, inventory_complete: project_paths.sql_inventory_complete };
+    let mut embedded_files = Vec::with_capacity(project_paths.embedded_paths.len());
+    for path in &project_paths.embedded_paths {
+        let relative_path = path.strip_prefix(&root).map_err(|_| "SQL candidate escaped project root")?.to_path_buf();
+        embedded_files.push(CompilerFileRevision { relative_path, metadata: project_paths.file_revisions.get(path).copied().flatten() });
+    }
+    embedded_files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    let sql_walk = SqlWalkEvidence {
+        project, root: root.clone(), files: sql_files, inventory_complete: project_paths.sql_inventory_complete,
+        embedded: embedded_files, embedded_complete: project_paths.embedded_inventory_complete,
+    };
     let revision_fence = CompilerRevisionFence {
         requested_root,
         root: root.clone(),
@@ -3730,6 +3808,16 @@ fn scan_project_with_configuration_policy_attempt(
             return Err("native TypeScript scan policy differs from its fixed recipe".into());
         }
         capture.fixed_discovery_policy = true;
+        let walked = directories.iter().map(|(relative, _)| relative.clone()).collect::<Vec<_>>();
+        capture.ambient_ignore = ambient_before
+            .as_ref()
+            .zip(AmbientIgnoreWitness::observe(&root, &discovery, Vec::new()))
+            .and_then(|(before, after)| {
+                if before.digest != after.digest {
+                    return None;
+                }
+                AmbientIgnoreWitness::observe(&root, &discovery, walked)
+            });
         Some(capture)
     } else { None };
     let native_source_bytes = match &native_typescript_capture {
@@ -3946,8 +4034,17 @@ fn scan_project_with_configuration_policy_attempt(
         if configurations.windows(2).any(|pair| pair[0].0 == pair[1].0) {
             return Err("duplicate native TypeScript configuration path".into());
         }
-        source.update(b"nudox.native-typescript-input-basis.v1\0");
+        source.update(b"nudox.native-typescript-input-basis.v2\0");
         source.update(&discovery_basis);
+        match native_typescript_capture.as_ref().and_then(|capture| capture.ambient_ignore.as_ref()) {
+            Some(ambient) => {
+                source.update(&[1]);
+                source.update(&ambient.digest);
+            }
+            None => {
+                source.update(&[0]);
+            }
+        }
         source.update(&[u8::from(compiler_configuration.complete_languages.contains(&Language::TypeScript))]);
         source.update(&(configurations.len() as u64).to_be_bytes());
         for (path, content) in configurations {
@@ -4188,6 +4285,8 @@ struct ProjectPaths {
     stylo_inventory: Option<(u64, [u8; 32])>,
     sql_paths: Vec<PathBuf>,
     sql_inventory_complete: bool,
+    embedded_paths: Vec<PathBuf>,
+    embedded_inventory_complete: bool,
     unsupported_css: u64,
     unsupported_sql: u64,
     unsupported_vue: u64,
@@ -4214,6 +4313,8 @@ fn project_paths_with_policy(
     let mut stylo_paths = Vec::new();
     let mut sql_paths = Vec::new();
     let mut sql_inventory_complete = true;
+    let mut embedded_paths = Vec::new();
+    let mut embedded_inventory_complete = true;
     let mut vue_paths = Vec::new();
     let mut vue_inventory_complete = true;
     let mut stylo_inventory_complete = true;
@@ -4357,6 +4458,16 @@ fn project_paths_with_policy(
                 if sql_paths.len() < backend_engine::builtin::MAX_SQL_HOSTS as usize {
                     sql_paths.push(entry.path().to_owned());
                 } else { sql_inventory_complete = false; }
+            }
+            // Application sources may carry SQL in string literals; they are only
+            // listed here and scanned at capture. Their revisions are recorded
+            // below because they are recognised sources.
+            if (frontends.is_some() || native_typescript) && recognized
+                && exact_relative.is_some_and(super::sql_embedded::is_candidate)
+            {
+                if embedded_paths.len() < MAX_EMBEDDED_SQL_CANDIDATES {
+                    embedded_paths.push(entry.path().to_owned());
+                } else { embedded_inventory_complete = false; }
             }
             if is_stylo_source {
                 if stylo_witness_available {
@@ -4534,6 +4645,8 @@ fn project_paths_with_policy(
         stylo_inventory,
         sql_paths,
         sql_inventory_complete,
+        embedded_paths,
+        embedded_inventory_complete,
         unsupported_css,
         unsupported_sql,
         unsupported_vue,
@@ -6442,6 +6555,11 @@ mod tests {
             1,
             "CSS stays available to its own native lane"
         );
+        assert!(
+            first.native_typescript_ambient_ignore_witnessed(),
+            "the walk's ancestor and global ignore inputs are read and folded into the version"
+        );
+        assert!(first.native_typescript_discovery_incomplete(), "witnessing them still claims no inventory");
         let mut rewalk_bytes = 0;
         first.native_typescript_capture.as_ref().ok_or("capture")?
             .revalidate(Some(cancelled.as_ref()), &mut rewalk_bytes)?;
@@ -6586,14 +6704,19 @@ mod tests {
         assert_eq!(mixed.source_version, legacy.source_version);
         assert_eq!(mixed.files.len(), legacy.files.len());
 
-        // Prior native evidence cannot move to the structural lane here: refuse with a reason.
-        let Err(refusal) = scan_project_with_native_typescript_auto(
+        // Prior native evidence does not turn a mixed project away: it is scanned in the
+        // structural lane exactly like the first index, with no native capture.
+        let retained = scan_project_with_native_typescript_auto(
             root_text, project, &BTreeMap::new(), Arc::clone(&cancelled), true, None, None,
-        ) else {
-            return Err("forced native lane must refuse a mixed project".into());
+        )?;
+        assert!(retained.native_typescript_capture.is_none());
+        assert_eq!(retained.source_version, legacy.source_version);
+        assert_eq!(retained.files.len(), legacy.files.len());
+        // The native-only lane (no prior evidence routing) still refuses a mixed walk.
+        let Err(refusal) = scan_native_typescript_only(root_text, project, Arc::clone(&cancelled)) else {
+            return Err("native-only lane must refuse a mixed project".into());
         };
         assert!(refusal.contains(NATIVE_TS_MIXED_REFUSAL), "{refusal}");
-        assert!(refusal.contains("selected native TypeScript evidence"), "{refusal}");
         Ok(())
     }
 
@@ -9940,6 +10063,57 @@ mod profile_tests {
     }
 
     #[test]
+    fn an_oversized_embedded_host_is_left_out_without_failing_the_project() -> Result<(), String> {
+        let mut scratch = scratch("sql-embedded-oversized")?;
+        scratch.0 = scratch.0.canonicalize().map_err(|e| e.to_string())?;
+        fs::write(scratch.0.join("small.ts"), b"db.exec('SELECT id FROM t');\n").map_err(|e| e.to_string())?;
+        let big = format!("db.exec(\"SELECT '{}' FROM t\");\n", "a".repeat(MAX_SQL_HOST_BYTES + 1024));
+        fs::write(scratch.0.join("big.ts"), big).map_err(|e| e.to_string())?;
+        let first = scan(&scratch)?;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let captured = capture_sql_project(&first.sql_walk, &first.revision_fence, &scratch.0, &cancelled)
+            .map_err(|e| format!("{e:?}"))?;
+        let paths: Vec<_> = captured.hosts().iter().map(|host| host.selected().path.as_str()).collect();
+        assert_eq!(paths, ["small.ts#embedded.sql"]);
+        assert!(!captured.embedded_complete(), "a skipped host is an incomplete inventory");
+        // An incomplete embedded inventory never reads as "this project has no SQL".
+        let workers = super::super::sql_index::SqlWorkers::default();
+        let projection = super::super::sql_index::sql_projection(
+            &first.sql_walk, &first.revision_fence, &scratch.0, false, &workers, &cancelled)
+            .map_err(|e| e.to_string())?;
+        assert!(projection.is_some());
+        fs::remove_file(scratch.0.join("small.ts")).map_err(|e| e.to_string())?;
+        fs::remove_file(scratch.0.join("big.ts")).map_err(|e| e.to_string())?;
+        fs::write(scratch.0.join("plain.ts"), b"export const answer = 42;\n").map_err(|e| e.to_string())?;
+        let second = scan(&scratch)?;
+        let projection = super::super::sql_index::sql_projection(
+            &second.sql_walk, &second.revision_fence, &scratch.0, false, &workers, &cancelled)
+            .map_err(|e| e.to_string())?;
+        assert!(projection.is_none(), "a complete scan with no SQL anywhere is no SQL");
+        Ok(())
+    }
+
+    #[test]
+    fn an_embedded_host_that_sorts_before_the_sql_files_still_projects() -> Result<(), String> {
+        let mut scratch = scratch("sql-embedded-order")?;
+        scratch.0 = scratch.0.canonicalize().map_err(|e| e.to_string())?;
+        // The capture lists the project's own `.sql` files before its embedded hosts, and
+        // here the embedded host's path sorts first (`Apps/` before `db/`).
+        fs::create_dir_all(scratch.0.join("db")).map_err(|e| e.to_string())?;
+        fs::create_dir_all(scratch.0.join("Apps")).map_err(|e| e.to_string())?;
+        fs::write(scratch.0.join("db/schema.sql"), b"CREATE TABLE t (id INTEGER);\n").map_err(|e| e.to_string())?;
+        fs::write(scratch.0.join("Apps/report.ts"), b"db.exec('SELECT id FROM t');\n").map_err(|e| e.to_string())?;
+        let first = scan(&scratch)?;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let workers = super::super::sql_index::SqlWorkers::default();
+        let projection = super::super::sql_index::sql_projection(
+            &first.sql_walk, &first.revision_fence, &scratch.0, false, &workers, &cancelled)
+            .map_err(|e| e.to_string())?;
+        assert!(projection.is_some(), "both hosts project, unavailable without a worker");
+        Ok(())
+    }
+
+    #[test]
     fn sql_project_queue_proof_drops_host_buffers_and_rechecks_them() -> Result<(), String> {
         let mut scratch = scratch("sql-compact")?;
         scratch.0 = scratch.0.canonicalize().map_err(|e| e.to_string())?;
@@ -10012,6 +10186,33 @@ mod profile_tests {
         for read in reads {
             assert_eq!(b"SELECT id, id FROM t;".get(read.start as usize..read.end as usize), Some(&b"id"[..]));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn vue_script_declarations_are_filed_in_source_line_order() -> Result<(), String> {
+        let scratch = scratch("vue-line-order")?;
+        fs::create_dir_all(scratch.0.join("src")).map_err(|e| e.to_string())?;
+        // A binding inside a function body comes back from the script parser
+        // after the file's other bindings, not between them.
+        fs::write(
+            scratch.0.join("src/App.vue"),
+            "<script setup>\nimport { ref, onMounted } from 'vue'\n\nconst status = ref('loading')\n\nasync function loadHealth() {\n  const response = await fetch('/api/health')\n  status.value = (await response.json()).status\n}\n\nonMounted(loadHealth)\n</script>\n\n<template>\n  <main>{{ status }}</main>\n</template>\n",
+        )
+        .map_err(|e| e.to_string())?;
+        let indexed = scan(&scratch)?;
+        let record = indexed
+            .files
+            .iter()
+            .find_map(|(_, record)| record.file_fields().filter(|fields| fields.path == "src/App.vue"))
+            .ok_or("the component was not filed")?;
+        let lines = record
+            .declarations
+            .iter()
+            .map(|declaration| (declaration.name().to_owned(), declaration.line()))
+            .collect::<Vec<_>>();
+        assert!(lines.windows(2).all(|pair| pair[0].1 <= pair[1].1), "{lines:?}");
+        assert!(lines.iter().any(|(name, _)| name == "response"), "{lines:?}");
         Ok(())
     }
 
@@ -10108,6 +10309,29 @@ mod profile_tests {
         assert_ne!(second.source_version, source_version, "Vue script edits change source identity");
         assert!(names_of(&second, "src/New.vue").contains(&"mounted".to_owned()));
         assert_eq!(second.compiler_sources.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn vue_script_declarations_keep_source_order_when_a_nested_declaration_is_parsed_first()
+    -> Result<(), String> {
+        let scratch = scratch("vue-source-order")?;
+        fs::create_dir_all(scratch.0.join("src")).map_err(|e| e.to_string())?;
+        fs::write(
+            scratch.0.join("src/App.vue"),
+            "<script setup>\nimport { ref, onMounted } from 'vue'\n\nconst status = ref('loading')\n\nasync function loadHealth() {\n  const response = await fetch('/api/health')\n  status.value = (await response.json()).status\n}\n\nonMounted(loadHealth)\n</script>\n\n<template>\n  <main>{{ status }}</main>\n</template>\n",
+        )
+        .map_err(|e| e.to_string())?;
+        let snapshot = scan(&scratch)?;
+        let names = names_of(&snapshot, "src/App.vue");
+        let position = |wanted: &str| names.iter().position(|name| name == wanted);
+        for wanted in ["App", "ref", "onMounted", "status", "loadHealth", "response"] {
+            assert!(position(wanted).is_some(), "{wanted} missing from {names:?}");
+        }
+        assert!(
+            position("loadHealth") < position("response"),
+            "an enclosing declaration precedes the declaration inside it: {names:?}"
+        );
         Ok(())
     }
 
@@ -11360,6 +11584,8 @@ pub(super) struct StyloProjectCapture {
     selection: backend_engine::builtin::StyloAnalysisRecord,
     attempt: Option<StyloAttemptCapture>,
     hosts: Vec<StyloProjectHost>,
+    /// Code sources scanned for style links, from the same confined walk.
+    code_hosts: Vec<super::commands::code_links::CodeHostRows>,
     fence: CompilerRevisionFence,
     source_bytes_read: usize,
     worker_attempts: u32,
@@ -11404,6 +11630,10 @@ impl StyloProjectCapture {
             if let StyloProjectHost::Captured(value) = host {
                 rows.extend(value.facts().iter().map(|(key, row)| (*key, row)));
             }
+        }
+        for code in &self.code_hosts {
+            rows.push((code.key, &code.host));
+            rows.extend(code.facts.iter().map(|(key, row)| (*key, row)));
         }
         rows.sort_by_key(|entry| entry.0);
         rows
@@ -11743,6 +11973,291 @@ fn read_stylo_bounded(
     result
 }
 
+/// Most code sources one project publishes style-link facts for.
+const MAX_CODE_HOSTS: usize = 8192;
+/// Fixed per-project cap on supervised runs for embedded (Vue `<style>`) sheets,
+/// separate from the stylesheet-file cap: a component library has many blocks.
+/// Blocks beyond it keep an explicit Limit terminal without a run.
+const MAX_STYLO_FRAGMENT_ATTEMPTS: u32 = 256;
+const MAX_VUE_HOST_BYTES: usize = 1024 * 1024;
+
+fn is_fragment_host(row: &backend_engine::builtin::StyloAnalysisRecord) -> bool {
+    matches!(row, backend_engine::builtin::StyloAnalysisRecord::Host { fragment: Some(_), .. })
+}
+
+/// Maps a capture failure of one embedded sheet to its host terminal. Only
+/// cancellation aborts the project capture.
+fn fragment_terminal(
+    error: super::stylo_capture::StyloCaptureFailure,
+) -> Result<backend_engine::builtin::StyloUnavailable, StyloProjectCaptureFailure> {
+    use super::stylo_capture::StyloCaptureFailure as C;
+    use super::stylo_worker::StyloWorkerFailure as W;
+    use backend_engine::builtin::StyloUnavailable as U;
+    Ok(match error {
+        C::Limit | C::Worker(W::Limit) => U::Limit,
+        C::Worker(W::Process(backend_compile::ProcessError::Cancelled))
+        | C::Worker(W::Terminal(backend_compile::ProcessTerminal::Cancelled))
+        | C::Worker(W::Native(backend_frontend_stylo::StyloError::Cancelled)) => {
+            return Err(StyloProjectCaptureFailure::Cancelled);
+        }
+        C::Worker(W::Process(backend_compile::ProcessError::Deadline))
+        | C::Worker(W::Terminal(backend_compile::ProcessTerminal::Deadline)) => U::Deadline,
+        C::Worker(W::Process(backend_compile::ProcessError::OutputLimit))
+        | C::Worker(W::Terminal(backend_compile::ProcessTerminal::OutputLimit)) => U::Limit,
+        C::Worker(W::Process(backend_compile::ProcessError::UnsupportedLimit(_))) => U::UnsupportedHardLimit,
+        C::Worker(W::Native(backend_frontend_stylo::StyloError::InvalidUtf8)) => U::InvalidUtf8,
+        C::Worker(W::Native(backend_frontend_stylo::StyloError::PreferencesChanged)) => U::PreferencesChanged,
+        _ => U::WorkerFailure,
+    })
+}
+
+/// Indexes every plain-CSS `<style>` block of the project's Vue single-file
+/// components through the Stylo fragment worker, as hosts whose sites are byte
+/// ranges of the `.vue` file. Sass, Less and external sources keep an explicit
+/// unsupported terminal. Returns false when the Vue inventory is incomplete.
+#[allow(clippy::too_many_arguments)]
+fn capture_vue_style_hosts(
+    scan: &IndexSnapshot,
+    permit: &super::stylo_worker::StyloWorkerPermit,
+    root: &ProjectRoot,
+    project: [u8; 32],
+    max_file: usize,
+    limits_for: &dyn Fn(usize, usize) -> Result<backend_semantic::stylo_analysis::StyloLimits, StyloProjectCaptureFailure>,
+    wall_time: std::time::Duration,
+    memory_limit: Option<usize>,
+    remaining_source: &mut usize,
+    remaining_bytes: &mut usize,
+    remaining_records: &mut usize,
+    source_bytes_read: &mut usize,
+    cancellation: &AtomicBool,
+    hosts: &mut Vec<StyloProjectHost>,
+) -> Result<bool, StyloProjectCaptureFailure> {
+    use backend_engine::builtin::{
+        StyloAnalysisRecord, StyloAnalysisRelation, StyloFragment, StyloTerminal, StyloUnavailable,
+        stylo_host_key, stylo_parser_configuration_id, stylo_rows_digest,
+    };
+    use backend_frontend_vue::BlockKind;
+    use backend_semantic::stylo_analysis::{StyloParseConfig, StyloSourceKind};
+    use backend_version::Relation;
+    let walk = &scan.vue_walk;
+    let mut complete = walk.complete();
+    let mut attempts_left = MAX_STYLO_FRAGMENT_ATTEMPTS;
+    'files: for file in walk.files() {
+        if cancellation.load(Ordering::Acquire) {
+            return Err(StyloProjectCaptureFailure::Cancelled);
+        }
+        if *remaining_records == 0 || *remaining_bytes == 0 {
+            complete = false;
+            break;
+        }
+        let Some(name) = file.relative_path.to_str().map(|path| path.replace(std::path::MAIN_SEPARATOR, "/")) else {
+            continue;
+        };
+        let bytes = match read_stylo_bounded(
+            root,
+            &file.relative_path,
+            max_file.min(MAX_VUE_HOST_BYTES),
+            remaining_source,
+            source_bytes_read,
+        ) {
+            Ok(bytes) => bytes,
+            Err(SourceFault::Vanished) => return Err(StyloProjectCaptureFailure::Stale),
+            Err(SourceFault::Fatal(error)) => return Err(StyloProjectCaptureFailure::Invalid(error)),
+            Err(_) => {
+                complete = false;
+                continue;
+            }
+        };
+        let Ok(container) = backend_frontend_vue::parse(&bytes) else {
+            complete = false;
+            continue;
+        };
+        let host_extent = container.host();
+        for (index, block) in container.blocks().iter().enumerate() {
+            let Some(BlockKind::Style { scoped, module }) = container.kind(index) else { continue };
+            let Some(content) = block.content.clone() else { continue };
+            // `<style scoped></style>` has content of no bytes: no rules, no
+            // sites, and no fragment the relation could admit.
+            if content.is_empty() {
+                continue;
+            }
+            if *remaining_records == 0 || *remaining_bytes == 0 {
+                complete = false;
+                break 'files;
+            }
+            let fragment = StyloFragment {
+                file: name.clone(),
+                block: u32::try_from(index).map_err(|_| StyloProjectCaptureFailure::Unavailable)?,
+                start: content.start as u64,
+                end: content.end as u64,
+                line: u32::try_from(bytes[..content.start].iter().filter(|byte| **byte == b'\n').count() + 1)
+                    .unwrap_or(u32::MAX),
+                scoped,
+                module,
+            };
+            let path = fragment.host_path();
+            let key = stylo_host_key(project, &path).map_err(StyloProjectCaptureFailure::Invalid)?;
+            let mut failure = if attempts_left == 0 {
+                Some(StyloUnavailable::Limit)
+            } else if container.inline_css(index).is_err() {
+                Some(StyloUnavailable::UnsupportedSyntax)
+            } else {
+                None
+            };
+            let mut captured = None;
+            let mut attempted = None;
+            if failure.is_none() {
+                let base_url = url::Url::from_file_path(walk.root().join(&file.relative_path))
+                    .map_err(|()| StyloProjectCaptureFailure::Unavailable)?
+                    .to_string();
+                let config = StyloParseConfig {
+                    source_kind: StyloSourceKind::EmbeddedUnicodeFragment,
+                    base_url,
+                    author_origin: true,
+                    no_quirks: true,
+                    allow_imports: true,
+                    limits: limits_for(*remaining_records, *remaining_bytes)?,
+                };
+                attempted = Some(config.clone());
+                attempts_left -= 1;
+                match super::stylo_capture::capture_stylo_fragment_host(
+                    permit,
+                    walk.root().to_path_buf(),
+                    project,
+                    &fragment,
+                    host_extent,
+                    &config,
+                    wall_time,
+                    memory_limit,
+                    *remaining_bytes,
+                    *remaining_records,
+                    cancellation,
+                ) {
+                    Ok(value) => captured = Some(value),
+                    Err(error) => failure = Some(fragment_terminal(error)?),
+                }
+            }
+            let host = if let Some(value) = captured {
+                *remaining_records = remaining_records.saturating_sub(value.facts().len() + 1);
+                *remaining_bytes = remaining_bytes.saturating_sub(value.encoded_bytes());
+                StyloProjectHost::Captured(value)
+            } else {
+                let policy = super::stylo_worker::stylo_worker_policy(wall_time, memory_limit)
+                    .map_err(|_| StyloProjectCaptureFailure::Unavailable)?;
+                let row = StyloAnalysisRecord::Host {
+                    project,
+                    path,
+                    content: Some(host_extent.content().to_bytes()),
+                    source: Some(*host_extent.source().as_ref()),
+                    byte_length: Some(bytes.len() as u64),
+                    utf8_bom_removed: None,
+                    configuration: attempted
+                        .as_ref()
+                        .map(|config| {
+                            stylo_parser_configuration_id(backend_engine::builtin::STYLO_EMBEDDED_RECIPE, config)
+                        })
+                        .transpose()
+                        .map_err(StyloProjectCaptureFailure::Invalid)?,
+                    worker_policy: attempted.as_ref().map(|_| policy),
+                    config: attempted,
+                    preferences: None,
+                    preference_stability: None,
+                    analysis_basis: None,
+                    source_coverage: None,
+                    source_gaps: vec![],
+                    source_observer_recipe: None,
+                    terminal: StyloTerminal::Unavailable(failure.ok_or(StyloProjectCaptureFailure::Unavailable)?),
+                    fact_count: 0,
+                    fact_digest: stylo_rows_digest(&[]).map_err(StyloProjectCaptureFailure::Invalid)?,
+                    fragment: Some(fragment),
+                };
+                row.validate().map_err(StyloProjectCaptureFailure::Invalid)?;
+                let mut encoded = Vec::new();
+                StyloAnalysisRelation::encode_value(&row, &mut encoded);
+                if encoded.len() > *remaining_bytes {
+                    complete = false;
+                    break 'files;
+                }
+                *remaining_bytes -= encoded.len();
+                *remaining_records -= 1;
+                StyloProjectHost::Unavailable { key, row }
+            };
+            hosts.push(host);
+        }
+    }
+    Ok(complete)
+}
+
+/// Scans the project's TypeScript and JavaScript sources for style links, from
+/// the same revision fence as the stylesheets. A source which cannot be read or
+/// does not fit the remaining budgets simply has no host row; readers then fall
+/// back to a query-time scan and say so. Only a vanished source is an error.
+#[allow(clippy::too_many_arguments)]
+fn capture_code_hosts(
+    fence: &CompilerRevisionFence,
+    root: &ProjectRoot,
+    project: [u8; 32],
+    max_file: usize,
+    remaining_source: &mut usize,
+    remaining_bytes: &mut usize,
+    remaining_records: &mut usize,
+    source_bytes_read: &mut usize,
+    cancellation: &AtomicBool,
+) -> Result<Vec<super::commands::code_links::CodeHostRows>, StyloProjectCaptureFailure> {
+    use super::commands::code_links::{host_rows, scan_bytes};
+    use backend_engine::builtin::StyloAnalysisRelation;
+    use backend_version::Relation;
+    let mut candidates: Vec<String> = fence
+        .files
+        .iter()
+        .filter_map(|file| file.relative_path.to_str())
+        .map(|path| path.replace(std::path::MAIN_SEPARATOR, "/"))
+        .filter(|path| super::commands::code_links::is_code_path(path))
+        .collect();
+    candidates.sort();
+    candidates.dedup();
+    let mut hosts = Vec::new();
+    for name in candidates.into_iter().take(MAX_CODE_HOSTS) {
+        if cancellation.load(Ordering::Acquire) {
+            return Err(StyloProjectCaptureFailure::Cancelled);
+        }
+        if *remaining_records == 0 || *remaining_bytes == 0 {
+            break;
+        }
+        let bytes = match read_stylo_bounded(
+            root,
+            Path::new(&name),
+            max_file,
+            remaining_source,
+            source_bytes_read,
+        ) {
+            Ok(bytes) => bytes,
+            Err(SourceFault::Vanished) => return Err(StyloProjectCaptureFailure::Stale),
+            Err(SourceFault::Fatal(error)) => return Err(StyloProjectCaptureFailure::Invalid(error)),
+            Err(_) => continue,
+        };
+        let Some(outcome) = scan_bytes(&name, &bytes) else { continue };
+        let source = *backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(&bytes).as_ref();
+        let rows = host_rows(project, &name, source, bytes.len() as u64, outcome)
+            .map_err(StyloProjectCaptureFailure::Invalid)?;
+        let mut encoded_total = 0usize;
+        for row in std::iter::once(&rows.host).chain(rows.facts.iter().map(|(_, row)| row)) {
+            let mut encoded = Vec::new();
+            StyloAnalysisRelation::encode_value(row, &mut encoded);
+            encoded_total = encoded_total.saturating_add(encoded.len());
+        }
+        let count = rows.facts.len() + 1;
+        if count > *remaining_records || encoded_total > *remaining_bytes {
+            break;
+        }
+        *remaining_records -= count;
+        *remaining_bytes -= encoded_total;
+        hosts.push(rows);
+    }
+    hosts.sort_by_key(|host| host.key);
+    Ok(hosts)
+}
+
 pub(super) fn capture_stylo_project(
     scan: &IndexSnapshot,
     permit: &super::stylo_worker::StyloWorkerPermit,
@@ -11768,8 +12283,11 @@ pub(super) fn capture_stylo_project(
     let (inventory_count, inventory_digest) = walk
         .inventory
         .ok_or(StyloProjectCaptureFailure::Unavailable)?;
+    // The fence covers stylesheets and Vue hosts alike: a changed `<style>` block
+    // must make the capture stale exactly as a changed `.css` file does.
     let fence = walk
         .bind_fence(&scan.revision_fence)
+        .and_then(|fence| scan.vue_walk.bind_fence(&fence))
         .map_err(StyloProjectCaptureFailure::Invalid)?;
     if !compiler_revision_is_current_with_cancellation(&fence, Some(cancellation))
         .map_err(StyloProjectCaptureFailure::Invalid)?
@@ -11878,7 +12396,9 @@ pub(super) fn capture_stylo_project(
                         base_url,
                         author_origin: true,
                         no_quirks: true,
-                        allow_imports: false,
+                        // Imports are recorded, never loaded: the worker answers
+                        // every request with a refused sheet.
+                        allow_imports: true,
                         limits: StyloLimits {
                             input_bytes: max_file as u64,
                             rules: u32::try_from(rule_quota)
@@ -12009,6 +12529,7 @@ pub(super) fn capture_stylo_project(
                 ),
                 fact_count: 0,
                 fact_digest: stylo_rows_digest(&[]).map_err(StyloProjectCaptureFailure::Invalid)?,
+                fragment: None,
             };
             row.validate()
                 .map_err(StyloProjectCaptureFailure::Invalid)?;
@@ -12024,7 +12545,54 @@ pub(super) fn capture_stylo_project(
         };
         hosts.push(host);
     }
+    let vue_complete = capture_vue_style_hosts(
+        scan,
+        permit,
+        &root,
+        walk.project,
+        max_file,
+        &|records, text_budget| {
+            let quota = records.saturating_sub(1);
+            let rule_quota = (quota / 4).min(100_000);
+            let record_quota = (quota / 2).min(200_000);
+            let diagnostic_quota = quota.saturating_sub(rule_quota + record_quota).min(2_000);
+            Ok(backend_semantic::stylo_analysis::StyloLimits {
+                input_bytes: max_file as u64,
+                rules: u32::try_from(rule_quota).map_err(|_| StyloProjectCaptureFailure::Unavailable)?,
+                depth: 64,
+                records: u32::try_from(record_quota).map_err(|_| StyloProjectCaptureFailure::Unavailable)?,
+                diagnostics: u32::try_from(diagnostic_quota).map_err(|_| StyloProjectCaptureFailure::Unavailable)?,
+                text_bytes: text_budget.min(8 * 1024 * 1024) as u64,
+            })
+        },
+        wall_time,
+        memory_limit,
+        &mut remaining_source,
+        &mut remaining_bytes,
+        &mut remaining_records,
+        &mut source_bytes_read,
+        cancellation,
+        &mut hosts,
+    )?;
+    complete &= vue_complete;
     hosts.sort_by_key(StyloProjectHost::key);
+    let code_hosts = capture_code_hosts(
+        &fence,
+        &root,
+        walk.project,
+        max_file,
+        &mut remaining_source,
+        &mut remaining_bytes,
+        &mut remaining_records,
+        &mut source_bytes_read,
+        cancellation,
+    )?;
+    let code_refs: Vec<_> = code_hosts.iter().map(|code| (code.key, &code.host)).collect();
+    let code_selection = backend_engine::builtin::CodeSelection {
+        recipe: backend_engine::builtin::CODE_LINK_RECIPE.to_owned(),
+        count: u32::try_from(code_hosts.len()).map_err(|_| StyloProjectCaptureFailure::Unavailable)?,
+        digest: stylo_rows_digest(&code_refs).map_err(StyloProjectCaptureFailure::Invalid)?,
+    };
     let host_refs: Vec<_> = hosts.iter().map(|host| (host.key(), host.row())).collect();
     let host_digest = stylo_rows_digest(&host_refs).map_err(StyloProjectCaptureFailure::Invalid)?;
     let selection = StyloAnalysisRecord::Selection {
@@ -12038,7 +12606,9 @@ pub(super) fn capture_stylo_project(
         discovery,
         policy_complete: false,
         max_worker_attempts: Some(MAX_STYLO_WORKER_ATTEMPTS),
-        inventory: if complete && hosts.len() as u64 == inventory_count {
+        inventory: if complete
+            && hosts.iter().filter(|host| !is_fragment_host(host.row())).count() as u64 == inventory_count
+        {
             StyloInventory::Complete
         } else {
             StyloInventory::Incomplete
@@ -12048,6 +12618,7 @@ pub(super) fn capture_stylo_project(
         host_count: u32::try_from(hosts.len())
             .map_err(|_| StyloProjectCaptureFailure::Unavailable)?,
         host_digest,
+        code: Some(code_selection),
     };
     selection
         .validate()
@@ -12062,6 +12633,7 @@ pub(super) fn capture_stylo_project(
         selection,
         attempt: None,
         hosts,
+        code_hosts,
         fence,
         source_bytes_read,
         worker_attempts: MAX_STYLO_WORKER_ATTEMPTS - worker_budget.remaining,
@@ -12082,6 +12654,8 @@ pub(super) struct SqlProjectCapture {
     /// True when no `.nudox/sql.json` exists and the selection was derived from
     /// the same bounded walk (every `.sql` file, dialect inferred per file).
     implicit: bool,
+    /// Whether every application source of the walk was scanned for embedded SQL.
+    embedded_complete: bool,
 }
 pub(super) struct SqlCapturedHost {
     selected: backend_library::sql_workspace::SqlProjectSource,
@@ -12136,6 +12710,7 @@ impl SqlProjectCapture {
     pub(super) fn settings_len(&self) -> usize { self.settings_bytes.len() }
     /// Whether the selection was derived from the walk because no settings file exists.
     pub(super) fn implicit(&self) -> bool { self.implicit }
+    pub(super) fn embedded_complete(&self) -> bool { self.embedded_complete }
     pub(super) fn witness(&self) -> SqlProjectWitness {
         SqlProjectWitness { implicit: self.implicit, project: self.project, config_input: self.settings.input(),
             config_source: self.settings.source(), config_len: self.settings_bytes.len(),
@@ -12175,7 +12750,7 @@ impl SqlProjectCapture {
         }
         for host in self.hosts.iter().filter(|host| host.fault.is_none()) {
             if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
-            let result = root.read(Path::new(&host.selected.path), 512 * 1024);
+            let result = root.read_host(&host.selected.path, MAX_SQL_HOST_BYTES);
             if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
             let bytes = result.map_err(sql_capture_fault)?;
             let verified = backend_compile::VerifiedSourceText::admit(&bytes, host.input, host.source)
@@ -12222,7 +12797,7 @@ impl SqlProjectWitness {
                            input: backend_compile::InputContentVersion,
                            source: backend_version::ContentId<backend_version::SourceFactDomain>| -> Result<(), SqlCaptureFailure> {
             if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
-            let result = root.read(relative, limit);
+            let result = root.read_host(relative.to_str().ok_or(SqlCaptureFailure::Invalid)?, limit);
             if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
             let bytes = result.map_err(sql_capture_fault)?;
             if bytes.len() != length { return Err(SqlCaptureFailure::Stale); }
@@ -12243,7 +12818,7 @@ impl SqlProjectWitness {
             check_bytes(Path::new(backend_library::sql_workspace::SQL_PROJECT_SETTINGS_PATH),
                 backend_library::sql_workspace::MAX_SQL_PROJECT_SETTINGS_BYTES, self.config_len, self.config_input, self.config_source)?;
         }
-        for host in &self.hosts { check_bytes(Path::new(&host.path), 512 * 1024, host.length, host.input, host.source)?; }
+        for host in &self.hosts { check_bytes(Path::new(&host.path), MAX_SQL_HOST_BYTES, host.length, host.input, host.source)?; }
         check_fence()
     }
 }
@@ -12297,13 +12872,14 @@ pub(super) fn capture_sql_project(walk: &SqlWalkEvidence, fence: &CompilerRevisi
     };
     let mut hosts = Vec::new();
     let mut total = 0usize;
+    let mut embedded_complete = walk.embedded_complete;
     let (settings, config) = if implicit {
         // No settings file: select every `.sql` file of the same bounded walk.
         let mut paths = Vec::new();
         for file in &walk.files {
             if file.metadata.is_none() { continue; }
             let Some(text) = file.relative_path.to_str() else { return Err(SqlCaptureFailure::Invalid) };
-            let text = text.replace('\\', "/");
+            let text = text.replace(std::path::MAIN_SEPARATOR, "/");
             if text == backend_library::sql_workspace::SQL_PROJECT_SETTINGS_PATH
                 || !text.rsplit_once('.').is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("sql")) { continue; }
             paths.push(text);
@@ -12315,7 +12891,7 @@ pub(super) fn capture_sql_project(walk: &SqlWalkEvidence, fence: &CompilerRevisi
         let mut read = Vec::with_capacity(paths.len());
         for path in &paths {
             if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
-            let result = root.read(Path::new(path), 512 * 1024);
+            let result = root.read(Path::new(path), MAX_SQL_HOST_BYTES);
             if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
             let (bytes, fault) = match result {
                 Ok(bytes) => (bytes, None),
@@ -12328,7 +12904,7 @@ pub(super) fn capture_sql_project(walk: &SqlWalkEvidence, fence: &CompilerRevisi
                 },
             };
             total = total.checked_add(bytes.len()).ok_or(SqlCaptureFailure::Limit)?;
-            if total > 16 * 1024 * 1024 { return Err(SqlCaptureFailure::Limit); }
+            if total > MAX_SQL_PROJECT_BYTES { return Err(SqlCaptureFailure::Limit); }
             let guess = infer_sql_dialect(path, &bytes);
             read.push((path.clone(), bytes, fault, guess));
         }
@@ -12351,6 +12927,55 @@ pub(super) fn capture_sql_project(walk: &SqlWalkEvidence, fence: &CompilerRevisi
             sources.push(selected.clone());
             hosts.push(SqlCapturedHost { selected, inferred: true, oracle: decided.is_none(), fault, bytes, input, source });
         }
+        // SQL written in application sources joins the selection after the files,
+        // so a migration always replays before code that might repeat its DDL.
+        let mut room = backend_library::sql_workspace::MAX_SQL_PROJECT_HOSTS.saturating_sub(hosts.len());
+        let mut scanned = 0usize;
+        for file in &walk.embedded {
+            if file.metadata.is_none() { continue; }
+            let Some(text) = file.relative_path.to_str() else { continue };
+            let text = text.replace(std::path::MAIN_SEPARATOR, "/");
+            if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+            let result = root.read(Path::new(&text), super::sql_embedded::MAX_SCAN_BYTES);
+            if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+            let source_bytes = match result {
+                Ok(bytes) => bytes,
+                // A file over the scan bound is not scanned (documented), and an
+                // unreadable one is the code domain's concern, not SQL's.
+                Err(SourceFault::Unavailable(_) | SourceFault::UnavailableRead(..)) => continue,
+                Err(error) => return Err(sql_capture_fault(error)),
+            };
+            scanned = scanned.saturating_add(source_bytes.len());
+            if scanned > MAX_EMBEDDED_SQL_SCAN_BYTES { embedded_complete = false; break; }
+            let Some(found) = super::sql_embedded::scan(&text, &source_bytes) else { continue };
+            let host_path = super::sql_embedded::virtual_path(&text);
+            // A real file already carrying this name wins; never two hosts of one path.
+            if paths.binary_search(&host_path).is_ok() { continue; }
+            // A host the verification would refuse to re-read, or one that would
+            // push the project past its byte cap, is left out of this capture
+            // alone; the inventory is then incomplete rather than the project lost.
+            if found.composed.len() > MAX_SQL_HOST_BYTES
+                || total.saturating_add(found.composed.len()) > MAX_SQL_PROJECT_BYTES
+            {
+                embedded_complete = false;
+                continue;
+            }
+            if room == 0 { embedded_complete = false; break; }
+            room -= 1;
+            total += found.composed.len();
+            let decided = found.dialect.or(consensus);
+            let dialect = decided.unwrap_or(backend_library::sql_workspace::SqlDialect::Sqlite);
+            let selected = backend_library::sql_workspace::SqlProjectSource {
+                path: host_path, dialect, context: backend_library::sql_workspace::SqlProjectContext::Unavailable,
+            };
+            let verified = backend_compile::VerifiedSourceText::capture(&found.composed).map_err(|_| SqlCaptureFailure::Invalid)?;
+            let input = verified.content();
+            let source = verified.extent(0..found.composed.len()).map_err(|_| SqlCaptureFailure::Invalid)?.source();
+            sources.push(selected.clone());
+            hosts.push(SqlCapturedHost { selected, inferred: true, oracle: decided.is_none(), fault: None, bytes: found.composed, input, source });
+        }
+        // The settings list is path-ordered; the host order stays files first.
+        sources.sort_by(|left, right| left.path.cmp(&right.path));
         let bytes = serde_json::to_vec(&backend_library::sql_workspace::SqlProjectSettings { version: 1, sources })
             .map_err(|_| SqlCaptureFailure::Invalid)?;
         let settings = backend_library::sql_workspace::ParsedSqlProjectSettings::parse(&bytes)
@@ -12368,11 +12993,11 @@ pub(super) fn capture_sql_project(walk: &SqlWalkEvidence, fence: &CompilerRevisi
             if !walk.files.iter().any(|file| file.relative_path == path && file.metadata.is_some()) {
                 return Err(SqlCaptureFailure::Unavailable);
             }
-            let result = root.read(path, 512 * 1024);
+            let result = root.read(path, MAX_SQL_HOST_BYTES);
             if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
             let bytes = result.map_err(sql_capture_fault)?;
             total = total.checked_add(bytes.len()).ok_or(SqlCaptureFailure::Limit)?;
-            if total > 16 * 1024 * 1024 { return Err(SqlCaptureFailure::Limit); }
+            if total > MAX_SQL_PROJECT_BYTES { return Err(SqlCaptureFailure::Limit); }
             let verified = backend_compile::VerifiedSourceText::capture(&bytes).map_err(|_| SqlCaptureFailure::Invalid)?;
             let input = verified.content();
             let source = verified.extent(0..bytes.len()).map_err(|_| SqlCaptureFailure::Invalid)?.source();
@@ -12381,7 +13006,7 @@ pub(super) fn capture_sql_project(walk: &SqlWalkEvidence, fence: &CompilerRevisi
         (settings, config)
     };
     if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
-    Ok(SqlProjectCapture { project: walk.project, settings_bytes: config, settings, hosts, cancellation: Arc::clone(cancellation), implicit })
+    Ok(SqlProjectCapture { project: walk.project, settings_bytes: config, settings, hosts, cancellation: Arc::clone(cancellation), implicit, embedded_complete })
 }
 
 /// Choose a dialect from the file's path and its own tokens. `None` means no

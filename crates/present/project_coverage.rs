@@ -121,6 +121,124 @@ impl ProjectCoverageEvidence {
     pub(crate) const fn semantic_partial(&self) -> bool {
         self.semantic_partial
     }
+
+    /// One row per selected source profile: its file count and how far its semantic lane got.
+    fn profile_files(&self) -> Vec<crate::shelf::ProfileFiles> {
+        use crate::shelf::{ProfileFiles, ProfileSemantic};
+        self.source_capture
+            .profiles
+            .iter()
+            .filter_map(|profile| {
+                let name = profile.profile.name()?;
+                let semantic = match profile.state {
+                    IndexOperationSemanticProfileState::Published { coverage, .. } => {
+                        match coverage {
+                            IndexOperationSemanticCoverage::Complete => ProfileSemantic::Complete,
+                            IndexOperationSemanticCoverage::Partial { completed, total } => {
+                                ProfileSemantic::Partial { completed, total }
+                            }
+                        }
+                    }
+                    IndexOperationSemanticProfileState::Pending { .. } => ProfileSemantic::Pending,
+                    IndexOperationSemanticProfileState::Unavailable { .. } => {
+                        ProfileSemantic::Unavailable
+                    }
+                    IndexOperationSemanticProfileState::Failed { .. } => ProfileSemantic::Failed,
+                };
+                Some(ProfileFiles::new(name, profile.source_count, semantic))
+            })
+            .collect()
+    }
+}
+
+/// Most local projects whose source receipt one `packages` call will read. A project past
+/// the bound has no profile row: its languages are unread, never reported as none.
+const MAX_PROFILE_READS: usize = 32;
+
+/// The selected publication relations an evidence read came from. Reads that disagree
+/// came from separate owner snapshots and are never combined.
+fn publication_relations(evidence: &ProjectCoverageEvidence) -> ([u8; 32], [u8; 32], [u8; 32]) {
+    (
+        evidence.binding.source_relation_root,
+        evidence.binding.semantic_relation_root,
+        evidence.binding.capture_relation_root,
+    )
+}
+
+/// Reads the per-language file counts of every ready local project from its current
+/// owner-authenticated source receipt. Unlike the semantic-gap attribution above this
+/// does not wait for a gap, and it covers a sole project: it is what lets `packages`
+/// name the languages a project holds. Evidence `known` from that attribution is reused
+/// rather than read again. A view advance, or receipts from different publications,
+/// discard the whole read, so a project never receives another revision's receipt; a
+/// project whose receipt is unavailable is simply absent, never reported as having no
+/// languages.
+pub(crate) fn read_current_project_profiles(
+    engine: &mut dyn Engine,
+    snapshot: &ViewSnapshot,
+    health: &HealthReport,
+    known: &BTreeMap<PackageKey, ProjectCoverageEvidence>,
+) -> BTreeMap<PackageKey, Vec<crate::shelf::ProfileFiles>> {
+    let mut result = BTreeMap::new();
+    let view_root = health.revision().root();
+    if !snapshot_matches_health(snapshot, health) || engine.revision().ok() != Some(view_root) {
+        return result;
+    }
+    let source_root = *health.basis().root.as_bytes();
+    let mut relations = None;
+    let mut reads = 0;
+    for (key, label) in snapshot
+        .root
+        .rows()
+        .iter()
+        .filter_map(|row| match (row.id, row.state) {
+            (RowId::Package(key), RowState::Ready) => Some((key, row.label.as_str())),
+            _ => None,
+        })
+    {
+        let read;
+        let evidence = match known.get(&key) {
+            Some(evidence) => evidence,
+            None => {
+                let Ok(package) = PackageReference::parse(label.to_owned()) else {
+                    continue;
+                };
+                if !matches!(package, PackageReference::Local(_)) || reads == MAX_PROFILE_READS {
+                    continue;
+                }
+                reads += 1;
+                let reply = engine.surface(SurfaceCommand::PackageCoverageCurrent {
+                    package: package.clone(),
+                    view_root: *view_root.as_bytes(),
+                });
+                let Some(evidence) = reply.ok().and_then(package_coverage).and_then(|coverage| {
+                    ProjectCoverageEvidence::from_owner_reply(
+                        view_root,
+                        source_root,
+                        key,
+                        &package,
+                        coverage,
+                    )
+                }) else {
+                    continue;
+                };
+                read = evidence;
+                &read
+            }
+        };
+        let observed = publication_relations(evidence);
+        if relations
+            .replace(observed)
+            .is_some_and(|previous| previous != observed)
+        {
+            return BTreeMap::new();
+        }
+        result.insert(key, evidence.profile_files());
+    }
+    if engine.revision().ok() != Some(view_root) {
+        return BTreeMap::new();
+    }
+    result
 }
 
 /// Reads current selected profile summaries only when workspace health says
@@ -186,11 +304,7 @@ pub(crate) fn read_current_project_coverage(
         ) else {
             continue;
         };
-        let relation_roots = (
-            evidence.binding.source_relation_root,
-            evidence.binding.semantic_relation_root,
-            evidence.binding.capture_relation_root,
-        );
+        let relation_roots = publication_relations(&evidence);
         if selected_relation_roots
             .replace(relation_roots)
             .is_some_and(|previous| previous != relation_roots)
@@ -533,6 +647,127 @@ mod tests {
         };
         assert!(read_current_project_coverage(&mut engine, &snapshot, &revision.health).is_empty());
         assert_eq!(engine.reads, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn a_sole_mixed_language_project_names_its_languages_and_their_semantic_state()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // `packages` reports the languages and the declaration count of a C# plus
+        // TypeScript project even though only package rows reach the shelf.
+        use backend_semantic::vocabulary::CSharpVersion;
+        let revision = revision(&[ASP], 61)?;
+        let snapshot = snapshot(&revision)?;
+        let view_root = revision.health.revision().root();
+        let source_root = *revision.health.basis().root.as_bytes();
+        let package = PackageReference::parse(ASP)
+            .map_err(|error| std::io::Error::other(format!("{error:?}")))?;
+        let mut receipt = owner_summary(&package, view_root, source_root, [62; 32], 63, false);
+        if let PackageCoverageCurrentResult::Current {
+            outcomes:
+                PackageCompilerOutcomes::Summary {
+                    source_capture,
+                    refusals,
+                    ..
+                },
+            ..
+        } = &mut receipt
+        {
+            // The owner lists every refused profile beside the capture.
+            *refusals = vec![backend_library::PackageCompilerProfileRefusal {
+                profile: backend_library::SemanticLanguageProfile::new(LanguageProfile::CSharp(
+                    CSharpVersion::CSharp14,
+                )),
+                reason: backend_library::IndexOperationSemanticUnavailableReason::Toolchain,
+                diagnostic: backend_library::PackageCompilerDiagnostic::NotRecorded,
+            }]
+            .into_boxed_slice();
+            let mut profiles = source_capture.profiles.to_vec();
+            profiles.push(IndexOperationSourceProfile {
+                profile: backend_library::SemanticLanguageProfile::new(LanguageProfile::CSharp(
+                    CSharpVersion::CSharp14,
+                )),
+                source_count: 7,
+                state: IndexOperationSemanticProfileState::Unavailable {
+                    reason: backend_library::IndexOperationSemanticUnavailableReason::Toolchain,
+                },
+                ..profiles[0]
+            });
+            profiles.sort_by_key(|profile| profile.profile.to_bytes());
+            source_capture.profiles = profiles.into_boxed_slice();
+        }
+        let mut engine = ProfileEngine {
+            revision: view_root,
+            outcomes: BTreeMap::from([(package_key(ASP), receipt)]),
+            advance_after_read: false,
+            reads: 0,
+        };
+        let profiles = read_current_project_profiles(
+            &mut engine,
+            &snapshot,
+            &revision.health,
+            &BTreeMap::new(),
+        );
+        let shelf = crate::assemble::shelf_from_snapshot_with_health(
+            &snapshot,
+            crate::KeyTag::from_key(&[64; 32]),
+            &revision.health,
+        )
+        .with_profiles(&profiles);
+        let entry = &shelf.entries()[0];
+        let phrases = entry
+            .profiles()
+            .iter()
+            .map(|p| p.phrase())
+            .collect::<Vec<_>>();
+        assert!(
+            phrases.contains(&"typescript 2 file(s)".to_owned()),
+            "{phrases:?}"
+        );
+        assert!(
+            phrases.contains(&"csharp 7 file(s) (semantic unavailable)".to_owned()),
+            "{phrases:?}"
+        );
+        let rendered = crate::render::markdown::shelf(&shelf);
+        assert!(
+            rendered.contains("csharp 7 file(s) (semantic unavailable)"),
+            "{rendered}"
+        );
+        let summary = crate::budget::encode_answer(
+            &crate::Answer::Shelf(Box::new(shelf)),
+            crate::budget::Detail::Summary,
+            None,
+            crate::budget::DEFAULT_RESPONSE_BUDGET_BYTES,
+        )
+        .expect("summary shelf");
+        let json: serde_json::Value = serde_json::from_slice(&summary.bytes)?;
+        let listed = &json["projects"][0]["source_profiles"];
+        assert_eq!(listed[0]["files"].as_u64().map(|_| ()), Some(()), "{json}");
+        assert!(
+            listed
+                .as_array()
+                .is_some_and(|rows| rows.iter().any(|row| row["profile"] == "csharp"
+                    && row["files"] == 7
+                    && row["semantic"] == "unavailable")),
+            "{json}"
+        );
+
+        // A view that advances mid-read discards the whole read.
+        let mut advancing = ProfileEngine {
+            revision: view_root,
+            outcomes: engine.outcomes.clone(),
+            advance_after_read: true,
+            reads: 0,
+        };
+        assert!(
+            read_current_project_profiles(
+                &mut advancing,
+                &snapshot,
+                &revision.health,
+                &BTreeMap::new()
+            )
+            .is_empty()
+        );
         Ok(())
     }
 

@@ -37,6 +37,21 @@ pub(super) struct ProjectSql {
     pub(super) facts: Vec<(usize, u32, SqlFact)>,
 }
 
+/// Whether the snapshot holds a selected SQL analysis for `project`, without
+/// reading its hosts or facts.
+pub(super) fn has_selection(
+    snapshot: &WorkspaceSnapshot,
+    project: [u8; 32],
+) -> Result<bool, String> {
+    let Some(relation) = sql_analysis_relation(snapshot).map_err(|e| e.to_string())? else {
+        return Ok(false);
+    };
+    Ok(relation
+        .lookup(&sql_selection_key(project))
+        .map_err(|e| e.to_string())?
+        .is_some())
+}
+
 /// Read the selected SQL analysis of `project`. `Ok(None)` means the snapshot
 /// holds no SQL selection for it, which is unknown, not "no SQL".
 pub(super) fn load_project(
@@ -465,6 +480,15 @@ pub(super) struct SlotsIter<'a, T> {
     slots: &'a Slots<T>,
     next: usize,
 }
+// A position in borrowed slots, so a copy never requires the slot values to clone.
+impl<T> Clone for SlotsIter<'_, T> {
+    fn clone(&self) -> Self {
+        Self {
+            slots: self.slots,
+            next: self.next,
+        }
+    }
+}
 impl<'a, T> Iterator for SlotsIter<'a, T> {
     type Item = &'a T;
     fn next(&mut self) -> Option<Self::Item> {
@@ -652,9 +676,14 @@ fn scan_sql(
     }
     Ok(())
 }
+/// The definitions bounded projection keeps: the live declarations, and the
+/// renames of live entities, which say which file a renamed declaration is
+/// filed under.
 fn selected_definition(fact: &SqlFact) -> bool {
     use backend_semantic::sql_analysis::SqlDefinitionAction;
-    matches!(fact, SqlFact::Definition(definition) if definition.live_at_head && matches!(definition.action, SqlDefinitionAction::Create | SqlDefinitionAction::AddColumn))
+    matches!(fact, SqlFact::Definition(definition) if definition.live_at_head
+        && (matches!(definition.action, SqlDefinitionAction::Create | SqlDefinitionAction::AddColumn)
+            || (matches!(definition.action, SqlDefinitionAction::Rename { .. }) && definition.entity.is_some())))
 }
 // Serialize directly into fixed caller-owned scratch. Decoded canonical SQL
 // rows already fit this bound; no serialization Vec or row clone is created.

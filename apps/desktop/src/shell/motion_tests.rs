@@ -241,6 +241,17 @@ fn repeated_route_reversal_survives_large_text_resize_and_stops_requesting_frame
 }
 
 
+/// While a destination's real read is pending the Reader keeps its
+/// last actual departure as the one presentation (read-only, no targets) and
+/// says so with an "Opening page" status in the native tree. It does not
+/// paint the destination's skeleton, and `said` keeps the departure's last
+/// words, so the pending state is read from the native tree.
+fn opening_page_is_announced(rig: &mut super::tests::Rig) -> bool {
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    rig.repaint();
+    rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native tree").contains("Opening page")
+}
+
 /// Native shell fixture coverage: hold an uncached read at the owner boundary.
 /// The requested destination paints its own pending state, never the previous
 /// declaration's body or targets. Resizes do not revive old motion.
@@ -265,8 +276,7 @@ fn pending_destination_paints_its_own_visit_and_back_recovers_the_prior_reading(
     rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(b.clone()), cx));
     rig.frame(0);
     assert_eq!(rig.route(), b);
-    assert!(rig.said().iter().any(|line| line.contains("KindGlyph") && line.contains("on its way")), "{:#?}", rig.said());
-    assert!(!rig.said().iter().any(|line| line.contains("RelationLabel")), "the old declaration cannot impersonate the destination");
+    assert!(opening_page_is_announced(&mut rig), "the pending destination is announced, not painted as the old declaration's page");
     assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx).placed()).is_empty(), "pending destination has no stale keyboard targets");
     assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).1), None);
     rig.cx.simulate_click(click, Modifiers::default());
@@ -312,8 +322,8 @@ fn superseded_pending_page_releases_on_failure_and_late_reads_cannot_replace_des
         rig.frame(0);
     }
     assert_eq!(rig.route(), c);
-    assert!(rig.said().iter().any(|line| line.contains("RelationDirection") && line.contains("on its way")), "{:#?}", rig.said());
-    assert!(!rig.said().iter().any(|line| line.contains("RelationLabel")), "C must never borrow A's body");
+    assert!(opening_page_is_announced(&mut rig), "C is pending: {:#?}", rig.said());
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx).placed()).is_empty(), "C must never borrow A's targets");
     rig.graph.store.update(rig.cx, |store, cx| store.owner_failed(&crate::runtime::owner::OwnerFault::Lost("retention fixture failure".into()), cx));
     rig.frame(0);
     assert!(!rig.said().iter().any(|line| line.as_str() == "RelationLabel"), "terminal fault belongs to C, not A");
@@ -338,7 +348,8 @@ fn pending_destination_stays_exact_on_root_wake_before_reads_start(cx: &mut Test
     rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
     rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(page_route("KindGlyph")), cx));
     rig.frame(0);
-    assert!(rig.said().iter().any(|line| line.contains("KindGlyph") && line.contains("on its way")), "{:#?}", rig.said());
+    assert!(opening_page_is_announced(&mut rig), "{:#?}", rig.said());
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx).placed()).is_empty(), "the departure offers no targets while the destination is pending");
     rig.graph.store.update(rig.cx, |store, cx| {
         let root = crate::core::VersionedRoot::synthetic(
             backend_library::view_state_root(&[("retention".to_owned(), "new owner root".to_owned())]), 5,
@@ -348,6 +359,7 @@ fn pending_destination_stays_exact_on_root_wake_before_reads_start(cx: &mut Test
     });
     rig.frame(0);
     assert!(!rig.said().iter().any(|line| line.contains("previous page:")));
-    assert!(!rig.said().iter().any(|line| line.as_str() == "RelationLabel"));
+    assert!(opening_page_is_announced(&mut rig), "a changed root does not resurrect a prior route as the destination");
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx).placed()).is_empty(), "and offers no stale target");
     assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx)), 1);
 }

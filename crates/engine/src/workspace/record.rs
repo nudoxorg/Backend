@@ -1,6 +1,6 @@
 //! Compact diagnostic workspace journal records and codecs.
 
-use super::transition::{PersistedTransition, TransactionId};
+use super::transition::{MAX_TRANSITION_PAYLOAD_BYTES, PersistedTransition, TransactionId};
 use crate::journal::{JournalCodec, JournalError, JournalReceipt};
 use crate::schema::WorkspaceLog;
 
@@ -289,7 +289,8 @@ fn put_summary_part(output: &mut Vec<u8>, bytes: &[u8]) {
 
 fn read_summary_length(bytes: &[u8], at: &mut usize) -> Result<u64, JournalError> {
     let length = u64::from_be_bytes(read_fixed::<8>(bytes, at)?);
-    if length > u64::try_from(MAX_RECORD_BYTES).unwrap_or(u64::MAX) {
+    // A summarised component is a store-retained payload, not journal bytes.
+    if length > u64::try_from(MAX_TRANSITION_PAYLOAD_BYTES).unwrap_or(u64::MAX) {
         return Err(JournalError::Bounds);
     }
     Ok(length)
@@ -351,7 +352,7 @@ fn read_bytes(bytes: &[u8], at: &mut usize) -> Result<Vec<u8>, JournalError> {
 
 #[cfg(test)]
 pub(super) mod tests {
-    use super::{JournalCodec, WorkspaceLog, WorkspaceRecord};
+    use super::{JournalCodec, MAX_TRANSITION_PAYLOAD_BYTES, WorkspaceLog, WorkspaceRecord};
     use crate::journal::{JournalDomain, JournalError};
     use crate::workspace::TransactionId;
 
@@ -425,7 +426,11 @@ pub(super) mod tests {
         let mut trailing = encoded.clone();
         trailing.push(0);
         assert!(WorkspaceLog::decode(&trailing).is_err());
-        encoded[65..73].copy_from_slice(&(large + 1).to_be_bytes());
+        // A component past the journal's record bound is still a valid store payload.
+        let payload_bound = MAX_TRANSITION_PAYLOAD_BYTES as u64;
+        encoded[65..73].copy_from_slice(&(large * 3).to_be_bytes());
+        assert!(WorkspaceLog::decode(&encoded).is_ok());
+        encoded[65..73].copy_from_slice(&(payload_bound + 1).to_be_bytes());
         assert!(matches!(
             WorkspaceLog::decode(&encoded),
             Err(JournalError::Bounds)

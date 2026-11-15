@@ -51,6 +51,9 @@ const AUTHORITY_VALUE: &[u8] = backend_engine::PRODUCT_AUTHORITY_BYTES;
 /// written under an older wire version it can no longer decode.
 pub(crate) const VIEW_SOURCE_VALUE: &[u8] = b"product-source-relation-v3";
 const MAX_REBUILD_PACKAGES: usize = 1_000_000;
+/// Bound on the owned bytes of one view rebuild and the per-package budgets derived
+/// from it. It also caps the owner's memory: a view measured at 286 MB grew the owner
+/// past 40 GB before publication, so it stays here until that growth is bounded.
 pub(super) const MAX_REBUILD_BYTES: usize = 64 * 1024 * 1024;
 // One compact event is fsynced before publication. Keep short edit suffixes
 // incremental, while cold loads and generated files use one paged snapshot
@@ -67,6 +70,7 @@ mod native_ts_admission;
 mod native_ts_headers;
 mod owner_receipt_context;
 mod sql_capture;
+mod sql_embedded;
 mod sql_admission;
 mod sql_intent;
 mod csharp_intent;
@@ -1124,9 +1128,9 @@ fn row_admission_bytes(row: &Row) -> Option<usize> {
 
 fn finish_admitted_bytes(bytes: usize) -> Result<usize, BuiltinModelError> {
     if bytes > MAX_REBUILD_BYTES {
-        return Err(BuiltinModelError(
-            "workspace view exceeds rebuild byte bound".to_owned(),
-        ));
+        return Err(BuiltinModelError(format!(
+            "workspace view exceeds rebuild byte bound ({bytes} bytes, at most {MAX_REBUILD_BYTES})"
+        )));
     }
     Ok(bytes)
 }
@@ -2895,7 +2899,34 @@ pub fn run(config: ProcessConfig) -> ExitCode {
 fn run_with_lifecycle(config: ProcessConfig, shutdown: crate::listener::ListenerShutdown) -> ExitCode {
     #[cfg(unix)]
     let _termination = crate::termination::install(shutdown.clone(), crate::termination::TERMINATION_GRACE).ok();
-    match compose_owner_with_shutdown(&config, Some(shutdown.clone())) {
+    let mut composed = compose_owner_with_shutdown(&config, Some(shutdown.clone()));
+    if let Err(refusal @ ProcessError::SavedStateUnreadable(_)) = composed {
+        // The saved index is derived state. Keep it whole beside the fresh one,
+        // say where it went and what to run, and let the owner start; trusting
+        // it, or stopping here, are the two outcomes this avoids.
+        let refused = refusal.to_string();
+        let cause = refused
+            .split_once("could not be reopened: ")
+            .and_then(|(_, rest)| rest.split_once(". This does not"))
+            .map_or(refused.as_str(), |(detail, _)| detail)
+            .to_owned();
+        composed = match crate::embedded::set_aside_unreadable_state(&config, refusal) {
+            Ok(set_aside) => {
+                eprintln!(
+                    "locald: the saved index at {} could not be authenticated by this build \
+                     (another build wrote it, or it is damaged), so it was moved whole to {}; \
+                     nothing was deleted. This owner starts with nothing indexed: run \
+                     `nudox add <project> --wait` for each project to index it again, and remove \
+                     that directory when you no longer need it. Cause: {cause}",
+                    config.workspace.display(),
+                    set_aside.display(),
+                );
+                compose_owner_with_shutdown(&config, Some(shutdown.clone()))
+            }
+            Err(error) => Err(error),
+        };
+    }
+    match composed {
         Ok(owner) => crate::process::run_process_with_shutdown(owner, config, shutdown),
         Err(error) => {
             crate::process::report_process_failure(&error);

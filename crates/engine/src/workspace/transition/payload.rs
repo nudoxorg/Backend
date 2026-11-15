@@ -211,9 +211,7 @@ pub(crate) fn persisted_from_store_manifest(
     }
     payload_objects.sort_by_key(|object| (object.schema(), *object.key(), *object.version()));
     let closure = ClosureManifest::new(payload_objects).map_err(WorkspaceError::store)?;
-    let closure_bytes = closure
-        .encode(super::MAX_RECORD_BYTES)
-        .map_err(WorkspaceError::store)?;
+    let closure_bytes = super::closure_summary_bytes(&closure)?;
     Ok(PersistedTransition::from_parts(
         request
             .as_ref()

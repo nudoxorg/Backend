@@ -22,10 +22,7 @@ internal static class AuthorityImage
     public static IReadOnlyList<ForeignOccurrence> Write(LoadedCompilation loaded, string sourceBinding, Stream destination, bool captureOccurrences = false)
     {
         var binding = Path.GetFullPath(sourceBinding);
-        var tree = loaded.Compilation.SyntaxTrees.SingleOrDefault(t =>
-            StringComparer.Ordinal.Equals(Path.GetFullPath(t.FilePath), binding));
-        if (tree is null)
-            throw new OracleFailure("C# authority source binding is absent from the Roslyn compilation");
+        var tree = BoundTree(loaded, binding);
         var source = loaded.CapturedBytes is { } captured
             ? captured.GetValueOrDefault(binding) ?? throw new OracleFailure("C# binding is absent from captured sources")
             : File.ReadAllBytes(binding);
@@ -33,10 +30,36 @@ internal static class AuthorityImage
             tree,
             source.AsSpan().StartsWith(new byte[] { 0xEF, 0xBB, 0xBF }) ? 3 : 0);
         var builder = new Builder(loaded.Compilation, tree, offsets, loaded.Root, loaded.CapturedBytes, loaded.CapturedGraphTrees, captureOccurrences);
-        var image = builder.Build(source, loaded.ErrorCount, loaded.CapturedBytes is not null);
+        var selectedErrors = SelectedErrors(loaded, tree);
+        // Printed after the loader's compilation-wide diagnostics, in compiler order and capped:
+        // only the errors that make this file's image unreliable, never another file's.
+        foreach (var error in selectedErrors.Take(10))
+            Console.Error.WriteLine($"oracle: source error: {error}");
+        if (selectedErrors.Count > 10)
+            Console.Error.WriteLine($"oracle: source error: ... and {selectedErrors.Count - 10} more error(s) in this file");
+        var image = builder.Build(source, selectedErrors.Count, loaded.CapturedBytes is not null);
         destination.Write(image);
         return builder.ForeignOccurrences;
     }
+
+    /// <summary>
+    /// The errors that make the image of <paramref name="tree"/> unreliable: those located in
+    /// that file, and those no file owns (a missing reference or a global option fault), which
+    /// concern every file. An error located in another file of the compilation is that file's
+    /// own failure; it does not make this file's declarations or references unreliable, and
+    /// the helper says so on stderr rather than refusing the file.
+    /// </summary>
+    internal static int SelectedErrorCount(LoadedCompilation loaded, string sourceBinding) =>
+        SelectedErrors(loaded, BoundTree(loaded, Path.GetFullPath(sourceBinding))).Count;
+
+    /// <summary>The compilation's single syntax tree for the full path <paramref name="binding"/>.</summary>
+    private static SyntaxTree BoundTree(LoadedCompilation loaded, string binding) =>
+        loaded.Compilation.SyntaxTrees.SingleOrDefault(t =>
+            StringComparer.Ordinal.Equals(Path.GetFullPath(t.FilePath), binding))
+        ?? throw new OracleFailure("C# authority source binding is absent from the Roslyn compilation");
+
+    internal static IReadOnlyList<Diagnostic> SelectedErrors(LoadedCompilation loaded, SyntaxTree tree) =>
+        loaded.Errors.Where(d => d.Location.SourceTree is null || d.Location.SourceTree == tree).ToList();
 
     /// <summary>
     /// The path embedded for a bound syntax tree's file: relative to

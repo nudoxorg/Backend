@@ -161,6 +161,7 @@ internal static partial class SourceLoader
             CapturedGraphTrees = loaded.Values.SelectMany(item => item.Compilation.SyntaxTrees).ToHashSet(),
             CapturedReferences = graphReferences.Values.OrderBy(item => item.Name, StringComparer.Ordinal).ToArray(),
             ErrorCount = loaded.Values.Sum(item => item.ErrorCount),
+            Errors = loaded.Values.SelectMany(item => item.Errors).ToList(),
             ReportableDiagnostics = loaded.Values.SelectMany(item => item.ReportableDiagnostics).Take(MaxReportedDiagnostics).ToArray(),
         };
     }

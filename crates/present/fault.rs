@@ -661,6 +661,25 @@ fn tool_arguments(name: &str, args: &[String]) -> serde_json::Value {
     )
 }
 
+/// Replaces each whole-word `--name` in `text` with `json_name`.
+fn swap_option_spelling(text: &str, name: &str, json_name: &str) -> String {
+    let flag = format!("--{name}");
+    let joins = |character: char| character.is_ascii_alphanumeric() || character == '-' || character == '_';
+    let mut out = String::with_capacity(text.len());
+    let mut from = 0;
+    while let Some(found) = text[from..].find(&flag) {
+        let at = from + found;
+        let end = at + flag.len();
+        let whole = !text[..at].chars().next_back().is_some_and(joins)
+            && !text[end..].chars().next().is_some_and(joins);
+        out.push_str(&text[from..at]);
+        out.push_str(if whole { json_name } else { &flag });
+        from = end;
+    }
+    out.push_str(&text[from..]);
+    out
+}
+
 /// One typed failure, complete enough to render on any surface.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Fault {
@@ -842,6 +861,33 @@ impl Fault {
     #[must_use]
     pub fn with_mcp_exposure(mut self, exposure: crate::McpExposure) -> Self {
         self.affordance = exposure.advice(self.affordance);
+        self
+    }
+
+    /// Names the arguments of an MCP call the way that call spells them.
+    ///
+    /// Usage sentences are written once for the CLI (`--custom-property`). The JSON input
+    /// of the same operand is `custom_property`, so a fault raised for `grammar`'s tool
+    /// swaps each of its option spellings, in the sentence and in the operand.
+    #[must_use]
+    pub fn with_mcp_argument_names(mut self, grammar: crate::grammar::CommandGrammar) -> Self {
+        let mut specs = grammar
+            .positional()
+            .iter()
+            .chain(grammar.options())
+            .chain(grammar.cli_options())
+            .copied()
+            .collect::<Vec<_>>();
+        // `--a-b` must be swapped before `--a`.
+        specs.sort_by_key(|spec| std::cmp::Reverse(spec.name().len()));
+        for spec in &specs {
+            self.cause.sentence = swap_option_spelling(&self.cause.sentence, spec.name(), spec.json_name());
+        }
+        if let Operand::Argument(name) = &self.operand
+            && let Some(spec) = specs.iter().find(|spec| spec.name() == name)
+        {
+            self.operand = Operand::Argument(spec.json_name().to_owned());
+        }
         self
     }
 
@@ -1102,6 +1148,13 @@ impl Fault {
                     tool.executable(),
                 )
             }
+        } else if let Some(host) = failure.csharp_host_format_failure() {
+            // The configured dotnet is a wrapper script: name the file kind and the one fix.
+            format!("{}; {}", failure.detail(), host.advice())
+        } else if let Some(reference) = failure.csharp_unresolved_reference() {
+            // Roslyn named the first reference it could not bind: say which, and where,
+            // instead of a general instruction to check every reference.
+            format!("{}; {}", failure.detail(), reference.advice())
         } else if failure.relative_path().ends_with(".cs") && failure.detail().contains("authority fault") {
             // The producer's own diagnostics stay local, so say what a reader can do about
             // a refused C# compilation without guessing beyond that.
@@ -1578,5 +1631,59 @@ mod mutation_outcome_wording_tests {
         let text = mutation_outcome_unknown_detail(ErrorKind::BrokenPipe);
         assert!(text.contains("connection to the owner was lost"), "{text}");
         assert!(text.contains("nudox health"), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod mcp_argument_names {
+    use super::{Fault, Operand};
+
+    fn stylo() -> crate::grammar::CommandGrammar {
+        crate::grammar_for("stylo-query").expect("stylo-query grammar")
+    }
+
+    #[test]
+    fn a_usage_sentence_names_the_json_arguments_of_the_tool() {
+        let fault = Fault::usage("class", "supply exactly one of --class or --custom-property")
+            .with_mcp_argument_names(stylo());
+        assert_eq!(
+            fault.cause().sentence(),
+            "supply exactly one of class or custom_property"
+        );
+    }
+
+    #[test]
+    fn the_operand_takes_its_json_spelling_and_longer_names_win() {
+        let fault = Fault::usage("custom-property", "--custom-property needs a value, not --class")
+            .with_mcp_argument_names(stylo());
+        assert_eq!(fault.operand(), &Operand::Argument("custom_property".to_owned()));
+        assert_eq!(fault.cause().sentence(), "custom_property needs a value, not class");
+    }
+
+    #[test]
+    fn only_whole_option_spellings_are_swapped() {
+        let fault = Fault::usage("class", "--classify is not an option, nor is --class-name or ---class")
+            .with_mcp_argument_names(stylo());
+        assert_eq!(
+            fault.cause().sentence(),
+            "--classify is not an option, nor is --class-name or ---class"
+        );
+    }
+
+    #[test]
+    fn every_option_of_every_command_is_swapped_by_its_own_json_name() {
+        for grammar in crate::GRAMMARS {
+            for spec in grammar.options() {
+                let fault = Fault::usage(spec.name(), format!("pass --{} again", spec.name()))
+                    .with_mcp_argument_names(grammar);
+                assert_eq!(
+                    fault.cause().sentence(),
+                    format!("pass {} again", spec.json_name()),
+                    "{} {}",
+                    grammar.name(),
+                    spec.name()
+                );
+            }
+        }
     }
 }

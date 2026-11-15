@@ -35,11 +35,20 @@ use backend_frontend_rust::legacy::{
 };
 use backend_frontend_typescript::legacy::TypeScriptInvocationModeV1;
 use backend_frontend_typescript::{TszFileWorkPolicy, TszProject, TszProjectCheckerExecution};
-// Each admitted compiler lane owns its private checker pool. Two compiler
-// lanes currently admit at most four file-check workers per owner; parse,
-// bind and merge are separate stages with their existing execution controls.
+// Each admitted compiler lane owns its private checker pool, and that pool is
+// one worker wide. The workers of a pool share one type interner, one
+// definition store and one query cache, and what a file's checker leaves in
+// them depends on which files were checked before it. The semantic queries
+// that follow the check read that state, so with two workers the interleaving
+// of the pool decided what the published semantic image of a file contained
+// (a member call through a defaulted generic reference resolved in one run and
+// stayed unresolved in the next), and the same sources published different
+// views. A single worker checks the files in program order, which makes the
+// shared state, and therefore every image, a function of the program alone.
+// Parse, bind and merge are separate stages with their existing execution
+// controls.
 const TSZ_CHECKER_WORKERS_PER_COMPILER_LANE: std::num::NonZeroUsize =
-    std::num::NonZeroUsize::new(2).expect("checker worker policy is nonzero");
+    std::num::NonZeroUsize::MIN;
 
 use backend_library::interface::{
     CompilerAttempt, CompilerCapability, CompilerCause, CompilerFragmentFailure, CompilerReadiness,
@@ -1821,7 +1830,10 @@ impl StagedSemanticPackage {
             || self.staged.csharp_config.iter().zip(expected_probes.iter()).any(|(probe, path)| probe.path.as_ref() != path)
             || self.staged.csharp_evidence.is_empty()
             || self.staged.csharp_evidence.windows(2).any(|pair| pair[0].path >= pair[1].path)
-            || self.staged.csharp_evidence.len() != self.artifacts.len() || !self.staged.coverage_gaps.is_empty() {
+            || self.staged.csharp_evidence.len() != self.artifacts.len()
+            // Only files Roslyn reported errors in may be missing; the claim lists the
+            // files that compiled and the caller joins the rest through these gaps.
+            || self.staged.coverage_gaps.iter().any(|gap| gap.cause != PackageSourceCoverageGapCause::CSharpSourceDoesNotCompile) {
             return None;
         }
         let mut images = BTreeMap::new();
@@ -2528,6 +2540,11 @@ pub enum PackageSemanticError {
     /// Restored compile references are unavailable or do not match the captured project.
     #[error("C# restored references unavailable: {0}")]
     CSharpRestore(#[source] backend_frontend_csharp::legacy::RestoreError),
+    /// No source of the package compiled in any language profile.
+    #[error(
+        "no source compiled in any language profile, so there is no semantic generation to publish; package-profile names each profile's outcome"
+    )]
+    NothingCompiled,
     /// A checked size computation overflowed or exceeded the package budget.
     #[error("package semantic publication exceeds its {lane} byte budget")]
     Capacity {
@@ -2714,6 +2731,19 @@ impl DegradedSources {
                 terminal: Box::new(terminal),
             });
         };
+        self.degrade_with_cause(terminal, path, source, cause, typescript_diagnostic, gaps)
+    }
+
+    /// Records `terminal` as `path`'s coverage gap with a cause the caller proved.
+    fn degrade_with_cause(
+        &mut self,
+        terminal: CompilerTerminal,
+        path: &str,
+        source: SourceAuthority,
+        cause: PackageSourceCoverageGapCause,
+        typescript_diagnostic: Option<SourceCoverageGapDiagnostic>,
+        gaps: &mut Vec<PackageSourceCoverageGap>,
+    ) -> Result<(), PackageSemanticError> {
         tracing::warn!(
             target: "compiler.package_source",
             path,
@@ -2772,6 +2802,30 @@ impl DegradedSources {
                 terminal: Box::new(terminal),
             })
     }
+}
+
+/// Whether `terminal` is Roslyn reporting errors in this exact C# source (the
+/// type-level refusal the producer derives from the file's own compile errors).
+fn csharp_source_compile_errors(
+    language: backend_semantic::vocabulary::Language,
+    terminal: &CompilerTerminal,
+    expected_source: SourceAuthority,
+) -> bool {
+    use backend_semantic::vocabulary::{
+        AuthorityDiagnosticClass as Class, AuthorityPhase as Phase,
+    };
+    language == backend_semantic::vocabulary::Language::CSharp
+        && matches!(
+            terminal,
+            CompilerTerminal::Compile {
+                attempted,
+                cause: CompilerCause::Authority {
+                    phase: Phase::TypeCheck,
+                    class: Class::Type,
+                    ..
+                },
+            } if attempted.source == expected_source
+        )
 }
 
 /// The gap a source's own terminal degrades to, or `None` for a failure that
@@ -3053,6 +3107,62 @@ mod source_degradation_tests {
             })),
             PackageSourceCoverageGapCause::RustSourceOutsideActiveCargoTarget,
         );
+    }
+
+    #[test]
+    fn only_roslyn_errors_in_a_csharp_source_degrade_it_to_a_does_not_compile_gap() {
+        use backend_semantic::vocabulary::{AuthorityPhase, Language};
+        let compile_errors = compile(CompilerCause::Authority {
+            phase: AuthorityPhase::TypeCheck,
+            class: AuthorityDiagnosticClass::Type,
+            diagnostic: None,
+        });
+        assert!(csharp_source_compile_errors(Language::CSharp, &compile_errors, source()));
+        // Another language's type-level refusal keeps its own policy.
+        assert!(!csharp_source_compile_errors(Language::Go, &compile_errors, source()));
+        assert!(!csharp_source_compile_errors(Language::TypeScript, &compile_errors, source()));
+        // A terminal about a different source is not this source's failure.
+        let other = SourceAuthority {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"package b"),
+            byte_len: 9,
+        };
+        assert!(!csharp_source_compile_errors(Language::CSharp, &compile_errors, other));
+        // A fault of the runtime or the helper (it concerns every file) stays a refusal.
+        for (phase, class) in [
+            (AuthorityPhase::Open, AuthorityDiagnosticClass::Authority),
+            (AuthorityPhase::TypeCheck, AuthorityDiagnosticClass::Authority),
+            (AuthorityPhase::Open, AuthorityDiagnosticClass::Binding),
+        ] {
+            assert!(!csharp_source_compile_errors(
+                Language::CSharp,
+                &compile(CompilerCause::Authority { phase, class, diagnostic: None }),
+                source(),
+            ));
+        }
+        assert!(!csharp_source_compile_errors(
+            Language::CSharp,
+            &compile(CompilerCause::DeadlineExceeded { diagnostic: None }),
+            source(),
+        ));
+        // It records the file's gap with the specific cause, and a project in which no file
+        // compiled still refuses with the first terminal.
+        let mut gaps = Vec::new();
+        let mut degraded = DegradedSources::default();
+        degraded
+            .degrade_with_cause(
+                compile_errors,
+                "src/Api/Restored.cs",
+                source(),
+                PackageSourceCoverageGapCause::CSharpSourceDoesNotCompile,
+                None,
+                &mut gaps,
+            )
+            .expect("a source-local failure degrades");
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].relative_path(), "src/Api/Restored.cs");
+        assert_eq!(gaps[0].cause(), PackageSourceCoverageGapCause::CSharpSourceDoesNotCompile);
+        assert!(gaps[0].cause().to_string().contains("restore packages"));
+        assert!(degraded.into_refusal_when_nothing_compiled(0).is_some());
     }
 
     #[test]
@@ -5766,8 +5876,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 && typescript_project.is_none()
                 && python_project.is_none()
             {
-                Some(
-                    enter_package_authority_with_go_authority_witness(
+                match enter_package_authority_with_go_authority_witness(
                         PackageAuthorityRequest {
                             package_root: package.package_root,
                             source_path: &source_path,
@@ -5791,12 +5900,39 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                             toolchain,
                             cause,
                         )
-                    })
-                    .map_err(|terminal| PackageSemanticError::Compile {
-                        path: source.relative_path.into(),
-                        terminal: Box::new(terminal),
-                    })?,
-                )
+                    }) {
+                        Ok(owner) => Some(owner),
+                        // Roslyn compiles every file of a C# project together. When it
+                        // reports errors in this exact file (an unrestored package, a
+                        // missing reference) only this file is unreliable: it becomes a
+                        // coverage gap with its reason and the files that compile keep
+                        // their facts. A fault of the runtime or helper, a deadline or a
+                        // cancellation stays a refusal, and a project in which no file
+                        // compiled still refuses with the first terminal.
+                        Err(terminal)
+                            if csharp_source_compile_errors(
+                                target.profile.language(),
+                                &terminal,
+                                source_authority,
+                            ) =>
+                        {
+                            degraded.degrade_with_cause(
+                                terminal,
+                                source.relative_path,
+                                source_authority,
+                                PackageSourceCoverageGapCause::CSharpSourceDoesNotCompile,
+                                None,
+                                &mut coverage_gaps,
+                            )?;
+                            continue;
+                        }
+                        Err(terminal) => {
+                            return Err(PackageSemanticError::Compile {
+                                path: source.relative_path.into(),
+                                terminal: Box::new(terminal),
+                            });
+                        }
+                    }
             } else {
                 None
             };
@@ -5934,14 +6070,19 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                             && attempted.source == source_authority
                     ) =>
                 {
-                    coverage_gaps.push(PackageSourceCoverageGap {
-                        source: source_authority,
-                        relative_path: source.relative_path.into(),
-                        cause: rust_source_scope_gap_cause(&terminal),
-                        python_source_status: None,
-                        native_python_diagnostics: Box::new([]),
-                        typescript_diagnostic: None,
-                    });
+                    // Recorded as a degraded source, so a profile none of whose
+                    // sources is in an active target (a nested workspace that is
+                    // not a member) refuses with this file's scope failure alone
+                    // and the other profiles still publish.
+                    let cause = rust_source_scope_gap_cause(&terminal);
+                    degraded.degrade_with_cause(
+                        terminal,
+                        source.relative_path,
+                        source_authority,
+                        cause,
+                        None,
+                        &mut coverage_gaps,
+                    )?;
                     continue;
                 }
                 // A Rust source the lowering lane cannot represent (a module of
@@ -6957,7 +7098,7 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         }
         let count = staged.artifacts.len();
         if count == 0 {
-            return Err(PackageSemanticError::Capacity { lane: "manifest" });
+            return Err(PackageSemanticError::NothingCompiled);
         }
         let mut fragment_bytes = 0_usize;
         for artifact in &staged.artifacts {
@@ -7112,7 +7253,7 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         let plane_execution_identity = staged.plane_execution_identity;
         let count = staged.artifacts.len();
         if count == 0 {
-            return Err(PackageSemanticError::Capacity { lane: "manifest" });
+            return Err(PackageSemanticError::NothingCompiled);
         }
         let mut fragment_bytes = 0_usize;
         for artifact in &staged.artifacts {
@@ -8134,9 +8275,14 @@ fn package_authority_terminal(
             // bounded text on the owner's own log, as staged-output preparation
             // does, so a refused authority can be explained where it ran.
             eprintln!(
-                "nudox: compiler authority refused phase={phase:?} class={class:?} detail={:?}{}",
+                "nudox: compiler authority refused phase={phase:?} class={class:?} detail={:?}{}{}",
                 message.text,
                 if message.truncated { " (truncated)" } else { "" },
+                // The bounded text above keeps only the tail of the compiler's output; name
+                // the first unresolved reference whole, as a partial publication keeps no
+                // other record of the files it left out.
+                csharp_unresolved_facts(&cause)
+                    .map_or_else(String::new, |facts| format!(" first-unresolved={:?}", facts.detail())),
             );
             let diagnostic = backend_library::interface::CompilerDiagnostic::from_native(
                 message.text.as_bytes(),
@@ -8170,6 +8316,13 @@ fn package_authority_terminal(
                     },
                 },
             });
+            let diagnostic = diagnostic.map(|diagnostic| {
+                match (csharp_unresolved_facts(&cause), csharp_host_format_failure(&cause)) {
+                    (Some(facts), _) => diagnostic.with_csharp_unresolved(facts),
+                    (None, Some(failure)) => diagnostic.with_csharp_host_format(failure),
+                    (None, None) => diagnostic,
+                }
+            });
             if adapter_unavailable || pre_recipe_typescript_admission {
                 CompilerTerminal::AuthorityAdmission {
                     source,
@@ -8193,6 +8346,53 @@ fn package_authority_terminal(
             }
         }
     }
+}
+
+/// The first unresolved reference Roslyn named for a refused C# compilation, in the
+/// closed shape the compiler outcome carries; `None` when the helper named none or its
+/// summary does not fit that shape.
+/// Why the configured dotnet file cannot run the compiler stage, when that was the refusal.
+pub(crate) fn csharp_host_format_failure(
+    cause: &PackageAuthorityError,
+) -> Option<backend_library::interface::CSharpHostFormatFailure> {
+    use backend_frontend_csharp::legacy::CSharpAuthorityError;
+    match cause {
+        PackageAuthorityError::CSharp(CSharpAuthorityError::ExecutionHostFormat {
+            launcher_script: true,
+            ..
+        }) => Some(backend_library::interface::CSharpHostFormatFailure::LauncherScript),
+        _ => None,
+    }
+}
+
+pub(crate) fn csharp_unresolved_facts(
+    cause: &PackageAuthorityError,
+) -> Option<backend_library::interface::CSharpUnresolvedReferenceFacts> {
+    use backend_frontend_csharp::legacy::{CSharpAuthorityError, CSharpRestoreState as State};
+    use backend_library::interface::{
+        CSharpRestoreState, CSharpUnresolvedReferenceFacts, CSharpUnresolvedReferenceInput,
+    };
+    let PackageAuthorityError::CSharp(CSharpAuthorityError::CompilationIncomplete {
+        unresolved: Some(found),
+        ..
+    }) = cause
+    else {
+        return None;
+    };
+    CSharpUnresolvedReferenceFacts::new(CSharpUnresolvedReferenceInput {
+        code: found.code,
+        symbol: &found.symbol,
+        path: &found.path,
+        line: found.line,
+        project: found.project.as_deref(),
+        restore: match found.restore {
+            State::Present => CSharpRestoreState::Present,
+            State::Missing => CSharpRestoreState::Missing,
+            State::Unknown => CSharpRestoreState::Unknown,
+        },
+        count: found.count,
+        files: found.files,
+    })
 }
 
 pub(crate) fn python_authority_failure_kind(
@@ -9186,6 +9386,150 @@ mod tests {
             backend_library::PackageCompilerFailure::decode_bounded_json(&encoded).unwrap(),
             failure
         );
+    }
+
+    #[test]
+    fn csharp_refused_compilation_names_its_first_unresolved_reference() {
+        use backend_frontend_csharp::legacy::{
+            CSharpAuthorityError, CSharpRestoreState, CSharpUnresolvedReference,
+        };
+        use backend_semantic::vocabulary::CSharpVersion;
+
+        let request = super::ApplicationCompilerRequest {
+            profile: LanguageProfile::CSharp(CSharpVersion::CSharp14),
+            stage: Stage::LowerIr,
+            source: "public sealed class Library {}",
+        };
+        let source = request_source(request).unwrap();
+        let target = ContentId::from_canonical_bytes(b"refused C# compilation");
+        let toolchain = ResolvedToolchain::from_version(
+            NativeTool::CSharpCompiler,
+            host_path("/toolchain/bin/dotnet"),
+            b"10.0.100",
+        )
+        .unwrap();
+        let unresolved = |found: Option<CSharpUnresolvedReference>| {
+            package_authority_terminal(
+                target,
+                request,
+                source,
+                ToolchainSelection::ResolvedNative(toolchain),
+                PackageAuthorityError::CSharp(CSharpAuthorityError::CompilationIncomplete {
+                    count: 23,
+                    diagnostic: "CS0246 /private/checkout/src/Api/Data/AppDbContext.cs".to_owned(),
+                    unresolved: found,
+                }),
+            )
+        };
+
+        let terminal = unresolved(Some(CSharpUnresolvedReference {
+            code: 246,
+            symbol: "DbContext".to_owned(),
+            path: "src/Api/Data/AppDbContext.cs".to_owned(),
+            line: 15,
+            project: Some("src/Api/Api.csproj".to_owned()),
+            restore: CSharpRestoreState::Present,
+            count: 23,
+            files: 5,
+        }));
+        let CompilerTerminal::Compile {
+            cause:
+                CompilerCause::Authority {
+                    phase: AuthorityPhase::TypeCheck,
+                    class: AuthorityDiagnosticClass::Type,
+                    diagnostic: Some(diagnostic),
+                },
+            ..
+        } = &terminal
+        else {
+            panic!("a refused C# compilation is a type-level refusal");
+        };
+        let facts = diagnostic.csharp_unresolved.as_ref().expect("named reference");
+        assert_eq!((facts.code(), facts.symbol(), facts.line()), (246, "DbContext", 15));
+        assert_eq!(facts.path(), "src/Api/Data/AppDbContext.cs");
+        assert_eq!(facts.project(), Some("src/Api/Api.csproj"));
+        let failure = backend_library::PackageCompilerFailure::from_package_terminal(
+            "tests/Api.Tests/Account.cs",
+            &terminal,
+        )
+        .unwrap()
+        .expect("typed package outcome");
+        assert_eq!(failure.kind_tag(), "csharp_unresolved_reference");
+        let detail = failure.detail();
+        for expected in [
+            "CS0246",
+            "DbContext",
+            "src/Api/Data/AppDbContext.cs:15",
+            "project src/Api/Api.csproj, which was restored",
+            "22 more unresolved references in 5 files",
+        ] {
+            assert!(detail.contains(expected), "{detail}");
+        }
+        assert!(!detail.contains("/private"), "{detail}");
+        let encoded = failure.encode_bounded_json().unwrap();
+        assert_eq!(
+            backend_library::PackageCompilerFailure::decode_bounded_json(&encoded).unwrap(),
+            failure
+        );
+
+        // The helper named nothing: the refusal keeps its closed type tag and no named reference.
+        let terminal = unresolved(None);
+        let failure = backend_library::PackageCompilerFailure::from_package_terminal(
+            "tests/Api.Tests/Account.cs",
+            &terminal,
+        )
+        .unwrap()
+        .expect("typed package outcome");
+        assert_eq!(failure.kind_tag(), "authority_type");
+        assert!(failure.csharp_unresolved_reference().is_none());
+    }
+
+    #[test]
+    fn csharp_launcher_script_host_is_named_in_the_refusal() {
+        use backend_frontend_csharp::legacy::CSharpAuthorityError;
+        use backend_semantic::vocabulary::CSharpVersion;
+
+        let request = super::ApplicationCompilerRequest {
+            profile: LanguageProfile::CSharp(CSharpVersion::CSharp14),
+            stage: Stage::LowerIr,
+            source: "public sealed class Library {}",
+        };
+        let source = request_source(request).unwrap();
+        let target = ContentId::from_canonical_bytes(b"launcher script host");
+        let toolchain = ResolvedToolchain::from_version(
+            NativeTool::CSharpCompiler,
+            host_path("/toolchain/bin/dotnet"),
+            b"10.0.100",
+        )
+        .unwrap();
+        let refused = |launcher_script| {
+            let terminal = package_authority_terminal(
+                target,
+                request,
+                source,
+                ToolchainSelection::ResolvedNative(toolchain),
+                PackageAuthorityError::CSharp(CSharpAuthorityError::ExecutionHostFormat {
+                    path: std::path::PathBuf::from("/toolchain/bin/dotnet").into_boxed_path(),
+                    length: 296,
+                    leading: "a launcher script: \"#! /bin/bash -e\"".to_owned(),
+                    launcher_script,
+                }),
+            );
+            backend_library::PackageCompilerFailure::from_package_terminal("Library.cs", &terminal)
+                .unwrap()
+                .expect("typed package outcome")
+        };
+        let failure = refused(true);
+        assert_eq!(failure.kind_tag(), "csharp_host_launcher_script");
+        assert!(failure.detail().contains("launcher script"), "{}", failure.detail());
+        assert!(!failure.detail().contains("/toolchain"), "{}", failure.detail());
+        let encoded = failure.encode_bounded_json().unwrap();
+        assert_eq!(
+            backend_library::PackageCompilerFailure::decode_bounded_json(&encoded).unwrap(),
+            failure
+        );
+        // A host that is not an ELF and not a script keeps the general runtime refusal.
+        assert_eq!(refused(false).kind_tag(), "authority_runtime");
     }
 
     #[test]
@@ -10794,6 +11138,17 @@ mod staged_identity_recipe_tests {
     use backend_semantic::vocabulary::{
         CompileRecipeFact, LanguageProfile, Stage, TypeScriptSource,
     };
+
+    /// The checker workers of one lane share a type interner, a definition
+    /// store and a query cache whose contents depend on the order in which
+    /// files were checked, and the semantic queries read that state. A wider
+    /// pool let the interleaving of its workers decide what a published image
+    /// contained, so the same sources produced different views. The pool stays
+    /// one worker wide until the shared state is order independent.
+    #[test]
+    fn checker_pool_of_a_compiler_lane_is_one_worker_wide() {
+        assert_eq!(TSZ_CHECKER_WORKERS_PER_COMPILER_LANE.get(), 1);
+    }
 
     #[test]
     fn project_recipe_admission_is_exact_and_foreign_toolchains_still_refuse() {

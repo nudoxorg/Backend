@@ -3,7 +3,10 @@
 //! A row is a producer claim. Authentication of captured bytes, exact
 //! predecessor/target updates, closure membership and cross-row ownership is
 //! required before serving this relation.
-use super::{StyloProjectedRow, StyloWorkerPolicy, stylo_projection::bounded_encode};
+use super::{
+    CodeFactRow, CodeHostState, CodeSelection, StyloFragment, StyloProjectedRow, StyloWorkerPolicy,
+    stylo_projection::bounded_encode,
+};
 use crate::workspace::{WorkspaceRelationError, WorkspaceRelationHandle, WorkspaceSnapshot};
 use backend_semantic::stylo_analysis::{
     StyloCoverage, StyloParseConfig, StyloPreferenceSnapshot, StyloPreferenceStability,
@@ -77,6 +80,9 @@ pub enum StyloUnavailable {
     WorkerFailure,
     /// Process-global preference values changed across the parse.
     PreferencesChanged,
+    /// An embedded stylesheet is written in a language the native parser does
+    /// not read (Sass, Less, an external `src`), so no facts were attempted.
+    UnsupportedSyntax,
 }
 
 /// Whether a trusted native worker capability was available to the attempt.
@@ -122,6 +128,10 @@ pub enum StyloAnalysisRecord {
         inventory_count: u64,
         host_count: u32,
         host_digest: [u8; 32],
+        /// Witness of the project's code-side style link hosts; absent on
+        /// historical rows, where it means "not published", never "none".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<CodeSelection>,
     },
     /// Latest same-walk attempt; absence in historical v2 roots is Unknown.
     Attempt {
@@ -169,6 +179,9 @@ pub enum StyloAnalysisRecord {
         terminal: StyloTerminal,
         fact_count: u32,
         fact_digest: [u8; 32],
+        /// Present when this host is an embedded stylesheet inside `path`'s file.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fragment: Option<StyloFragment>,
     },
     /// One native rule, selector, retained declaration, dependency or diagnostic.
     Fact {
@@ -176,6 +189,23 @@ pub enum StyloAnalysisRecord {
         ordinal: u32,
         subordinal: u32,
         fact: StyloProjectedRow,
+    },
+    /// One code source scanned for style links; its facts follow as `CodeFact`.
+    CodeHost {
+        project: [u8; 32],
+        path: String,
+        /// Typed source-fact identity of the exact scanned bytes.
+        source: [u8; 32],
+        byte_length: u64,
+        state: CodeHostState,
+        fact_count: u32,
+        fact_digest: [u8; 32],
+    },
+    /// One lexical style-link fact of a code host.
+    CodeFact {
+        host: [u8; 32],
+        ordinal: u32,
+        fact: CodeFactRow,
     },
 }
 impl StyloAnalysisRecord {
@@ -282,9 +312,17 @@ impl StyloAnalysisRecord {
                 source_observer_recipe,
                 terminal,
                 fact_count,
+                fragment,
                 ..
             } if *project == [0; 32]
                 || !canonical_path(path)
+                || fragment.as_ref().is_some_and(|fragment| {
+                    !canonical_path(&fragment.file)
+                        || fragment.host_path() != *path
+                        || fragment.start >= fragment.end
+                        || byte_length.is_some_and(|length| fragment.end > length)
+                        || content.is_none()
+                })
                 || content.is_some() != source.is_some()
                 || content.is_some() != byte_length.is_some()
                 || config.is_some() != configuration.is_some()
@@ -316,6 +354,27 @@ impl StyloAnalysisRecord {
             }
             Self::Fact { host, .. } if *host == [0; 32] => {
                 return Err("invalid Stylo fact owner".into());
+            }
+            Self::CodeHost {
+                project,
+                path,
+                source,
+                state,
+                fact_count,
+                ..
+            } if *project == [0; 32]
+                || !canonical_path(path)
+                || *source == [0; 32]
+                || *fact_count > super::MAX_CODE_FACTS_PER_HOST
+                || (!matches!(state, CodeHostState::Scanned { .. }) && *fact_count != 0) =>
+            {
+                return Err("invalid code host".into());
+            }
+            Self::CodeFact { host, fact, .. } => {
+                if *host == [0; 32] {
+                    return Err("invalid code fact owner".into());
+                }
+                fact.validate()?;
             }
             _ => {}
         }
@@ -395,6 +454,21 @@ pub fn stylo_host_key(project: [u8; 32], path: &str) -> Result<[u8; 32], String>
         return Err("invalid Stylo host key".into());
     }
     Ok(stylo_owner_key(b"host", &project, path.as_bytes()))
+}
+/// Derives the code host row key from the project and normalized relative path.
+///
+/// # Errors
+/// Rejects a malformed or noncanonical project-relative path.
+pub fn code_host_key(project: [u8; 32], path: &str) -> Result<[u8; 32], String> {
+    if project == [0; 32] || !canonical_path(path) {
+        return Err("invalid code host key".into());
+    }
+    Ok(stylo_owner_key(b"code-host", &project, path.as_bytes()))
+}
+/// Derives one code fact row key from its host and ordinal.
+#[must_use]
+pub fn code_fact_key(host: [u8; 32], ordinal: u32) -> [u8; 32] {
+    stylo_owner_key(b"code-fact", &host, &ordinal.to_be_bytes())
 }
 fn stylo_owner_key(kind: &[u8], project: &[u8; 32], suffix: &[u8]) -> [u8; 32] {
     let mut hash = blake3::Hasher::new();
@@ -630,6 +704,7 @@ mod tests {
             inventory_count: 0,
             host_count: 0,
             host_digest: stylo_rows_digest(&[]).unwrap(),
+            code: None,
         };
         let mut old_bytes = Vec::new();
         StyloAnalysisRelation::encode_value(&old, &mut old_bytes);
@@ -675,6 +750,201 @@ mod tests {
         assert_ne!(first_root.root(), second_root.root());
     }
 
+    fn code_fixture(
+        count_witness: bool,
+    ) -> (
+        [u8; 32],
+        StyloAnalysisRecord,
+        [u8; 32],
+        StyloAnalysisRecord,
+        Vec<([u8; 32], StyloAnalysisRecord)>,
+    ) {
+        use super::super::{CODE_LINK_RECIPE, CodeFactRow, CodeHostState};
+        let project = [1; 32];
+        let path = "src/Card.tsx";
+        let host_key = code_host_key(project, path).unwrap();
+        let facts: Vec<_> = [
+            CodeFactRow::Import {
+                local: "styles".into(),
+                spec: "./Card.module.css".into(),
+                imported: super::super::CodeImported::Default,
+                line: 1,
+            },
+            CodeFactRow::ModuleClassUse {
+                binding: 0,
+                class: "card".into(),
+                line: 4,
+                owner: Some("Card".into()),
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, fact)| {
+            let ordinal = ordinal as u32;
+            (
+                code_fact_key(host_key, ordinal),
+                StyloAnalysisRecord::CodeFact {
+                    host: host_key,
+                    ordinal,
+                    fact,
+                },
+            )
+        })
+        .collect();
+        let mut sorted = facts.clone();
+        sorted.sort_by_key(|(key, _)| *key);
+        let refs: Vec<_> = sorted.iter().map(|(key, row)| (*key, row)).collect();
+        let host = StyloAnalysisRecord::CodeHost {
+            project,
+            path: path.into(),
+            source: [9; 32],
+            byte_length: 120,
+            state: CodeHostState::Scanned {
+                dynamic_class_expressions: 0,
+            },
+            fact_count: 2,
+            fact_digest: stylo_rows_digest(&refs).unwrap(),
+        };
+        let (_, inventory_digest) = StyloInventoryWitness::default().finish();
+        let code = count_witness.then(|| super::super::CodeSelection {
+            recipe: CODE_LINK_RECIPE.into(),
+            count: 1,
+            digest: stylo_rows_digest(&[(host_key, &host)]).unwrap(),
+        });
+        let selection = StyloAnalysisRecord::Selection {
+            project,
+            source_root: "/project".into(),
+            profile: StyloAnalysisProfile::StyloStandaloneV1,
+            recipe: "stylo-test".into(),
+            producer: [2; 32],
+            worker_artifact: [3; 32],
+            adapter: [4; 32],
+            discovery: [5; 32],
+            policy_complete: false,
+            max_worker_attempts: Some(16),
+            inventory: StyloInventory::Complete,
+            inventory_digest,
+            inventory_count: 0,
+            host_count: 0,
+            host_digest: stylo_rows_digest(&[]).unwrap(),
+            code,
+        };
+        (
+            stylo_selection_key(project),
+            selection,
+            host_key,
+            host,
+            sorted,
+        )
+    }
+
+    fn admit_code(
+        selection: (&[u8; 32], &StyloAnalysisRecord),
+        host: (&[u8; 32], &StyloAnalysisRecord),
+        facts: &[([u8; 32], StyloAnalysisRecord)],
+    ) -> Result<(), String> {
+        let mut rows: Vec<([u8; 32], &StyloAnalysisRecord)> =
+            vec![(*selection.0, selection.1), (*host.0, host.1)];
+        rows.extend(facts.iter().map(|(key, row)| (*key, row)));
+        rows.sort_by_key(|(key, _)| *key);
+        admit_stylo_relation(&rows)
+    }
+
+    #[test]
+    fn code_rows_admit_only_under_the_selection_witness_and_roundtrip() {
+        let (selection_key, selection, host_key, host, facts) = code_fixture(true);
+        admit_code((&selection_key, &selection), (&host_key, &host), &facts).unwrap();
+        for row in std::iter::once(&host)
+            .chain(facts.iter().map(|(_, row)| row))
+            .chain(std::iter::once(&selection))
+        {
+            let mut bytes = Vec::new();
+            StyloAnalysisRelation::encode_value(row, &mut bytes);
+            assert_eq!(&StyloAnalysisRelation::decode_value(&bytes).unwrap(), row);
+        }
+        // A selection from before code rows existed serializes without the field.
+        let (_, historical, _, _, _) = code_fixture(false);
+        let mut bytes = Vec::new();
+        StyloAnalysisRelation::encode_value(&historical, &mut bytes);
+        assert!(!std::str::from_utf8(&bytes).unwrap().contains("\"code\""));
+    }
+
+    #[test]
+    fn code_rows_without_a_witness_dropped_hosts_or_forged_facts_are_refused() {
+        let (selection_key, selection, host_key, host, facts) = code_fixture(false);
+        assert!(
+            admit_code((&selection_key, &selection), (&host_key, &host), &facts).is_err(),
+            "code rows may not ride on a selection that never witnessed them"
+        );
+        let (selection_key, selection, host_key, host, facts) = code_fixture(true);
+        // Host omitted: the witness names one host.
+        let mut rows: Vec<([u8; 32], &StyloAnalysisRecord)> = vec![(selection_key, &selection)];
+        rows.extend(facts.iter().map(|(key, row)| (*key, row)));
+        rows.sort_by_key(|(key, _)| *key);
+        assert!(
+            admit_stylo_relation(&rows).is_err(),
+            "facts without their host"
+        );
+        // One fact dropped: the host's count and digest no longer match.
+        assert!(
+            admit_code(
+                (&selection_key, &selection),
+                (&host_key, &host),
+                &facts[..1]
+            )
+            .is_err()
+        );
+        // A fact edited in place: the digest catches it.
+        let mut forged = facts.clone();
+        if let StyloAnalysisRecord::CodeFact {
+            fact: super::super::CodeFactRow::ModuleClassUse { class, .. },
+            ..
+        } = &mut forged[0].1
+        {
+            *class = "other".into();
+        } else if let StyloAnalysisRecord::CodeFact {
+            fact: super::super::CodeFactRow::ModuleClassUse { class, .. },
+            ..
+        } = &mut forged[1].1
+        {
+            *class = "other".into();
+        }
+        assert!(admit_code((&selection_key, &selection), (&host_key, &host), &forged).is_err());
+        // A module-class fact must bind an import fact.
+        let mut rebound = facts.clone();
+        for (_, row) in &mut rebound {
+            if let StyloAnalysisRecord::CodeFact {
+                fact: super::super::CodeFactRow::ModuleClassUse { binding, .. },
+                ..
+            } = row
+            {
+                *binding = 1;
+            }
+        }
+        let refs: Vec<_> = rebound.iter().map(|(key, row)| (*key, row)).collect();
+        let mut rehosted = host.clone();
+        if let StyloAnalysisRecord::CodeHost { fact_digest, .. } = &mut rehosted {
+            *fact_digest = stylo_rows_digest(&refs).unwrap();
+        }
+        let (_, witnessed, _, _, _) = code_fixture(true);
+        let mut reselected = witnessed;
+        if let StyloAnalysisRecord::Selection {
+            code: Some(code), ..
+        } = &mut reselected
+        {
+            code.digest = stylo_rows_digest(&[(host_key, &rehosted)]).unwrap();
+        }
+        assert!(
+            admit_code(
+                (&selection_key, &reselected),
+                (&host_key, &rehosted),
+                &rebound
+            )
+            .is_err(),
+            "even with every witness recomputed, a binding must name an import"
+        );
+    }
+
     #[test]
     fn inventory_witness_changes_when_an_extra_selected_path_is_omitted_from_rows() {
         let mut earlier = StyloInventoryWitness::default();
@@ -711,6 +981,7 @@ mod tests {
             terminal: StyloTerminal::Unavailable(StyloUnavailable::ReadUnavailable),
             fact_count: 0,
             fact_digest: [2; 32],
+            fragment: None,
         };
         let mut changed = row.clone();
         if let StyloAnalysisRecord::Host { path, .. } = &mut changed {
@@ -827,6 +1098,7 @@ mod tests {
                 terminal: StyloTerminal::Parsed(StyloCoverage::Partial),
                 fact_count: 1,
                 fact_digest,
+                fragment: None,
             };
             let host_digest = stylo_rows_digest(&[(host_key, &host)]).unwrap();
             let mut witness = StyloInventoryWitness::default();
@@ -848,6 +1120,7 @@ mod tests {
                 inventory_count,
                 host_count: 1,
                 host_digest,
+                code: None,
             };
             (selection, host, fact)
         };
@@ -889,6 +1162,7 @@ mod tests {
             inventory_count: 0,
             host_count: 0,
             host_digest: stylo_rows_digest(&[]).unwrap(),
+            code: None,
         };
         assert!(admit_stylo_relation(&[(stylo_selection_key([1; 32]), &selection)]).is_ok());
         assert!(admit_stylo_relation(&[([5; 32], &selection)]).is_err());
@@ -917,6 +1191,7 @@ mod tests {
             terminal: StyloTerminal::Unavailable(StyloUnavailable::ReadUnavailable),
             fact_count: 0,
             fact_digest: [2; 32],
+            fragment: None,
         };
         let mut encoded = Vec::new();
         StyloAnalysisRelation::encode_value(&value, &mut encoded);
@@ -965,9 +1240,21 @@ pub fn admit_stylo_selection(
     if hosts.len() > 65_536 || facts.len() > 262_144 {
         return Err("Stylo selection exceeds row work limit".into());
     }
+    let stylesheet_hosts = hosts
+        .iter()
+        .filter(|(_, host)| {
+            !matches!(
+                host,
+                StyloAnalysisRecord::Host {
+                    fragment: Some(_),
+                    ..
+                }
+            )
+        })
+        .count();
     if selection_key != stylo_selection_key(*project)
         || hosts.len() != *host_count as usize
-        || *inventory_count < u64::from(*host_count)
+        || *inventory_count < stylesheet_hosts as u64
         || stylo_rows_digest(hosts)? != *host_digest
     {
         return Err("Stylo selected host witness mismatch".into());
@@ -980,6 +1267,7 @@ pub fn admit_stylo_selection(
         let StyloAnalysisRecord::Host {
             project: owner,
             path,
+            fragment,
             ..
         } = record
         else {
@@ -991,7 +1279,10 @@ pub fn admit_stylo_selection(
         {
             return Err("invalid Stylo host ownership".into());
         }
-        host_paths.push(path.as_str());
+        // Embedded stylesheets are not members of the stylesheet-file inventory.
+        if fragment.is_none() {
+            host_paths.push(path.as_str());
+        }
     }
     host_paths.sort_unstable();
     let mut inventory_witness = StyloInventoryWitness::default();
@@ -1032,10 +1323,16 @@ pub fn admit_stylo_selection(
             terminal,
             fact_count,
             fact_digest,
+            fragment,
             ..
         } = record
         else {
             return Err("Stylo host row required".into());
+        };
+        let recipe: &str = if fragment.is_some() {
+            super::STYLO_EMBEDDED_RECIPE
+        } else {
+            recipe
         };
         let selected = by_host
             .remove(host_key)
@@ -1119,7 +1416,7 @@ pub fn admit_stylo_selection(
         }
         let analysis = StyloAnalysis {
             config: host_config,
-            recipe: recipe.clone(),
+            recipe: recipe.to_owned(),
             support_fingerprint: *producer,
             utf8_bom_removed: utf8_bom_removed.ok_or("Stylo BOM handling missing")?,
             preferences: preferences
@@ -1298,6 +1595,33 @@ pub fn admit_stylo_relation(rows: &[([u8; 32], &StyloAnalysisRecord)]) -> Result
                 .push((*key, *row));
         }
     }
+    let mut code_owners = BTreeMap::new();
+    let mut code_hosts: BTreeMap<[u8; 32], Vec<([u8; 32], &StyloAnalysisRecord)>> = BTreeMap::new();
+    for (key, row) in rows {
+        if let StyloAnalysisRecord::CodeHost { project, path, .. } = row {
+            if *key != code_host_key(*project, path)?
+                || code_owners.insert(*key, *project).is_some()
+            {
+                return Err("noncanonical or duplicate code host".into());
+            }
+            if !projects.contains_key(project) {
+                return Err("code host without selection".into());
+            }
+            code_hosts.entry(*project).or_default().push((*key, *row));
+        }
+    }
+    let mut code_facts: BTreeMap<[u8; 32], Vec<([u8; 32], &StyloAnalysisRecord)>> = BTreeMap::new();
+    for (key, row) in rows {
+        if let StyloAnalysisRecord::CodeFact { host, ordinal, .. } = row {
+            if !code_owners.contains_key(host) {
+                return Err("code fact without host".into());
+            }
+            if *key != code_fact_key(*host, *ordinal) {
+                return Err("noncanonical code fact key".into());
+            }
+            code_facts.entry(*host).or_default().push((*key, *row));
+        }
+    }
     for (project, row) in &attempts {
         if let StyloAnalysisRecord::Attempt {
             outcome: StyloAttemptOutcome::Observed,
@@ -1323,6 +1647,90 @@ pub fn admit_stylo_relation(rows: &[([u8; 32], &StyloAnalysisRecord)]) -> Result
     }
     for (project, (selection, hosts, facts)) in projects {
         admit_stylo_selection(stylo_selection_key(project), selection, &hosts, &facts)?;
+        let owned = code_hosts.remove(&project).unwrap_or_default();
+        admit_code_links(selection, &owned, &mut code_facts)?;
+    }
+    if !code_facts.is_empty() {
+        return Err("code fact without a selected host".into());
+    }
+    Ok(())
+}
+
+/// Checks one project's code hosts against the selection witness and each
+/// host's own fact count and digest. A selection without a code witness may
+/// not own code rows; a witness may not be forged by dropping hosts.
+fn admit_code_links(
+    selection: &StyloAnalysisRecord,
+    hosts: &[([u8; 32], &StyloAnalysisRecord)],
+    facts: &mut std::collections::BTreeMap<[u8; 32], Vec<([u8; 32], &StyloAnalysisRecord)>>,
+) -> Result<(), String> {
+    let StyloAnalysisRecord::Selection { code, project, .. } = selection else {
+        return Err("Stylo selection row required".into());
+    };
+    let Some(witness) = code else {
+        return if hosts.is_empty() {
+            Ok(())
+        } else {
+            Err("code hosts without a selection witness".into())
+        };
+    };
+    if witness.recipe.is_empty()
+        || witness.recipe.len() > 256
+        || hosts.len() != witness.count as usize
+        || stylo_rows_digest(hosts)? != witness.digest
+    {
+        return Err("selected code host witness mismatch".into());
+    }
+    for (host_key, host) in hosts {
+        let StyloAnalysisRecord::CodeHost {
+            project: owner,
+            state,
+            fact_count,
+            fact_digest,
+            ..
+        } = host
+        else {
+            return Err("code host row required".into());
+        };
+        if owner != project {
+            return Err("invalid code host ownership".into());
+        }
+        let selected = facts.remove(host_key).unwrap_or_default();
+        if selected.len() != *fact_count as usize || stylo_rows_digest(&selected)? != *fact_digest {
+            return Err("code host fact witness mismatch".into());
+        }
+        if !matches!(state, CodeHostState::Scanned { .. }) && !selected.is_empty() {
+            return Err("unscanned code host contains facts".into());
+        }
+        let mut ordinals = Vec::with_capacity(selected.len());
+        let mut imports = std::collections::BTreeSet::new();
+        for (_, fact) in &selected {
+            let StyloAnalysisRecord::CodeFact { ordinal, fact, .. } = fact else {
+                return Err("code fact row required".into());
+            };
+            ordinals.push(*ordinal);
+            if matches!(fact, CodeFactRow::Import { .. }) {
+                imports.insert(*ordinal);
+            }
+        }
+        ordinals.sort_unstable();
+        if ordinals
+            .iter()
+            .enumerate()
+            .any(|(index, ordinal)| *ordinal as usize != index)
+        {
+            return Err("code fact ordinals are not contiguous".into());
+        }
+        for (_, fact) in &selected {
+            if let StyloAnalysisRecord::CodeFact {
+                fact: CodeFactRow::ModuleClassUse { binding, .. },
+                ..
+            } = fact
+                && !imports.contains(binding)
+            {
+                return Err("code module class use binds a non-import".into());
+            }
+        }
     }
     Ok(())
 }

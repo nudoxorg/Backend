@@ -933,9 +933,13 @@ pub(super) fn prepare_scan_source(
         scan,
         workspace_snapshot,
     } = result;
-    // A native-only walk does not witness global or ancestor ignore inputs.
-    // Its repeated digest alone cannot authorize an old TS program or capture.
+    // A native walk's repeated digest cannot authorize the replay cache of an
+    // old compile. It authorizes a stored TS read witness only when the walk also
+    // witnessed the global and ancestor ignore inputs, because the witness then
+    // replays the program's whole read closure.
     let native_typescript_discovery_incomplete = scan.native_typescript_discovery_incomplete();
+    let native_typescript_snapshot_unwitnessed =
+        native_typescript_discovery_incomplete && !scan.native_typescript_ambient_ignore_witnessed();
     let mut final_revision_fence = scan.revision_fence.clone();
     let cancellation = work.cancellation.clone();
     let relation = base_snapshot
@@ -1052,7 +1056,7 @@ pub(super) fn prepare_scan_source(
     // closure, including dependencies and negative filesystem observations.
     let mut typescript_reused_profiles = BTreeSet::new();
     for &profile in &live {
-        if native_typescript_discovery_incomplete
+        if native_typescript_snapshot_unwitnessed
             || !matches!(profile, LanguageProfile::TypeScript(_))
             || lost.contains(&profile)
         {
@@ -1066,31 +1070,42 @@ pub(super) fn prepare_scan_source(
             profile,
         )?;
         let input = semantic_input_digest(&scan, profile);
-        let proof = binding.and_then(|binding| {
-            compiler
-                .typescript_snapshot_reuse(
+        let proof = match binding {
+            None => Err("no compiled generation is selected for this project yet"),
+            Some(binding) => compiler
+                .typescript_snapshot_reuse_checked(
                     source_root,
                     profile,
                     input,
                     binding,
                     cancellation.as_ref(),
                 )
-                .or_else(|| {
+                .or_else(|in_memory| {
+                    // A new owner holds no in-memory witness; the selected
+                    // generation's stored witness is the only other proof.
                     let package_reference =
-                        backend_engine::PackageReference::parse(label.clone()).ok()?;
+                        backend_engine::PackageReference::parse(label.clone())
+                            .map_err(|_| "the package reference is invalid")?;
                     let semantic_coordinate = crate::builtin::compiler_scope::semantic_coordinate(
                         package, profile, coordinate,
                     )
-                    .ok()?;
+                    .map_err(|_| "the semantic coordinate is invalid")?;
                     let key = ProductSemanticPublicationKey::new(
                         package_reference,
                         semantic_coordinate,
                         profile,
                     )
-                    .ok()?;
-                    let bytes = semantic_authority
-                        .selected_typescript_snapshot_certificate(&key, binding, input)?;
-                    compiler.restore_typescript_snapshot_certificate(
+                    .map_err(|_| "the publication key is invalid")?;
+                    let Some(bytes) = semantic_authority
+                        .selected_typescript_snapshot_certificate(&key, binding, input)
+                    else {
+                        return Err(if in_memory.starts_with("this owner holds no") {
+                            "no stored read witness matches the selected generation and input"
+                        } else {
+                            in_memory
+                        });
+                    };
+                    compiler.restore_typescript_snapshot_certificate_checked(
                         source_root,
                         profile,
                         input,
@@ -1098,9 +1113,15 @@ pub(super) fn prepare_scan_source(
                         &bytes,
                         cancellation.as_ref(),
                     )
-                })
-        });
-        if let Some(proof) = proof {
+                }),
+        };
+        if let (Err(reason), Some(_)) = (&proof, binding) {
+            eprintln!(
+                "locald: {} sources are compiled again: {reason}",
+                profile.language().name()
+            );
+        }
+        if let Ok(proof) = proof {
             typescript_reused_profiles.insert(profile);
             final_revision_fence.typescript_reuse.push(proof);
         }
@@ -1630,7 +1651,14 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
             reused_profiles,
             pending_changes,
         } => {
-            if native_typescript.is_some() {
+            // A native TypeScript profile reaches here only through its stored
+            // read witness (the compiler replay cache is never consulted for a
+            // native walk). That witness was replayed against the current files
+            // above and is checked again at final selection, so no compiler
+            // attempt is owed and the revalidated capture is not needed further.
+            if native_typescript.is_some()
+                && !reused_profiles.iter().any(|profile| matches!(profile, LanguageProfile::TypeScript(_)))
+            {
                 return Err(BuiltinModelError("native TypeScript requires a fresh compiler attempt".into()));
             }
             if captures.is_empty() {
@@ -2055,6 +2083,29 @@ mod csharp_project_discovery_tests {
         assert!(!witness.matches_invocation_claim(&claim, [0x52; 32])); claim.profile = profile;
         claim.sources[0].byte_length += 1; assert!(!witness.matches_invocation_claim(&claim, [0x52; 32]));
         claim.sources[0].byte_length -= 1;
+        assert!(witness.matches_invocation_claim(&claim, [0x52; 32]));
+        // The members every invocation lists must be exactly the selected sources.
+        let member = claim.members[0].clone();
+        claim.members[0].sha256 = "0".repeat(64); assert!(!witness.matches_invocation_claim(&claim, [0x52; 32]));
+        claim.members[0] = member.clone();
+        claim.members.push(backend_engine::application::CSharpEvidenceMember { path: "Hidden.cs".into(), byte_length: 1, sha256: "1".repeat(64) });
+        assert!(!witness.matches_invocation_claim(&claim, [0x52; 32]));
+        claim.members.clear(); assert!(!witness.matches_invocation_claim(&claim, [0x52; 32]));
+        claim.members.push(member);
+        assert!(witness.matches_invocation_claim(&claim, [0x52; 32]));
+        // A selected source Roslyn reported errors in is absent from the claim and
+        // accounted for by a gap with the exact selected bytes; nothing else may be.
+        let gap = |path, byte_len, fact| UnpublishedCSharpSource { path, byte_len, fact };
+        let claimed = std::mem::take(&mut claim.sources);
+        assert!(!witness.matches_invocation_claim_with_gaps(&claim, [0x52; 32], &[]));
+        assert!(witness.matches_invocation_claim_with_gaps(&claim, [0x52; 32], &[gap("App.cs", bytes.len(), fact)]));
+        assert!(!witness.matches_invocation_claim_with_gaps(&claim, [0x52; 32], &[gap("Other.cs", bytes.len(), fact)]));
+        assert!(!witness.matches_invocation_claim_with_gaps(&claim, [0x52; 32], &[gap("App.cs", bytes.len() + 1, fact)]));
+        assert!(!witness.matches_invocation_claim_with_gaps(&claim, [0x52; 32], &[gap("App.cs", bytes.len(), ingest::SourceFactIdentity::from_canonical_bytes(b"other"))]));
+        assert!(!witness.matches_invocation_claim_with_gaps(&claim, [0x52; 32],
+            &[gap("App.cs", bytes.len(), fact), gap("App.cs", bytes.len(), fact)]));
+        claim.sources = claimed;
+        assert!(!witness.matches_invocation_claim_with_gaps(&claim, [0x52; 32], &[gap("App.cs", bytes.len(), fact)]));
         assert!(witness.matches_invocation_claim(&claim, [0x52; 32]));
 
         let wrong_operation = backend_library::IndexOperationKey::from_bytes([0x42; 32]).map_err(|e| e.to_string())?;

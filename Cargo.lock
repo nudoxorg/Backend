@@ -1751,6 +1751,7 @@ dependencies = [
  "backend-runtime",
  "backend-semantic",
  "backend-version",
+ "blake3",
  "fancy-regex 0.17.0",
  "serde",
  "serde_json",

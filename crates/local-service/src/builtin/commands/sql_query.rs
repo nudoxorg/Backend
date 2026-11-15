@@ -89,8 +89,19 @@ impl UsesSet {
         }
     }
 }
+/// Split an optional `kind:` prefix from a `uses` operand; the kind is any of
+/// [`SqlObjectKind::ALL`], in any letter case, and an unknown one is refused.
+fn split_kind(spec: &str) -> Result<(Option<SqlObjectKind>, &str), BuiltinModelError> {
+    let Some((kind, rest)) = spec.split_once(':') else { return Ok((None, spec)) };
+    match SqlObjectKind::parse(&kind.to_ascii_lowercase()) {
+        Some(kind) => Ok((Some(kind), rest)),
+        None => Err(error("uses expects name, table.column or kind:name with a known kind")),
+    }
+}
 /// Resolve `table`, `schema.table`, `table.column` or `schema.table.column` against
 /// the definitions of the selected project, by head name (after every rename).
+/// Any of them may be prefixed `kind:` (`view:orders`, `index:orders.id`) to match
+/// only that kind of object.
 fn resolve_uses(
     relation: &RelationHandle,
     project: [u8; 32],
@@ -122,6 +133,7 @@ fn resolve_uses(
             None => break,
         }
     }
+    let (wanted, spec) = split_kind(spec)?;
     let parts: Vec<String> = spec.split('.').map(|part| part.to_ascii_lowercase()).collect();
     let lower = |value: &Option<String>| value.as_deref().map(str::to_ascii_lowercase);
     let creates = |definition: &SqlDefinition| {
@@ -138,6 +150,9 @@ fn resolve_uses(
         let schema = lower(&definition.schema);
         let parent_schema = lower(&definition.parent_schema);
         let is_column = definition.kind == SqlObjectKind::Column;
+        if wanted.is_some_and(|kind| kind != definition.kind) {
+            continue;
+        }
         let hit = match (is_column, parts.len()) {
             (false, 1) => name.as_deref() == Some(parts[0].as_str()),
             (false, 2) => schema.as_deref() == Some(parts[0].as_str()) && name.as_deref() == Some(parts[1].as_str()),
@@ -751,7 +766,7 @@ pub(super) fn read_source(
         ) => return Ok(SqlSourceRead::SourceChanged),
         Err(error) => return Err(self::error(error)),
     };
-    let line_1 = u32::try_from(
+    let mut line_1 = u32::try_from(
         bytes[..extent.start as usize]
             .iter()
             .filter(|b| **b == b'\n')
@@ -759,6 +774,18 @@ pub(super) fn read_source(
             + 1,
     )
     .map_err(error)?;
+    // SQL written in application code: the line is the one of the call in its
+    // own file, plus the lines the statement text itself spans before the extent.
+    if let Some(real) = super::super::sql_embedded::real_path(&path) {
+        let call = read_stylo_selected_source(Path::new(&source_root), real, super::super::sql_embedded::MAX_SCAN_BYTES)
+            .ok()
+            .and_then(|file| super::super::sql_embedded::scan(real, &file))
+            .and_then(|scan| scan.fragment_at(extent.start as usize).map(|fragment| (fragment.line, fragment.text_start)));
+        if let Some((call_line, text_start)) = call {
+            let within = bytes[text_start.min(extent.start as usize)..extent.start as usize].iter().filter(|b| **b == b'\n').count();
+            line_1 = call_line.saturating_add(u32::try_from(within).map_err(error)?);
+        }
+    }
     let text = verified
         .extent(extent.start as usize..extent.end as usize)
         .map_err(error)?
@@ -781,6 +808,18 @@ mod tests {
     use super::*;
     use backend_library::PackageReference;
     use backend_semantic::sql_analysis::SqliteRelationKind;
+    #[test]
+    fn uses_operands_split_an_optional_kind_prefix() {
+        assert_eq!(split_kind("orders").unwrap(), (None, "orders"));
+        assert_eq!(split_kind("orders.id").unwrap(), (None, "orders.id"));
+        assert_eq!(split_kind("view:orders").unwrap(), (Some(SqlObjectKind::View), "orders"));
+        assert_eq!(split_kind("INDEX:main.orders_id").unwrap(), (Some(SqlObjectKind::Index), "main.orders_id"));
+        for kind in SqlObjectKind::ALL {
+            assert_eq!(split_kind(&format!("{}:x", kind.as_str())).unwrap(), (Some(kind), "x"));
+        }
+        let refused = split_kind("widget:orders").unwrap_err().to_string();
+        assert!(refused.contains("known kind"), "{refused}");
+    }
     #[test]
     fn native_names_are_exact_and_diagnostics_do_not_match_relation_filters() {
         let mut request = SqlQueryRequest {

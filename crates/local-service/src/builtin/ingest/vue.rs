@@ -56,7 +56,12 @@ pub(super) fn scan(
                 Err(_) => continue,
             };
             supported = true;
-            for declaration in parsed.declarations {
+            // The native arena allocates a nested declaration before the
+            // declaration that encloses it, but the retained rows must follow
+            // source order within the host.
+            let mut found = parsed.declarations;
+            found.sort_by_key(|declaration| declaration.name.byte_range().start);
+            for declaration in found {
                 if declarations.len() >= 16_384 {
                     return Err("Vue script declaration bound exceeded".into());
                 }
@@ -99,6 +104,10 @@ pub(super) fn scan(
             }
         }
     }
+    // The script parser returns a component's declarations in groups (a binding
+    // inside a function body after the file's other bindings), but a file's facts
+    // must be filed in source line order.
+    declarations.sort_by_key(|declaration| declaration.line());
     if !supported {
         return unavailable(
             path,

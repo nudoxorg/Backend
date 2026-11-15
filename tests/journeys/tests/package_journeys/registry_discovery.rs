@@ -229,7 +229,7 @@ fn start_owner(
     }
     let child = command.spawn().expect("spawn isolated locald");
     let mut daemon = Daemon {
-        child: Some(child),
+        child: RefCell::new(Some(child)),
         endpoint,
     };
     daemon.wait_ready();
@@ -279,7 +279,7 @@ fn start_osv_owner(
         .stderr(Stdio::inherit());
     let child = command.spawn().expect("spawn configured locald");
     let mut daemon = Daemon {
-        child: Some(child),
+        child: RefCell::new(Some(child)),
         endpoint,
     };
     daemon.wait_ready();
@@ -406,10 +406,10 @@ fn assert_current_search(page: &Value, proof: &[u8; 32], source: &Value, time: u
     assert_eq!(candidate["metadata"]["advisories"]["state"], "unknown");
 }
 
-fn wait_for_discovery(endpoint: &Path, workspace: &Path, purl: &str) -> Value {
+fn wait_for_discovery(owner: &Daemon, workspace: &Path, purl: &str) -> Value {
     let deadline = Instant::now() + INDEX_DEADLINE;
     loop {
-        let page = cli_json(endpoint, workspace, &["index-search", "fixture"]);
+        let page = cli_json_after_start(owner, workspace, &["index-search", "fixture"]);
         if page.to_string().contains(purl) {
             return page;
         }
@@ -504,7 +504,7 @@ fn configured_osv_discovery_lifecycle(snapshot: bool) {
             }),
         "{initial_refresh}"
     );
-    let _ = wait_for_discovery(&endpoint, &workspace, PURL);
+    let _ = wait_for_discovery(&owner, &workspace, PURL);
     let mut failures = Vec::new();
     let expected_coverage = if snapshot { "complete" } else { "partial" };
     let expected_id = if snapshot {
@@ -726,7 +726,7 @@ fn unversioned_registry_locator_points_to_discovery_on_cli_and_mcp() {
             "fixture"
         );
     }
-    let found = wait_for_discovery(endpoint, &workspace, "pkg:npm/fixture@1.0.0");
+    let found = wait_for_discovery(&daemon, &workspace, "pkg:npm/fixture@1.0.0");
     assert!(found.to_string().contains("pkg:npm/fixture@1.0.0"));
     let exact = cli_json(endpoint, &workspace, &["package", "pkg:npm/fixture@1.0.0"]);
     assert!(exact.to_string().contains("pkg:npm/fixture@1.0.0"));
@@ -747,7 +747,7 @@ fn loopback_npm_pypi_public_metadata_refresh_and_offline_reopen() {
     let mut daemon = start_owner(&workspace, &secret, &registry, false);
     let endpoint = daemon.endpoint.clone();
     for purl in ["pkg:npm/fixture@1.0.0", "pkg:pypi/fixture@1.0.0"] {
-        let _ = wait_for_discovery(&endpoint, &workspace, purl);
+        let _ = wait_for_discovery(&daemon, &workspace, purl);
         let package = cli_json(&endpoint, &workspace, &["package", purl]);
         assert!(
             package.to_string().contains("discovered · unacquired"),
@@ -1035,4 +1035,183 @@ fn loopback_npm_pypi_public_metadata_refresh_and_offline_reopen() {
         "metadata journey fetched archive"
     );
     offline.crash();
+}
+
+/// One private workspace and an online owner over the loopback registry.
+fn online_owner(label: &str) -> (PathBuf, PathBuf, PathBuf, NativeRegistry, Daemon) {
+    let root = fresh_root(label);
+    let workspace = root.join("workspace");
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).expect("private root");
+    std::fs::set_permissions(&workspace, std::fs::Permissions::from_mode(0o700))
+        .expect("private workspace");
+    let secret = authority(&root);
+    let registry = NativeRegistry::start();
+    let daemon = start_owner(&workspace, &secret, &registry, false);
+    (root, workspace, secret, registry, daemon)
+}
+
+/// `index-search` finds a discovered package that `explore`
+/// does not, and the empty `explore` page says which scope it covered instead
+/// of reading as "this does not exist".
+#[test]
+fn explore_of_an_unacquired_name_states_its_scope_and_points_to_index_search() {
+    let (root, workspace, secret, _registry, daemon) = online_owner("explore-scope");
+    let endpoint = &daemon.endpoint;
+    let found = wait_for_discovery(&daemon, &workspace, "pkg:npm/fixture@1.0.0");
+    assert!(found.to_string().contains("pkg:npm/fixture@1.0.0"));
+
+    let explored = cli_json(endpoint, &workspace, &["explore", "fixture"]);
+    assert_eq!(explored["records"].as_array().expect("records").len(), 0);
+    let note = explored["note"]
+        .as_str()
+        .expect("an empty explore carries a note");
+    assert!(
+        note.contains("Nothing acquired or indexed matches `fixture`")
+            && note.contains("does not mean no such package or symbol exists")
+            && note.contains("index-search fixture"),
+        "{note}"
+    );
+
+    let replies = mcp(
+        endpoint,
+        &workspace,
+        &secret,
+        &[(
+            10,
+            json!({"name":"backend.explore","arguments":{"query":"fixture"}}),
+        )],
+    );
+    let structured = mcp_structured(&replies, 10, "explore");
+    assert_eq!(structured["note"], explored["note"]);
+    drop(daemon);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Before acquisition the registry's metadata answers which
+/// versions exist; dependencies, README and engines wait for the acquired
+/// release, and the refusal names that acquisition for the CLI and for MCP.
+#[test]
+fn unacquired_release_queries_name_the_acquisition_and_list_discovered_versions() {
+    let (root, workspace, secret, _registry, daemon) = online_owner("unacquired-queries");
+    let endpoint = &daemon.endpoint;
+    let purl = "pkg:npm/fixture@1.0.0";
+    let _ = wait_for_discovery(&daemon, &workspace, purl);
+
+    // package-versions: the exact lookup runs, then the discovered releases of
+    // the package (not only the pinned one) are listed with their standing.
+    let versions = cli_json(endpoint, &workspace, &["package-versions", purl]);
+    let rendered = versions.to_string();
+    assert!(
+        rendered.contains(purl) && rendered.contains("discovered · unacquired"),
+        "{versions}"
+    );
+    let note = versions["note"].as_str().expect("versions note");
+    assert!(
+        note.contains("None is acquired") && note.contains("add <pinned purl>"),
+        "{note}"
+    );
+
+    // dependencies: typed refusal that names the acquisition command.
+    let output = cli(endpoint, &workspace, "json", &["dependencies", purl]);
+    let refused: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        panic!("dependencies printed no JSON ({error}): {}", fault(&output))
+    });
+    let rendered = refused.to_string();
+    assert!(rendered.contains("lane-unavailable"), "{refused}");
+    let detail = refused["fault"]["detail"].as_str().expect("fault detail");
+    assert!(
+        detail.contains("registry discovery records standing, downloads and advisories only")
+            && detail.contains(&format!("add {purl}")),
+        "{detail}"
+    );
+    assert_eq!(refused["fault"]["shell"], format!("nudox add {purl}"));
+    assert_eq!(refused["fault"]["call"]["name"], "backend.index");
+    assert_eq!(refused["fault"]["call"]["arguments"]["path"], purl);
+
+    // MCP: the same typed answers, with the same acquisition call.
+    let replies = mcp(
+        endpoint,
+        &workspace,
+        &secret,
+        &[
+            (
+                10,
+                json!({"name":"backend.package_versions","arguments":{"package":purl}}),
+            ),
+            (
+                11,
+                json!({"name":"backend.dependencies","arguments":{"package":purl}}),
+            ),
+        ],
+    );
+    let listed = mcp_structured(&replies, 10, "package_versions");
+    assert!(listed.to_string().contains(purl), "{listed}");
+    let refusal = &replies[&11]["result"]["structuredContent"];
+    assert_eq!(
+        refusal["fault"]["call"]["name"], "backend.index",
+        "{refusal}"
+    );
+    assert_eq!(refusal["fault"]["call"]["arguments"]["path"], purl);
+
+    // A package the registry does not know is a typed refusal that reports
+    // what the lookup found, never an empty list.
+    let unknown = cli(
+        endpoint,
+        &workspace,
+        "json",
+        &["package-versions", "pkg:npm/absent@1.0.0"],
+    );
+    assert!(!unknown.status.success(), "{}", fault(&unknown));
+    let refusal = fault(&unknown);
+    assert!(
+        refusal.contains("no acquired, indexed or discovered versions")
+            && refusal.contains("registry metadata lookup:"),
+        "{refusal}"
+    );
+    drop(daemon);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// `package` and `advisory` must not
+/// disagree about a release whose advisory coverage nobody established. Both
+/// answers carry the same decision and the same coverage and freshness tags,
+/// and neither claims the release is clean.
+#[test]
+fn package_and_advisory_agree_when_advisory_coverage_is_unknown() {
+    let (root, workspace, _secret, _registry, daemon) = online_owner("advisory-agreement");
+    let endpoint = &daemon.endpoint;
+    let purl = "pkg:npm/fixture@1.0.0";
+    let _ = wait_for_discovery(&daemon, &workspace, purl);
+    let package = cli_json(endpoint, &workspace, &["package", purl]);
+    let advisory = cli_json(endpoint, &workspace, &["advisory", purl]);
+    let tags = |page: &Value, prefix: &str| -> Vec<String> {
+        page["records"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|row| row["tags"].as_array().into_iter().flatten())
+            .filter_map(Value::as_str)
+            .filter(|tag| tag.starts_with(prefix))
+            .map(str::to_owned)
+            .collect()
+    };
+    for prefix in ["decision:", "coverage:", "freshness:"] {
+        let from_advisory = tags(&advisory, prefix);
+        assert!(
+            !from_advisory.is_empty(),
+            "advisory has no `{prefix}` tag: {advisory}"
+        );
+        assert_eq!(
+            tags(&package, prefix),
+            from_advisory,
+            "package and advisory disagree on `{prefix}`: {package} vs {advisory}"
+        );
+    }
+    let rendered = package.to_string();
+    assert!(
+        !rendered.contains("no advisories reported"),
+        "unknown advisory coverage must not read as clean: {package}"
+    );
+    drop(daemon);
+    let _ = std::fs::remove_dir_all(root);
 }

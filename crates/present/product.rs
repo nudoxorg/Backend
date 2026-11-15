@@ -13,6 +13,8 @@
 //! reader learns it once.
 
 use crate::drive::ContinuationCursor;
+use crate::reference_page::ReferenceCursor;
+pub use crate::reference_page::ReferencePageInfo;
 use crate::fault::{Fault, Operand};
 use crate::words::wire_words;
 use backend_library::{
@@ -93,6 +95,8 @@ pub struct ProductRecord {
     source_policy: backend_library::SourcePolicyQualification,
     site_symbol: Option<[u8; 32]>,
     reference_details: Option<ReferenceDetails>,
+    /// The last tag is a raw source excerpt, which a summary leaves out.
+    excerpt_tag: bool,
 }
 
 impl ProductRecord {
@@ -116,6 +120,23 @@ impl ProductRecord {
             source_policy: backend_library::SourcePolicyQualification::Unknown,
             site_symbol: None,
             reference_details: None,
+            excerpt_tag: false,
+        }
+    }
+
+    /// Marks the last tag as a raw source excerpt, shown at standard and full detail only.
+    #[must_use]
+    fn with_excerpt_tag(mut self) -> Self {
+        self.excerpt_tag = true;
+        self
+    }
+
+    /// The tags this row shows at `detail`: a summary leaves out raw source excerpts.
+    #[must_use]
+    pub fn tags_for(&self, detail: Option<crate::Detail>) -> &[String] {
+        match (self.excerpt_tag, detail) {
+            (true, Some(crate::Detail::Summary)) => &self.tags[..self.tags.len().saturating_sub(1)],
+            _ => &self.tags,
         }
     }
 
@@ -739,6 +760,7 @@ pub struct ProductView {
     package_graph_request_authority: Option<backend_library::PackageGraphSourceAuthority>,
     semantic_data: Option<ProductSemanticData>,
     references_result: bool,
+    reference_page: Option<ReferencePageInfo>,
     pub(crate) mcp_exposure: crate::McpExposure,
     package_discovery: Option<PackageDiscoveryProjection>,
 }
@@ -955,6 +977,21 @@ impl ProductView {
     #[must_use]
     pub fn records(&self) -> &[ProductRecord] {
         &self.records
+    }
+
+    /// The note at `detail`, saying so when a summary left source excerpts out.
+    #[must_use]
+    pub fn note_for(&self, detail: Option<crate::Detail>) -> Option<std::borrow::Cow<'_, str>> {
+        let note = self.note.as_deref()?;
+        let omitted = detail == Some(crate::Detail::Summary)
+            && self.records.iter().any(|record| record.excerpt_tag);
+        Some(if omitted {
+            std::borrow::Cow::Owned(format!(
+                "{note} Raw source excerpts are omitted at summary; request detail=standard or full to read them."
+            ))
+        } else {
+            std::borrow::Cow::Borrowed(note)
+        })
     }
 
     /// Returns the one-line note, when the reply carried a scalar answer.
@@ -1521,6 +1558,95 @@ impl ProductView {
         self
     }
 
+    /// The cursor to the next page of a references listing, when more uses remain.
+    #[must_use]
+    pub fn reference_cursor(&self) -> Option<&CursorProjection> {
+        self.owner_cursor
+            .as_ref()
+            .filter(|_| self.reference_page.is_some())
+    }
+
+    /// Where this answer sits in a complete references listing, when it is a page of one.
+    #[must_use]
+    pub const fn reference_page(&self) -> Option<&ReferencePageInfo> {
+        self.reference_page.as_ref()
+    }
+
+    /// Identifies the complete listing, so a cursor cannot resume a different one.
+    fn reference_digest(&self) -> [u8; 32] {
+        let mut hasher = blake3::Hasher::new();
+        for record in self.records.iter() {
+            for part in [record.title.as_bytes(), record.operand.as_deref().unwrap_or("").as_bytes()] {
+                hasher.update(&(part.len() as u64).to_le_bytes());
+                hasher.update(part);
+            }
+            if let Some(details) = record.reference_details.as_ref().and_then(|d| serde_json::to_vec(d).ok()) {
+                hasher.update(&details);
+            }
+        }
+        *hasher.finalize().as_bytes()
+    }
+
+    /// Up to `limit` uses of a complete references listing, from `cursor` onward.
+    ///
+    /// The owner answers every use at once, so the page is a window over that reply. The note
+    /// says how many uses remain; the cursor, when any do, names the next and the exact listing.
+    ///
+    /// # Errors
+    ///
+    /// Returns a usage fault for a cursor that is not a references cursor, and a stale-cursor
+    /// fault when the listing changed since the cursor was issued.
+    pub fn reference_window(
+        &self,
+        cursor: Option<&str>,
+        limit: usize,
+        target: CursorTarget,
+    ) -> Result<Self, Fault> {
+        let total = self.records.len();
+        let digest = self.reference_digest();
+        let offset = match cursor {
+            None => 0,
+            Some(token) => {
+                let cursor = ReferenceCursor::parse(token)
+                    .filter(|cursor| cursor.offset <= total)
+                    .ok_or_else(|| Fault::usage("cursor", "not a cursor returned by a references page"))?;
+                if cursor.digest != digest {
+                    return Err(Fault::from_client_error(
+                        &backend_client::ClientError::StaleCursor,
+                        Operand::Argument("cursor".to_owned()),
+                    ));
+                }
+                cursor.offset
+            }
+        };
+        let end = offset.saturating_add(limit.max(1)).min(total);
+        let remaining = total - end;
+        let mut view = Self::rows(&self.heading, self.records[offset..end].to_vec()).with_references_result();
+        let coverage = self.note.as_deref().unwrap_or_default();
+        view.note = if offset == 0 && remaining == 0 {
+            self.note.clone()
+        } else {
+            let place = format!("Uses {}-{} of {total}", offset + 1, end);
+            Some(if remaining == 0 {
+                format!("{coverage}. {place}; this is the last page.")
+            } else {
+                format!("{coverage}. {place}; {remaining} more remain. Pass the returned cursor to read the next page.")
+            })
+        };
+        if offset > 0 || remaining > 0 {
+            view.reference_page = Some(ReferencePageInfo { offset, returned: end - offset, total, remaining });
+        }
+        if remaining > 0 {
+            let token = ReferenceCursor { offset: end, digest }.encode();
+            view.owner_cursor = Some(CursorProjection::projected(
+                ContinuationCursor::ReferencePage(token.clone()),
+                token,
+                target,
+            ));
+        }
+        Ok(view)
+    }
+
     /// Records one product answer a surface assembled itself.
     ///
     /// An accepted intent is not a [`SurfaceReply`], but it is the same shape
@@ -1547,6 +1673,7 @@ impl ProductView {
             package_graph_request_authority: None,
             semantic_data: None,
             references_result: false,
+            reference_page: None,
             package_discovery: None,
             mcp_exposure: crate::McpExposure::Direct,
         }
@@ -1575,6 +1702,7 @@ impl ProductView {
             package_graph_request_authority: None,
             semantic_data: None,
             references_result: false,
+            reference_page: None,
             package_discovery: None,
             mcp_exposure: crate::McpExposure::Direct,
         }
@@ -1601,6 +1729,7 @@ impl ProductView {
             package_graph_request_authority: None,
             semantic_data: None,
             references_result: false,
+            reference_page: None,
             package_discovery: None,
             mcp_exposure: crate::McpExposure::Direct,
         }
@@ -1627,6 +1756,7 @@ impl ProductView {
             package_graph_request_authority: None,
             semantic_data: None,
             references_result: false,
+            reference_page: None,
             package_discovery: None,
             mcp_exposure: crate::McpExposure::Direct,
         }
@@ -1653,6 +1783,7 @@ impl ProductView {
             package_graph_request_authority: None,
             semantic_data: None,
             references_result: false,
+            reference_page: None,
             package_discovery: None,
             mcp_exposure: crate::McpExposure::Direct,
         }
@@ -1682,17 +1813,7 @@ fn fresh_index_attempt_affordance(
 /// claims the later name.
 fn sql_definition_label(definition: &backend_library::sql_query::SqlDefinition) -> String {
     use backend_library::sql_query::{SqlDefinitionAction, SqlObjectKind};
-    let kind_word = match definition.kind {
-        SqlObjectKind::Schema => "schema",
-        SqlObjectKind::Table => "table",
-        SqlObjectKind::View => "view",
-        SqlObjectKind::Column => "column",
-        SqlObjectKind::Index => "index",
-        SqlObjectKind::Trigger => "trigger",
-        SqlObjectKind::Function => "function",
-        SqlObjectKind::Type => "type",
-        SqlObjectKind::Sequence => "sequence",
-    };
+    let kind_word = definition.kind.as_str();
     let qualified = |owner: Option<&str>, name: &str| match owner {
         Some(owner) if definition.kind == SqlObjectKind::Column => format!("{owner}.{name}"),
         _ => name.to_owned(),
@@ -1762,6 +1883,19 @@ pub fn product_view_for_command(
     reply: &SurfaceReply,
 ) -> ProductView {
     let mut view = product_view(reply);
+    if let backend_library::SurfaceCommand::Explore { query, .. } = command
+        && view.records.is_empty()
+        && view.fault.is_none()
+        && matches!(
+            reply,
+            SurfaceReply::Explored(_) | SurfaceReply::ExploredDeclarations(_)
+        )
+    {
+        view.note = Some(explore_empty_note(
+            query.as_ref().map(backend_library::ProductText::as_str),
+            matches!(reply, SurfaceReply::ExploredDeclarations(_)),
+        ));
+    }
     if let backend_library::SurfaceCommand::PackageGraphPage { request } = command {
         view.package_graph_request_authority = request.authority;
     }
@@ -1775,12 +1909,61 @@ pub fn product_view_for_command(
                     package.as_str(),
                 )))
                 .with_affordance(crate::Affordance::UseCommand {
-                    name: "package",
+                    // A pinned registry release is acquired before its
+                    // dependencies can be read; a local label is looked up.
+                    name: match package {
+                        backend_library::PackageReference::Purl(_) => "add",
+                        backend_library::PackageReference::Local(_) => "package",
+                    },
                     args: Box::new([package.as_str().to_owned()]),
                 }),
         );
     }
     view
+}
+
+/// Says what an empty `explore` covered, so an empty page is never read as
+/// "this does not exist". `explore` browses the acquired shelf and one indexed
+/// project's declarations; registry discovery and external references are
+/// searched by name with `index-search`.
+fn explore_empty_note(query: Option<&str>, project_scope: bool) -> String {
+    match (query, project_scope) {
+        (Some(query), true) => format!(
+            "No declaration of this indexed project matches `{query}`. Declarations in other projects, external references and registry packages are not browsed here; `index-search {query}` (backend.index_search) searches all of them by name."
+        ),
+        (Some(query), false) => format!(
+            "Nothing acquired or indexed matches `{query}`; this does not mean no such package or symbol exists. `explore` browses only acquired registry packages and indexed projects, not registry discovery or external references. `index-search {query}` (backend.index_search) searches discovered packages and indexed declarations by name."
+        ),
+        (None, _) => "Nothing is acquired or indexed yet. `explore` browses only acquired registry packages and indexed projects; add a project (`add <directory>`) or acquire a release (`add <pinned purl>`), or look up packages by name with `index-search <name>`.".to_owned(),
+    }
+}
+
+/// Says plainly when an index-search page holds no package, so local declarations alone are
+/// never read as a registry answer.
+///
+/// Only what the page itself establishes is claimed: whether the registry index was ever
+/// populated is not in the reply, so the note names the calls that look a package up or
+/// acquire it instead of guessing.
+fn index_search_package_note(hits: &[RegistrySearchHit], more: bool) -> Option<String> {
+    if hits.iter().any(|hit| !matches!(hit, RegistrySearchHit::LocalDeclaration(_))) {
+        return None;
+    }
+    let found = if hits.is_empty() {
+        "no package or declaration row"
+    } else {
+        "no package, only declaration rows,"
+    };
+    let scope = if more {
+        format!("This page holds {found} from the local registry index; later pages may.")
+    } else {
+        format!("No package from the local registry index matched: this search returned {found}.")
+    };
+    Some(format!(
+        "{scope} This answer does not say whether registry discovery has populated that index. \
+         `package <pinned purl>` (backend.package) looks up one exact release and \
+         `add <pinned purl>` (backend.index) acquires it; `explore` (backend.explore) browses \
+         only acquired packages and indexed projects."
+    ))
 }
 
 /// Registry, library, and semantic-generation answers.
@@ -1879,6 +2062,26 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
             });
             view
         }
+        SurfaceReply::DiscoveredVersions {
+            package,
+            candidates,
+        } => {
+            let mut view = ProductView::rows(
+                "package-versions",
+                candidates
+                    .iter()
+                    .cloned()
+                    .map(RegistrySearchHit::Discovered)
+                    .map(|hit| registry_search_hit_row(&hit))
+                    .collect(),
+            );
+            view.note = Some(format!(
+                "{} release(s) of {} observed by registry metadata, newest first. None is acquired, so dependencies, README and engine requirements are not read yet; acquire one with `add <pinned purl>` (backend.index with path <pinned purl>).",
+                candidates.len(),
+                package.name()
+            ));
+            view
+        }
         SurfaceReply::PackageDetails { registry, forge } => {
             let mut rows = registry_rows(registry);
             rows.extend(forge.iter().map(forge_package_detail_row));
@@ -1893,15 +2096,23 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         SurfaceReply::IndexSearch(records) => {
             ProductView::rows("index-search", registry_rows(records))
         }
-        SurfaceReply::IndexSearchWithDiscovery(hits) => ProductView::rows(
-            "index-search",
-            hits.iter().map(registry_search_hit_row).collect(),
-        ),
-        SurfaceReply::IndexSearchPage(page) => ProductView::rows(
-            "index-search",
-            page.hits.iter().map(registry_search_hit_row).collect(),
-        )
-        .with_index_search_page(page),
+        SurfaceReply::IndexSearchWithDiscovery(hits) => {
+            let mut view = ProductView::rows(
+                "index-search",
+                hits.iter().map(registry_search_hit_row).collect(),
+            );
+            view.note = index_search_package_note(hits, false);
+            view
+        }
+        SurfaceReply::IndexSearchPage(page) => {
+            let mut view = ProductView::rows(
+                "index-search",
+                page.hits.iter().map(registry_search_hit_row).collect(),
+            )
+            .with_index_search_page(page);
+            view.note = index_search_package_note(&page.hits, page.next_cursor.is_some());
+            view
+        }
         SurfaceReply::PackageVersions(records) => {
             ProductView::rows("package-versions", registry_rows(records))
         }
@@ -2044,6 +2255,7 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
                     StyloFailure::Deadline => "; CSS worker deadline exceeded",
                     StyloFailure::WorkerFailure => "; CSS worker or its protocol failed",
                     StyloFailure::PreferencesChanged => "; parser preferences changed",
+                    StyloFailure::UnsupportedSyntax => "; an embedded stylesheet is in a language the CSS parser does not read",
                 },
                 _ => "",
             };
@@ -2182,17 +2394,7 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
             use backend_library::sql_query::SqlQueryTerminal;
             use backend_library::sql_query::SqlFact;
             use backend_library::sql_query::{SqlObjectKind, SqlResolution, SqlStatementSupport};
-            let kind_word = |kind: SqlObjectKind| match kind {
-                SqlObjectKind::Schema => "schema",
-                SqlObjectKind::Table => "table",
-                SqlObjectKind::View => "view",
-                SqlObjectKind::Column => "column",
-                SqlObjectKind::Index => "index",
-                SqlObjectKind::Trigger => "trigger",
-                SqlObjectKind::Function => "function",
-                SqlObjectKind::Type => "type",
-                SqlObjectKind::Sequence => "sequence",
-            };
+            let kind_word = |kind: SqlObjectKind| kind.as_str();
             let mut first_source = true;
             let mut rows: Vec<_> = page.hits.iter().map(|hit| {
                 let label = match &hit.fact {
@@ -2236,6 +2438,7 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
                         use backend_library::sql_query::SqlFailure;
                         match reason {
                             SqlFailure::EngineNotAdmitted => "no SQL worker is admitted or available".to_owned(),
+                            SqlFailure::UnsupportedDialect if page.basis.implicit_selection => "no admitted worker supports this SQL dialect; no .nudox/sql.json declares one, so it was inferred from the file's own content (declare each file's dialect in .nudox/sql.json)".to_owned(),
                             SqlFailure::UnsupportedDialect => "no admitted worker supports this SQL dialect".to_owned(),
                             SqlFailure::Read => "source file could not be read".to_owned(),
                             SqlFailure::SelectionUnavailable => "SQL file selection is unavailable".to_owned(),
@@ -2273,7 +2476,11 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
                     "; no match, but this is NOT proof of absence: see the gaps (query --role gap lists affected files and statements)"
                 }
             } else { "" };
-            let selection = if page.basis.implicit_selection { "all .sql files, dialect inferred" } else { "files named by .nudox/sql.json" };
+            let selection = if page.basis.implicit_selection {
+                format!("all .sql files, dialect inferred (no .nudox/sql.json; declare dialects there, for example {})", backend_library::SQL_SETTINGS_EXAMPLE)
+            } else {
+                "files named by .nudox/sql.json".to_owned()
+            };
             view.note = Some(format!("{terminal}; selection: {selection}; gaps: {gap_text}{empty_hint}. No deployed database is claimed."));
             view.semantic_data = Some(ProductSemanticData::SqlQuery(page.clone())); view
         }
@@ -2571,7 +2778,16 @@ fn index_operation_view(observation: &backend_library::IndexOperationObservation
                     if partial.is_empty() {
                         "published".to_owned()
                     } else {
-                        format!("published with partial compiler coverage ({}); inspect package-profile for compiler coverage details", partial.join("; "))
+                        // The receipt holds only counts per profile; the files left out and why
+                        // are listed by one package-profile read, named here exactly.
+                        let read = crate::Affordance::ReadCompilerOutcomes { package: status.package.clone() };
+                        let call = match (read.tool_call(), read.shell()) {
+                            (Some(call), Some(shell)) => format!(": `{shell}` or `{call}`"),
+                            (Some(call), None) => format!(": `{call}`"),
+                            (None, Some(shell)) => format!(": `{shell}`"),
+                            (None, None) => String::new(),
+                        };
+                        format!("published with partial compiler coverage ({}); inspect package-profile for compiler coverage details, which lists the files left out and why{call}", partial.join("; "))
                     }
                 }
                 backend_library::IndexOperationState::PartiallyPublished {
@@ -3258,6 +3474,7 @@ fn compiler_outcome_rows(
             ProductRecord::new(title,page.next.and_then(|read|serde_json::to_string(&read).ok()),vec![format!("{} of {} captured sources have semantic artifacts",page.completed,page.source_count)])
         }).collect(),
         Outcomes::Stale { .. } => vec![ProductRecord::new("compiler outcome selection changed; read package-profile again", None, Vec::new())],
+        Outcomes::Unavailable { reason: backend_library::PackageCompilerOutcomesUnavailable::SqlAnalysisOnly, .. } => vec![ProductRecord::new("no compiler profile: this project's SQL files are analysed by the SQL worker, not a compiler; see sql-query (MCP: backend.sql_query)", None, Vec::new())],
         Outcomes::Unavailable { reason, .. } => vec![ProductRecord::new(format!("current compiler outcomes unavailable: {}", wire_words(reason)), None, Vec::new())],
     }
 }
@@ -3787,7 +4004,7 @@ fn installed_package_view(heading: &str, facts: &backend_library::InstalledPacka
         rows.extend(facts.files.iter().map(|file| ProductRecord::new(file.path.as_str(), None, vec![
             format!("observed {} bytes · source window starts at byte {} · digest {} · {}", file.bytes, file.offset, file.digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>(), if file.truncated { "partial source excerpt" } else { "complete source excerpt" }),
             file.excerpt.as_str().to_owned(),
-        ])));
+        ]).with_excerpt_tag()));
     }
     let mut view = ProductView::rows(heading, rows);
     view.note = Some("Current local metadata and bounded API entrypoint excerpts; files were read without executing package code. API coverage is partial; no compiler graph or registry acquisition is implied.".to_owned());
@@ -4777,6 +4994,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sql_only_package_profile_points_at_sql_query_not_a_missing_capture() {
+        let outcomes = backend_library::PackageCompilerOutcomes::Unavailable {
+            package: backend_library::PackageReference::parse("/project").expect("local package"),
+            reason: backend_library::PackageCompilerOutcomesUnavailable::SqlAnalysisOnly,
+        };
+        let rows = compiler_outcome_rows(&outcomes);
+        assert_eq!(rows.len(), 1);
+        let text = format!("{:?}", rows[0]);
+        assert!(text.contains("analysed by the SQL worker") && text.contains("sql-query"), "{text}");
+        assert!(!text.contains("capture-not-recorded") && !text.contains("unavailable"), "{text}");
+    }
+
+    #[test]
     fn coverage_gap_text_places_the_exact_owner_context_at_its_source_position() {
         let diagnostic =
             backend_library::PackageCompilerCoverageGapDiagnostic::TypeProjectionCycle {
@@ -5011,6 +5241,67 @@ mod tests {
             let original = serde_json::to_value(&reply).expect("source facts");
             assert!(original.to_string().contains("literal\\nforged"));
         }
+    }
+
+    fn local_hit(name: &str) -> RegistrySearchHit {
+        RegistrySearchHit::LocalDeclaration(LocalDeclarationSearchRecord {
+            coordinate: backend_library::ProductText::new(format!("/project::src/{name}.ts:1::{name}"))
+                .expect("coordinate"),
+            name: backend_library::ProductText::new(name).expect("name"),
+            source: LocalDeclarationSource::Captured {
+                path: backend_library::ProductText::new(format!("src/{name}.ts")).expect("path"),
+                line: std::num::NonZeroU32::new(1).expect("line"),
+            },
+        })
+    }
+
+    #[test]
+    fn index_search_with_no_package_says_so_and_names_the_next_calls() {
+        let views = [
+            product_view(&SurfaceReply::IndexSearchWithDiscovery(Box::new([
+                local_hit("setupConfig"),
+                local_hit("setupLink"),
+            ]))),
+            product_view(&SurfaceReply::IndexSearchPage(IndexSearchPage {
+                snapshot: [7; 32],
+                evaluated_at_millis: 11,
+                hits: Box::new([local_hit("setupConfig")]),
+                next_cursor: None,
+                result_count: IndexSearchResultCount::Exact(1),
+            })),
+        ];
+        for view in &views {
+            let note = view.note().expect("a page with no package hit says so");
+            assert!(note.contains("No package from the local registry index matched"), "{note}");
+            assert!(note.contains("only declaration rows"), "{note}");
+            assert!(note.contains("does not say whether registry discovery has populated"), "{note}");
+            assert!(note.contains("`add <pinned purl>` (backend.index)"), "{note}");
+            assert!(note.contains("`package <pinned purl>` (backend.package)"), "{note}");
+            for rendered in [crate::markdown::product(view), crate::text::product(view, crate::Theme::plain())] {
+                assert!(rendered.contains("No package from the local registry index matched"), "{rendered}");
+            }
+            assert!(crate::dto::ProductDto::new(view).note.is_some());
+        }
+    }
+
+    #[test]
+    fn an_empty_index_search_claims_nothing_beyond_the_reply() {
+        let empty = product_view(&SurfaceReply::IndexSearchWithDiscovery(Box::new([])));
+        let note = empty.note().expect("note");
+        assert!(note.contains("no package or declaration row"), "{note}");
+        assert!(!note.contains("is empty") && !note.contains("not been populated"), "{note}");
+        // A page with more to come only speaks for itself.
+        let first = product_view(&SurfaceReply::IndexSearchPage(IndexSearchPage {
+            snapshot: [7; 32],
+            evaluated_at_millis: 11,
+            hits: Box::new([local_hit("setupConfig")]),
+            next_cursor: Some(IndexSearchCursor::new("owner-v4-token").expect("cursor")),
+            result_count: IndexSearchResultCount::AtLeast(2),
+        }));
+        let note = first.note().expect("note");
+        assert!(note.contains("This page holds no package, only declaration rows"), "{note}");
+        assert!(note.contains("later pages may"), "{note}");
+        assert!(!note.contains("No package from the local registry index matched"), "{note}");
     }
 
     #[test]
@@ -5576,6 +5867,10 @@ mod tests {
             assert!(title.contains("published with partial compiler coverage"), "{title}");
             assert!(title.contains("typescript: 50 of 106 files"), "{title}");
             assert!(title.contains("package-profile for compiler coverage details"), "{title}");
+            assert!(title.contains("lists the files left out and why"), "{title}");
+            assert!(title.contains("\"name\":\"backend.package_profile\""), "{title}");
+            assert!(title.contains("\"compiler_outcome\""), "{title}");
+            assert!(title.contains("package-profile"), "{title}");
             assert!(crate::render::text::product(&view, crate::Theme::plain()).contains("50 of 106 files"));
             assert!(crate::render::markdown::product(&view).contains("50 of 106 files"));
             let dto = serde_json::to_value(crate::dto::ProductDto::new(&view)).unwrap();

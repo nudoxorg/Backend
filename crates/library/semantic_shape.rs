@@ -199,9 +199,30 @@ struct SemanticShapeReadRequestWire {
     source: SemanticShapeSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source_epoch: Option<SemanticSourceEpoch>,
+    #[serde(deserialize_with = "symbol_ids")]
     symbols: Box<[[u8; 32]]>,
     max_nodes: u16,
     max_bytes: u32,
+}
+
+/// Each symbol is read as the 64 hex digits other reads print for an identity, or as the
+/// older 32-byte array, so an id copied from an answer can be passed back unchanged.
+fn symbol_ids<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Box<[[u8; 32]]>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Spelling {
+        Hex(String),
+        Bytes([u8; 32]),
+    }
+    Vec::<Spelling>::deserialize(deserializer)?
+        .into_iter()
+        .map(|spelling| match spelling {
+            Spelling::Bytes(bytes) => Ok(bytes),
+            Spelling::Hex(text) => crate::decode_id(&text)
+                .map_err(|_| serde::de::Error::custom("symbol id is not 64 hex digits")),
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Vec::into_boxed_slice)
 }
 impl SemanticShapeReadRequest {
     /// Checks an inline source and mandatory captured source/compiler roots.
@@ -1866,6 +1887,14 @@ mod tests {
         let admitted: SemanticShapeReadRequest =
             serde_json::from_value(value.clone()).expect("closed operands");
         assert_eq!(admitted.symbols(), &[[6; 32]]);
+        let mut hex = value.clone();
+        hex["symbols"] = serde_json::json!(["06".repeat(32)]);
+        assert_eq!(
+            serde_json::from_value::<SemanticShapeReadRequest>(hex)
+                .expect("a printed hex id reads back")
+                .symbols(),
+            &[[6; 32]]
+        );
         for changed in [
             serde_json::json!({"source": value["source"], "source_epoch":value["source_epoch"], "symbols": ["06060606"], "max_nodes": 4096, "max_bytes": 49152}),
             serde_json::json!({"source": value["source"], "source_epoch":value["source_epoch"], "symbols": [{"kind":"canonical","id":"06".repeat(32)}], "max_nodes": 4096, "max_bytes": 49152}),

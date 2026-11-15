@@ -33,6 +33,30 @@ fn resolve_route_preserves_exact_case_order_for_fixture_rows() {
     assert_eq!(records[1]["identity"]["coordinate"], folded);
 }
 
+#[test]
+fn resolve_route_lists_the_exact_case_file_module_before_a_folded_variable() {
+    let variable = format!("{PROJECT}::backend/main.py:3::app");
+    let module = format!("{PROJECT}::App.vue");
+    let make = |coordinate: &str, kind: DeclarationKind, path: &str, line: u32| {
+        Row::in_package(RowId::Symbol(symbol_key(coordinate)), basis(), package_key(PROJECT), coordinate)
+            .with_kind(kind)
+            .with_source(backend_library::SourceLocation::new(path, line).expect("fixture site"))
+    };
+    let rows = [
+        make(&variable, DeclarationKind::Variable, "backend/main.py", 3),
+        make(&module, DeclarationKind::Module, "App.vue", 1),
+    ];
+    let view = root(std::iter::once(package_row()).chain(rows).collect());
+    let cursor = backend_library::Cursor::for_view_root(&view);
+    let catalog = backend_library::Library::from_view(view, cursor).expect("fixture catalog");
+    let mut server = ready(Fake { page_catalog: Some(catalog), ..Fake::default() });
+    let result = call(&mut server, "backend.resolve", &json!({"query":"App", "limit":2}));
+    let records = result["structuredContent"]["records"].as_array().expect("resolve records");
+    assert_eq!(records.len(), 2, "{result}");
+    assert_eq!(records[0]["identity"]["coordinate"], module);
+    assert_eq!(records[1]["identity"]["coordinate"], variable);
+}
+
 struct SearchAdmissionEndpoint {
     connects: Arc<AtomicUsize>,
     health: Arc<AtomicUsize>,

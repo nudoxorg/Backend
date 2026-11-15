@@ -161,16 +161,13 @@ fn run(private: bool, complete: bool) -> Result<(), Box<dyn std::error::Error>> 
     let mut source_changes = Vec::new();
     let mut ids = Vec::new();
     for &(path, text) in &files {
-        let file = ProductSourceRecord::file_with_retention(
+        let file = ProductSourceRecord::file(
             package.to_bytes(),
             path,
             backend_engine::SourceLanguage::TypeScript,
             *blake3::hash(text.as_bytes()).as_bytes(),
             [3; 32],
             Vec::<backend_compile::SourceDeclaration>::new(),
-            backend_engine::DeclarationRetention::Unavailable(
-                backend_library::SourceUnavailableReason::Unparsed,
-            ),
         )?
         .with_source_identity(ContentId::<SourceFactDomain>::from_canonical_bytes(
             text.as_bytes(),
@@ -433,16 +430,13 @@ fn run(private: bool, complete: bool) -> Result<(), Box<dyn std::error::Error>> 
     if !private {
         let changed_page = format!("{page}// newer source\n");
         fs::write(project.join("page.tsx"), &changed_page)?;
-        let changed_file = ProductSourceRecord::file_with_retention(
+        let changed_file = ProductSourceRecord::file(
             package.to_bytes(),
             "page.tsx",
             backend_engine::SourceLanguage::TypeScript,
             *blake3::hash(changed_page.as_bytes()).as_bytes(),
             [3; 32],
             Vec::<backend_compile::SourceDeclaration>::new(),
-            backend_engine::DeclarationRetention::Unavailable(
-                backend_library::SourceUnavailableReason::Unparsed,
-            ),
         )?
         .with_source_identity(ContentId::<SourceFactDomain>::from_canonical_bytes(
             changed_page.as_bytes(),

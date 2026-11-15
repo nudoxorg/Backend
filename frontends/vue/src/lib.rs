@@ -417,6 +417,11 @@ fn parse_verified(
     })
 }
 
+mod template;
+pub use template::{
+    TemplateClass, TemplateClasses, TemplateModuleClass, TemplateScan, template_classes,
+};
+
 mod script;
 pub use script::{
     DeclarationKind, ScriptCall, ScriptCoverage, ScriptDeclaration, ScriptParse, ScriptParseError,
@@ -443,6 +448,7 @@ pub fn support_fingerprint() -> [u8; 32] {
         include_bytes!("lib.rs").as_slice(),
         include_bytes!("script.rs").as_slice(),
         include_bytes!("inventory.rs").as_slice(),
+        include_bytes!("template.rs").as_slice(),
         include_bytes!("../Cargo.toml").as_slice(),
         include_bytes!("../build.rs").as_slice(),
         env!("VUE_NATIVE_BUILD_BASIS").as_bytes(),

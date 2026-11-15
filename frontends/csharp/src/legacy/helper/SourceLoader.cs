@@ -40,11 +40,20 @@ internal sealed record LoadedCompilation
     /// <summary>Total compilation errors — the fidelity signal for tiering.</summary>
     public required int ErrorCount { get; init; }
 
+    /// <summary>
+    /// Every compilation error, so an image can state the errors of the one file it
+    /// describes (plus the errors no file owns) instead of the whole compilation's.
+    /// </summary>
+    public required IReadOnlyList<Diagnostic> Errors { get; init; }
+
     /// <summary>A capped, human-readable sample of errors for stderr.</summary>
     public required IReadOnlyList<string> ReportableDiagnostics { get; init; }
 
     /// <summary>Whether configured source generators ran successfully.</summary>
     public required string GeneratorSupport { get; init; }
+
+    /// <summary>One-line JSON naming the earliest unresolved reference, when any error is one.</summary>
+    public string? UnresolvedReference { get; init; }
 
     /// <summary>
     /// The absolute, fully-resolved effective root every bound
@@ -287,9 +296,26 @@ internal static partial class SourceLoader
         var detectedFrameworks = config is null && options.ReferenceDirectories.Count == 0
             ? DetectSharedFrameworks(roots)
             : DetectedFrameworks.None;
+        // Package references come from the restore result of each project, never from a
+        // scan of the NuGet cache. Like the shared framework above, a fully captured unit
+        // receives its references from the host and never reads restore output here.
+        var restoredPackages = config is null && options.ReferenceDirectories.Count == 0
+            ? RestoredPackages.Detect(roots)
+            : RestoredPackages.None;
         var (references, capturedReferences) = ReferenceAssemblies(
-            options.ReferenceDirectories, captured is not null, detectedFrameworks.ReferenceDirectories);
+            options.ReferenceDirectories, captured is not null, detectedFrameworks.ReferenceDirectories,
+            restoredPackages.References);
         if (projectReferences is not null) references.AddRange(projectReferences);
+        if (restoredPackages.ProjectCount > 0)
+        {
+            Console.Error.WriteLine(
+                $"oracle: restored packages: {restoredPackages.References.Count} compile assemblies from "
+                    + $"{restoredPackages.RestoredProjectCount} restored project(s)");
+            foreach (var note in restoredPackages.Notes)
+            {
+                Console.Error.WriteLine($"oracle: restore: {note}");
+            }
+        }
         if (detectedFrameworks.ReferenceDirectories.Count > 0)
         {
             Console.Error.WriteLine(
@@ -379,7 +405,9 @@ internal static partial class SourceLoader
             SourceFileCount = files.Count,
             ReferenceCount = references.Count,
             ErrorCount = errors.Count,
+            Errors = errors,
             ReportableDiagnostics = reported,
+            UnresolvedReference = UnresolvedReferences.Summarize(errors, identityRoot, restoredPackages),
             GeneratorSupport = generatorSupport,
             Root = identityRoot,
         };
@@ -813,7 +841,7 @@ internal static partial class SourceLoader
         return result;
     }
 
-    private static bool IsExcluded(string root, string file)
+    internal static bool IsExcluded(string root, string file)
     {
         var relative = Path.GetRelativePath(root, file);
         var segments = relative.Split(
@@ -1083,11 +1111,29 @@ internal static partial class SourceLoader
 
             var directory = new DirectoryInfo(Path.GetFullPath(root));
 
+            // Every project beneath the root contributes: the roots compile as one
+            // assembly, so a nested project's <Using> items and the build files between
+            // it and the root apply to the files it owns.
+            var rootFull = directory.FullName;
             foreach (var project in Directory
-                         .EnumerateFiles(directory.FullName, "*.csproj", SearchOption.TopDirectoryOnly)
+                         .EnumerateFiles(rootFull, "*.csproj", SearchOption.AllDirectories)
+                         .Where(p => !IsExcluded(rootFull, p))
                          .OrderBy(p => p, StringComparer.Ordinal))
             {
                 yield return project;
+                for (var owner = Path.GetDirectoryName(project);
+                     owner is not null && owner.Length > rootFull.Length && owner.StartsWith(rootFull, StringComparison.Ordinal);
+                     owner = Path.GetDirectoryName(owner))
+                {
+                    foreach (var name in new[] { "Directory.Build.props", "Directory.Build.targets" })
+                    {
+                        var path = Path.Combine(owner, name);
+                        if (File.Exists(path))
+                        {
+                            yield return path;
+                        }
+                    }
+                }
             }
 
             for (var depth = 0; directory is not null && depth < MaxAncestorDepth; depth++)
@@ -1263,6 +1309,19 @@ internal static partial class SourceLoader
         return new DetectedFrameworks(["Microsoft.AspNetCore.App"], [aspNet], webImplicitUsings);
     }
 
+    /// <summary>Assembly version of an installed framework file; null when it is unreadable.</summary>
+    private static Version? FrameworkVersion(string file)
+    {
+        try
+        {
+            return AssemblyName.GetAssemblyName(file).Version;
+        }
+        catch (Exception ex) when (ex is BadImageFormatException or IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
     /// <summary>
     /// Reference assemblies for binding.
     /// </summary>
@@ -1274,7 +1333,8 @@ internal static partial class SourceLoader
     /// "everything is an error type" extraction.
     /// </remarks>
     private static (List<MetadataReference> References, IReadOnlyList<CapturedReferenceWitness>? Witness) ReferenceAssemblies(
-        IReadOnlyList<string> overrideDirectories, bool capturedSources, IReadOnlyList<string>? supplementalDirectories = null)
+        IReadOnlyList<string> overrideDirectories, bool capturedSources, IReadOnlyList<string>? supplementalDirectories = null,
+        IReadOnlyList<RestoredPackageReference>? restoredPackages = null)
     {
         IReadOnlyList<string> directories = overrideDirectories.Count == 0
             ? [Path.GetDirectoryName(typeof(object).Assembly.Location) ?? "", .. (supplementalDirectories ?? [])]
@@ -1286,6 +1346,69 @@ internal static partial class SourceLoader
         long capturedReferenceBytes = 0;
         const long maxReferenceBytes = 32L * 1024 * 1024;
         const long maxReferenceSetBytes = 256L * 1024 * 1024;
+        // Restored package assemblies share a simple-name space with the framework
+        // directories. As the SDK's conflict resolution does, the higher assembly version
+        // wins and the framework wins a tie; a package never silently duplicates a name.
+        var packagesByName = (restoredPackages ?? [])
+            .ToDictionary(package => package.Name, StringComparer.OrdinalIgnoreCase);
+        var packageWinners = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Adds one assembly file; the bytes Roslyn consumes are the bytes validated here.
+        void AddReference(string file, string name, bool strict)
+        {
+            try
+            {
+                if (capturedSources)
+                {
+                    // Roslyn must consume exactly the bytes validated here, not lazily
+                    // reopen a mutable path after the metadata check.
+                    using var input = File.OpenRead(file);
+                    using var buffer = new MemoryStream();
+                    var chunk = new byte[64 * 1024];
+                    int read;
+                    while ((read = input.Read(chunk, 0, chunk.Length)) != 0)
+                    {
+                        if (buffer.Length + read > maxReferenceBytes
+                            || capturedReferenceBytes + buffer.Length + read > maxReferenceSetBytes)
+                            throw new OracleFailure("captured reference set exceeds limit");
+                        buffer.Write(chunk, 0, read);
+                    }
+                    var bytes = buffer.ToArray();
+                    capturedReferenceBytes = checked(capturedReferenceBytes + bytes.LongLength);
+                    if (bytes.LongLength > maxReferenceBytes || capturedReferenceBytes > maxReferenceSetBytes)
+                        throw new OracleFailure("captured reference set exceeds limit");
+                    using var stream = new MemoryStream(bytes, writable: false);
+                    using var pe = new PEReader(stream);
+                    if (!pe.HasMetadata || !pe.GetMetadataReader().IsAssembly)
+                    {
+                        if (strict)
+                            throw new BadImageFormatException("not a managed assembly");
+                        return;
+                    }
+                    references.Add(MetadataReference.CreateFromImage(bytes));
+                    witness!.Add(new CapturedReferenceWitness(name, bytes.LongLength,
+                        Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant()));
+                }
+                else
+                {
+                    if (strict)
+                    {
+                        using var stream = File.OpenRead(file);
+                        using var pe = new PEReader(stream);
+                        if (!pe.HasMetadata || !pe.GetMetadataReader().IsAssembly)
+                            throw new BadImageFormatException("not a managed assembly");
+                    }
+                    references.Add(MetadataReference.CreateFromFile(file));
+                }
+            }
+            catch (Exception ex) when (ex is BadImageFormatException or IOException)
+            {
+                if (strict)
+                    throw new OracleFailure($"configured reference assembly could not be loaded: {name}");
+                Console.Error.WriteLine($"oracle: skipping reference {name}: {ex.Message}");
+            }
+        }
+
         foreach (var directory in directories)
         {
             if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory))
@@ -1309,63 +1432,30 @@ internal static partial class SourceLoader
                     || name.Equals("Microsoft.DiaSymReader.Native.amd64", StringComparison.OrdinalIgnoreCase))
                     continue;
 
+                if (packagesByName.TryGetValue(name, out var package) && !seen.Contains(name)
+                    && FrameworkVersion(file) is { } installed && package.AssemblyVersion > installed)
+                {
+                    packageWinners.Add(name);
+                    continue;
+                }
+
                 if (!seen.Add(name))
                     throw new OracleFailure($"duplicate reference assembly name: {name}");
                 if (capturedSources && seen.Count > 8192)
                     throw new OracleFailure("captured reference set exceeds file limit");
 
-                try
-                {
-                    if (capturedSources)
-                    {
-                        // Roslyn must consume exactly the bytes validated here, not lazily
-                        // reopen a mutable path after the metadata check.
-                        using var input = File.OpenRead(file);
-                        using var buffer = new MemoryStream();
-                        var chunk = new byte[64 * 1024];
-                        int read;
-                        while ((read = input.Read(chunk, 0, chunk.Length)) != 0)
-                        {
-                            if (buffer.Length + read > maxReferenceBytes
-                                || capturedReferenceBytes + buffer.Length + read > maxReferenceSetBytes)
-                                throw new OracleFailure("captured reference set exceeds limit");
-                            buffer.Write(chunk, 0, read);
-                        }
-                        var bytes = buffer.ToArray();
-                        capturedReferenceBytes = checked(capturedReferenceBytes + bytes.LongLength);
-                        if (bytes.LongLength > maxReferenceBytes || capturedReferenceBytes > maxReferenceSetBytes)
-                            throw new OracleFailure("captured reference set exceeds limit");
-                        using var stream = new MemoryStream(bytes, writable: false);
-                        using var pe = new PEReader(stream);
-                        if (!pe.HasMetadata || !pe.GetMetadataReader().IsAssembly)
-                        {
-                            if (overrideDirectories.Count != 0)
-                                throw new BadImageFormatException("not a managed assembly");
-                            continue;
-                        }
-                        references.Add(MetadataReference.CreateFromImage(bytes));
-                        witness!.Add(new CapturedReferenceWitness(name, bytes.LongLength,
-                            Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant()));
-                    }
-                    else
-                    {
-                        if (overrideDirectories.Count != 0)
-                        {
-                            using var stream = File.OpenRead(file);
-                            using var pe = new PEReader(stream);
-                            if (!pe.HasMetadata || !pe.GetMetadataReader().IsAssembly)
-                                throw new BadImageFormatException("not a managed assembly");
-                        }
-                        references.Add(MetadataReference.CreateFromFile(file));
-                    }
-                }
-                catch (Exception ex) when (ex is BadImageFormatException or IOException)
-                {
-                    if (overrideDirectories.Count != 0)
-                        throw new OracleFailure($"configured reference assembly could not be loaded: {name}");
-                    Console.Error.WriteLine($"oracle: skipping reference {name}: {ex.Message}");
-                }
+                AddReference(file, name, overrideDirectories.Count != 0);
             }
+        }
+
+        foreach (var package in restoredPackages ?? [])
+        {
+            if (seen.Contains(package.Name)) continue;
+            if (!seen.Add(package.Name)) continue;
+            if (packageWinners.Contains(package.Name))
+                Console.Error.WriteLine(
+                    $"oracle: package {package.Name} {package.AssemblyVersion} replaces the older framework assembly");
+            AddReference(package.Path, package.Name, false);
         }
 
         return (references, witness);
