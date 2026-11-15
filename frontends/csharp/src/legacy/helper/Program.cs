@@ -69,6 +69,11 @@ internal static class Program
             Console.Error.WriteLine($"oracle: {diagnostic}");
         }
 
+        if (loaded.UnresolvedReference is { } unresolved)
+        {
+            Console.Error.WriteLine($"oracle: unresolved-reference: {unresolved}");
+        }
+
         // A buffered stream keeps the writer from issuing a syscall per token.
         // `leaveOpen` matters for stdout: closing the console stream would make
         // any later stderr write on process teardown fail.
