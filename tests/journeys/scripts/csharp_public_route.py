@@ -110,9 +110,9 @@ class Journey:
             self.records.append({"cleanup_error": repr(error)})
 
     # -- CLI ---------------------------------------------------------------
-    def cli(self, label, args, project=None, timeout=900):
+    def cli(self, label, args, project=None, timeout=900, fmt="json"):
         project = project or self.project
-        cmd = [str(self.bin / "backend-cli"), "--format", "json", "--project", str(project),
+        cmd = [str(self.bin / "backend-cli"), *(["--format", fmt] if fmt else []), "--project", str(project),
                "--workspace", str(self.workspace), "--endpoint", str(self.endpoint), *args]
         # A read the owner did not answer in time is documented as repeatable; a busy
         # host (a build farm) makes that common, so repeat it a bounded number of times.
