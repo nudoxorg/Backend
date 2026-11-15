@@ -1964,6 +1964,9 @@ impl CSharpOracle {
     /// Produces an image while retaining the independently owned selected
     /// reference snapshot for publication-time replay custody.
     pub fn produce_with_owned_reference_snapshot<'request, 'config, 'cancel>(
+                unresolved: crate::legacy::unresolved::CSharpUnresolvedReference::from_stderr(
+                    &result.stderr,
+                ),
         &self,
         request: CSharpAuthorityRequest<'request, 'config, 'cancel>,
         snapshot: Arc<crate::legacy::sdk::CSharpResolvedReferenceSnapshot>,
@@ -2315,6 +2318,8 @@ pub enum CSharpAuthorityError {
         expected: [u8; 32],
         /// Digest of the bytes read from the selected path.
         observed: [u8; 32],
+        /// The earliest unresolved reference over every error, when one exists.
+        unresolved: Option<crate::legacy::unresolved::CSharpUnresolvedReference>,
     },
     /// The selected source exceeds the explicit pre-read byte bound.
     #[error("C# authority source observed {observed} bytes; maximum is {maximum}")]
