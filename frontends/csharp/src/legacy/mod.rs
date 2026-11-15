@@ -13,6 +13,7 @@ mod oracle;
 mod producer;
 mod restore;
 mod sdk;
+mod unresolved;
 
 pub use self::image::{
     Atom, Attribute, CSharpImage, Declaration, DeclarationFlags, DeclarationIter, DeclarationKind,
@@ -35,6 +36,7 @@ pub use self::producer::{
     DEFAULT_OUTPUT_LIMIT, DEFAULT_SOURCE_LIMIT,
 };
 
+pub use self::unresolved::{CSharpRestoreState, CSharpUnresolvedReference};
 pub use self::restore::{
     RestoreClosure, RestoreError, resolve_project_assets, resolve_project_assets_checked,
     resolve_project_assets_with_metadata,

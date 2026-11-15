@@ -7,6 +7,7 @@
 //! typed diagnostics. Process, JSON-RPC, and GPUI crates only decode or project these values.
 
 mod compiler;
+mod compiler_csharp;
 mod compiler_go;
 mod compiler_typescript;
 mod compiler_typescript_admission;
@@ -50,6 +51,9 @@ pub use compiler::{
     SemanticImageAccessError, SemanticImageAuthority, SemanticImageSnapshot,
     SignatureCarrierFaultFacts, SourceAuthority, TypeNodeFaultFacts, UnavailableCompiler,
     ValidateFaultKind, ValidationFaultFacts, WriteFaultKind,
+};
+pub use compiler_csharp::{
+    CSharpRestoreState, CSharpUnresolvedReferenceFacts, CSharpUnresolvedReferenceInput,
 };
 pub use compiler_go::GoAuthorityFailureKind;
 pub use compiler_typescript::{

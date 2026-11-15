@@ -8311,6 +8311,10 @@ fn package_authority_terminal(
                     },
                 },
             });
+            let diagnostic = diagnostic.map(|diagnostic| match csharp_unresolved_facts(&cause) {
+                Some(facts) => diagnostic.with_csharp_unresolved(facts),
+                None => diagnostic,
+            });
             if adapter_unavailable || pre_recipe_typescript_admission {
                 CompilerTerminal::AuthorityAdmission {
                     source,
@@ -8334,6 +8338,39 @@ fn package_authority_terminal(
             }
         }
     }
+}
+
+/// The first unresolved reference Roslyn named for a refused C# compilation, in the
+/// closed shape the compiler outcome carries; `None` when the helper named none or its
+/// summary does not fit that shape.
+pub(crate) fn csharp_unresolved_facts(
+    cause: &PackageAuthorityError,
+) -> Option<backend_library::interface::CSharpUnresolvedReferenceFacts> {
+    use backend_frontend_csharp::legacy::{CSharpAuthorityError, CSharpRestoreState as State};
+    use backend_library::interface::{
+        CSharpRestoreState, CSharpUnresolvedReferenceFacts, CSharpUnresolvedReferenceInput,
+    };
+    let PackageAuthorityError::CSharp(CSharpAuthorityError::CompilationIncomplete {
+        unresolved: Some(found),
+        ..
+    }) = cause
+    else {
+        return None;
+    };
+    CSharpUnresolvedReferenceFacts::new(CSharpUnresolvedReferenceInput {
+        code: found.code,
+        symbol: &found.symbol,
+        path: &found.path,
+        line: found.line,
+        project: found.project.as_deref(),
+        restore: match found.restore {
+            State::Present => CSharpRestoreState::Present,
+            State::Missing => CSharpRestoreState::Missing,
+            State::Unknown => CSharpRestoreState::Unknown,
+        },
+        count: found.count,
+        files: found.files,
+    })
 }
 
 pub(crate) fn python_authority_failure_kind(
@@ -9327,6 +9364,102 @@ mod tests {
             backend_library::PackageCompilerFailure::decode_bounded_json(&encoded).unwrap(),
             failure
         );
+    }
+
+    #[test]
+    fn csharp_refused_compilation_names_its_first_unresolved_reference() {
+        use backend_frontend_csharp::legacy::{
+            CSharpAuthorityError, CSharpRestoreState, CSharpUnresolvedReference,
+        };
+        use backend_semantic::vocabulary::CSharpVersion;
+
+        let request = super::ApplicationCompilerRequest {
+            profile: LanguageProfile::CSharp(CSharpVersion::CSharp14),
+            stage: Stage::LowerIr,
+            source: "public sealed class Library {}",
+        };
+        let source = request_source(request).unwrap();
+        let target = ContentId::from_canonical_bytes(b"refused C# compilation");
+        let toolchain = ResolvedToolchain::from_version(
+            NativeTool::CSharpCompiler,
+            host_path("/toolchain/bin/dotnet"),
+            b"10.0.100",
+        )
+        .unwrap();
+        let unresolved = |found: Option<CSharpUnresolvedReference>| {
+            package_authority_terminal(
+                target,
+                request,
+                source,
+                ToolchainSelection::ResolvedNative(toolchain),
+                PackageAuthorityError::CSharp(CSharpAuthorityError::CompilationIncomplete {
+                    count: 23,
+                    diagnostic: "CS0246 /private/checkout/src/Api/Data/AppDbContext.cs".to_owned(),
+                    unresolved: found,
+                }),
+            )
+        };
+
+        let terminal = unresolved(Some(CSharpUnresolvedReference {
+            code: 246,
+            symbol: "DbContext".to_owned(),
+            path: "src/Api/Data/AppDbContext.cs".to_owned(),
+            line: 15,
+            project: Some("src/Api/Api.csproj".to_owned()),
+            restore: CSharpRestoreState::Present,
+            count: 23,
+            files: 5,
+        }));
+        let CompilerTerminal::Compile {
+            cause:
+                CompilerCause::Authority {
+                    phase: AuthorityPhase::TypeCheck,
+                    class: AuthorityDiagnosticClass::Type,
+                    diagnostic: Some(diagnostic),
+                },
+            ..
+        } = &terminal
+        else {
+            panic!("a refused C# compilation is a type-level refusal");
+        };
+        let facts = diagnostic.csharp_unresolved.as_ref().expect("named reference");
+        assert_eq!((facts.code(), facts.symbol(), facts.line()), (246, "DbContext", 15));
+        assert_eq!(facts.path(), "src/Api/Data/AppDbContext.cs");
+        assert_eq!(facts.project(), Some("src/Api/Api.csproj"));
+        let failure = backend_library::PackageCompilerFailure::from_package_terminal(
+            "tests/Api.Tests/Account.cs",
+            &terminal,
+        )
+        .unwrap()
+        .expect("typed package outcome");
+        assert_eq!(failure.kind_tag(), "csharp_unresolved_reference");
+        let detail = failure.detail();
+        for expected in [
+            "CS0246",
+            "DbContext",
+            "src/Api/Data/AppDbContext.cs:15",
+            "project src/Api/Api.csproj, which was restored",
+            "22 more unresolved references in 5 files",
+        ] {
+            assert!(detail.contains(expected), "{detail}");
+        }
+        assert!(!detail.contains("/private"), "{detail}");
+        let encoded = failure.encode_bounded_json().unwrap();
+        assert_eq!(
+            backend_library::PackageCompilerFailure::decode_bounded_json(&encoded).unwrap(),
+            failure
+        );
+
+        // The helper named nothing: the refusal keeps its closed type tag and no named reference.
+        let terminal = unresolved(None);
+        let failure = backend_library::PackageCompilerFailure::from_package_terminal(
+            "tests/Api.Tests/Account.cs",
+            &terminal,
+        )
+        .unwrap()
+        .expect("typed package outcome");
+        assert_eq!(failure.kind_tag(), "authority_type");
+        assert!(failure.csharp_unresolved_reference().is_none());
     }
 
     #[test]

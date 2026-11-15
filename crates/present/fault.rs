@@ -1102,6 +1102,10 @@ impl Fault {
                     tool.executable(),
                 )
             }
+        } else if let Some(reference) = failure.csharp_unresolved_reference() {
+            // Roslyn named the first reference it could not bind: say which, and where,
+            // instead of a general instruction to check every reference.
+            format!("{}; {}", failure.detail(), reference.advice())
         } else if failure.relative_path().ends_with(".cs") && failure.detail().contains("authority fault") {
             // The producer's own diagnostics stay local, so say what a reader can do about
             // a refused C# compilation without guessing beyond that.
