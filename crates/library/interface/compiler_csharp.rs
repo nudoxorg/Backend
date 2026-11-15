@@ -15,6 +15,45 @@ const MAX_PATH_BYTES: usize = 256;
 /// CS0006, CS0012, CS0234, CS0246, CS0400 and CS0518.
 const UNRESOLVED_CODES: [u16; 6] = [6, 12, 234, 246, 400, 518];
 
+/// Why the configured `dotnet` file cannot run the compiler stage.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CSharpHostFormatFailure {
+    /// The file is an interpreter script that launches the real host (a package manager's
+    /// wrapper), not an executable the compiler stage can hold in private custody.
+    LauncherScript,
+}
+
+impl CSharpHostFormatFailure {
+    /// One-line public detail.
+    #[must_use]
+    pub const fn detail(self) -> &'static str {
+        match self {
+            Self::LauncherScript => {
+                "C# compiler stage refused: the configured dotnet is a launcher script, not an executable the compiler can hold in private custody"
+            }
+        }
+    }
+
+    /// What the owner of the configuration can do about it.
+    #[must_use]
+    pub const fn advice(self) -> &'static str {
+        match self {
+            Self::LauncherScript => {
+                "point NUDOX_DOTNET at the real dotnet executable that the launcher runs (not the launcher), then retry"
+            }
+        }
+    }
+
+    /// Stable tag for the failure.
+    #[must_use]
+    pub const fn kind_tag(self) -> &'static str {
+        match self {
+            Self::LauncherScript => "csharp_host_launcher_script",
+        }
+    }
+}
+
 /// What the restore result of the project owning an unresolved reference says.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -255,6 +294,16 @@ fn relative_path_ok(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launcher_script_failure_says_what_to_configure() {
+        let failure = CSharpHostFormatFailure::LauncherScript;
+        assert!(failure.detail().contains("launcher script"));
+        assert!(failure.advice().contains("NUDOX_DOTNET"));
+        assert_eq!(failure.kind_tag(), "csharp_host_launcher_script");
+        assert_eq!(serde_json::to_string(&failure).unwrap(), "\"launcher_script\"");
+        assert!(serde_json::from_str::<CSharpHostFormatFailure>("\"elf\"").is_err());
+    }
 
     fn facts(restore: CSharpRestoreState) -> CSharpUnresolvedReferenceFacts {
         CSharpUnresolvedReferenceFacts::new(CSharpUnresolvedReferenceInput {

@@ -287,6 +287,47 @@ mod tests {
     }
 
     #[test]
+    fn csharp_launcher_script_host_reaches_refusal_render_with_the_configuration_fix() {
+        use backend_library::interface::{
+            AuthorityDiagnosticClass, AuthorityPhase, CSharpHostFormatFailure, CompilerAttempt,
+            CompilerCause, CompilerDiagnostic, CompilerTerminal, SourceAuthority,
+        };
+        use backend_version::{CompileRecipeDomain, ContentId, SourceFactDomain};
+
+        let terminal = CompilerTerminal::Compile {
+            attempted: CompilerAttempt {
+                source: SourceAuthority {
+                    identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"cs source"),
+                    byte_len: 9,
+                },
+                recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"cs recipe"),
+            },
+            cause: CompilerCause::Authority {
+                phase: AuthorityPhase::TypeCheck,
+                class: AuthorityDiagnosticClass::Authority,
+                diagnostic: CompilerDiagnostic::from_native(
+                    b"/nix/store/x-dotnet-wrapper/bin/dotnet is a launcher script",
+                    60,
+                    false,
+                )
+                .map(|d| d.with_csharp_host_format(CSharpHostFormatFailure::LauncherScript)),
+            },
+        };
+        let failure = PackageCompilerFailure::from_package_terminal("src/App.cs", &terminal)
+            .expect("source-bound C# refusal")
+            .expect("authority refusal");
+        let bytes = failure.encode_bounded_json().expect("canonical refusal JSON");
+        let reopened = PackageCompilerFailure::decode_bounded_json(&bytes)
+            .expect("cold compiler-outcome reader");
+        let rendered =
+            Fault::compiler_refusal(&reopened, Operand::Whole).cause().sentence().to_owned();
+        assert!(rendered.contains("configured dotnet is a launcher script"), "{rendered}");
+        assert!(rendered.contains("point NUDOX_DOTNET at the real dotnet executable"), "{rendered}");
+        assert!(!rendered.contains("/nix/store"), "{rendered}");
+        assert!(!rendered.contains("confirm dotnet and the Roslyn helper"), "{rendered}");
+    }
+
+    #[test]
     fn rust_scope_details_reach_refusal_render_without_paths() {
         use backend_library::interface::{
             AuthorityDiagnosticClass, AuthorityPhase, CompilerAttempt, CompilerCause,

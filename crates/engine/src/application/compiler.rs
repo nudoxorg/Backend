@@ -8311,9 +8311,12 @@ fn package_authority_terminal(
                     },
                 },
             });
-            let diagnostic = diagnostic.map(|diagnostic| match csharp_unresolved_facts(&cause) {
-                Some(facts) => diagnostic.with_csharp_unresolved(facts),
-                None => diagnostic,
+            let diagnostic = diagnostic.map(|diagnostic| {
+                match (csharp_unresolved_facts(&cause), csharp_host_format_failure(&cause)) {
+                    (Some(facts), _) => diagnostic.with_csharp_unresolved(facts),
+                    (None, Some(failure)) => diagnostic.with_csharp_host_format(failure),
+                    (None, None) => diagnostic,
+                }
             });
             if adapter_unavailable || pre_recipe_typescript_admission {
                 CompilerTerminal::AuthorityAdmission {
@@ -8343,6 +8346,20 @@ fn package_authority_terminal(
 /// The first unresolved reference Roslyn named for a refused C# compilation, in the
 /// closed shape the compiler outcome carries; `None` when the helper named none or its
 /// summary does not fit that shape.
+/// Why the configured dotnet file cannot run the compiler stage, when that was the refusal.
+pub(crate) fn csharp_host_format_failure(
+    cause: &PackageAuthorityError,
+) -> Option<backend_library::interface::CSharpHostFormatFailure> {
+    use backend_frontend_csharp::legacy::CSharpAuthorityError;
+    match cause {
+        PackageAuthorityError::CSharp(CSharpAuthorityError::ExecutionHostFormat {
+            launcher_script: true,
+            ..
+        }) => Some(backend_library::interface::CSharpHostFormatFailure::LauncherScript),
+        _ => None,
+    }
+}
+
 pub(crate) fn csharp_unresolved_facts(
     cause: &PackageAuthorityError,
 ) -> Option<backend_library::interface::CSharpUnresolvedReferenceFacts> {
@@ -9460,6 +9477,54 @@ mod tests {
         .expect("typed package outcome");
         assert_eq!(failure.kind_tag(), "authority_type");
         assert!(failure.csharp_unresolved_reference().is_none());
+    }
+
+    #[test]
+    fn csharp_launcher_script_host_is_named_in_the_refusal() {
+        use backend_frontend_csharp::legacy::CSharpAuthorityError;
+        use backend_semantic::vocabulary::CSharpVersion;
+
+        let request = super::ApplicationCompilerRequest {
+            profile: LanguageProfile::CSharp(CSharpVersion::CSharp14),
+            stage: Stage::LowerIr,
+            source: "public sealed class Library {}",
+        };
+        let source = request_source(request).unwrap();
+        let target = ContentId::from_canonical_bytes(b"launcher script host");
+        let toolchain = ResolvedToolchain::from_version(
+            NativeTool::CSharpCompiler,
+            host_path("/toolchain/bin/dotnet"),
+            b"10.0.100",
+        )
+        .unwrap();
+        let refused = |launcher_script| {
+            let terminal = package_authority_terminal(
+                target,
+                request,
+                source,
+                ToolchainSelection::ResolvedNative(toolchain),
+                PackageAuthorityError::CSharp(CSharpAuthorityError::ExecutionHostFormat {
+                    path: std::path::PathBuf::from("/toolchain/bin/dotnet").into_boxed_path(),
+                    length: 296,
+                    leading: "a launcher script: \"#! /bin/bash -e\"".to_owned(),
+                    launcher_script,
+                }),
+            );
+            backend_library::PackageCompilerFailure::from_package_terminal("Library.cs", &terminal)
+                .unwrap()
+                .expect("typed package outcome")
+        };
+        let failure = refused(true);
+        assert_eq!(failure.kind_tag(), "csharp_host_launcher_script");
+        assert!(failure.detail().contains("launcher script"), "{}", failure.detail());
+        assert!(!failure.detail().contains("/toolchain"), "{}", failure.detail());
+        let encoded = failure.encode_bounded_json().unwrap();
+        assert_eq!(
+            backend_library::PackageCompilerFailure::decode_bounded_json(&encoded).unwrap(),
+            failure
+        );
+        // A host that is not an ELF and not a script keeps the general runtime refusal.
+        assert_eq!(refused(false).kind_tag(), "authority_runtime");
     }
 
     #[test]

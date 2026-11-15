@@ -862,6 +862,7 @@ fn snapshot_execution(
                 path: toolchain.to_path_buf().into_boxed_path(),
                 length: tool_bytes.len(),
                 leading: describe_leading_bytes(&tool_bytes),
+                launcher_script: tool_bytes.starts_with(b"#!"),
             });
         }
         // External loader files are bound for identity and the post-copy
@@ -2299,6 +2300,9 @@ pub enum CSharpAuthorityError {
         length: usize,
         /// What the file's first bytes say it is.
         leading: String,
+        /// Whether the file starts with an interpreter line (`#!`): a launcher script
+        /// that execs the real host, as package managers install.
+        launcher_script: bool,
     },
     /// Process-wide execution snapshot credits are unavailable.
     #[error("C# execution snapshot capacity is exhausted or unavailable")]

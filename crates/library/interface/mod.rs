@@ -53,7 +53,7 @@ pub use compiler::{
     ValidateFaultKind, ValidationFaultFacts, WriteFaultKind,
 };
 pub use compiler_csharp::{
-    CSharpRestoreState, CSharpUnresolvedReferenceFacts, CSharpUnresolvedReferenceInput,
+    CSharpHostFormatFailure, CSharpRestoreState, CSharpUnresolvedReferenceFacts, CSharpUnresolvedReferenceInput,
 };
 pub use compiler_go::GoAuthorityFailureKind;
 pub use compiler_typescript::{

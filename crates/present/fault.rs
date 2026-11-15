@@ -1148,6 +1148,9 @@ impl Fault {
                     tool.executable(),
                 )
             }
+        } else if let Some(host) = failure.csharp_host_format_failure() {
+            // The configured dotnet is a wrapper script: name the file kind and the one fix.
+            format!("{}; {}", failure.detail(), host.advice())
         } else if let Some(reference) = failure.csharp_unresolved_reference() {
             // Roslyn named the first reference it could not bind: say which, and where,
             // instead of a general instruction to check every reference.

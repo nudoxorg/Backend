@@ -2153,6 +2153,22 @@ impl PackageCompilerFailure {
         }
     }
 
+    /// Why the configured dotnet file cannot run the C# compiler stage, when that was the cause.
+    #[must_use]
+    pub fn csharp_host_format_failure(&self) -> Option<crate::interface::CSharpHostFormatFailure> {
+        match &self.cause {
+            PackageCompilerFailureCause::Authority {
+                diagnostic: Some(facts),
+                ..
+            }
+            | PackageCompilerFailureCause::AuthorityAdmission {
+                diagnostic: Some(facts),
+                ..
+            } => facts.csharp_host_format,
+            _ => None,
+        }
+    }
+
     /// Installed compiler-package evidence; the retained source is request context.
     #[must_use]
     pub fn typescript_compiler_admission(
@@ -2351,7 +2367,8 @@ impl PackageCompilerFailure {
             && (facts.typescript_admission.is_some()
                 || facts.typescript_cause.is_some()
                 || facts.rust_source_scope_failure.is_some()
-                || facts.csharp_unresolved.is_some())
+                || facts.csharp_unresolved.is_some()
+                || facts.csharp_host_format.is_some())
         {
             let expected = detail_for_package_cause(&self.cause);
             if (self.detail.as_str(), self.detail_truncated) != (expected.0.as_str(), expected.1) {
@@ -2769,6 +2786,25 @@ fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, boo
     if let PackageCompilerFailureCause::Authority {
         diagnostic:
             Some(CompilerAuthorityDiagnosticFacts {
+                csharp_host_format: Some(failure),
+                ..
+            }),
+        ..
+    }
+    | PackageCompilerFailureCause::AuthorityAdmission {
+        diagnostic:
+            Some(CompilerAuthorityDiagnosticFacts {
+                csharp_host_format: Some(failure),
+                ..
+            }),
+        ..
+    } = cause
+    {
+        return sanitize_package_compiler_detail(failure.detail(), false);
+    }
+    if let PackageCompilerFailureCause::Authority {
+        diagnostic:
+            Some(CompilerAuthorityDiagnosticFacts {
                 csharp_unresolved: Some(reference),
                 ..
             }),
@@ -2979,6 +3015,9 @@ fn package_cause_is_valid(cause: &PackageCompilerFailureCause) -> bool {
                 && (facts.csharp_unresolved.is_none()
                     || (*language == CompilerLanguageFact::CSharp
                         && *class == AuthorityClassFact::Type))
+                && (facts.csharp_host_format.is_none()
+                    || (*language == CompilerLanguageFact::CSharp
+                        && *class == AuthorityClassFact::Authority))
         }
         PackageCompilerFailureCause::Authority {
             class,
@@ -2987,7 +3026,8 @@ fn package_cause_is_valid(cause: &PackageCompilerFailureCause) -> bool {
         } => authority_diagnostic_facts_are_valid(facts)
             && (facts.rust_source_scope_failure.is_none()
                 || *class == AuthorityClassFact::SourceScope)
-            && (facts.csharp_unresolved.is_none() || *class == AuthorityClassFact::Type),
+            && (facts.csharp_unresolved.is_none() || *class == AuthorityClassFact::Type)
+            && (facts.csharp_host_format.is_none() || *class == AuthorityClassFact::Authority),
         PackageCompilerFailureCause::Authority {
             diagnostic: None, ..
         }
@@ -3004,6 +3044,7 @@ fn authority_diagnostic_facts_are_valid(facts: &CompilerAuthorityDiagnosticFacts
         facts.go_failure.is_some(),
         facts.rust_source_scope_failure.is_some(),
         facts.csharp_unresolved.is_some(),
+        facts.csharp_host_format.is_some(),
     ]
     .into_iter()
     .filter(|present| *present)
@@ -8174,6 +8215,57 @@ mod tests {
         let plain_bytes = plain.encode_bounded_json().expect("canonical facts");
         let plain_json: serde_json::Value = serde_json::from_slice(&plain_bytes).expect("JSON");
         assert!(plain_json["cause"]["fault"]["diagnostic"].get("csharp_unresolved").is_none());
+    }
+
+    #[test]
+    fn csharp_launcher_script_host_survives_the_codec_and_rejects_forgery() {
+        use crate::interface::{
+            AuthorityDiagnosticClass, AuthorityPhase, CSharpHostFormatFailure, CompilerAttempt,
+            CompilerCause, CompilerDiagnostic, CompilerTerminal, SourceAuthority,
+        };
+        let terminal = CompilerTerminal::Compile {
+            attempted: CompilerAttempt {
+                source: SourceAuthority {
+                    identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"cs bytes"),
+                    byte_len: 8,
+                },
+                recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"cs recipe"),
+            },
+            cause: CompilerCause::Authority {
+                phase: AuthorityPhase::TypeCheck,
+                class: AuthorityDiagnosticClass::Authority,
+                diagnostic: CompilerDiagnostic::from_native(b"#! /nix/store/bash -e", 21, false)
+                    .map(|d| d.with_csharp_host_format(CSharpHostFormatFailure::LauncherScript)),
+            },
+        };
+        let failure = PackageCompilerFailure::from_package_terminal("App.cs", &terminal)
+            .expect("projection")
+            .expect("authority refusal");
+        assert_eq!(failure.kind_tag(), "csharp_host_launcher_script");
+        assert_eq!(
+            failure.csharp_host_format_failure(),
+            Some(CSharpHostFormatFailure::LauncherScript)
+        );
+        assert!(failure.detail().contains("launcher script"));
+        let encoded = failure.encode_bounded_json().expect("canonical facts");
+        assert!(!String::from_utf8_lossy(&encoded).contains("/nix/store"));
+        assert_eq!(
+            PackageCompilerFailure::decode_bounded_json(&encoded).expect("reopens"),
+            failure
+        );
+        let json: serde_json::Value = serde_json::from_slice(&encoded).expect("JSON");
+        let mut forged = json.clone();
+        forged["detail"] = serde_json::json!("something else");
+        assert!(
+            PackageCompilerFailure::decode_bounded_json(&serde_json::to_vec(&forged).unwrap())
+                .is_err()
+        );
+        let mut forged = json;
+        forged["cause"]["fault"]["class"] = serde_json::json!("type");
+        assert!(
+            PackageCompilerFailure::decode_bounded_json(&serde_json::to_vec(&forged).unwrap())
+                .is_err()
+        );
     }
 
     #[test]
