@@ -17,7 +17,7 @@ Checks (each is printed; the receipt lists them):
 Debug builds skip the account gate, so a passing run is a development-mode result.
 
   csharp_efcore_acceptance.py --bin-dir DIR --fixtures DIR --output DIR --dotnet PATH --helper PATH
-                              [--no-restore] [--scenario restored|unresolved ...]
+                              [--no-restore] [--scenario restored|partial|unresolved ...]
 """
 import argparse
 import json
@@ -82,7 +82,7 @@ def profile_text(j, project, label):
     return rc, raw
 
 
-def scenario(args, fixtures, label, mutate=None, expect_published=True):
+def scenario(args, fixtures, label, mutate=None, mode="published"):
     j = Journey(args.bin_dir, args.output, {"NUDOX_DOTNET": args.dotnet, "NUDOX_ROSLYN_HELPER": args.helper}, label)
     try:
         project = j.stage_fixture(fixtures / "csharp-efcore-solution")
@@ -97,6 +97,24 @@ def scenario(args, fixtures, label, mutate=None, expect_published=True):
         show(f"{label}: add (exit {rc})", raw)
         rc, profile = profile_text(j, project, label)
         refused = "compiler input was rejected" in profile or "authority_runtime" in profile
+        expect_published = mode == "published"
+        if mode == "partial":
+            partial = re.search(r"published with partial coverage \((\d+) of (\d+) files\)", profile)
+            check(f"{label}: the profile is published and says it is partial",
+                  rc == 0 and partial is not None and int(partial[1]) < int(partial[2]), profile[:600])
+            owner_log = "".join(path.read_text(errors="replace") for path in pathlib.Path(args.output).glob(f"{label}-owner-*.log"))
+            check(f"{label}: the owner log names the file that does not compile",
+                  re.search(r"scope gap: path=\S*Missing\.cs .*CSharpSourceDoesNotCompile", owner_log) is not None, owner_log[-600:])
+            check(f"{label}: the owner log names the first unresolved reference with its project",
+                  '"symbol\\":\\"Missing\\"' in owner_log and "Pantry.Api.csproj" in owner_log, owner_log[-600:])
+            # references still answer for the files that compiled, and say the publication is partial
+            rc, found, raw = j.cli(f"{label}-search-db", ["search", "AppDbContext", "--limit", "20"], project)
+            coords = coordinates(found, "AppDbContext", {"class"})
+            if coords:
+                _, refs, raw = j.cli(f"{label}-references", ["references", coords[0]], project)
+                check(f"{label}: references answer from the files that compiled and call the coverage partial",
+                      "Reference coverage: partial" in raw or "partial" in str((refs or {}).get("note", "")), raw[:500])
+            return j
         if expect_published:
             check(f"{label}: package-profile reports no compiler refusal", rc == 0 and not refused, profile[:600])
             check(f"{label}: no unresolved reference is accepted into a complete publication",
@@ -151,10 +169,20 @@ def scenario(args, fixtures, label, mutate=None, expect_published=True):
         return None
 
 
-def unresolved_package(project):
-    """A source file whose using no package or project supplies, in a restored project."""
-    (project / "src" / "Pantry.Api" / "Data" / "Missing.cs").write_text(
-        "using Missing.Package.Core;\nnamespace Pantry.Api.Data;\npublic class Missing { public Thing Value = new Thing(); }\n")
+MISSING = "using Missing.Package.Core;\nnamespace Pantry.Api.Data;\npublic class Missing { public Thing Value = new Thing(); }\n"
+
+
+def unresolved_in_one_file(project):
+    """One source file whose using no package or project supplies, in a restored project."""
+    (project / "src" / "Pantry.Api" / "Data" / "Missing.cs").write_text(MISSING)
+
+
+def unresolved_everywhere(project):
+    """No file of the project compiles: only the file with the missing reference remains."""
+    for source in project.rglob("*.cs"):
+        source.unlink()
+    (project / "src" / "Pantry.Api" / "Data").mkdir(parents=True, exist_ok=True)
+    (project / "src" / "Pantry.Api" / "Data" / "Missing.cs").write_text(MISSING)
 
 
 def main():
@@ -168,13 +196,15 @@ def main():
     p.add_argument("--scenario", action="append")
     args = p.parse_args()
     fixtures = pathlib.Path(args.fixtures)
-    wanted = args.scenario or ["restored", "unresolved"]
+    wanted = args.scenario or ["restored", "partial", "unresolved"]
     journeys = []
     try:
         if "restored" in wanted:
             journeys.append(scenario(args, fixtures, "restored"))
+        if "partial" in wanted:
+            journeys.append(scenario(args, fixtures, "partial", unresolved_in_one_file, mode="partial"))
         if "unresolved" in wanted:
-            journeys.append(scenario(args, fixtures, "unresolved", unresolved_package, expect_published=False))
+            journeys.append(scenario(args, fixtures, "unresolved", unresolved_everywhere, mode="refused"))
     finally:
         for journey in journeys:
             if journey:
