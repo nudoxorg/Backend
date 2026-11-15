@@ -703,6 +703,117 @@ impl DiscoveryPolicy {
     }
 }
 
+/// Ignore inputs the walker reads from outside the per-directory files of the tree it walks,
+/// as exact bytes (`None` when a file is absent).
+///
+/// `walk` consults every ancestor directory's ignore files, each visited
+/// directory's `.git/info/exclude`, and the configured global Git excludes. Only the
+/// walk's result used to witness them, so a scan could not tell that the same
+/// inventory was selected by the same rules. A caller that hashes these entries
+/// next to the walk's own policy can.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AmbientIgnoreInputs {
+    entries: Vec<(PathBuf, Option<Vec<u8>>)>,
+}
+
+impl AmbientIgnoreInputs {
+    /// Canonical length-prefixed encoding of the paths and their exact bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut out = b"nudox.ambient-ignore-inputs.v1\0".to_vec();
+        out.extend_from_slice(&(self.entries.len() as u64).to_be_bytes());
+        for (path, contents) in &self.entries {
+            let path = path.as_os_str().as_encoded_bytes();
+            out.extend_from_slice(&(path.len() as u64).to_be_bytes());
+            out.extend_from_slice(path);
+            match contents {
+                None => out.push(0),
+                Some(bytes) => {
+                    out.push(1);
+                    out.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+                    out.extend_from_slice(bytes);
+                }
+            }
+        }
+        out
+    }
+}
+
+const AMBIENT_IGNORE_FILE_LIMIT: u64 = 1024 * 1024;
+const AMBIENT_IGNORE_TOTAL_LIMIT: u64 = 16 * 1024 * 1024;
+const AMBIENT_IGNORE_NAMES: [&str; 4] = [".ignore", ".gitignore", ".nudoxignore", ".git/info/exclude"];
+
+impl DiscoveryPolicy {
+    /// Reads the ambient ignore inputs `walk(root)` consults.
+    ///
+    /// `directories` are the walked directories (relative to `root`, the root as
+    /// an empty path). Returns `None` when an input exists but cannot be read as a
+    /// bounded regular file: the caller must then treat the discovery as unwitnessed.
+    #[must_use]
+    pub fn ambient_ignore_inputs(
+        &self,
+        root: &Path,
+        directories: &[PathBuf],
+    ) -> Option<AmbientIgnoreInputs> {
+        self.ambient_ignore_inputs_with(
+            root,
+            directories,
+            ignore::gitignore::gitconfig_excludes_path(),
+        )
+    }
+
+    fn ambient_ignore_inputs_with(
+        &self,
+        root: &Path,
+        directories: &[PathBuf],
+        global_excludes: Option<PathBuf>,
+    ) -> Option<AmbientIgnoreInputs> {
+        if !self.respect_gitignore {
+            return Some(AmbientIgnoreInputs { entries: Vec::new() });
+        }
+        let mut paths = std::collections::BTreeSet::new();
+        for ancestor in root.ancestors() {
+            for name in AMBIENT_IGNORE_NAMES {
+                paths.insert(ancestor.join(name));
+            }
+        }
+        for directory in directories {
+            paths.insert(root.join(directory).join(".git/info/exclude"));
+        }
+        if let Some(global) = global_excludes {
+            paths.insert(global);
+        }
+        let mut total = 0_u64;
+        let mut entries = Vec::with_capacity(paths.len());
+        for path in paths {
+            let contents = match std::fs::metadata(&path) {
+                Ok(metadata) if metadata.is_file() && metadata.len() <= AMBIENT_IGNORE_FILE_LIMIT => {
+                    total = total.checked_add(metadata.len())?;
+                    if total > AMBIENT_IGNORE_TOTAL_LIMIT {
+                        return None;
+                    }
+                    Some(std::fs::read(&path).ok()?)
+                }
+                // A directory where a file could be (for example `.git` as a
+                // file in a worktree) is read by the walker as absent.
+                Ok(metadata) if !metadata.is_file() => None,
+                Ok(_) => return None,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                    ) =>
+                {
+                    None
+                }
+                Err(_) => return None,
+            };
+            entries.push((path, contents));
+        }
+        Some(AmbientIgnoreInputs { entries })
+    }
+}
+
 /// An owned iterator over the selected tree.
 pub struct Discovery {
     root: PathBuf,
@@ -980,6 +1091,43 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn ambient_ignore_inputs_follow_ancestor_global_and_exclude_files() {
+        let scratch = Scratch::new("ambient-ignore");
+        let root = scratch.0.join("outer/project");
+        fs::create_dir_all(root.join(".git/info")).expect("project");
+        let global = scratch.0.join("global-ignore");
+        let policy = DiscoveryPolicy::default();
+        let read = |global: Option<&Path>| {
+            policy
+                .ambient_ignore_inputs_with(&root, &[PathBuf::new()], global.map(Path::to_path_buf))
+                .expect("bounded inputs")
+                .canonical_bytes()
+        };
+        let base = read(Some(&global));
+        assert_eq!(base, read(Some(&global)), "unchanged inputs encode identically");
+        fs::write(scratch.0.join("outer/.gitignore"), "*.gen.ts\n").expect("ancestor ignore");
+        let ancestor = read(Some(&global));
+        assert_ne!(base, ancestor, "an ancestor ignore file is witnessed");
+        fs::write(&global, "scratch/\n").expect("global ignore");
+        let with_global = read(Some(&global));
+        assert_ne!(ancestor, with_global, "the global excludes are witnessed");
+        fs::write(root.join(".git/info/exclude"), "local.ts\n").expect("exclude");
+        assert_ne!(with_global, read(Some(&global)), "the repository exclude is witnessed");
+        assert_ne!(base, read(None), "the global excludes' location is witnessed");
+        assert!(
+            policy
+                .clone()
+                .respect_gitignore(false)
+                .ambient_ignore_inputs_with(&root, &[], Some(global.clone()))
+                .is_some_and(|inputs| inputs.entries.is_empty()),
+            "a policy that ignores no Git files has nothing ambient"
+        );
+        // An input too large to witness is refused rather than skipped.
+        fs::write(scratch.0.join("outer/.ignore"), vec![b'#'; 2 * 1024 * 1024]).expect("large ignore");
+        assert!(policy.ambient_ignore_inputs_with(&root, &[], Some(global)).is_none());
     }
 
     #[test]

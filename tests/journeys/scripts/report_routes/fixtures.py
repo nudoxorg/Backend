@@ -518,6 +518,60 @@ def refs_mixed_project(root):
     return refs_project(root, "mixed")
 
 
+def next_bulk_project(root, n_ts=11, n_tsx=15, excluded=0):
+    """Next.js-shaped client of about a thousand declarations: `n_ts` modules and `n_tsx` pages.
+
+    `excluded` extra files sit under a path that the project's own tsconfig `exclude` lists, so
+    the compiler admits the rest and leaves exactly those out by configuration.
+    """
+    write(root, "package.json", '{"name":"synthetic-shop","version":"1.0.0","private":true}\n')
+    write(root, "tsconfig.json", '''\
+{"compilerOptions":{"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","strict":true,
+ "jsx":"preserve","noEmit":true,"baseUrl":".","paths":{"@/*":["./*"]},
+ "typeRoots":["./node_modules/@types"]},
+ "include":["**/*.ts","**/*.tsx"],"exclude":["node_modules",".next","scratch"]}
+''')
+    write(root, "node_modules/@types/react/index.d.ts", REACT_TYPES)
+    write(root, "node_modules/@types/react/package.json",
+          '{"name":"@types/react","version":"19.0.0","types":"index.d.ts"}\n')
+    write(root, "node_modules/react/package.json", '{"name":"react","version":"19.0.0","main":"index.js"}\n')
+
+    def declarations(prefix, count):
+        out = []
+        for i in range(count):
+            out.append(f"export interface {prefix}Row{i} {{ id: string; label: string; weight: number; tags: string[]; next?: {prefix}Row{max(i - 1, 0)} }}")
+            out.append(f"export type {prefix}Key{i} = keyof {prefix}Row{i};")
+            out.append(f"export const {prefix}DEFAULT{i}: {prefix}Row{i} = {{ id: '{prefix}{i}', label: 'row {i}', weight: {i}, tags: ['a', 'b'] }};")
+            out.append(f"export function {prefix}make{i}(seed: number): {prefix}Row{i} {{\n  return {{ ...{prefix}DEFAULT{i}, weight: seed * {i + 1}, tags: [String(seed)] }};\n}}")
+            out.append(f"export function {prefix}score{i}(rows: {prefix}Row{i}[], bias = {i}): number {{\n  let total = bias;\n  for (const row of rows) {{ total += row.weight + row.tags.length; }}\n  return total;\n}}")
+        return "\n".join(out) + "\n"
+
+    for i in range(n_ts):
+        previous = f"import {{ ts{(i - 1) % n_ts}make0 }} from './m{(i - 1) % n_ts}';\n" if i else ""
+        tail = f"export const first{i} = ts{(i - 1) % n_ts}make0(1);\n" if i else ""
+        write(root, f"lib/m{i}.ts", previous + declarations(f"ts{i}", 4) + tail)
+    for i in range(n_tsx):
+        head = (f"import {{ ts{i % n_ts}make1 }} from '@/lib/m{i % n_ts}';\n"
+                "import { useState } from 'react';\n")
+        body = f"""
+export function Panel{i}({{ title, count }}: {{ title: string; count: number }}) {{
+  const [open, setOpen] = useState(false);
+  const row = ts{i % n_ts}make1(count);
+  return (
+    <section onClick={{() => setOpen(!open)}}>
+      <h2>{{title}} {{row.label}}</h2>
+      {{open ? <ul>{{row.tags.map((t) => <li key={{t}}>{{t}}</li>)}}</ul> : null}}
+    </section>
+  );
+}}
+export default function Page{i}() {{ return <Panel{i} title='p{i}' count={{{i}}} />; }}
+"""
+        write(root, f"app/p{i}/page.tsx", head + declarations(f"c{i}", 3) + body)
+    for i in range(excluded):
+        write(root, f"scratch/draft{i}.ts", f"export const draft{i} = {i};\nexport function useDraft{i}() {{ return draft{i}; }}\n")
+    return root
+
+
 def budget_variant(root, drop):
     """The budget project with one ingredient removed, to bisect the cross-file reference misses."""
     import shutil
@@ -540,5 +594,5 @@ def _bv(drop):
     return lambda root: budget_variant(root, drop)
 
 
-BUILDERS = {"budget_no_csharp": _bv("csharp"), "budget_no_appshell": _bv("appshell"),
+BUILDERS = {"next_bulk": next_bulk_project, "next_bulk_excluded": lambda root: next_bulk_project(root, excluded=6), "budget_no_csharp": _bv("csharp"), "budget_no_appshell": _bv("appshell"),
             "budget_no_next": _bv("next_cache"), "refs_mixed": refs_mixed_project, "refs_nested": refs_nested_project, "refs_gap": refs_gap_project, "refs_nested_calls": refs_nested_calls_project, "react_variants": react_variants_project, "refs": refs_project, "crm": crm_project, "budget": budget_project, "tiny": tiny_ts_project}

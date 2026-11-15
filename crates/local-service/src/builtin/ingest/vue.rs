@@ -104,6 +104,10 @@ pub(super) fn scan(
             }
         }
     }
+    // The script parser returns a component's declarations in groups (a binding
+    // inside a function body after the file's other bindings), but a file's facts
+    // must be filed in source line order.
+    declarations.sort_by_key(|declaration| declaration.line());
     if !supported {
         return unavailable(
             path,

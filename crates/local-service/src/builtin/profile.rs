@@ -5860,6 +5860,16 @@ fn reopen_staged_intent(
     })
 }
 
+/// Whether `message` is a refusal to reopen staged state whose cause is the
+/// content of the staged evidence (it did not authenticate, or a member is
+/// missing), as opposed to a file-system failure that a retry may clear.
+pub(super) fn is_unauthenticated_staged_state(message: &str) -> bool {
+    message.contains("persisted staged state at ")
+        && message.contains(" could not be reopened: ")
+        && !message.contains("Io(")
+        && !message.contains("TemporaryIo(")
+}
+
 fn staged_reopen_recovery_message(
     state: &std::path::Path,
     cause: &BuiltinModelError,

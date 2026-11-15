@@ -225,7 +225,13 @@ impl EmbeddedLocalService {
     ) -> Result<Self, ProcessError> {
         match Self::start(config.clone()) {
             Err(ProcessError::StateFromAnotherBuild(_)) => {
-                let set_aside = set_aside_workspace_state(&config)?;
+                let set_aside = set_aside_workspace_state(&config, SET_ASIDE_DIRECTORY)?;
+                let mut started = Self::start(config)?;
+                started.set_aside = Some(set_aside);
+                Ok(started)
+            }
+            Err(ProcessError::SavedStateUnreadable(_)) => {
+                let set_aside = set_aside_workspace_state(&config, UNREADABLE_DIRECTORY)?;
                 let mut started = Self::start(config)?;
                 started.set_aside = Some(set_aside);
                 Ok(started)
@@ -282,14 +288,40 @@ impl EmbeddedLocalService {
 /// build.
 const SET_ASIDE_DIRECTORY: &str = "from-another-build";
 
-/// Moves every index entry of the workspace into a fresh [`SET_ASIDE_DIRECTORY`]
+/// Name of the directory, inside a workspace, that receives saved state this
+/// build could not authenticate ([`ProcessError::SavedStateUnreadable`]).
+const UNREADABLE_DIRECTORY: &str = "unreadable-state";
+
+/// Sets aside saved state that this build cannot authenticate, for a standalone
+/// owner that would otherwise exit during startup, and returns the directory the
+/// state moved to. Nothing is deleted. Any other refusal is returned unchanged.
+///
+/// # Errors
+/// Returns `refusal` when it is not an unreadable saved state, or the reason
+/// the state could not be set aside.
+pub(crate) fn set_aside_unreadable_state(
+    config: &ProcessConfig,
+    refusal: ProcessError,
+) -> Result<PathBuf, ProcessError> {
+    match refusal {
+        ProcessError::SavedStateUnreadable(_) => {
+            set_aside_workspace_state(config, UNREADABLE_DIRECTORY)
+        }
+        other => Err(other),
+    }
+}
+
+/// Moves every index entry of the workspace into a fresh `directory`
 /// of it, under the workspace lock, and returns that directory.
 ///
 /// The lock file and its epoch stay: the lock is what makes moving safe, and
 /// they are not state anybody could read back. So does the authority
 /// credential when it lives in the workspace: the fresh state is opened under
 /// the same secret its clients already hold.
-fn set_aside_workspace_state(config: &ProcessConfig) -> Result<PathBuf, ProcessError> {
+fn set_aside_workspace_state(
+    config: &ProcessConfig,
+    directory: &str,
+) -> Result<PathBuf, ProcessError> {
     let refused = |what: String| {
         ProcessError::Profile(format!(
             "set aside workspace state from another build ({}): {what}",
@@ -301,10 +333,8 @@ fn set_aside_workspace_state(config: &ProcessConfig) -> Result<PathBuf, ProcessE
             .map_err(|error| refused(error.to_string()))?;
     let destination = (1..1000)
         .map(|number| match number {
-            1 => config.workspace.join(SET_ASIDE_DIRECTORY),
-            number => config
-                .workspace
-                .join(format!("{SET_ASIDE_DIRECTORY}-{number}")),
+            1 => config.workspace.join(directory),
+            number => config.workspace.join(format!("{directory}-{number}")),
         })
         .find(|candidate| !candidate.exists())
         .ok_or_else(|| refused("a thousand earlier sets exist".to_owned()))?;
@@ -319,6 +349,7 @@ fn set_aside_workspace_state(config: &ProcessConfig) -> Result<PathBuf, ProcessE
         let kept = name == "OWNER.lock"
             || name == "OWNER.state"
             || name.to_string_lossy().starts_with(SET_ASIDE_DIRECTORY)
+            || name.to_string_lossy().starts_with(UNREADABLE_DIRECTORY)
             || config.authority_secret.as_deref() == Some(path.as_path());
         if !kept {
             std::fs::rename(&path, destination.join(&name))
@@ -831,7 +862,7 @@ mod tests {
                 .expect("this test is the other process");
 
         let refusal =
-            set_aside_workspace_state(&config).expect_err("a held workspace is not set aside");
+            set_aside_workspace_state(&config, SET_ASIDE_DIRECTORY).expect_err("a held workspace is not set aside");
 
         assert!(
             refusal.to_string().contains("held by another process"),

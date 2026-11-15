@@ -459,6 +459,25 @@ pub(super) struct NativeTsCapture {
     source_policy: SourceAdmissionPolicy,
     project_source_version: Option<[u8; 32]>,
     cancellation: Option<Arc<AtomicBool>>,
+    /// Digest of the ambient ignore inputs the discovery walk consulted, together
+    /// with the walked directories whose repository excludes it read. Present only
+    /// when every input was read, and folded into the project source version.
+    ambient_ignore: Option<AmbientIgnoreWitness>,
+}
+
+/// The ambient ignore inputs one native walk consulted, by digest.
+#[derive(Clone)]
+struct AmbientIgnoreWitness {
+    digest: [u8; 32],
+    directories: Vec<PathBuf>,
+}
+
+impl AmbientIgnoreWitness {
+    /// Reads the inputs again; `None` when any cannot be read as a bounded file.
+    fn observe(root: &Path, policy: &DiscoveryPolicy, directories: Vec<PathBuf>) -> Option<Self> {
+        let inputs = policy.ambient_ignore_inputs(root, &directories)?;
+        Some(Self { digest: *blake3::hash(&inputs.canonical_bytes()).as_bytes(), directories })
+    }
 }
 
 /// A fresh positive-source rewalk of the original private capture. It carries
@@ -533,10 +552,19 @@ impl RevalidatedNativeTsCapture {
 }
 
 impl IndexSnapshot {
-    /// Native-only discovery has unwitnessed global/ancestor ignore inputs.
-    /// Its source digest cannot independently establish a current program.
+    /// Native-only discovery never claims a complete inventory.
     pub(super) fn native_typescript_discovery_incomplete(&self) -> bool {
         self.native_typescript_capture.is_some()
+    }
+
+    /// Whether the native walk's global and ancestor ignore inputs were read,
+    /// bracketed around the walk and folded into the source version. Without
+    /// that, a repeated source digest cannot stand for the same selection rules
+    /// and may not authorize an old TypeScript program.
+    pub(super) fn native_typescript_ambient_ignore_witnessed(&self) -> bool {
+        self.native_typescript_capture
+            .as_ref()
+            .is_some_and(|capture| capture.ambient_ignore.is_some())
     }
 }
 
@@ -653,8 +681,8 @@ impl NativeTsCapture {
 
     /// Rewalks the original discovery policy and rereads exact TS inputs under
     /// the original root/configuration fence. This proves only the observed
-    /// positives at this check: ambient ignore inputs remain unwitnessed and
-    /// inventory completeness remains unknown. The caller must charge the
+    /// positives at this check, and that the ambient ignore inputs it recorded
+    /// are unchanged; inventory completeness remains unknown. The caller must charge the
     /// returned read work and recheck the fence before final publication.
     pub(super) fn revalidate(
         &self,
@@ -666,6 +694,14 @@ impl NativeTsCapture {
         }
         if !compiler_revision_is_current_with_cancellation(&self.revision_fence, cancellation)? {
             return Err("native TypeScript capture fence changed".into());
+        }
+        if let Some(ambient) = &self.ambient_ignore {
+            let current = AmbientIgnoreWitness::observe(
+                &self.canonical_root, &source_selection_policy(), ambient.directories.clone(),
+            );
+            if current.is_none_or(|current| current.digest != ambient.digest) {
+                return Err("native TypeScript ambient ignore inputs changed".into());
+            }
         }
         let root = self.revision_fence.open_bound_root(&self.revision_fence.requested_root)?;
         let walk = project_paths_with_policy(
@@ -843,13 +879,15 @@ fn capture_native_typescript_sources(
         source_policy: policy,
         project_source_version: None,
         cancellation: None,
+        ambient_ignore: None,
     })
 }
 
 /// Locally observed discovery-policy inputs for native TS source-version
-/// composition. The discovery walker can also consult ancestor and global Git
-/// excludes, which this digest does not witness. It must not be used as proof
-/// of a complete inventory or as a substitute for a fresh publication walk.
+/// composition. The discovery walker also consults ancestor and global Git
+/// excludes; those are witnessed separately by [`AmbientIgnoreWitness`], and this
+/// digest is not proof of a complete inventory without it. It is not a substitute
+/// for a fresh publication walk.
 /// Missing or unreadable local policy files refuse the native scan.
 fn native_typescript_discovery_basis(
     walk: &StyloWalkEvidence,
@@ -3406,6 +3444,10 @@ fn scan_project_with_configuration_policy_attempt(
     if let Some(observed) = observation {
         observed.begin_source_attempt();
     }
+    // The walk consults ancestor and global ignore files that nothing else
+    // pins, so they are read before it and again after, and a change between
+    // the two refuses the scan.
+    let ambient_before = AmbientIgnoreWitness::observe(&root, &discovery, Vec::new());
     let mut project_paths = project_paths_with_policy(
         &root,
         &root_capability,
@@ -3766,6 +3808,16 @@ fn scan_project_with_configuration_policy_attempt(
             return Err("native TypeScript scan policy differs from its fixed recipe".into());
         }
         capture.fixed_discovery_policy = true;
+        let walked = directories.iter().map(|(relative, _)| relative.clone()).collect::<Vec<_>>();
+        capture.ambient_ignore = ambient_before
+            .as_ref()
+            .zip(AmbientIgnoreWitness::observe(&root, &discovery, Vec::new()))
+            .and_then(|(before, after)| {
+                if before.digest != after.digest {
+                    return None;
+                }
+                AmbientIgnoreWitness::observe(&root, &discovery, walked)
+            });
         Some(capture)
     } else { None };
     let native_source_bytes = match &native_typescript_capture {
@@ -3982,8 +4034,17 @@ fn scan_project_with_configuration_policy_attempt(
         if configurations.windows(2).any(|pair| pair[0].0 == pair[1].0) {
             return Err("duplicate native TypeScript configuration path".into());
         }
-        source.update(b"nudox.native-typescript-input-basis.v1\0");
+        source.update(b"nudox.native-typescript-input-basis.v2\0");
         source.update(&discovery_basis);
+        match native_typescript_capture.as_ref().and_then(|capture| capture.ambient_ignore.as_ref()) {
+            Some(ambient) => {
+                source.update(&[1]);
+                source.update(&ambient.digest);
+            }
+            None => {
+                source.update(&[0]);
+            }
+        }
         source.update(&[u8::from(compiler_configuration.complete_languages.contains(&Language::TypeScript))]);
         source.update(&(configurations.len() as u64).to_be_bytes());
         for (path, content) in configurations {
@@ -6494,6 +6555,11 @@ mod tests {
             1,
             "CSS stays available to its own native lane"
         );
+        assert!(
+            first.native_typescript_ambient_ignore_witnessed(),
+            "the walk's ancestor and global ignore inputs are read and folded into the version"
+        );
+        assert!(first.native_typescript_discovery_incomplete(), "witnessing them still claims no inventory");
         let mut rewalk_bytes = 0;
         first.native_typescript_capture.as_ref().ok_or("capture")?
             .revalidate(Some(cancelled.as_ref()), &mut rewalk_bytes)?;
@@ -10120,6 +10186,33 @@ mod profile_tests {
         for read in reads {
             assert_eq!(b"SELECT id, id FROM t;".get(read.start as usize..read.end as usize), Some(&b"id"[..]));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn vue_script_declarations_are_filed_in_source_line_order() -> Result<(), String> {
+        let scratch = scratch("vue-line-order")?;
+        fs::create_dir_all(scratch.0.join("src")).map_err(|e| e.to_string())?;
+        // A binding inside a function body comes back from the script parser
+        // after the file's other bindings, not between them.
+        fs::write(
+            scratch.0.join("src/App.vue"),
+            "<script setup>\nimport { ref, onMounted } from 'vue'\n\nconst status = ref('loading')\n\nasync function loadHealth() {\n  const response = await fetch('/api/health')\n  status.value = (await response.json()).status\n}\n\nonMounted(loadHealth)\n</script>\n\n<template>\n  <main>{{ status }}</main>\n</template>\n",
+        )
+        .map_err(|e| e.to_string())?;
+        let indexed = scan(&scratch)?;
+        let record = indexed
+            .files
+            .iter()
+            .find_map(|(_, record)| record.file_fields().filter(|fields| fields.path == "src/App.vue"))
+            .ok_or("the component was not filed")?;
+        let lines = record
+            .declarations
+            .iter()
+            .map(|declaration| (declaration.name().to_owned(), declaration.line()))
+            .collect::<Vec<_>>();
+        assert!(lines.windows(2).all(|pair| pair[0].1 <= pair[1].1), "{lines:?}");
+        assert!(lines.iter().any(|(name, _)| name == "response"), "{lines:?}");
         Ok(())
     }
 
