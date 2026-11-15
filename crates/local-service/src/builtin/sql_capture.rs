@@ -1187,6 +1187,9 @@ pub(super) fn project_sql_project(
             _ => {}
         }
     }
+    // The inventory digest names the hosts in path order, as admission recomputes it,
+    // while the capture lists embedded hosts after the project's own `.sql` files.
+    inventory.sort_by(|left, right| left.0.cmp(&right.0));
     let settings = capture.settings();
     let selection = SqlAnalysisRecord::Selection {
         project,

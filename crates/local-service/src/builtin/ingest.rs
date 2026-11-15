@@ -10028,6 +10028,26 @@ mod profile_tests {
     }
 
     #[test]
+    fn an_embedded_host_that_sorts_before_the_sql_files_still_projects() -> Result<(), String> {
+        let mut scratch = scratch("sql-embedded-order")?;
+        scratch.0 = scratch.0.canonicalize().map_err(|e| e.to_string())?;
+        // The capture lists the project's own `.sql` files before its embedded hosts, and
+        // here the embedded host's path sorts first (`Apps/` before `db/`).
+        fs::create_dir_all(scratch.0.join("db")).map_err(|e| e.to_string())?;
+        fs::create_dir_all(scratch.0.join("Apps")).map_err(|e| e.to_string())?;
+        fs::write(scratch.0.join("db/schema.sql"), b"CREATE TABLE t (id INTEGER);\n").map_err(|e| e.to_string())?;
+        fs::write(scratch.0.join("Apps/report.ts"), b"db.exec('SELECT id FROM t');\n").map_err(|e| e.to_string())?;
+        let first = scan(&scratch)?;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let workers = super::super::sql_index::SqlWorkers::default();
+        let projection = super::super::sql_index::sql_projection(
+            &first.sql_walk, &first.revision_fence, &scratch.0, false, &workers, &cancelled)
+            .map_err(|e| e.to_string())?;
+        assert!(projection.is_some(), "both hosts project, unavailable without a worker");
+        Ok(())
+    }
+
+    #[test]
     fn sql_project_queue_proof_drops_host_buffers_and_rechecks_them() -> Result<(), String> {
         let mut scratch = scratch("sql-compact")?;
         scratch.0 = scratch.0.canonicalize().map_err(|e| e.to_string())?;
