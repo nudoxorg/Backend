@@ -8275,9 +8275,14 @@ fn package_authority_terminal(
             // bounded text on the owner's own log, as staged-output preparation
             // does, so a refused authority can be explained where it ran.
             eprintln!(
-                "nudox: compiler authority refused phase={phase:?} class={class:?} detail={:?}{}",
+                "nudox: compiler authority refused phase={phase:?} class={class:?} detail={:?}{}{}",
                 message.text,
                 if message.truncated { " (truncated)" } else { "" },
+                // The bounded text above keeps only the tail of the compiler's output; name
+                // the first unresolved reference whole, as a partial publication keeps no
+                // other record of the files it left out.
+                csharp_unresolved_facts(&cause)
+                    .map_or_else(String::new, |facts| format!(" first-unresolved={:?}", facts.detail())),
             );
             let diagnostic = backend_library::interface::CompilerDiagnostic::from_native(
                 message.text.as_bytes(),

@@ -26,6 +26,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import traceback
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from csharp_public_route import Journey  # noqa: E402
@@ -106,7 +107,8 @@ def scenario(args, fixtures, label, mutate=None, mode="published"):
             check(f"{label}: the owner log names the file that does not compile",
                   re.search(r"scope gap: path=\S*Missing\.cs .*CSharpSourceDoesNotCompile", owner_log) is not None, owner_log[-600:])
             check(f"{label}: the owner log names the first unresolved reference with its project",
-                  '"symbol\\":\\"Missing\\"' in owner_log and "Pantry.Api.csproj" in owner_log, owner_log[-600:])
+                  re.search(r"first unresolved reference CS0246 Missing at src/Pantry\.Api/Data/Missing\.cs:1 in project src/Pantry\.Api/Pantry\.Api\.csproj", owner_log) is not None,
+                  owner_log[-600:])
             # references still answer for the files that compiled, and say the publication is partial
             rc, found, raw = j.cli(f"{label}-search-db", ["search", "AppDbContext", "--limit", "20"], project)
             coords = coordinates(found, "AppDbContext", {"class"})
@@ -164,6 +166,7 @@ def scenario(args, fixtures, label, mutate=None, mode="published"):
                       "PantryEndpointsTests.cs" in text, text[:600])
         return j
     except Exception as error:  # noqa: BLE001
+        traceback.print_exc()
         check(f"{label}: scenario completed", False, repr(error))
         j.close()
         return None
