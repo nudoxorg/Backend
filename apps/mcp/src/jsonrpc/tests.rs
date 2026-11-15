@@ -9826,14 +9826,31 @@ mod conditional_progress_tests {
             );
             assert_eq!(full["isError"], false);
             assert!(text_of(&full).contains("profile 2/3"));
-            assert_eq!(
-                full["structuredContent"]["surface"]["index_job"],
-                serde_json::to_value(backend_present::IndexJobProjection::Progress(
-                    backend_library::IndexJobObservation::Pending(page.clone())
-                ))
-                .expect("existing progress DTO")
-            );
+            let mut expected_job = serde_json::to_value(
+                backend_present::IndexJobProjection::Progress(
+                    backend_library::IndexJobObservation::Pending(page.clone()),
+                ),
+            )
+            .expect("existing progress DTO");
+            if detail == "summary" {
+                // A summary poll of an operation names the job ticket once, in the page; the
+                // events it carries leave out their copy of it.
+                let events = expected_job
+                    .pointer_mut("/value/detail/events")
+                    .and_then(Value::as_array_mut)
+                    .expect("page events");
+                assert_eq!(events.len(), 1);
+                for event in events {
+                    assert!(event.as_object_mut().expect("event").remove("ticket").is_some());
+                }
+            }
+            assert_eq!(full["structuredContent"]["surface"]["index_job"], expected_job);
             let action = full["structuredContent"]["index_poll"]["call"].clone();
+            assert_eq!(
+                action["arguments"].get("after_event").cloned(),
+                (detail == "summary").then(|| json!(3)),
+                "only a summary poll names the last event it reached"
+            );
             assert_eq!(
                 action["arguments"]["operation_key"],
                 json!(status.operation_key)
@@ -9905,14 +9922,33 @@ mod conditional_progress_tests {
             truncated: false,
             has_more: false,
         };
+        let context = backend_present::StartupRecoveryContext::new(
+            PROJECT.to_owned(),
+            "/private/owner.sock".to_owned(),
+            "/observed/bundle/backend-cli".to_owned(),
+            backend_present::StartupRecoveryCommand::Status,
+            backend_present::StartupRecoveryMode::Active,
+            backend_present::StartupRecoveryWorkspace::Explicit("/private/workspace".to_owned()),
+        );
         let mut sizes = Vec::new();
         for (detail, compact) in [("summary", true), ("standard", false)] {
+            // With an installed CLI the poll could carry its shell line; only the standard one does.
             let mut server = ready(Fake {
                 surface_reply: Some(active.clone()),
                 profile_progress_reply: Some(page(3)),
+                cli_context: Some(context.clone()),
                 ..Fake::default()
             });
+            // The observation the caller holds covers the events the owner has reported so far.
             let mut arguments = active_arguments();
+            arguments["after_observation"] = json!(
+                backend_client::IndexObservationFingerprint::active_with_profile_progress(
+                    status,
+                    Some(&page(3))
+                )
+                .expect("full fingerprint of the observed history")
+                .expect("active")
+            );
             arguments["detail"] = json!(detail);
             arguments["wait_millis"] = json!(0);
             let unchanged = call(&mut server, INDEX_PROGRESS_TOOL, &arguments);
@@ -10403,7 +10439,12 @@ mod conditional_progress_tests {
                 next["arguments"]["after_observation"],
                 arguments["after_observation"]
             );
-            assert!(text_of(&pending).contains(&next.to_string()));
+            // The poll names its next call once, in `index_poll.call`, and does not repeat it in text.
+            assert_eq!(
+                text_of(&pending),
+                "Operation remains pending; the referenced observation is unchanged. Poll again with `index_poll.call`, or omit the conditional options to read the complete current receipt."
+            );
+            assert!(!text_of(&pending).contains(&next.to_string()));
             let failed = call(
                 &mut server,
                 next["name"].as_str().expect("same tool"),
@@ -10764,8 +10805,11 @@ fn index_poll_cli_advice_is_optional_and_preserves_installed_attachment_key_and_
                 poll["call"],
                 json!({"name":"backend.index_progress","arguments":{"operation_key":key,"detail":detail}})
             );
-            assert_eq!(poll.get("shell").is_some(), installed);
-            if installed {
+            // A summary poll of an operation repeats a call the caller already made, so the
+            // CLI line is left to the first reply; the other details still carry it.
+            let carries_shell = installed && detail != "summary";
+            assert_eq!(poll.get("shell").is_some(), carries_shell);
+            if carries_shell {
                 let expected =
                     backend_present::Affordance::PollIndexOperation { operation_key: key }
                         .poll_shell_in_context(&context, backend_present::Detail::parse(detail));
