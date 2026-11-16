@@ -12,13 +12,13 @@ let
     arguments = { package = project; } // { "${field}" = name; };
     expect = { exit = 0; json = [
       (eq "/answer" "product")
-      (eq "/semantic_data/kind" "stylo-query-summary")
+      (eq "/semantic_data/kind" "stylo-query")
       (eq "/semantic_data/value/basis/attempt/state" "latest_observed")
       (eq "/semantic_data/value/basis/worker_capability/state" "admitted")
       (eq "/semantic_data/value/terminal/state" "complete")
       { pointer = "/records"; select = "/title"; contains = title; }
     ]; };
-    bind = { css_source = "/semantic_data/value/first_site"; };
+    bind = { css_source = "/semantic_data/value/hits/0/source"; };
   };
   sql = id: role: name: title: {
     inherit id; kind = "query"; wait_for = true;
@@ -27,7 +27,7 @@ let
     arguments = { package = project; inherit role name; };
     expect = { exit = 0; json = [
       (eq "/answer" "product")
-      (eq "/semantic_data/kind" "sql-query-summary")
+      (eq "/semantic_data/kind" "sql-query")
       (eq "/semantic_data/value/terminal/state" "complete")
       (eq "/semantic_data/value/basis/catalog_is_deployed" false)
       (eq "/semantic_data/value/basis/attempt/state" "latest_observed")
@@ -36,7 +36,7 @@ let
       (eq "/semantic_data/value/basis/gaps/native_error_hosts" 0)
       { pointer = "/records"; select = "/title"; contains = title; }
     ]; };
-    bind = { sql_source = "/semantic_data/value/first_source"; };
+    bind = { sql_source = "/semantic_data/value/hits/0/source"; };
   };
   noCss = id: name: {
     inherit id; kind = "query"; wait_for = true;
