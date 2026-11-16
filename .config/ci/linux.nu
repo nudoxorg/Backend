@@ -8,6 +8,7 @@
 
 use lib.nu *
 use focused-selection.nu [focused-package-args assert-focused-dependencies]
+use stage-keel-native.nu [prepare-keel-native verify-keel-native]
 
 # Prints the process output the CLI captured for a failed step. The CLI keeps
 # a child's stdout/stderr out of the log (process-require writes them beside a
@@ -244,13 +245,22 @@ def main [
     let host_result = (run-external "rustc" "-vV" | complete)
     if $host_result.exit_code != 0 { error make {msg: "cannot determine native Rust target"} }
     let host = ($host_result.stdout | lines | where {|line| $line | str starts-with "host: "} | first | str replace "host: " "")
-    let bin_dir = $target_dir | path join $host "debug"
+    let build_bin_dir = $target_dir | path join $host "debug"
+    mkdir .local/keel-stages
+    let stage = (^mktemp -d --tmpdir=.local/keel-stages native.XXXXXX | str trim | path expand)
+    let bin_dir = $stage | path join "bin"
     let built = ci-step "linux" "build focused product and Keel artifacts" {||
         with-env ($test_env | merge {CARGO_TARGET_DIR: $target_dir}) {
             assert-focused-dependencies $host
-            run-bounded 75min "cargo" "build" "--locked" ...(focused-package-args) "--bins" "--target" $host "--jobs" ($test_jobs | into string)
-            run-bounded 30min "cargo" "build" "--locked" "--manifest-path" "frontends/sqlite/Cargo.toml" "--bin" "sqlite-worker" "--target" $host "--jobs" ($test_jobs | into string)
-            cp --force ($bin_dir | path join "sqlite-worker") ($bin_dir | path join "backend-sqlite-worker")
+            let anchors = (prepare-keel-native $host $target_dir $test_jobs $stage)
+            with-env $anchors {
+                run-bounded 75min "cargo" "build" "--locked" ...(focused-package-args) "--bins" "--target" $host "--jobs" ($test_jobs | into string)
+            }
+            for name in ["backend-locald" "backend-cli" "backend-mcp" "backend-desktop" "backend-keel-harness"] {
+                ^cp ($build_bin_dir | path join $name) ($bin_dir | path join $name)
+                ^chmod 700 ($bin_dir | path join $name)
+            }
+            verify-keel-native $host $target_dir $stage
         }
     }
     stop-if-superseded "linux"
