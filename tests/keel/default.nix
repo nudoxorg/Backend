@@ -7,8 +7,9 @@ let
   references = import ./references.nix;
   ownerNative = import ./owner-native.nix;
   tsExternal = import ./ts-external.nix;
+  cursorLifecycle = import ./cursor-lifecycle.nix;
   required = import ./required-cases.nix;
-  assembled = histories.cases ++ native.cases ++ protocol.cases ++ focus.cases ++ references.cases ++ ownerNative.cases ++ tsExternal.cases;
+  assembled = histories.cases ++ native.cases ++ protocol.cases ++ focus.cases ++ references.cases ++ ownerNative.cases ++ tsExternal.cases ++ cursorLifecycle.cases;
   cases = map (case: case // {
     steps = map (step: if step.kind == "query" then
       let

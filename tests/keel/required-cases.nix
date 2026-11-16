@@ -31,4 +31,5 @@
   "rust-reference-sites"
   "owner-css-sql-history"
   "typescript-external-source-policy"
+  "rust-mcp-cursor-lifecycle"
 ]
