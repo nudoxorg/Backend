@@ -7,7 +7,7 @@
     },
     {
       "name": "polyglot-focused",
-      "project": "tests/surface/fixtures/polyglot",
+      "project": "tests/surface/fixtures/polyglot-focused",
       "languages": [
         "rust",
         "python",
@@ -61,7 +61,17 @@
         }
       ],
       "live_contracts": {
-        "bounded_search_query": "language"
+        "bounded_search_query": "language",
+        "authored_methods": [
+          {
+            "path": "src/main.py",
+            "language": "python"
+          },
+          {
+            "path": "src/main.ts",
+            "language": "typescript"
+          }
+        ]
       },
       "authored_symbols": {
         "ferris": "src/lib.rs",

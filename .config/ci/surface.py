@@ -1413,14 +1413,17 @@ def run_live_contracts(owner: Owner, project: Path, config: dict, published_root
     print("surface-contract: live health summary/full agree with MCP status identity and coverage", flush=True)
     text = config["bounded_search_query"]
     reference = query("bounded search reference", ["search", text, "--limit", "200"])
-    # The fixture authors two lowercase language methods at these public paths.
+    # The fixture authors lowercase language methods at these public paths.
     methods = {
         (row.get("identity", {}).get("path"), row.get("language"))
         for row in reference.get("records", [])
         if row.get("identity", {}).get("name") == "language" and row.get("kind") == "method"
     }
-    if not {("src/Duke.java", "java"), ("src/main.cpp", "cpp")}.issubset(methods):
-        raise RuntimeError(f"bounded search: reference lost authored Java/C++ language methods: {methods}")
+    expected_methods = {(item["path"], item["language"]) for item in config.get(
+        "authored_methods", [{"path": "src/Duke.java", "language": "java"},
+                             {"path": "src/main.cpp", "language": "cpp"}])}
+    if len(expected_methods) < 2 or not expected_methods.issubset(methods):
+        raise RuntimeError(f"bounded search: reference lost authored language methods: {methods}")
     for limit in (1, 3):
         bounded = query(f"bounded search limit {limit}", ["--limit", str(limit), "search", text])
         require_bounded_search(reference, bounded, limit)
@@ -1434,23 +1437,32 @@ def run_live_contracts(owner: Owner, project: Path, config: dict, published_root
         require_cli_success("CLI search continuation", answer)
         return answer["json"]
 
-    def mcp_page(cursor):
-        arguments = {"query": text, "limit": 1}
-        if cursor is not None:
-            arguments["cursor"] = cursor
-        session, _ = run_mcp(owner, project, [{"tool": "backend.search", "arguments": arguments}], 10)
-        if session["exit"] != 0 or len(session["calls"]) != 1:
-            raise RuntimeError("MCP search continuation: session failed")
-        reply = session["calls"][0]["reply"]
-        if not isinstance(reply, dict) or reply.get("isError", False) or not isinstance(reply.get("structuredContent"), dict):
-            raise RuntimeError(f"MCP search continuation failed: {reply}")
-        return reply["structuredContent"]
+    started = time.monotonic()
+    count, _ = walk_search_pages(reference, cli_page)
+    times["CLI search continuation"] = round(time.monotonic() - started, 3)
+    print(f"surface-contract: CLI search exhausted {count} pages in rank order, no lost/duplicate rows", flush=True)
 
-    for name, fetch_page in (("CLI", cli_page), ("MCP", mcp_page)):
-        started = time.monotonic()
-        count, _ = walk_search_pages(reference, fetch_page)
-        times[f"{name} search continuation"] = round(time.monotonic() - started, 3)
-        print(f"surface-contract: {name} search exhausted {count} pages in rank order, no lost/duplicate rows", flush=True)
+    def prove_mcp_search(call, reply, exchange, _readiness_exchange):
+        first = _mcp_structured(reply, "MCP search initial page")
+        current = first
+        def mcp_page(cursor):
+            nonlocal current
+            if cursor is None:
+                return current
+            continuation = mcp_continuation_call(call, current)
+            if continuation["arguments"].get("cursor") != cursor:
+                raise RuntimeError("MCP search continuation changed its offered cursor")
+            current = _mcp_structured(exchange(continuation, 10), "MCP search continuation")
+            return current
+        count, _ = walk_search_pages(reference, mcp_page)
+        print(f"surface-contract: MCP search exhausted {count} pages in rank order, no lost/duplicate rows", flush=True)
+
+    session, seconds = run_mcp_interactive(owner, project, [{"tool": "backend.search", "arguments": {
+        "query": text, "limit": 1,
+    }}], 30, prove_mcp_search)
+    if session["exit"] != 0 or len(session["calls"]) != 1:
+        raise RuntimeError("MCP search continuation: session failed")
+    times["MCP search continuation"] = round(seconds, 3)
 
     refused_cli, seconds = run_cli(owner, project, ["--limit", "1", "search", text, "--cursor", "pc1-not-hex"], 10)
     times["malformed CLI cursor"] = round(seconds, 3)
