@@ -5,6 +5,7 @@
 use backend_engine::driver::{
     AuthorityDiagnostic, AuthorityDiagnosticFault, AuthorityFailure, AuthorityProfileMismatch,
 };
+#[cfg(feature = "paused-frontends")]
 use backend_frontend_clang::legacy::CollectError;
 use backend_frontend_typescript::legacy::{AuthorityError, with_analysis};
 use backend_semantic::vocabulary::{
@@ -73,6 +74,7 @@ fn authority_diagnostic_rejects_inconsistent_transport_claims() -> Result<(), Te
 }
 
 #[test]
+#[cfg(feature = "paused-frontends")]
 fn profile_mismatch_retains_the_concrete_frontend_error() -> Result<(), TestError> {
     let error = AuthorityFailure::Clang {
         diagnostic: AuthorityDiagnostic::absent(),

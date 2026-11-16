@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! Focused repro for the `golang:github.com/stretchr/testify@v1.9.0` audit row.
 //!
 //! The audit selects the root package's only non-test file, `doc.go` (759

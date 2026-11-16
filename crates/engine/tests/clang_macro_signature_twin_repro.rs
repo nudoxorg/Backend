@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! Focused repro for the `jemalloc` audit row.
 //!
 //! The selected file (`src/ctl.c`) generates whole families of ctl functions

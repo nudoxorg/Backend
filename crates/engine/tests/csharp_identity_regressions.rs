@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! Regression coverage for C# declaration identity and reference ownership.
 //!
 //! Each test pins one erasure that once turned a real MoreLinq source row

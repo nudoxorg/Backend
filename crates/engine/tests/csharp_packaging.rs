@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! Packaging and environment contract for the vendored C# Roslyn oracle.
 
 #![forbid(unsafe_code)]

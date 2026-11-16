@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! Cross-file C# method calls emit namespace foreign keys that name the declaring type.
 
 #![forbid(unsafe_code)]

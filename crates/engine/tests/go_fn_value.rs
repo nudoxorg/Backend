@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! Cross-file Go function value reads retarget through the module import path.
 
 use std::{

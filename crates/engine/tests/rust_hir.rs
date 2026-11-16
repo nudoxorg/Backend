@@ -128,13 +128,14 @@ fn real_rust_analyzer_project_admits_source_backed_declarations() -> Result<(), 
         },
     ) {
         Ok(compiled) => compiled,
+        #[cfg(feature = "paused-frontends")]
+        Err(CompileFailure::ClangProjection { .. }) => return Err(TestError::Compile),
         Err(CompileFailure::Authority { .. })
         | Err(CompileFailure::AuthorityInputRequired { .. })
         | Err(CompileFailure::AuthorityInputProfileMismatch { .. })
         | Err(CompileFailure::LoweringUnsupported { .. })
         | Err(CompileFailure::ExtensionAtomUnbound { .. })
         | Err(CompileFailure::ExtensionTypeParametersUnbound { .. })
-        | Err(CompileFailure::ClangProjection { .. })
         | Err(CompileFailure::Build { .. })
         | Err(CompileFailure::Prepare { .. })
         | Err(CompileFailure::Write { .. })

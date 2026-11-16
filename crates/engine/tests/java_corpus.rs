@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 #![forbid(unsafe_code)]
 #![deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 //! Zero-fold corpus stage law (P17): every frozen row passes every stage through

@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! Type rows are an emission-ordered log: pooled anonymous rows and fact rows
 //! interleave, so these assertions locate rows by their decoded content.
 

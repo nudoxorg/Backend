@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! Use-case flow: a `.h` entry in a C++ package (because a sibling `.cpp`
 //! exists) parses with C++ arguments and lowers both the record and its
 //! out-of-line method declaration.

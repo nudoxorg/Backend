@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! The real nuget corpus end to end: twenty pinned `nuget:ID@VERSION`
 //! artifacts, each located, fetched under explicit bounds, digest-verified
 //! against the registry's declared SHA-512, unpacked through the minimal

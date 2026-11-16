@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 #![forbid(unsafe_code)]
 #![deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 //! T1 stages: PURL -> repository -> JAR -> safe extraction -> JDK harness image ->

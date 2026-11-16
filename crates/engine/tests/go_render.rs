@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! Golden rendering over the Go semantic authority lane.
 
 use std::{

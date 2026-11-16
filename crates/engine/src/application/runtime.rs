@@ -7536,6 +7536,32 @@ mod input_witness_store_tests {
     }
 }
 
+#[cfg(all(test, not(feature = "paused-frontends")))]
+mod paused_profile_capability_tests {
+    use super::*;
+    use backend_semantic::vocabulary::{CSharpVersion, CStandard, GoVersion, JavaRelease};
+
+    #[test]
+    fn paused_profiles_are_unavailable_without_frontends() {
+        let root = crate::test_support::host_path("/test/paused-profiles");
+        let configuration = LocalCompilerRuntimeConfiguration::new(
+            LocalCompilerRuntimePaths::new(root.join("artifacts"), root.join("journal"), root.join("native")).unwrap(),
+            Box::new([]), Box::new([]), LocalRuntimePackageAuthority::default(),
+            LocalCompilerTimeout::new(Duration::from_secs(1)).unwrap(),
+            PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN).unwrap(),
+            LocalCompilerScratch::with_fragment_capacity(NonZeroUsize::MIN).unwrap(),
+        ).unwrap();
+        for profile in [
+            LanguageProfile::C(CStandard::C23),
+            LanguageProfile::Go(GoVersion::Go125),
+            LanguageProfile::Java(JavaRelease::Java25),
+            LanguageProfile::CSharp(CSharpVersion::CSharp14),
+        ] {
+            assert_eq!(configuration.capabilities().for_profile(profile).state(), LocalCompilerCapabilityState::Unavailable);
+        }
+    }
+}
+
 #[cfg(all(test, feature = "paused-frontends"))]
 mod go_profile_capability_tests {
     use super::*;

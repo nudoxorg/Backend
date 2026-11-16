@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! C# explicit-interface event use-case flow: same-named events stay distinct in IR.
 
 #[path = "use_case_support/mod.rs"]

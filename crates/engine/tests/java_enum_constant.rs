@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! Cross-file Java enum-constant reads retarget through the declaring enum's maven namespace key.
 
 use std::{

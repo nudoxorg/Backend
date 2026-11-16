@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! Go method-set projection regressions through the owned IR.
 //!
 //! Each test drives one real `stretchr`-class width (the measured `pflag`

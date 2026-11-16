@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! Use-case flow: blank struct fields stay distinct when the type and its
 //! use site live in separate Go source files within one package.
 

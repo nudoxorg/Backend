@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! Cross-file Go method calls and method values retarget through the receiver namespace.
 
 use std::{

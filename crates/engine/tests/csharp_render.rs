@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! Byte-exact rendering over the committed C# Roslyn authority fixtures.
 
 #![forbid(unsafe_code)]

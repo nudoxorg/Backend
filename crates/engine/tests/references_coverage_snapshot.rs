@@ -2693,6 +2693,7 @@ enum Authority {
         project: backend_frontend_rust::legacy::RustProject,
         source_limit: u32,
     },
+    #[cfg(feature = "paused-frontends")]
     Go {
         image: Vec<u8>,
     },
@@ -2703,12 +2704,15 @@ enum Authority {
         report: backend_frontend_python::legacy::CheckerReport,
     },
     PythonAstOnly,
+    #[cfg(feature = "paused-frontends")]
     Java {
         image: Vec<u8>,
     },
+    #[cfg(feature = "paused-frontends")]
     CSharp {
         image: Vec<u8>,
     },
+    #[cfg(feature = "paused-frontends")]
     ClangProject {
         project: backend_frontend_clang::ClangProject,
     },
@@ -2790,12 +2794,16 @@ fn measure(label: &str, prepared: Prepared) -> Result<PackageOutcome, String> {
             maximum_source_bytes: backend_frontend_rust::legacy::SourceByteLimit(*source_limit),
             features: backend_frontend_rust::legacy::RustFeatureControl::default(),
         },
+        #[cfg(feature = "paused-frontends")]
         Authority::Go { image } => SemanticAuthorityInput::Go { image },
         Authority::TypeScript { report } => SemanticAuthorityInput::TypeScript { report },
         Authority::Python { report } => SemanticAuthorityInput::Python { report },
         Authority::PythonAstOnly => SemanticAuthorityInput::None,
+        #[cfg(feature = "paused-frontends")]
         Authority::Java { image } => SemanticAuthorityInput::Java { image },
+        #[cfg(feature = "paused-frontends")]
         Authority::CSharp { image } => SemanticAuthorityInput::CSharp { image },
+        #[cfg(feature = "paused-frontends")]
         Authority::ClangProject { project } => SemanticAuthorityInput::Clang { project },
     };
     let (written, ir) = {
@@ -3556,6 +3564,7 @@ fn python_prepare(root: &Path, package: &str) -> Result<Prepared, String> {
 
 // ----- Go lane -------------------------------------------------------------
 
+#[cfg(feature = "paused-frontends")]
 fn go_prepare(root: &Path, module: &str) -> Result<Prepared, String> {
     let Some(tool) = env_tool("NUDOX_GO").or_else(|| path_tool("go")) else {
         return Err("no go".to_owned());
@@ -3619,6 +3628,7 @@ fn go_prepare(root: &Path, module: &str) -> Result<Prepared, String> {
 
 // ----- Java lane -----------------------------------------------------------
 
+#[cfg(feature = "paused-frontends")]
 fn java_prepare(
     harness: &mut backend_frontend_java::legacy::harness::Harness,
     tool: &backend_frontend_java::legacy::harness::JdkToolchain<'static>,
@@ -3751,6 +3761,7 @@ fn java_prepare(
 
 // ----- C# lane -------------------------------------------------------------
 
+#[cfg(feature = "paused-frontends")]
 fn csharp_dotnet() -> Option<PathBuf> {
     env_tool("COMPILER_CSHARP_COMPILER")
         .or_else(|| env_tool("NUDOX_DOTNET"))
@@ -3766,6 +3777,7 @@ fn csharp_dotnet() -> Option<PathBuf> {
 /// no-restore publish reuses exactly those assets. The committed `obj/`
 /// build assets are not part of the source tree, so a no-restore publish
 /// without the prior restore has nothing to consume.
+#[cfg(feature = "paused-frontends")]
 fn csharp_oracle(dotnet: &Path) -> Result<PathBuf, String> {
     static ORACLE: std::sync::OnceLock<Result<PathBuf, String>> = std::sync::OnceLock::new();
     ORACLE
@@ -3833,6 +3845,7 @@ fn csharp_oracle(dotnet: &Path) -> Result<PathBuf, String> {
         .clone()
 }
 
+#[cfg(feature = "paused-frontends")]
 fn csharp_prepare(root: &Path, row: &(&str, &str, &str)) -> Result<Prepared, String> {
     let (package, version, relative) = *row;
     let Some(dotnet) = csharp_dotnet() else {
@@ -3885,6 +3898,7 @@ fn csharp_prepare(root: &Path, row: &(&str, &str, &str)) -> Result<Prepared, Str
 
 // ----- Clang lane ----------------------------------------------------------
 
+#[cfg(feature = "paused-frontends")]
 fn clang_prepare(root: &Path, row: &(&str, &str, bool)) -> Result<Prepared, String> {
     let (package, entry_relative, cxx) = *row;
     let package_root = root.join(package);
@@ -3906,6 +3920,7 @@ fn clang_prepare(root: &Path, row: &(&str, &str, bool)) -> Result<Prepared, Stri
     clang_prepare_entry(&package_root, &entry, cxx)
 }
 
+#[cfg(feature = "paused-frontends")]
 fn clang_prepare_entry(package_root: &Path, entry: &Path, cxx: bool) -> Result<Prepared, String> {
     let project = backend_frontend_clang::ClangProject::open(package_root, entry)
         .map_err(|cause| format!("project: {cause:?}"))?;
@@ -3986,6 +4001,7 @@ fn run_lane(lane: &str, outcome_path: &Path) -> Result<(), String> {
                 );
             }
         }
+        #[cfg(feature = "paused-frontends")]
         "go" => {
             let Some(root) = corpus_root("NUDOX_GO_CORPUS_DIR") else {
                 writeln_lane(outcome_path, "SKIP NUDOX_GO_CORPUS_DIR unset")?;
@@ -3999,6 +4015,7 @@ fn run_lane(lane: &str, outcome_path: &Path) -> Result<(), String> {
                 );
             }
         }
+        #[cfg(feature = "paused-frontends")]
         "java" => {
             let Some(root) = corpus_root("NUDOX_JAVA_CORPUS_DIR") else {
                 writeln_lane(outcome_path, "SKIP NUDOX_JAVA_CORPUS_DIR unset")?;
@@ -4023,6 +4040,7 @@ fn run_lane(lane: &str, outcome_path: &Path) -> Result<(), String> {
                 );
             }
         }
+        #[cfg(feature = "paused-frontends")]
         "csharp" => {
             let Some(root) = corpus_root("NUDOX_CSHARP_CORPUS_DIR") else {
                 writeln_lane(outcome_path, "SKIP NUDOX_CSHARP_CORPUS_DIR unset")?;
@@ -4036,6 +4054,7 @@ fn run_lane(lane: &str, outcome_path: &Path) -> Result<(), String> {
                 );
             }
         }
+        #[cfg(feature = "paused-frontends")]
         "clang" => {
             let Some(root) = corpus_root("NUDOX_CLANG_CORPUS_DIR") else {
                 writeln_lane(outcome_path, "SKIP NUDOX_CLANG_CORPUS_DIR unset")?;
@@ -4345,9 +4364,13 @@ macro_rules! lane_test {
 lane_test!(references_coverage_rust_lane, "rust");
 lane_test!(references_coverage_typescript_lane, "typescript");
 lane_test!(references_coverage_python_lane, "python");
+#[cfg(feature = "paused-frontends")]
 lane_test!(references_coverage_go_lane, "go");
+#[cfg(feature = "paused-frontends")]
 lane_test!(references_coverage_java_lane, "java");
+#[cfg(feature = "paused-frontends")]
 lane_test!(references_coverage_csharp_lane, "csharp");
+#[cfg(feature = "paused-frontends")]
 lane_test!(references_coverage_clang_lane, "clang");
 
 /// Parent-side snapshot assertions, one per lane, each in its own test so a
@@ -4373,21 +4396,25 @@ fn python_references_snapshot() {
 }
 
 #[test]
+#[cfg(feature = "paused-frontends")]
 fn go_references_snapshot() {
     drive_lane("go", GO_PACKAGES, GO_SYMBOLS, baseline_mode());
 }
 
 #[test]
+#[cfg(feature = "paused-frontends")]
 fn java_references_snapshot() {
     drive_lane("java", JAVA_PACKAGES, JAVA_SYMBOLS, baseline_mode());
 }
 
 #[test]
+#[cfg(feature = "paused-frontends")]
 fn csharp_references_snapshot() {
     drive_lane("csharp", CSHARP_PACKAGES, CSHARP_SYMBOLS, baseline_mode());
 }
 
 #[test]
+#[cfg(feature = "paused-frontends")]
 fn clang_references_snapshot() {
     drive_lane("clang", CLANG_PACKAGES, CLANG_SYMBOLS, baseline_mode());
 }

@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 #![forbid(unsafe_code)]
 #![deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 //! Focused whole-package reproduction for the real Java corpus terminals.

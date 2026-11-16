@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! Regression: repeated Go blank struct fields must not share one declaration
 //! identity.
 //!

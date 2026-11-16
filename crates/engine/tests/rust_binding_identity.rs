@@ -70,6 +70,7 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
         CompileFailure::ExtensionTypeParametersUnbound { .. } => {
             "extension-type-parameters-unbound"
         }
+        #[cfg(feature = "paused-frontends")]
         CompileFailure::ClangProjection { .. } => "clang-projection",
         CompileFailure::Build { .. } => "build",
         CompileFailure::Prepare { .. } => "prepare",

@@ -454,6 +454,7 @@ pub(super) fn compile_terminal(failure: &CompileFailure<'_>) -> CompileTerminal 
         },
         CompileFailure::ExtensionAtomUnbound { .. } => CompileTerminal::Build,
         CompileFailure::ExtensionTypeParametersUnbound { .. } => CompileTerminal::Build,
+        #[cfg(feature = "paused-frontends")]
         CompileFailure::ClangProjection { .. } => CompileTerminal::ClangProjection,
         CompileFailure::Build { .. } => CompileTerminal::Build,
         CompileFailure::Prepare { .. } => CompileTerminal::Prepare,

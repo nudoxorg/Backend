@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! Cross-file C# field reads lower to nuget namespace keys the field join can follow.
 
 #![forbid(unsafe_code)]

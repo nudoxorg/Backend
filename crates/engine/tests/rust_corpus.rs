@@ -228,6 +228,7 @@ fn failure_label(failure: &CompileFailure<'_>) -> String {
         CompileFailure::ExtensionTypeParametersUnbound { .. } => {
             "extension-type-parameters-unbound".to_owned()
         }
+        #[cfg(feature = "paused-frontends")]
         CompileFailure::ClangProjection { .. } => "clang-projection".to_owned(),
         CompileFailure::Build { .. } => "build".to_owned(),
         CompileFailure::Prepare { .. } => "prepare".to_owned(),

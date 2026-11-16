@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! Cross-file C++ method calls must join on the declaring header's package key.
 
 use backend_engine::driver::{

@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! Exercises Go binary-authority admission through the public compiler request.
 //! Proves configured image facts bypass retired native scanner dispatch.
 //! Validates the compact artifact written from the same shared fact lane.

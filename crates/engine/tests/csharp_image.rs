@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! Exercises source-bound Roslyn image admission through the public driver request.
 //! Proves a configured C# authority image reaches the shared compact fact lane.
 //! Keeps the declared interface kind distinct from a concrete record.

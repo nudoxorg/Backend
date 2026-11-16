@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 mod java_support;
 
 use backend_semantic::ir::semantic_render::EmbeddingProfile;

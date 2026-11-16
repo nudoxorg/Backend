@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! Exercises source-bound javac image admission through the public driver request.
 //! Proves typed javac declarations feed the shared compact canonical lane.
 //! Keeps Java interfaces mapped to the canonical trait vocabulary.

@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! Java generic-box use-case flow: two types in one harness compile, then IR lower.
 
 #[path = "use_case_support/mod.rs"]

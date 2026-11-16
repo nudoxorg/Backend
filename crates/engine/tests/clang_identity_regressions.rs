@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! Regression coverage for coordinate-free Clang declaration identity.
 //!
 //! Each case compiles a complete C++ translation unit and requires the

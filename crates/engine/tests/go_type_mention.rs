@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! Cross-file Go type mentions retarget through the module import path.
 
 use std::{
