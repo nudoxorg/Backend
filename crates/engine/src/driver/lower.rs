@@ -36,10 +36,14 @@ use core::mem::size_of;
 use core::num::NonZeroU16;
 
 mod admission;
+#[cfg(feature = "paused-frontends")]
 pub(crate) mod clang;
+#[cfg(feature = "paused-frontends")]
 pub(crate) mod csharp;
+#[cfg(feature = "paused-frontends")]
 pub(crate) mod go;
 mod identity;
+#[cfg(feature = "paused-frontends")]
 pub(crate) mod java;
 mod provenance;
 pub(crate) mod python;
