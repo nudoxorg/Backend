@@ -5,3 +5,6 @@
 .config/direnv/entrypoint text eol=lf
 .config/scripts/fleet-census-recovery text eol=lf
 tests/fuzz/libfuzzer-rustc text eol=lf
+# Byte-offset fixture oracles include BOM and CRLF; never normalize them.
+tests/keel/fixtures/css/unicode.css -text
+tests/keel/fixtures/sql/unicode.sql -text
