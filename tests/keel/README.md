@@ -91,8 +91,11 @@ Independent cases continue. No blocked case is counted as a pass.
 On Linux, set `KEEL_CGROUP_ROOT` to an explicitly delegated child of a cgroup-v2
 mount. Every product process enters its own owned child cgroup before exec; the
 scope kills and waits for all members, including children that create their own
-sessions. `KEEL_REQUIRE_CGROUP=1` refuses to execute without that boundary. CI
-crash and timeout worlds must require it. Reports distinguish `cgroup-v2` from
+sessions. The Linux CI lane and `keel.nu` execution require that explicit
+delegation and force `KEEL_REQUIRE_CGROUP=1`; a worker without it fails with an
+infrastructure error before product execution. They never create a host root
+or change its permissions. Listing the inventory needs no delegation.
+Reports distinguish `cgroup-v2` from
 the process-group fallback. The explicit Linux containment holdout requires a
 pinned `KEEL_TEST_SETSID` executable and runs with `--ignored`; its absence does
 not establish full process-tree containment.

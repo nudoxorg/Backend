@@ -9,6 +9,7 @@
 use lib.nu *
 use focused-selection.nu [focused-package-args assert-focused-dependencies]
 use stage-keel-native.nu [prepare-keel-native verify-keel-native]
+use keel-isolation.nu required-keel-isolation
 
 # Prints the process output the CLI captured for a failed step. The CLI keeps
 # a child's stdout/stderr out of the log (process-require writes them beside a
@@ -238,6 +239,7 @@ def main [
     | merge (
         if ($cargo_home | path exists) { {NUDOX_CARGO_HOME: $cargo_home} } else { {} }
     )
+    | merge (required-keel-isolation)
     # The active release gate builds the product and admits the process driver
     # from the pinned standalone Keel package. Historical tests remain through
     # `backend test pr`; they are not claimed as replaced by these histories.

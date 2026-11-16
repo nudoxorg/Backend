@@ -1,6 +1,7 @@
 # Run the declarative product histories against already-built artifacts. Building
 # the product here would substitute new binaries for the ones the caller admitted.
 use lib.nu run-bounded
+use keel-isolation.nu required-keel-isolation
 
 def main [
     --bin-dir: path
@@ -29,6 +30,9 @@ def main [
     if $evidence != null and ($evidence | path exists) {
         error make {msg: "Keel evidence destination already exists; choose a new directory"}
     }
+    let isolation = if not $list and $nu.os-info.name == "linux" {
+        required-keel-isolation
+    } else { {} }
     let model = $root | path join "tests/keel/default.nix"
     let evaluated = (^nix-instantiate --eval --strict --json $model | complete)
     if $evaluated.exit_code != 0 {
@@ -56,7 +60,9 @@ def main [
         if $list {
             run-bounded 1min $executable "--manifest" $manifest "--list" ...$selected ...$ordering
         } else {
-            run-bounded 30min $executable "--manifest" $manifest "--bin-dir" ($bin_dir | path expand) "--evidence" ($evidence | path expand) ...$selected ...$ordering
+            with-env $isolation {
+                run-bounded 30min $executable "--manifest" $manifest "--bin-dir" ($bin_dir | path expand) "--evidence" ($evidence | path expand) ...$selected ...$ordering
+            }
         }
         null
     } catch {|failure| $failure }
