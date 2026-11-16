@@ -241,26 +241,42 @@ def main [
     # The active release gate builds the product and admits the process driver
     # from the pinned standalone Keel package. Historical tests remain through
     # `backend test pr`; they are not claimed as replaced by these histories.
-    let declared_runner = ($env.BACKEND_KEEL_HARNESS? | default "")
+    let declared_runner = $env.BACKEND_KEEL_HARNESS? | default ""
     if ($declared_runner | is-empty) {
-        error make {msg: "the compiler shell must declare BACKEND_KEEL_HARNESS from its pinned standalone Keel input"}
+        error make {
+            msg: "the compiler shell must declare BACKEND_KEEL_HARNESS from its pinned standalone Keel input"
+        }
     }
-    let runner = ($declared_runner | path expand --strict)
+    let runner = $declared_runner | path expand --strict
     if not ($runner | str starts-with "/nix/store/") {
-        error make {msg: $"Keel must come from the pinned standalone Nix package, got ($runner)"}
+        error make {
+            msg: $"Keel must come from the pinned standalone Nix package, got ($runner)"
+        }
     }
-    let runner_elf = (run-external "readelf" "-h" $runner | complete)
+    let runner_elf = run-external "readelf" "-h" $runner | complete
     if $runner_elf.exit_code != 0 {
-        error make {msg: "the standalone Keel runner must be the actual ELF executable, not a shell wrapper"}
+        error make {
+            msg: "the standalone Keel runner must be the actual ELF executable, not a shell wrapper"
+        }
     }
-    let runner_sha256 = (open --raw $runner | hash sha256)
+    let runner_sha256 = open --raw $runner | hash sha256
     let target_dir = $env.CARGO_TARGET_DIR? | default ($env.PWD | path join ".local/target") | path expand
-    let host_result = (run-external "rustc" "-vV" | complete)
+    let host_result = run-external "rustc" "-vV" | complete
     if $host_result.exit_code != 0 { error make {msg: "cannot determine native Rust target"} }
-    let host = ($host_result.stdout | lines | where {|line| $line | str starts-with "host: "} | first | str replace "host: " "")
+    let host = (
+        $host_result.stdout
+        | lines
+        | where {|line| $line | str starts-with "host: "}
+        | first
+        | str replace "host: " ""
+    )
     let build_bin_dir = $target_dir | path join $host "debug"
     mkdir .local/keel-stages
-    let stage = (^mktemp -d --tmpdir=.local/keel-stages native.XXXXXX | str trim | path expand)
+    let stage = (
+        ^mktemp -d --tmpdir=.local/keel-stages native.XXXXXX
+        | str trim
+        | path expand
+    )
     let bin_dir = $stage | path join "bin"
     let built = ci-step "linux" "build focused product and Keel artifacts" {||
         with-env ($test_env | merge {CARGO_TARGET_DIR: $target_dir}) {

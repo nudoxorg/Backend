@@ -3,14 +3,16 @@
 use lib.nu run-bounded
 
 def checked [program: string, ...args: string] {
-    let result = (run-external $program ...$args | complete)
+    let result = run-external $program ...$args | complete
     if $result.exit_code != 0 {
         error make {msg: $"($program) failed: ($result.stderr)"}
     }
     $result.stdout | str trim
 }
 
-def digest [path: path] { open --raw $path | hash sha256 }
+def digest [path: path] {
+    open --raw $path | hash sha256
+}
 
 def needed [image: path] {
     checked "readelf" "-d" $image
@@ -21,7 +23,12 @@ def needed [image: path] {
 }
 
 def interpreter [image: path] {
-    let matches = (checked "readelf" "-l" $image | lines | parse --regex 'Requesting program interpreter: (?<path>[^\]]+)' | get path)
+    let matches = (
+        checked "readelf" "-l" $image
+        | lines
+        | parse --regex 'Requesting program interpreter: (?<path>[^\]]+)'
+        | get path
+    )
     if ($matches | length) != 1 or not (($matches | first) | str starts-with "/") {
         error make {msg: $"worker ($image) lacks exactly one absolute ELF interpreter"}
     }
@@ -50,7 +57,12 @@ def valid-id [id: string] {
 # Build, relocate and observe workers *before* building any owner application.
 # The caller builds all apps with the returned anchor environment and then
 # calls verify-keel-native after copying those binaries into stage/bin.
-export def prepare-keel-native [host: string, target: path, jobs: int, stage: path] {
+export def prepare-keel-native [
+    host: string
+    target: path
+    jobs: int
+    stage: path
+] {
     let raw = $target | path join $host "debug"
     let sqlite_target = $target | path join "keel-sqlite"
     let sqlite_raw = $sqlite_target | path join $host "debug"
@@ -68,7 +80,11 @@ export def prepare-keel-native [host: string, target: path, jobs: int, stage: pa
     let css_lib = library-for $raw_css
     let sql_lib = library-for $raw_sql
     if (digest $css_lib) != (digest $sql_lib) { error make {msg: "CSS and SQLite do not share the same libgcc bytes"} }
-    let system_names = (open --raw "tools/package/linux_system_sonames.txt" | lines | where {|name| $name != "" })
+    let system_names = (
+        open --raw "tools/package/linux_system_sonames.txt"
+        | lines
+        | where {|name| $name != "" }
+    )
     for image in [$raw_css $raw_sql] {
         let dependencies = needed $image
         let foreign = $dependencies | where {|name| $name not-in $system_names }
@@ -100,17 +116,22 @@ export def prepare-keel-native [host: string, target: path, jobs: int, stage: pa
     if (checked "patchelf" "--print-rpath" $library) != '$ORIGIN' or (checked "patchelf" "--print-rpath" $worker_css) != '$ORIGIN/../lib' or (checked "patchelf" "--print-rpath" $worker_sql) != '$ORIGIN/../lib' {
         error make {msg: "relocated private library search path differs"}
     }
-    let css = (checked $css_observer $worker_css $library | from json)
-    let sqlite = (checked $sql_observer $worker_sql $library | from json)
+    let css = checked $css_observer $worker_css $library | from json
+    let sqlite = checked $sql_observer $worker_sql $library | from json
     if $css.state != "observed-helper" or not (valid-id $css.identity) or $sqlite.state != "observed-build-helper" or not (valid-id $sqlite.artifact_identity) {
         error make {msg: "invalid native worker observer identity"}
     }
     let basis = $sqlite.basis
-    let lock_bytes = (digest "frontends/sqlite/Cargo.lock" | split chars | chunks 2 | each {|digits| $digits | str join | into int --radix 16 })
+    let lock_bytes = (
+        digest "frontends/sqlite/Cargo.lock"
+        | split chars
+        | chunks 2
+        | each {|digits| $digits | str join | into int --radix 16 }
+    )
     if $basis.engine != "Syntaqlite4e4de76" or $basis.native_revision != "4e4de76312429fb2235ae093ab2125914320d5bd" or $basis.recipe != "syntaqlite-sqlite-fmt-analysis-dqs-default-v1" or $basis.lock_sha256 != $lock_bytes or ($basis.support_sha256 | length) != 32 or ($basis.support_sha256 | all {|byte| $byte == 0 }) or $basis.settings.Sqlite != {version: 2147483647, cflags: 0, analyzer_dqs_fallback: true} {
         error make {msg: "SQLite observer returned an unsupported native basis"}
     }
-    let basis_json = ($basis | to json --raw)
+    let basis_json = $basis | to json --raw
     if ($basis_json | str length) > 8192 { error make {msg: "SQLite basis exceeds owner limit"} }
     let observation = {
         schema: "nudox.keel-development-native-observation.v1"
@@ -155,7 +176,13 @@ export def verify-keel-native [host: string, target: path, stage: path] {
     if (checked $css_observer $css $lib | from json) != $observation.stylo or (checked $sql_observer $sql $lib | from json) != $observation.sqlite {
         error make {msg: "relocated native worker identity changed during owner build"}
     }
-    let apps = ["backend-locald" "backend-cli" "backend-mcp" "backend-desktop" "backend-keel-harness"]
+    let apps = [
+        "backend-locald"
+        "backend-cli"
+        "backend-mcp"
+        "backend-desktop"
+        "backend-keel-harness"
+    ]
     let outputs = ($apps | each {|name|
         {name: $name, sha256: (digest ($stage | path join "bin" $name))}
     })
