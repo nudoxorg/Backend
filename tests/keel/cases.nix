@@ -139,6 +139,26 @@ in {
       steps = [
         (index "initial-index")
         (bindSearch "find-leaf" "keel_rust_leaf")
+        {
+          id = "default-cli-summary-identity"; kind = "cli";
+          args = [ "search" "keel_rust_leaf" "--limit" "20" ];
+          expect = { exit = 0; json = [
+            (eq "/records/0/identity/name" "keel_rust_leaf")
+            (eq "/records/0/identity/coordinate" "\${coordinate}")
+            (eq "/records/0/identity/path" "src/lib.rs")
+          ]; };
+        }
+        {
+          id = "default-mcp-summary-identity"; kind = "pages";
+          tool = "backend.search";
+          arguments = { query = "keel_rust_leaf"; limit = 20; };
+          minimum_pages = 1; maximum_pages = 1;
+          expect = { exit = 0; json = [
+            (eq "/first/records/0/identity/name" "keel_rust_leaf")
+            (eq "/first/records/0/identity/coordinate" "\${coordinate}")
+            (eq "/first/records/0/identity/path" "src/lib.rs")
+          ]; };
+        }
         (show "show-leaf" "keel_rust_leaf" "src/lib.rs")
         (related "initial-caller" "keel_rust_middle" "keel_rust_decoy")
         { id = "edit"; kind = "write"; files."src/lib.rs" = read ./fixtures/rust/after.rs; }

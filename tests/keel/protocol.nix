@@ -54,7 +54,7 @@ in {
     (cli "cli-passive-search-refused" [ "--passive" "search" "needle" ] 64 [ ]
       [ "--passive" "health" "status" ])
     (cli "cli-unknown-option" [ "search" "needle" "--not-an-option" ] 64 [ ]
-      [ "✗ usage" "`--not-an-option`" "search takes only" ])
+      [ "✗ usage" "--not-an-option" "search takes only" ])
     (cli "cli-missing-global-option-value" [ "--project" ] 64 [ ]
       [ "✗ usage" "--project needs a value after it" ])
     (cli "cli-missing-command-operand" [ "show" ] 64 [ ]
