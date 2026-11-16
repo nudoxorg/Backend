@@ -477,6 +477,17 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         let go_failure: Option<LocalRuntimeGoAuthorityFailure> = None;
         let mut python_checker_failure = self.environment.python_checker_failure().cloned();
         for variable in LocalHostVariable::closed_environment_snapshot_roles() {
+            #[cfg(not(feature = "paused-frontends"))]
+            if matches!(variable,
+                LocalHostVariable::NudoxClang | LocalHostVariable::LibclangPath
+                | LocalHostVariable::NudoxGo | LocalHostVariable::NudoxGoOracle
+                | LocalHostVariable::NudoxJavaCompiler | LocalHostVariable::NudoxJdk
+                | LocalHostVariable::NudoxDotnet | LocalHostVariable::NudoxRoslynHelper
+                | LocalHostVariable::NudoxGoRoot | LocalHostVariable::NudoxMavenRoot
+                | LocalHostVariable::NudoxNugetRoot
+            ) {
+                continue;
+            }
             if matches!(
                 variable,
                 LocalHostVariable::Home
