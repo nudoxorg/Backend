@@ -2010,7 +2010,7 @@ def _replay_cli_cursor(owner: Owner, project: Path, args: list[str], key: str,
             transport="cli",
             query=args[-1],
             expected={args[-1]: case["authored_symbols"][args[-1]]},
-            language=case["languages"][0],
+            language=case.get("authored_languages", {}).get(args[-1], case["languages"][0]),
             request=args,
             gap_lanes=settled_gap_lanes(case),
         )
@@ -2084,7 +2084,7 @@ def _replay_mcp_calls(owner: Owner, project: Path, calls: list[dict], measured: 
                 transport="mcp",
                 query=query,
                 expected={query: case["authored_symbols"][query]},
-                language=case["languages"][0],
+                language=case.get("authored_languages", {}).get(query, case["languages"][0]),
                 request=call,
                 gap_lanes=settled_gap_lanes(case),
             )
@@ -2541,7 +2541,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                     transport="cli",
                     query=args[-1],
                     expected={args[-1]: case["authored_symbols"][args[-1]]},
-                    language=case["languages"][0],
+                    language=case.get("authored_languages", {}).get(args[-1], case["languages"][0]),
                     request=args,
                     gap_lanes=settled_gap_lanes(case),
                 )
@@ -2570,7 +2570,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                         transport="mcp",
                         query=query,
                         expected={query: case["authored_symbols"][query]},
-                        language=case["languages"][0],
+                        language=case.get("authored_languages", {}).get(query, case["languages"][0]),
                         request=call,
                         gap_lanes=settled_gap_lanes(case),
                     )
@@ -2616,7 +2616,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                     raise RuntimeError(f"MCP search returned no fixture symbols: {result}")
                 text = result["call"].get("arguments", {}).get("query")
                 if result["call"]["tool"] == "backend.search" and text in case.get("authored_symbols", {}):
-                    require_authored_symbols(reply["structuredContent"], {text: case["authored_symbols"][text]}, case["languages"][0])
+                    require_authored_symbols(reply["structuredContent"], {text: case["authored_symbols"][text]}, case.get("authored_languages", {}).get(text, case["languages"][0]))
                 first = reply.get("structuredContent", {})
                 token = require_initial_cursor_shape(first)
                 if token is not None and token not in proven_answers.get(f"mcp:{answer_index}", set()):
