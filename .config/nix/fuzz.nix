@@ -1,7 +1,8 @@
 # Backend's adapter for the shared continuous-fuzz package shape.
 # packages.${system}.continuous-fuzz passthru is bins, corpora, engines, metadata.
 # Auth copies that shape and plugs its own engine. This file's engine is libFuzzer.
-# fuzz-<id> packages are optional aliases. These are not flake checks.
+# fuzz-<id> packages are optional aliases. These are not flake checks;
+# checks.${system}.fuzz-engine-resolution only resolves the engine's Cargo graph.
 {
   pkgs,
   workspaceRoot,
@@ -673,6 +674,26 @@ let
           runHook postInstall
         '';
       };
+  # The engine's own source, manifest, vendor dir and environment, stopped
+  # after Cargo resolves the graph: nothing compiles. No lane builds
+  # `continuous-fuzz`, so `checks.<system>.fuzz-engine-resolution` is what
+  # catches a manifest or vendoring change that breaks the engine. Canonical
+  # cb92bd655 failed this way, and only a downstream gate noticed.
+  engineResolution =
+    if engineBinary == null then
+      null
+    else
+      engineBinary.overrideAttrs (_: {
+        pname = "backend-fuzz-engine-resolution";
+        buildPhase = ''
+          runHook preBuild
+          cargo metadata --locked --offline --format-version 1 > /dev/null
+          runHook postBuild
+        '';
+        installPhase = ''
+          touch "$out"
+        '';
+      });
   # The cargo derivation's RUNPATH is empty (see the comment on RUSTFLAGS).
   # Copy the cached binary and point it at the same gcc lib the toolchain
   # linked. Bins exec this path. The unpatched libexec is not a runner.
@@ -854,5 +875,6 @@ in
     else
       {
         inherit bundle aliases;
+        resolution = engineResolution;
       };
 }

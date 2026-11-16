@@ -513,3 +513,8 @@ in
 // pkgs.lib.optionalAttrs (localHostRuntimeContract != null) {
   local-host-runtime-contract = localHostRuntimeContract;
 }
+// pkgs.lib.optionalAttrs (tools.fuzzContract != null) {
+  # Resolves the continuous-fuzz engine's Cargo graph without compiling it;
+  # the fuzz bundle itself stays out of the checks (fuzz.nix).
+  fuzz-engine-resolution = tools.fuzzContract.resolution;
+}
