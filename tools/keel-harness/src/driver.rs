@@ -128,6 +128,8 @@ impl World {
         ] {
             let path = home.join(sub);
             fs::create_dir_all(&path).map_err(|e| e.to_string())?;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
+                .map_err(|e| e.to_string())?;
             env.insert(key.into(), path.to_string_lossy().into_owned());
         }
         for key in [
@@ -140,6 +142,8 @@ impl World {
         }
         let workspace = root.join("workspace");
         fs::create_dir_all(&workspace).map_err(|e| e.to_string())?;
+        fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700))
+            .map_err(|e| e.to_string())?;
         let authority = workspace.join("authority.secret");
         fs::write(&authority, [0x5a; 32]).map_err(|e| e.to_string())?;
         fs::set_permissions(&authority, fs::Permissions::from_mode(0o600))

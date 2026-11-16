@@ -147,13 +147,25 @@ fn ordering_cannot_drop_unknown_or_duplicate_a_case() {
     assert_eq!(world.report()["cases"][0]["id"], "b");
 }
 fn alive(pid: &str) -> bool {
-    Command::new("/bin/kill")
-        .args(["-0", pid])
-        .output()
-        .expect("probe process")
-        .status
-        .success()
+    let Some(pid) = pid
+        .parse::<i32>()
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+    else {
+        return false;
+    };
+    #[cfg(target_os = "linux")]
+    if let Ok(stat) = fs::read_to_string(format!("/proc/{}/stat", pid.as_raw_nonzero())) {
+        if stat
+            .rsplit_once(')')
+            .is_some_and(|(_, tail)| tail.trim_start().starts_with('Z'))
+        {
+            return false;
+        }
+    }
+    rustix::process::test_kill_process(pid).is_ok()
 }
+
 #[test]
 fn timeout_retires_descendants_and_retains_a_failure_instead_of_a_pass() {
     let world = Sandbox::new();

@@ -29,18 +29,12 @@ fn prepare_file(path: &Path) -> Result<File, String> {
 // The child is the leader of a fresh process group. Kill the group even when
 // its leader has already exited, since a descendant may still hold its pipes.
 fn kill_group(id: u32) -> Result<(), String> {
-    let status = Command::new("/bin/kill")
-        .args(["-KILL", "--", &format!("-{id}")])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|e| format!("kill process group {id}: {e}"))?;
-    // A group that has already disappeared is an expected outcome. A failed
-    // kill is also followed by Child::kill as a fallback at each call site.
-    if !status.success() {
-        return Err(format!("kill process group {id} returned {status}"));
+    let raw = i32::try_from(id).map_err(|e| format!("process group id: {e}"))?;
+    let pid = rustix::process::Pid::from_raw(raw).ok_or("process group id must be positive")?;
+    match rustix::process::kill_process_group(pid, rustix::process::Signal::KILL) {
+        Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
+        Err(error) => Err(format!("kill process group {id}: {error}")),
     }
-    Ok(())
 }
 
 struct Capture {
