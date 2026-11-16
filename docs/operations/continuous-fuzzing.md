@@ -127,7 +127,7 @@ The bounded engine is 16 iterations and 150 ms. That smoke is not a proof. Accep
 
 ## Corpora that survive
 
-`corpora.<id>` is the committed seed derivation. Its passthru `warmVault.corporaAttr` names that attr, and its passthru `durableMount` is the argv[1] path. `bins.<id>` requires argv[1] to equal `durableMount` and exits 2 otherwise. LibFuzzer writes new coverage only to that directory and treats the store seeds as a second, read-only corpus. Replacing the binary and passing the same directory resumes from the inputs already there. Crashes go to the sibling `artifacts/` directory. `-max_total_time` is refused on `bins.<id>`; the supervisor owns campaign lifetime. `-timeout=10` is the per-input hang cap.
+`corpora.<id>` is the committed seed derivation. Its passthru `warmVault.corporaAttr` names that attr, and its passthru `durableMount` is the argv[1] path. `bins.<id>` requires argv[1] to equal `durableMount` and exits 2 otherwise. LibFuzzer writes new coverage only to that directory and treats the store seeds as a second, read-only corpus. Replacing the binary and passing the same directory resumes from the inputs already there. Crashes go to the sibling `artifacts/` directory. `-max_total_time` is refused on `bins.<id>`; the supervisor owns campaign lifetime. `-fork=`, `-jobs=`, and `-workers=` are refused too: they take libFuzzer out of in-process execution, and the supervisor owns the process model. `-timeout=10` is the per-input hang cap.
 
 A local always-on build, without Nix, needs both cfg flags. Bolero 0.13.4 selects libFuzzer from `fuzzing_libfuzzer` and only then stops naming `crate::test::TestEngine` when `fuzzing` is also set.
 
@@ -246,7 +246,7 @@ Go's `testing.F` is the adapter auth sets on `go-native`. It is an engine plug, 
 1. **`Result::Ok` hid rejection.** The oracle returns `Ok` for a clean rejection. `Verdict::{Rejected, Accepted}` is the classifier. `empty` and `bad_magic` must be `Rejected`. `canonical` must be `Accepted` and byte-identical to a fresh encode.
 2. **Bolero drops `String` errors.** `OracleFailure` implements `std::error::Error`.
 3. **Inherited bolero budget.** `with_iterations` keeps an environment value that was already set. Unsetting it is `unsafe` here, so `drive` exits 2.
-4. **LibFuzzer ignores argv.** `bolero-libfuzzer` reads only `BOLERO_LIBFUZZER_ARGS` and splits on spaces. The runner sets that variable, rejects spaces, and rejects `-max_total_time`.
+4. **LibFuzzer ignores argv.** `bolero-libfuzzer` reads only `BOLERO_LIBFUZZER_ARGS` and splits on spaces. The runner sets that variable, rejects spaces, and rejects `-max_total_time`, `-fork=`, `-jobs=`, and `-workers=`.
 5. **Read-only store corpus.** The writable directory is first and must be `/durable/fuzz/<id>/corpus`. `corpora.<id>` is second and read-only. Omitting argv[1] used to create a corpus under XDG state, `$HOME/.local/state`, or `$TMPDIR`/`/tmp`. That fallback is gone. `bins.<id>` exits 2.
 6. **Crash files inside the corpus.** `-artifact_prefix` is the sibling `artifacts/` directory. Replay does not scan it.
 7. **Symlinks and path traversal.** Replay rejects symlinks. Seed names must be one path segment.
