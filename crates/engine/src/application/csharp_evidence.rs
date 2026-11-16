@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! Strict claim-only replay of a staged C# invocation aggregate.
 //! Decoding never selects a compiler publication, a source row, or an image.
 

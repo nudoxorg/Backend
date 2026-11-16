@@ -1,3 +1,5 @@
+#![cfg(feature = "paused-frontends")]
+
 //! Conservative captured-project options for a private SDK observation.
 //! This is not MSBuild evaluation; unsupported constructs refuse the slice.
 use backend_frontend_csharp::legacy::{CSharpSdkKind, CSharpSdkProjectProperties};
