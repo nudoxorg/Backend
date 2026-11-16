@@ -21,13 +21,12 @@ relation engine. Stable logical keys, immutable object versions, canonical
 relation roots, exact deltas, retained arrangements, replication, and local or
 remote execution all share the contracts in `backend-version`.
 
-The runtime product graph contains 30 packages: fourteen shared crates, seven
-language frontends, four query/index adapters, and five app surfaces. The full
-workspace contains 41 packages after its seven verification suites and four
-tools are included. Agent cutover and verification tools have zero product
-dependents and remain outside the runtime dependency graph. Historical source
-is kept in external reference checkouts and the migration map; no legacy crate
-or owner remains in the product tree.
+The current release focuses on Rust, Python, and JavaScript/TypeScript. Their
+source indexing uses the corresponding compiler authority when available.
+CSS and SQL have dedicated analysis paths with bounded syntax coverage; they do
+not claim compiler-level semantic authority. Go, Java, C#, C and C++ are paused
+and are not admitted for new source indexing or advertised as active language
+capabilities. Their implementation remains in the repository for future work.
 
 The native GPUI desktop is the primary local host. It embeds the same local
 service used by the headless `backend-locald` launcher, owns the workspace when

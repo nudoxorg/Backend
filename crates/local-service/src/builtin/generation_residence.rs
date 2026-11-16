@@ -522,6 +522,7 @@ fn publication_scope(key: &ProductSemanticPublicationKey) -> [u8; 32] {
 /// The package is compiled before either timer. `cold` reopens the generation
 /// from the artifact directory. `warm` returns the same image allocation and
 /// does not call the owner.
+#[cfg(any(test, feature = "search-bench"))]
 #[allow(clippy::expect_used, clippy::print_stdout)]
 pub(super) fn measure_semantic_generation() {
     const SAMPLES: usize = 32;
@@ -583,6 +584,7 @@ pub(super) fn measure_semantic_generation() {
     );
 }
 
+#[cfg(any(test, feature = "search-bench"))]
 fn load_fixture(
     fixture: &GenerationFixture,
     claim: &SemanticPublicationClaim,
@@ -592,6 +594,7 @@ fn load_fixture(
     super::load_semantic_publication(client, fixture.key(), *claim, generations)
 }
 
+#[cfg(any(test, feature = "search-bench"))]
 struct GenerationFixture {
     root: std::path::PathBuf,
     /// Deleted by the adversarial test after the first successful activation.
@@ -610,6 +613,7 @@ struct GenerationFixture {
     cxx_key: ProductSemanticPublicationKey,
 }
 
+#[cfg(any(test, feature = "search-bench"))]
 impl GenerationFixture {
     fn client(&self) -> Result<&backend_engine::application::LocalCompilerClient, String> {
         self.client
@@ -669,6 +673,7 @@ impl GenerationFixture {
     }
 }
 
+#[cfg(any(test, feature = "search-bench"))]
 impl Drop for GenerationFixture {
     fn drop(&mut self) {
         drop(self.client.take());
@@ -676,6 +681,7 @@ impl Drop for GenerationFixture {
     }
 }
 
+#[cfg(any(test, feature = "search-bench"))]
 fn open_generation_fixture() -> Result<GenerationFixture, String> {
     use backend_engine::application::{
         LocalCompilerClient, LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths,
@@ -940,6 +946,7 @@ fn open_generation_fixture() -> Result<GenerationFixture, String> {
     })
 }
 
+#[cfg(any(test, feature = "search-bench"))]
 fn unique_directory() -> Result<std::path::PathBuf, std::io::Error> {
     for ordinal in 0_u16..64 {
         let path = std::env::temp_dir().join(format!(
@@ -958,6 +965,7 @@ fn unique_directory() -> Result<std::path::PathBuf, std::io::Error> {
     ))
 }
 
+#[cfg(any(test, feature = "search-bench"))]
 #[allow(clippy::indexing_slicing)]
 fn percentiles(samples: &[u128]) -> (u128, u128) {
     let mut ordered = samples.to_vec();

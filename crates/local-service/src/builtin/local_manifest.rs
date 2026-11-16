@@ -473,13 +473,7 @@ pub(crate) fn read_local_manifest(
     if has_python_manifest(project_root) {
         return read_python_manifest(project_root);
     }
-    if project_root.join("go.mod").is_file() {
-        return read_go_manifest(project_root);
-    }
-    if project_root.join("pom.xml").is_file() {
-        return read_maven_manifest(project_root);
-    }
-    read_nuget_root(project_root)
+    Ok(None)
 }
 
 /// Reads one supported manifest, rejecting a directory that has none.
@@ -984,6 +978,7 @@ fn read_python_manifest(project_root: &Path) -> Result<Option<LocalPackageManife
     }))
 }
 
+#[allow(dead_code)] // Retained for the paused frontend.
 fn read_go_manifest(project_root: &Path) -> Result<Option<LocalPackageManifest>, String> {
     let path = project_root.join("go.mod");
     let bytes = read_manifest_bytes(&path)?;
@@ -1182,6 +1177,7 @@ fn strip_line_comment(line: &str) -> &str {
     line.split_once("//").map_or(line, |(code, _)| code)
 }
 
+#[allow(dead_code)] // Retained for the paused frontend.
 fn read_maven_manifest(project_root: &Path) -> Result<Option<LocalPackageManifest>, String> {
     let path = project_root.join("pom.xml");
     let bytes = read_manifest_bytes(&path)?;
@@ -1241,6 +1237,7 @@ fn java_release(document: &str) -> Result<JavaRelease, String> {
     Ok(JavaRelease::Java25)
 }
 
+#[allow(dead_code)] // Retained for the paused frontend.
 fn read_nuget_root(project_root: &Path) -> Result<Option<LocalPackageManifest>, String> {
     let mut specs = Vec::new();
     for entry in fs::read_dir(project_root)

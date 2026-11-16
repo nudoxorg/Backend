@@ -2610,8 +2610,7 @@ fn encode_prior(prior: SemanticPublicationVersion, output: &mut Vec<u8>) {
 /// A version-pinned package URL already selects a compiler family. Adding it
 /// without a checked source/project authority records that exact semantic
 /// terminal instead of manufacturing declarations from package metadata.
-/// Local labels and generic C/C++ coordinates remain without a row until an
-/// index request supplies an explicit language profile.
+/// Local labels and paused ecosystems remain without a row.
 fn added_package_semantic_terminal(
     package: backend_engine::PackageKey,
     label: &str,
@@ -2637,24 +2636,11 @@ fn added_package_semantic_terminal(
                 backend_semantic::vocabulary::PythonVersion::Python314,
             )
         }
-        backend_semantic::vocabulary::PackageType::Golang => {
-            backend_semantic::vocabulary::LanguageProfile::Go(
-                backend_semantic::vocabulary::GoVersion::Go125,
-            )
-        }
-        backend_semantic::vocabulary::PackageType::Maven => {
-            backend_semantic::vocabulary::LanguageProfile::Java(
-                backend_semantic::vocabulary::JavaRelease::Java25,
-            )
-        }
-        backend_semantic::vocabulary::PackageType::Nuget => {
-            backend_semantic::vocabulary::LanguageProfile::CSharp(
-                backend_semantic::vocabulary::CSharpVersion::CSharp14,
-            )
-        }
-        // The `generic` package type intentionally cannot choose between C and
-        // C++; indexing a concrete extension supplies that distinction.
-        backend_semantic::vocabulary::PackageType::Generic => return Ok(Vec::new()),
+        // Paused ecosystems and generic coordinates have no active compiler lane.
+        backend_semantic::vocabulary::PackageType::Golang
+        | backend_semantic::vocabulary::PackageType::Maven
+        | backend_semantic::vocabulary::PackageType::Nuget
+        | backend_semantic::vocabulary::PackageType::Generic => return Ok(Vec::new()),
     };
     let package_reference = backend_engine::PackageReference::parse(label.to_owned())
         .map_err(|error| BuiltinModelError(format!("added package reference: {error:?}")))?;

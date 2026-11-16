@@ -1625,7 +1625,6 @@ dependencies = [
  "backend-frontend-clang",
  "backend-frontend-csharp",
  "backend-frontend-go",
- "backend-frontend-java",
  "backend-frontend-python",
  "backend-frontend-rust",
  "backend-frontend-stylo",

@@ -2861,6 +2861,7 @@ pub fn measure_semantic_query_walk() {
 ///
 /// The package is compiled before either timer. The printed line is the
 /// release measurement for an unchanged semantic claim.
+#[cfg(feature = "search-bench")]
 pub fn measure_semantic_generation() {
     generation_residence::measure_semantic_generation();
 }

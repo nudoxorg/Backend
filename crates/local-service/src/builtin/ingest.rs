@@ -2281,7 +2281,7 @@ struct ProductFrontend {
 }
 
 struct FrontendSet {
-    values: [ProductFrontend; 7],
+    values: [ProductFrontend; 3],
 }
 
 // Readiness must never construct a syntax parser. Legacy indexing may fill
@@ -2298,10 +2298,6 @@ impl FrontendSet {
             backend_frontend_rust::syntax_frontend(),
             backend_frontend_python::syntax_frontend(),
             backend_frontend_typescript::syntax_frontend(),
-            backend_frontend_go::syntax_frontend(),
-            backend_frontend_java::syntax_frontend(),
-            backend_frontend_csharp::syntax_frontend(),
-            backend_frontend_clang::syntax_frontend(),
         ]
         .into_iter()
         .collect::<Result<Vec<_>, _>>()
@@ -2356,6 +2352,13 @@ pub(super) fn semantic_capabilities(
     let mut rows = baseline
         .as_slice()
         .iter()
+        .filter(|status| match status.family() {
+            backend_engine::CapabilityFamily::LanguageOracle { profile, .. }
+            | backend_engine::CapabilityFamily::StructuralFrontend { profile } => matches!(
+                profile.language(), Language::Rust | Language::Python | Language::TypeScript
+            ),
+            backend_engine::CapabilityFamily::Embedding { .. } => true,
+        })
         .map(|status| match status.family() {
             backend_engine::CapabilityFamily::LanguageOracle { profile, task } => {
                 let compiler_capability = compiler.capabilities().for_profile(profile);
@@ -4382,19 +4385,6 @@ fn project_paths_with_policy(
                             | "py"
                             | "pyi"
                             | "pyw"
-                            | "go"
-                            | "java"
-                            | "cs"
-                            | "c"
-                            | "h"
-                            | "cc"
-                            | "cpp"
-                            | "cxx"
-                            | "hh"
-                            | "hpp"
-                            | "hxx"
-                            | "m"
-                            | "mm"
                     )
                 })
             {
@@ -4409,10 +4399,6 @@ fn project_paths_with_policy(
                     [
                         SourceLanguage::Rust,
                         SourceLanguage::Python,
-                        SourceLanguage::Go,
-                        SourceLanguage::Java,
-                        SourceLanguage::CSharp,
-                        SourceLanguage::Clang,
                     ]
                     .into_iter()
                     .any(|language| admitted_file_profile(language, path).is_some())
@@ -4713,15 +4699,11 @@ fn read_compiler_configuration_snapshot(
     })
 }
 
-fn compiler_languages() -> [Language; 7] {
+fn compiler_languages() -> [Language; 3] {
     [
         Language::Rust,
         Language::TypeScript,
         Language::Python,
-        Language::Go,
-        Language::Java,
-        Language::CSharp,
-        Language::Clang,
     ]
 }
 
@@ -4784,52 +4766,6 @@ fn compiler_configuration_language(path: &Path) -> Option<Language> {
     ) || name.starts_with("requirements") && (name.ends_with(".txt") || name.ends_with(".in"))
     {
         return Some(Language::Python);
-    }
-    if matches!(name, "go.mod" | "go.sum" | "go.work" | "go.work.sum")
-        || name == "modules.txt"
-            && path
-                .parent()
-                .is_some_and(|parent| parent.ends_with("vendor"))
-    {
-        return Some(Language::Go);
-    }
-    if matches!(
-        name,
-        "pom.xml"
-            | "build.gradle"
-            | "build.gradle.kts"
-            | "settings.gradle"
-            | "settings.gradle.kts"
-            | "gradle.lockfile"
-            | "gradle.properties"
-            | "gradle-wrapper.properties"
-    ) {
-        return Some(Language::Java);
-    }
-    let lower = name.to_ascii_lowercase();
-    if matches!(
-        lower.as_str(),
-        "directory.build.props"
-            | "directory.build.targets"
-            | "directory.packages.props"
-            | "packages.lock.json"
-            | "nuget.config"
-            | "global.json"
-    ) || lower.ends_with(".csproj")
-        || lower.ends_with(".sln")
-        || lower.ends_with(".slnx")
-    {
-        return Some(Language::CSharp);
-    }
-    if matches!(
-        name,
-        "compile_commands.json"
-            | "compile_flags.txt"
-            | ".clang-tidy"
-            | "CMakeLists.txt"
-            | "Makefile"
-    ) {
-        return Some(Language::Clang);
     }
     None
 }
