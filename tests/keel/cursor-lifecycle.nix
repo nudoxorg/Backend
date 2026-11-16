@@ -42,6 +42,7 @@ in {
         expect = { exit = 0; json = [
           (eq "/answer" "fault")
           (eq "/slug" "cursor-mismatch")
+          (eq "/cause" "moved")
         ]; };
       }
       { id = "stop-mcp"; kind = "mcp-stop"; session = "reader"; }
@@ -52,6 +53,7 @@ in {
         expect = { exit = 0; json = [
           (eq "/answer" "fault")
           (eq "/slug" "usage")
+          (eq "/cause" "malformed")
           { pointer = "/detail"; contains = "short-lived server-side handle"; }
         ]; };
       }
