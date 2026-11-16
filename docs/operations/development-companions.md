@@ -3,14 +3,25 @@
 A plain `cargo build --locked` builds the four public applications: CLI, MCP,
 local owner and desktop. Workspace QA members opt into GPUI's test-support and
 visual-harness features; the product defaults keep those features out of an
-ordinary desktop build. Use `cargo test --workspace` for complete workspace
-validation and explicit package/feature selections for GUI capture tooling.
+ordinary desktop build. The active release scope is Rust, Python,
+JavaScript/TypeScript, CSS and SQL. The focused Linux gate builds the public
+applications, both in-tree native workers and the Keel process runner; it runs
+all definitions in `tests/keel/default.nix`. Invoke it with
+`nu .config/ci/linux.nu`. `--archived` additionally runs the historical workspace
+test selection; that selection includes language suites outside the current scope.
+Use explicit package/feature selections for GUI capture tooling.
 
 Several native frontends also need companion executables. A successful Cargo build alone does
 not mean those frontends are available. Missing companions remain explicit
 capability gaps in the owner; they do not select a syntax-parser fallback.
 
-## C# / Roslyn
+## Paused C# / Roslyn archive
+
+C#, Java, Go and Clang frontend execution are paused in focused product builds.
+A Roslyn helper alone does not re-enable C# discovery or capability reporting.
+The engine's `paused-frontends` feature retains archived adapter and regression
+coverage; it is not part of the focused release gate. The recipe below is
+retained for archived helper development.
 
 Use an installed .NET SDK that can target net8.0. Publish the pinned Roslyn
 helper and its entire dependency closure into a new development directory:
