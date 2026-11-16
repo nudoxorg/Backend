@@ -7,7 +7,8 @@ license.workspace = true
 publish = false
 
 [features]
-search-bench = ["dep:backend-frontend-clang"]
+search-bench = ["paused-frontends"]
+paused-frontends = ["backend-engine/paused-frontends", "dep:backend-frontend-clang", "dep:backend-frontend-csharp", "dep:backend-frontend-go"]
 cluster-process-journey-hooks = [
     "backend-engine/cluster-process-journey-hooks",
     "backend-store-s3/test-support",
@@ -25,6 +26,8 @@ backend-extension-qdrant = { path = "../../extensions/qdrant" }
 backend-extension-tantivy = { path = "../../extensions/tantivy" }
 backend-extension-trustfall = { path = "../../extensions/trustfall" }
 backend-frontend-clang = { path = "../../frontends/clang", optional = true }
+backend-frontend-csharp = { path = "../../frontends/csharp", optional = true }
+backend-frontend-go = { path = "../../frontends/go", optional = true }
 backend-frontend-python = { path = "../../frontends/python" }
 backend-frontend-rust = { path = "../../frontends/rust" }
 backend-frontend-stylo = { path = "../../frontends/stylo" }
@@ -65,9 +68,6 @@ unicode-normalization = "0.1.25"
 url = "=2.5.8"
 
 [dev-dependencies]
-backend-frontend-clang = { path = "../../frontends/clang" }
-backend-frontend-go = { path = "../../frontends/go" }
-backend-frontend-csharp = { path = "../../frontends/csharp" }
 allocation-counter.workspace = true
 axum.workspace = true
 backend-client = { path = "../client", features = ["test-support"] }

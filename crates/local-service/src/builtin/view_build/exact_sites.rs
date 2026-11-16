@@ -623,6 +623,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn cold_canonical_sites_unify_only_current_exact_twins_in_rows_and_query_plan()
     -> Result<(), String> {
         use super::super::super::{IndexedProject, IndexedSources, ProductSourceRecord};
@@ -1086,6 +1087,7 @@ mod go_field_witness_tests {
     use super::*;
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn cold_go_field_extents_unify_exact_bindings_and_preserve_distinct_owners()
     -> Result<(), String> {
         use backend_semantic::ir::{

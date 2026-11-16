@@ -1697,17 +1697,7 @@ mod tests {
             &nuget.join("AutoMapper.nuspec"),
             "<package><metadata><id>AutoMapper</id><version>13.0.0</version></metadata></package>",
         );
-        let nuget_manifest = read_local_manifest(&nuget)
-            .expect("nuget")
-            .expect("identity");
-        assert_eq!(
-            nuget_manifest.record.coordinate.as_str(),
-            "pkg:nuget/AutoMapper@13.0.0"
-        );
-        assert_eq!(
-            nuget_manifest.profile,
-            LanguageProfile::CSharp(backend_semantic::vocabulary::CSharpVersion::CSharp14)
-        );
+        assert!(read_local_manifest(&nuget).expect("paused nuget").is_none());
 
         write(&root.join("broken").join("package.json"), "{");
         let broken = read_local_manifest(&root.join("broken"));
@@ -1716,6 +1706,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn local_manifest_go_version_comes_from_the_directory_name() -> Result<(), String> {
         use crate::test_support::TestValue as _;
         let root = fixture("go");
@@ -1758,6 +1749,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn local_manifest_go_future_language_requirement_is_refused_with_exact_source() -> Result<(), String>
     {
         use crate::test_support::TestValue as _;
@@ -1802,6 +1794,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn local_manifest_go_language_requirement_is_not_the_suggested_toolchain() -> Result<(), String> {
         use crate::test_support::TestValue as _;
         let root = fixture("go-language-toolchain");
@@ -1854,6 +1847,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn local_manifest_go_malformed_version_is_not_a_supported_or_future_profile() -> Result<(), String>
     {
         use crate::test_support::TestValue as _;
@@ -1897,6 +1891,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn local_manifest_maven_parent_and_dynamic_version() {
         let root = fixture("maven");
         let parented = root.join("parented");

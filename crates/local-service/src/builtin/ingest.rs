@@ -6253,7 +6253,7 @@ mod tests {
             walk.native_typescript_paths,
             [root.join("dep.ts"), root.join("view.tsx")]
         );
-        assert_eq!(walk.sources, [root.join("main.go")]);
+        assert!(walk.sources.is_empty());
         assert_eq!(walk.unsupported_css, 1);
         let project =
             backend_engine::PackageKey::from_value(root.to_str().ok_or("root UTF-8")?).to_bytes();
@@ -6983,7 +6983,7 @@ mod tests {
     #[test]
     fn structural_frontend_inventory_has_exactly_one_parser_per_language() -> Result<(), String> {
         let frontends = FrontendSet::build()?;
-        for language in SourceLanguage::ALL {
+        for language in [SourceLanguage::Rust, SourceLanguage::Python, SourceLanguage::TypeScript] {
             let frontend = frontends
                 .for_language(language)
                 .ok_or_else(|| format!("missing {language:?} parser capability"))?;
@@ -6992,6 +6992,9 @@ mod tests {
                     "{language:?} parser has an empty producer identity"
                 ));
             }
+        }
+        for language in [SourceLanguage::Go, SourceLanguage::Java, SourceLanguage::CSharp, SourceLanguage::Clang] {
+            assert!(frontends.for_language(language).is_none());
         }
         Ok(())
     }
@@ -7755,6 +7758,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn go_module_profiles_bind_fresh_reused_and_cold_source_frontiers() -> Result<(), String> {
         let repository = git_test_repo(
             "go-module-profiles",
@@ -7917,6 +7921,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn go_future_module_is_refused_before_source_rows_or_frontiers() -> Result<(), String> {
         let root = crate::test_support::private_temp_dir("go-future-module")
             .map_err(|error| error.to_string())?;
@@ -9584,6 +9589,7 @@ mod robustness_tests {
     /// preprocessing, but the structural grammar rejects it. The real pugixml
     /// header was dropped here before libclang could observe its declarations.
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn cpp_declaration_macros_use_exact_native_candidate_frontier() -> Result<(), String> {
         let scratch = scratch("cpp-macro-frontier")?;
         let source: &[u8] = b"#define PUGIXML_CLASS\nnamespace pugi {\nclass PUGIXML_CLASS xml_document {};\nstruct PUGIXML_CLASS xml_parse_result { int status; };\n}\n";

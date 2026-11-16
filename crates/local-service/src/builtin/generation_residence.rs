@@ -522,7 +522,7 @@ fn publication_scope(key: &ProductSemanticPublicationKey) -> [u8; 32] {
 /// The package is compiled before either timer. `cold` reopens the generation
 /// from the artifact directory. `warm` returns the same image allocation and
 /// does not call the owner.
-#[cfg(any(test, feature = "search-bench"))]
+#[cfg(feature = "paused-frontends")]
 #[allow(clippy::expect_used, clippy::print_stdout)]
 pub(super) fn measure_semantic_generation() {
     const SAMPLES: usize = 32;
@@ -584,7 +584,7 @@ pub(super) fn measure_semantic_generation() {
     );
 }
 
-#[cfg(any(test, feature = "search-bench"))]
+#[cfg(feature = "paused-frontends")]
 fn load_fixture(
     fixture: &GenerationFixture,
     claim: &SemanticPublicationClaim,
@@ -594,7 +594,7 @@ fn load_fixture(
     super::load_semantic_publication(client, fixture.key(), *claim, generations)
 }
 
-#[cfg(any(test, feature = "search-bench"))]
+#[cfg(feature = "paused-frontends")]
 struct GenerationFixture {
     root: std::path::PathBuf,
     /// Deleted by the adversarial test after the first successful activation.
@@ -613,7 +613,7 @@ struct GenerationFixture {
     cxx_key: ProductSemanticPublicationKey,
 }
 
-#[cfg(any(test, feature = "search-bench"))]
+#[cfg(feature = "paused-frontends")]
 impl GenerationFixture {
     fn client(&self) -> Result<&backend_engine::application::LocalCompilerClient, String> {
         self.client
@@ -673,7 +673,7 @@ impl GenerationFixture {
     }
 }
 
-#[cfg(any(test, feature = "search-bench"))]
+#[cfg(feature = "paused-frontends")]
 impl Drop for GenerationFixture {
     fn drop(&mut self) {
         drop(self.client.take());
@@ -681,7 +681,7 @@ impl Drop for GenerationFixture {
     }
 }
 
-#[cfg(any(test, feature = "search-bench"))]
+#[cfg(feature = "paused-frontends")]
 fn open_generation_fixture() -> Result<GenerationFixture, String> {
     use backend_engine::application::{
         LocalCompilerClient, LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths,
@@ -946,7 +946,7 @@ fn open_generation_fixture() -> Result<GenerationFixture, String> {
     })
 }
 
-#[cfg(any(test, feature = "search-bench"))]
+#[cfg(feature = "paused-frontends")]
 fn unique_directory() -> Result<std::path::PathBuf, std::io::Error> {
     for ordinal in 0_u16..64 {
         let path = std::env::temp_dir().join(format!(
@@ -965,7 +965,7 @@ fn unique_directory() -> Result<std::path::PathBuf, std::io::Error> {
     ))
 }
 
-#[cfg(any(test, feature = "search-bench"))]
+#[cfg(feature = "paused-frontends")]
 #[allow(clippy::indexing_slicing)]
 fn percentiles(samples: &[u128]) -> (u128, u128) {
     let mut ordered = samples.to_vec();
@@ -1559,6 +1559,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn preparation_reuses_real_selected_publication_bytes_and_structural_proofs() {
         if !run_with_explicit_clang_fixture() {
             return;
@@ -1989,6 +1990,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn a_deleted_artifact_directory_still_serves_the_admitted_generation() {
         if !run_with_explicit_clang_fixture() {
             return;
@@ -2051,6 +2053,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn byte_budget_evicts_asymmetric_valid_generations_and_reopens_them() {
         if !run_with_explicit_clang_fixture() {
             return;
@@ -2144,6 +2147,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn over_limit_generation_is_not_retained() {
         if !run_with_explicit_clang_fixture() {
             return;
@@ -2188,6 +2192,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn selected_loader_checks_entry_cap_before_copying_payloads() {
         if !run_with_explicit_clang_fixture() {
             return;
@@ -2352,6 +2357,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn native_freshness_requires_current_package_source_even_with_same_input_digest()
     -> Result<(), String> {
         use crate::test_support::TestValue as _;
@@ -2752,6 +2758,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn native_history_cas_holds_the_committed_marker_lease_across_two_generations() {
         if !run_with_explicit_clang_fixture() {
             return;

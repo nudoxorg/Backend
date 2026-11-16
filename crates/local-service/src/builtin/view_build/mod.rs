@@ -1313,6 +1313,7 @@ pub fn execute() {}
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn frontend_duplicate_coordinates_are_retained_without_a_dangling_target() -> Result<(), String>
     {
         let frontend = backend_frontend_csharp::syntax_frontend().map_err(|e| e.to_string())?;

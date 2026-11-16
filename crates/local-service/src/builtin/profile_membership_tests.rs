@@ -12,6 +12,7 @@ use std::sync::Arc;
 type TestFile = ([u8; 32], String, [u8; 32]);
 
 #[test]
+#[cfg(feature = "paused-frontends")]
 fn malformed_native_source_refusal_binds_to_selected_bytes_and_survives_reopen() {
     use backend_engine::builtin::{
         NativePathDisposition, ProductSemanticCaptureOutcome, ProductSemanticPublicationKey,

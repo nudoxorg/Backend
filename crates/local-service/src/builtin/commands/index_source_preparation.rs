@@ -1923,7 +1923,7 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "paused-frontends"))]
 mod csharp_project_discovery_tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};

@@ -4268,6 +4268,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires an explicitly selected installed Go compiler"]
+    #[cfg(feature = "paused-frontends")]
     fn actual_go_embedded_field_has_file_evidence_without_a_span() {
         use backend_engine::driver::{
             CompileControl, CompileOutput, CompileRequest, CompileScratch, DeclarationScope,
