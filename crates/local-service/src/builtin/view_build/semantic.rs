@@ -2601,7 +2601,10 @@ fn semantic_rows(
                 }
                 if observed.is_some() {
                     const NOTE: &str = " Source was observed at capture; discovery policy stability is unknown.";
-                    for row in &mut rows[first_group_row..] {
+                    for row in rows[first_group_row..]
+                        .iter_mut()
+                        .filter(|row| row.source.captured().is_some())
+                    {
                         let cost = NOTE.len().checked_add(std::mem::size_of::<Fragment>())
                             .ok_or_else(|| BuiltinModelError("native policy note size overflow".into()))?;
                         remaining_bytes = remaining_bytes.checked_sub(cost)

@@ -582,6 +582,88 @@ fn served_excerpts(session: &mut Session, name: &str) -> Result<Vec<String>, Box
     Ok(served)
 }
 
+/// The observation qualification belongs to rows with a captured declaration
+/// location. A generated native external target has no source location, even
+/// when its caller was captured in the same native image.
+#[test]
+fn native_ts_external_target_does_not_claim_source_observed_at_capture()
+    -> Result<(), Box<dyn Error>>
+{
+    let mut builder = tempfile::Builder::new();
+    builder.prefix("tsx-external-note-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o700));
+    }
+    let fixture = builder.tempdir_in("/tmp")?;
+    let project = fixture.path().join("project");
+    fs::create_dir(&project)?;
+    fs::write(
+        project.join("tsconfig.json"),
+        r#"{
+            "compilerOptions": {"strict": true, "target": "ES2022", "lib": ["ES2022"]},
+            "include": ["*.ts"]
+        }"#,
+    )?;
+    fs::write(
+        project.join("view.ts"),
+        "export function local() { return Math.max(1, 2); }\n",
+    )?;
+    let paths = backend_runtime::WorkspacePaths::discover(
+        Some(fixture.path().join("owner")),
+        Some(fixture.path().join("state")),
+        Some(fixture.path().join("owner.sock")),
+    )?;
+    paths.initialize()?;
+    let owner = start_owner(&paths)?;
+    let mut session = Session::connect(owner.endpoint())?;
+    assert_eq!(index_to_publication(&mut session, &project, 0x8a)?, 0);
+
+    let note = "Source was observed at capture; discovery policy stability is unknown.";
+    let CommandReply::Names(local) = session.names("local", 100)?.reply else {
+        return Err("local Names reply".into());
+    };
+    let local_row = local
+        .root
+        .rows()
+        .iter()
+        .find(|row| {
+            row.kind == Some(backend_library::DeclarationKind::Function)
+                && row.label.ends_with("::local")
+        })
+        .ok_or("source-bearing local function row")?;
+    assert!(
+        local_row.source.captured().is_some(),
+        "local row source is captured"
+    );
+    assert!(local_row.document.iter().any(|fragment| matches!(
+        fragment,
+        backend_library::Fragment::Text(text) if text.contains(note)
+    )));
+
+    let CommandReply::Names(external) = session.names("max", 100)?.reply else {
+        return Err("Math.max Names reply".into());
+    };
+    let external_row = external
+        .root
+        .rows()
+        .iter()
+        .find(|row| {
+            row.label.ends_with("::max")
+                && matches!(row.source, backend_library::SourceAvailability::NotCaptured)
+        })
+        .ok_or("source-less Math.max external row")?;
+    assert!(external_row.document.iter().all(|fragment| !matches!(
+        fragment,
+        backend_library::Fragment::Text(text) if text.contains(note)
+    )));
+
+    drop(session);
+    assert_eq!(owner.close()?.failures, 0);
+    Ok(())
+}
+
 /// A workspace whose TypeScript project is already published through selected
 /// native evidence must keep indexing when the project gains a second source
 /// language. Canonical indexes such a project; failing the whole index would be
