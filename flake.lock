@@ -85,17 +85,17 @@
         ]
       },
       "locked": {
-        "lastModified": 1794867995,
-        "narHash": "sha256-tNak/93tb81x7/gMGxzclUig2es3iKsTbx3zHY2L9/U=",
+        "lastModified": 1794869491,
+        "narHash": "sha256-JtU7mLyS5DRat5kkdxglSUNQuu4KHLb6p3OA6Z1IBYE=",
         "owner": "nudoxorg",
         "repo": "keel",
-        "rev": "2dc899f6bb0dd7f6f31f3f0c5ee9423594d1e8c0",
+        "rev": "4266d70f1329bbd70058f5c840182ee81b3ff90a",
         "type": "github"
       },
       "original": {
         "owner": "nudoxorg",
         "repo": "keel",
-        "rev": "2dc899f6bb0dd7f6f31f3f0c5ee9423594d1e8c0",
+        "rev": "4266d70f1329bbd70058f5c840182ee81b3ff90a",
         "type": "github"
       }
     },
