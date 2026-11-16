@@ -3,10 +3,12 @@
 use crate::options::{Format, Options};
 use backend_client::{LocalSemanticIndexClient, RemoteIndexCommandTransport, Session};
 use backend_engine::application::{
-    CompilerPackageTargetV2, DEFAULT_RUST_CARGO_METADATA_POLICY, GoPackageAuthorityWitness,
+    CompilerPackageTargetV2, DEFAULT_RUST_CARGO_METADATA_POLICY,
     LocalCompilerCapabilityState, LocalCompilerExecutionIdentity, LocalCompilerHost,
     RustCargoMetadataPolicy,
 };
+#[cfg(feature = "paused-frontends")]
+use backend_engine::application::GoPackageAuthorityWitness;
 use backend_engine::cluster_transport::{
     ClusterExecutionClass, EndpointId, RemoteIndexCapability, RemoteIndexCapabilityClaims,
     RemoteIndexPermission, RemoteIndexProductScope, RemoteIndexQueryOperation,
@@ -280,6 +282,10 @@ fn package_placement(
     profile: LanguageProfile,
     package_root: Option<&str>,
 ) -> Result<PackagePlacement, Fault> {
+    #[cfg(not(feature = "paused-frontends"))]
+    if !matches!(profile, LanguageProfile::Rust(_) | LanguageProfile::Python(_) | LanguageProfile::TypeScript(_)) {
+        return Err(usage("--profile", "this language profile is paused in the focused build"));
+    }
     let root = package_root.map(PathBuf::from);
     if root.is_some() && profile.language() != backend_semantic::vocabulary::Language::Go {
         return Err(usage(
@@ -287,6 +293,7 @@ fn package_placement(
             "project placement inspection is currently supported only for Go profiles",
         ));
     }
+    #[cfg(feature = "paused-frontends")]
     if let Some(root) = root {
         let witness = GoPackageAuthorityWitness::capture(&root).map_err(|error| {
             usage(
@@ -2080,6 +2087,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn go_workspace_scope_is_reported_local_only_until_transferable() {
         use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -2109,6 +2117,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn go_local_replace_scope_is_reported_local_only() {
         use std::sync::atomic::{AtomicU64, Ordering};
 

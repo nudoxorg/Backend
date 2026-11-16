@@ -13,6 +13,9 @@ path = "src/main.rs"
 [lib]
 path = "src/lib.rs"
 
+[features]
+paused-frontends = ["backend-engine/paused-frontends", "backend-local-service/paused-frontends"]
+
 [dependencies]
 backend-account = { path = "../../crates/account" }
 backend-client = { path = "../../crates/client" }
