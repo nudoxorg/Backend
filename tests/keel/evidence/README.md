@@ -49,3 +49,23 @@ The evaluated manifest SHA-256 is recorded in the report; the full evaluated
 input and raw replies remain at
 `/root/nudox-keel-official-189f-20261116` on ilo-prod. Report SHA-256:
 `0b79fbf2d8434a609c583f5552b0dc9e3142a5dd4d68bdd90c6b5c3524a58133`.
+
+`native-owner-linux-631a-20261116.json` records a second independent development
+run against the CSS/SQLite anchored 631a artifacts in
+`/root/nudox-dev-anchor-631a-20261116/bin` (private libraries in its sibling
+`lib` directory). All three cases and 50 process/history steps passed: the 17
+worker steps and all 33 owner steps. The owner history includes both Standard
+full-data parity and Summary's exact first-source actions, source-handle reads,
+edits, removed facts, restart, and a transition from explicit SQL selection
+(`inventory_complete=false`) to implicit discovery (`inventory_complete=true`).
+The CSS source-partial and SQL undeployed-catalog qualifications remain intact.
+
+The manifest SHA-256 is
+`3aa01a97a0c3de6a9cfee33bf7219f423558ba2b9a7468c93e4b9746e1602aef`;
+the report SHA-256 is
+`4fe768005019acb24da83365ffcdb87a7df8689604b1374aee4e0dd3bd2e30a2`.
+The driver is the same published Keel executable named above, with required
+cgroup-v2 containment. Raw evidence is retained at
+`/root/nudox-keel-anchored-owner-631a-v4-20261116` on ilo-prod. These are debug
+worker-anchor development observations, not the final 0.3 release artifacts or
+formal release attestation.

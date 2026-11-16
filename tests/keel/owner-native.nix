@@ -31,7 +31,10 @@ let
       (eq "/semantic_data/value/terminal/state" "complete")
       (eq "/semantic_data/value/basis/catalog_is_deployed" false)
       (eq "/semantic_data/value/basis/attempt/state" "latest_observed")
-      (eq "/semantic_data/value/basis/inventory_complete" true)
+      # Explicit settings name selected hosts; they never certify a complete
+      # project inventory, even when their retained enumeration is complete.
+      (eq "/semantic_data/value/basis/inventory_complete" false)
+      (eq "/semantic_data/value/basis/implicit_selection" false)
       (eq "/semantic_data/value/basis/gaps/unavailable_hosts" 0)
       (eq "/semantic_data/value/basis/gaps/native_error_hosts" 0)
       { pointer = "/records"; select = "/title"; contains = title; }
@@ -49,6 +52,14 @@ let
       json = map (assertion: if assertion.pointer == "/semantic_data/kind" then
         eq assertion.pointer (builtins.replaceStrings [ "-summary" ] [ "" ] assertion.equals)
       else assertion) step.expect.json;
+    };
+  };
+  implicitSql = step: step // {
+    expect = step.expect // {
+      json = map (assertion: if builtins.elem assertion.pointer [
+        "/semantic_data/value/basis/inventory_complete"
+        "/semantic_data/value/basis/implicit_selection"
+      ] then eq assertion.pointer true else assertion) step.expect.json;
     };
   };
   noCss = id: name: {
@@ -69,7 +80,8 @@ let
     expect = { exit = 0; json = [
       (eq "/semantic_data/value/terminal/state" "complete")
       (eq "/semantic_data/value/basis/attempt/state" "latest_observed")
-      (eq "/semantic_data/value/basis/inventory_complete" true)
+      (eq "/semantic_data/value/basis/inventory_complete" false)
+      (eq "/semantic_data/value/basis/implicit_selection" false)
       (eq "/semantic_data/value/basis/gaps/unavailable_hosts" 0)
       (eq "/semantic_data/value/basis/gaps/native_error_hosts" 0)
       (eq "/records" [ ])
@@ -150,6 +162,11 @@ in {
       (cssRead "panel-source-after-restart" "panel")
       (sql "persons-after-restart" "definition" "persons" "table persons (created)")
       (sqlRead "persons-source-after-restart" "persons")
+      { id = "remove-explicit-sql-selection"; kind = "write"; remove = [ ".nudox/sql.json" ]; }
+      { id = "reindex-implicit-sql-selection"; kind = "index"; }
+      (implicitSql (sql "implicit-persons" "definition" "persons" "table persons (created)"))
+      (sqlRead "implicit-persons-source" "persons")
+      (implicitSql (noSql "implicit-removed-members" "members"))
     ];
   } ];
 }

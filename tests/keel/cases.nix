@@ -18,7 +18,10 @@ let
     id = "caller-identity-${suffix}"; kind = "query";
     cli = [ "search" "keel_fanout_${suffix}" "--limit" "20" ];
     tool = "backend.search"; arguments = { query = "keel_fanout_${suffix}"; limit = 20; };
-    bind."caller_${suffix}" = { pointer = "/records/0/identity/semantic_data"; transform = "selected-symbol-key"; };
+    bind = {
+      "caller_${suffix}" = { pointer = "/records/0/identity/semantic_data"; transform = "selected-symbol-key"; };
+      "caller_${suffix}_coordinate" = "/records/0/identity/coordinate";
+    };
     expect = { exit = 0; json = [ (eq "/records/0/identity/name" "keel_fanout_${suffix}") ]; };
   };
   show = id: name: path: {
@@ -74,37 +77,51 @@ in {
         (callerIdentity "a") (callerIdentity "b") (callerIdentity "c") (callerIdentity "d")
         (callerIdentity "e") (callerIdentity "f") (callerIdentity "g") (callerIdentity "h")
         {
+          id = "resolve-return-type"; kind = "query";
+          cli = [ "resolve" "u32" "--limit" "20" ];
+          tool = "backend.resolve"; arguments = { query = "u32"; limit = 20; };
+          bind = {
+            u32_coordinate = "/records/0/identity/coordinate";
+            u32_id = { pointer = "/records/0/identity/semantic_data"; transform = "selected-symbol-key"; };
+          };
+          expect = { exit = 0; json = [
+            (eq "/records/0/identity/name" "u32")
+            (eq "/records/0/identity/shape" "external")
+            { pointer = "/records/1"; absent = true; }
+          ]; };
+        }
+        {
           id = "pin-related-source-root"; kind = "cli"; args = [ "status" ];
           expect = { exit = 0; json = [ (eq "/answer" "status") ]; };
           bind.source_root = { pointer = "/revision"; transform = "hex-root"; };
         }
         {
-          id = "guidance-status-before"; kind = "pages"; tool = "backend.status";
+          id = "guidance-status-before"; kind = "query"; tool = "backend.status";
+          cli = [ "status" ];
           arguments.detail = "full";
-          minimum_pages = 1; maximum_pages = 1;
           expect = { exit = 0; json = [
-            (eq "/first/answer" "status")
-            (eq "/first/revision" "\${source_root}")
+            (eq "/answer" "status")
+            (eq "/revision" "\${source_root}")
           ]; };
         }
         {
-          id = "guidance-graph"; kind = "pages"; tool = "backend.graph";
-          arguments = { coordinate = "\${coordinate}"; limit = 1000; detail = "full"; };
-          minimum_pages = 1; maximum_pages = 1;
+          id = "guidance-graph"; kind = "query"; tool = "backend.graph";
+          cli = [ "graph" "\${coordinate}" "--limit" "200" ];
+          arguments = { coordinate = "\${coordinate}"; limit = 200; detail = "full"; };
           expect = { exit = 0; json = [
-            (eq "/first/answer" "records")
-            (eq "/first/query" "\${coordinate}")
-            (eq "/first/more" false)
+            (eq "/answer" "records")
+            (eq "/query" "\${coordinate}")
+            (eq "/more" false)
           ]; };
         }
         {
-          id = "guidance-source"; kind = "pages"; tool = "backend.source";
+          id = "guidance-source"; kind = "query"; tool = "backend.source";
+          cli = [ "source" "\${coordinate}" ];
           arguments = { coordinate = "\${coordinate}"; detail = "full"; };
-          minimum_pages = 1; maximum_pages = 1;
           expect = { exit = 0; json = [
-            (eq "/first/answer" "page")
-            (eq "/first/identity/coordinate" "\${coordinate}")
-            (eq "/first/source/extent" "complete")
+            (eq "/answer" "page")
+            (eq "/identity/coordinate" "\${coordinate}")
+            (eq "/source/extent" "complete")
           ]; };
         }
         {
@@ -117,20 +134,25 @@ in {
             (eq "/first/related_basis/coordinate" "\${coordinate}")
             (eq "/first/related_basis/source_view_root" "\${source_root}")
             (eq "/first/related_basis/relation_coverage" "unknown")
-            { pointer = "/first/edges"; select = "/from_id"; set_equals = [
-              "\${caller_a}" "\${caller_b}" "\${caller_c}" "\${caller_d}"
-              "\${caller_e}" "\${caller_f}" "\${caller_g}" "\${caller_h}"
-            ]; }
-            { pointer = "/first/edges"; select = "/to_id"; set_equals = builtins.genList (_: "\${center_id}") 8; }
+            { pointer = "/first/edges"; set_equals = (map (suffix: {
+              from = "\${caller_${suffix}_coordinate}";
+              from_id = "\${caller_${suffix}}";
+              to = "\${coordinate}"; to_id = "\${center_id}";
+              relation = "calls"; confidence = "compiler";
+            }) [ "a" "b" "c" "d" "e" "f" "g" "h" ]) ++ [ {
+              from = "\${coordinate}"; from_id = "\${center_id}";
+              to = "\${u32_coordinate}"; to_id = "\${u32_id}";
+              relation = "type-reference"; confidence = "compiler";
+            } ]; }
           ]; };
         }
         {
-          id = "guidance-status-after"; kind = "pages"; tool = "backend.status";
+          id = "guidance-status-after"; kind = "query"; tool = "backend.status";
+          cli = [ "status" ];
           arguments.detail = "full";
-          minimum_pages = 1; maximum_pages = 1;
           expect = { exit = 0; json = [
-            (eq "/first/answer" "status")
-            (eq "/first/revision" "\${source_root}")
+            (eq "/answer" "status")
+            (eq "/revision" "\${source_root}")
           ]; };
         }
         {
@@ -138,7 +160,7 @@ in {
           expect = { exit = 0; json = [
             { pointer = "/records"; select = "/identity/name"; set_equals = [
               "keel_fanout_target" "keel_fanout_a" "keel_fanout_b" "keel_fanout_c"
-              "keel_fanout_d" "keel_fanout_e" "keel_fanout_f" "keel_fanout_g" "keel_fanout_h"
+              "keel_fanout_d" "keel_fanout_e" "keel_fanout_f" "keel_fanout_g" "keel_fanout_h" "u32"
             ]; }
             { pointer = "/records"; select = "/identity/name"; not_contains = "keel_fanout_decoy"; }
           ]; };
@@ -148,7 +170,7 @@ in {
           id = "diamond-incoming"; kind = "cli"; args = [ "related" "\${coordinate}" ];
           expect = { exit = 0; json = [
             { pointer = "/records"; select = "/identity/name"; set_equals = [
-              "keel_fanout_a" "keel_fanout_target" "keel_diamond_left" "keel_diamond_right"
+              "keel_fanout_a" "keel_fanout_target" "keel_diamond_left" "keel_diamond_right" "u32"
             ]; }
             { pointer = "/records"; select = "/identity/name"; not_contains = "keel_diamond_top"; }
           ]; };
@@ -160,7 +182,7 @@ in {
           expect = { exit = 0; json = [
             { pointer = "/records"; select = "/identity/name"; set_equals = [
               "keel_fanout_target" "keel_fanout_a" "keel_fanout_b" "keel_fanout_c"
-              "keel_fanout_d" "keel_fanout_e" "keel_fanout_f" "keel_fanout_g" "keel_fanout_h"
+              "keel_fanout_d" "keel_fanout_e" "keel_fanout_f" "keel_fanout_g" "keel_fanout_h" "u32"
             ]; }
           ]; };
         }
