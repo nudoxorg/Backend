@@ -9,25 +9,25 @@ let
     inherit id; kind = "query"; wait_for = true;
     cli = [ "stylo-query" project option name ];
     tool = "backend.stylo_query";
-    arguments = { package = project; } // { "${field}" = name; };
+    arguments = { package = project; detail = "summary"; } // { "${field}" = name; };
     expect = { exit = 0; json = [
       (eq "/answer" "product")
-      (eq "/semantic_data/kind" "stylo-query")
+      (eq "/semantic_data/kind" "stylo-query-summary")
       (eq "/semantic_data/value/basis/attempt/state" "latest_observed")
       (eq "/semantic_data/value/basis/worker_capability/state" "admitted")
       (eq "/semantic_data/value/terminal/state" "complete")
       { pointer = "/records"; select = "/title"; contains = title; }
     ]; };
-    bind = { css_source = "/semantic_data/value/hits/0/source"; };
+    bind = { css_source = "/semantic_data/value/first_site"; };
   };
   sql = id: role: name: title: {
     inherit id; kind = "query"; wait_for = true;
     cli = [ "sql-query" project "--role" role "--name" name ];
     tool = "backend.sql_query";
-    arguments = { package = project; inherit role name; };
+    arguments = { package = project; detail = "summary"; inherit role name; };
     expect = { exit = 0; json = [
       (eq "/answer" "product")
-      (eq "/semantic_data/kind" "sql-query")
+      (eq "/semantic_data/kind" "sql-query-summary")
       (eq "/semantic_data/value/terminal/state" "complete")
       (eq "/semantic_data/value/basis/catalog_is_deployed" false)
       (eq "/semantic_data/value/basis/attempt/state" "latest_observed")
@@ -36,7 +36,20 @@ let
       (eq "/semantic_data/value/basis/gaps/native_error_hosts" 0)
       { pointer = "/records"; select = "/title"; contains = title; }
     ]; };
-    bind = { sql_source = "/semantic_data/value/hits/0/source"; };
+    bind = { sql_source = "/semantic_data/value/first_source"; };
+  };
+  # Exercise the complete typed data on both transports as well as Summary's
+  # executable first-source action. Native hits are ordered by their fact IDs;
+  # their first element is not necessarily a source site.
+  fullNative = step: step // {
+    id = "${step.id}-standard";
+    arguments = step.arguments // { detail = "standard"; };
+    bind = {};
+    expect = step.expect // {
+      json = map (assertion: if assertion.pointer == "/semantic_data/kind" then
+        eq assertion.pointer (builtins.replaceStrings [ "-summary" ] [ "" ] assertion.equals)
+      else assertion) step.expect.json;
+    };
   };
   noCss = id: name: {
     inherit id; kind = "query"; wait_for = true;
@@ -99,10 +112,12 @@ in {
     steps = [
       { id = "index-initial"; kind = "index"; }
       (css "class-card" "--class" "class" "card" "card")
+      (fullNative (css "class-card" "--class" "class" "card" "card"))
       (cssRead "read-card" "card")
       (css "property-tone" "--custom-property" "custom_property" "--tone" "--tone")
       (cssRead "read-tone" "--tone")
       (sql "table-members" "definition" "members" "table members (created)")
+      (fullNative (sql "table-members" "definition" "members" "table members (created)"))
       (sqlRead "read-members" "members")
       (sql "view-member-names" "definition" "member_names" "view member_names (created)")
       (sqlRead "read-member-names" "member_names")

@@ -10,10 +10,20 @@ let
   required = import ./required-cases.nix;
   assembled = histories.cases ++ native.cases ++ protocol.cases ++ focus.cases ++ references.cases ++ ownerNative.cases ++ tsExternal.cases;
   cases = map (case: case // {
-    steps = map (step: if step.kind == "query" then step // {
-      cli = step.cli ++ [ "--detail" "standard" ];
-      arguments = step.arguments // { detail = "standard"; };
-    } else step) case.steps;
+    steps = map (step: if step.kind == "query" then
+      let
+        detail = step.arguments.detail or "standard";
+        searchBarrier = if step.tool == "backend.search" then {
+          wait_for = true;
+          expect = step.expect // {
+            json = step.expect.json ++ [ { pointer = "/readiness"; equals = "ready"; } ];
+          };
+        } else {};
+      in step // {
+        cli = step.cli ++ [ "--detail" detail ];
+        arguments = step.arguments // { inherit detail; };
+      } // searchBarrier
+    else step) case.steps;
   }) assembled;
   actual = map (case: case.id) cases;
   sorted = builtins.sort builtins.lessThan;
