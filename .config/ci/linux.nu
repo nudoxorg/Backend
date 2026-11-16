@@ -1,12 +1,13 @@
 # Linux CI lane runner, invoked as `nu .config/ci/linux.nu` inside the
 # `.#compiler` dev shell. The lane is the whole native x86_64/aarch64 Linux
-# gate: the root flake's structural checks, then `backend test pr` (every
-# workspace test except the deep-accuracy suites and the PR quarantine).
+# gate: root flake structural checks and the complete focused Keel histories.
+# `--archived` additionally runs the historical workspace PR test selection.
 #
 # MachineConfigurations only schedules this file; what the lane runs lives
 # here so a Backend PR can change it.
 
 use lib.nu *
+use focused-selection.nu [focused-package-args assert-focused-dependencies]
 
 # Prints the process output the CLI captured for a failed step. The CLI keeps
 # a child's stdout/stderr out of the log (process-require writes them beside a
@@ -166,6 +167,7 @@ export def warm-registry-cache []: nothing -> nothing {
 def main [
     --skip-flake-check # run only the test step (the flake check is already cached on the host store)
     --only-flake-check # run only the flake check, so a scheduler can run it beside the test step
+    --archived # also run the historical workspace PR tests
 ]: nothing -> nothing {
 
     # The flake closes over ~1,100 pinned corpus archives; the default 1,024
@@ -235,24 +237,43 @@ def main [
     | merge (
         if ($cargo_home | path exists) { {NUDOX_CARGO_HOME: $cargo_home} } else { {} }
     )
-    # Desktop registry and journey tests read real releases from this
-    # machine's Cargo cache, as they do on a developer's Mac. A fresh CI
-    # container has none, so fetch (download and unpack) them first: what
-    # the two fixture projects pin, plus the releases tests name directly.
-    ci-step "linux" "warm the Cargo cache for registry tests" {|| warm-registry-cache } | ignore
-    stop-if-superseded "linux"
-    let tests_started = date now
-    let tests = ci-step "linux" "backend test pr" {||
-        with-env $test_env { run-bounded 75min "sh" "-c" "umask 077 && exec backend test pr" }
+    # The active release gate builds exactly the product binaries and the
+    # process harness. Historical workspace tests remain available through
+    # `backend test pr`; they are not claimed as replaced by these histories.
+    let target_dir = $env.CARGO_TARGET_DIR? | default ($env.PWD | path join ".local/target") | path expand
+    let host_result = (run-external "rustc" "-vV" | complete)
+    if $host_result.exit_code != 0 { error make {msg: "cannot determine native Rust target"} }
+    let host = ($host_result.stdout | lines | where {|line| $line | str starts-with "host: "} | first | str replace "host: " "")
+    let bin_dir = $target_dir | path join $host "debug"
+    let built = ci-step "linux" "build focused product and Keel artifacts" {||
+        with-env ($test_env | merge {CARGO_TARGET_DIR: $target_dir}) {
+            assert-focused-dependencies $host
+            run-bounded 75min "cargo" "build" "--locked" ...(focused-package-args) "--bins" "--target" $host "--jobs" ($test_jobs | into string)
+            run-bounded 30min "cargo" "build" "--locked" "--manifest-path" "frontends/sqlite/Cargo.toml" "--bin" "sqlite-worker" "--target" $host "--jobs" ($test_jobs | into string)
+            cp --force ($bin_dir | path join "sqlite-worker") ($bin_dir | path join "backend-sqlite-worker")
+        }
     }
+    stop-if-superseded "linux"
+    let tests = if $built {
+        ci-step "linux" "Keel complete focused product histories" {||
+            mkdir .local/keel-runs
+            let run = (^mktemp -d --tmpdir=.local/keel-runs keel.XXXXXX | str trim)
+            with-env $test_env {
+                run-bounded 35min "sh" "-c" 'umask 077; exec nu .config/ci/keel.nu --bin-dir "$1" --evidence "$2"' "keel" $bin_dir ($run | path join "evidence")
+            }
+        }
+    } else { false }
     if not $tests { print-captured-failures }
-    let step_seconds = ((date now) - $tests_started) / 1sec
-    let junit = glob ".local/nextest/runs/*/**/junit.xml"
-    try {
-        ^python3 ($env.FILE_PWD | path join "junit_timing.py") --lane linux --step-seconds $step_seconds ...$junit
-    } catch { print "ci: nextest timing summary unavailable" }
+    let archived_tests = if $archived {
+        ci-step "linux" "warm registry cache for archived tests" {|| warm-registry-cache } | ignore
+        let result = ci-step "linux" "archived backend test pr" {||
+            with-env $test_env { run-bounded 75min "sh" "-c" "umask 077 && exec backend test pr" }
+        }
+        if not $result { print-captured-failures }
+        $result
+    } else { true }
 
     report-build-size
     reclaim-build-output
-    finish-lane "linux" [$flake $tests]
+    finish-lane "linux" [$flake $built $tests $archived_tests]
 }

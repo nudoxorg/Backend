@@ -2,6 +2,8 @@
 # inside the lean `.#cross` dev shell. Independent of the `backend` command so a
 # compile-only lane never realizes the corpus, native compilers, or GUI closure.
 
+use focused-selection.nu [focused-package-args assert-focused-dependencies]
+
 # Splits the space-separated target list the cross shell exports into triples.
 def split-targets [raw: string]: nothing -> list<string> {
     $raw
@@ -27,7 +29,7 @@ def ensure-fast-cache-cargo-home []: nothing -> nothing {
     }
 }
 
-# Compile-checks the whole workspace and all its targets for each configured
+# Compile-checks the focused product binaries for each configured
 # cross target. Proves Windows and aarch64 Linux still build from the CI host.
 # Then, unless `--compile-only`, runs each platform's `platform` test selection
 # under emulation: Windows under Wine, aarch64 under QEMU user mode
@@ -36,6 +38,7 @@ def main [
     --target: string # limit the run to one triple from NUDOX_CROSS_CHECK_TARGETS
     --keep-artifacts # keep each target tree instead of reclaiming its disk
     --compile-only # skip the emulated (Wine, QEMU) test runs after the checks
+    --archived # explicitly include all archived workspace members and targets
 ]: nothing -> nothing {
     let configured = split-targets ($env.NUDOX_CROSS_CHECK_TARGETS? | default "")
     if ($configured | is-empty) {
@@ -59,7 +62,8 @@ def main [
         # foreign outputs; parallel Cargo invocations must not share those.
         let target_dir = $target_root | path join $triple
         let started = date now
-        print $"cross: cargo check --locked --keep-going --workspace --all-targets --target ($triple) --jobs ($jobs)"
+        let selection = if $archived { ["--workspace" "--all-targets"] } else { (focused-package-args | append "--bins") }
+        print $"cross: cargo check --locked --keep-going ($selection | str join ' ') --target ($triple) --jobs ($jobs)"
         # Stream Cargo's own progress and diagnostics straight through. The
         # verdict comes out of the try itself: an env change such as
         # LAST_EXIT_CODE made inside the block does not survive it, so
@@ -69,8 +73,9 @@ def main [
             # If a previous cache lifecycle step removed it, recreate only
             # that direct child; never clear or follow any cache path here.
             ensure-fast-cache-cargo-home
+            if not $archived { assert-focused-dependencies $triple }
             with-env {CARGO_TARGET_DIR: $target_dir} {
-                run-external "cargo" "check" "--locked" "--keep-going" "--workspace" "--all-targets" "--target" $triple "--jobs" ($jobs | into string)
+                run-external "cargo" "check" "--locked" "--keep-going" ...$selection "--target" $triple "--jobs" ($jobs | into string)
             }
             0
         } catch {

@@ -1,0 +1,22 @@
+# Product binaries checked in the focused release lanes. The SQLite worker is
+# an isolated workspace and is built separately by the native Keel lane.
+export def focused-packages []: nothing -> list<string> {
+    ["backend-cli" "backend-mcp" "backend-locald" "backend-desktop" "backend-frontend-stylo" "backend-keel-harness"]
+}
+
+export def focused-package-args []: nothing -> list<string> {
+    focused-packages | each {|name| ["--package" $name] } | flatten
+}
+
+# The selected normal/build closure must not silently reacquire a paused
+# frontend through a newly added dependency or default feature.
+export def assert-focused-dependencies [target: string]: nothing -> nothing {
+    let result = (run-external "cargo" "tree" "--locked" "--target" $target "--edges" "normal,build" "--prefix" "none" ...(focused-package-args) | complete)
+    if $result.exit_code != 0 {
+        error make {msg: $"focused dependency inspection failed: ($result.stderr)"}
+    }
+    let paused = ($result.stdout | lines | where {|line| $line =~ '^backend-frontend-(clang|csharp|go|java) v' } | uniq)
+    if not ($paused | is-empty) {
+        error make {msg: $"focused dependency closure contains paused frontends: ($paused | str join ', ')"}
+    }
+}
