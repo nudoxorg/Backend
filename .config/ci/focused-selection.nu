@@ -1,7 +1,8 @@
 # Product binaries checked in the focused release lanes. The SQLite worker is
 # an isolated workspace and is built separately by the native Keel lane.
+# The Keel driver comes from the pinned standalone Nix input, outside Cargo.
 export def focused-packages []: nothing -> list<string> {
-    ["backend-cli" "backend-mcp" "backend-locald" "backend-desktop" "backend-frontend-stylo" "backend-keel-harness"]
+    ["backend-cli" "backend-mcp" "backend-locald" "backend-desktop" "backend-frontend-stylo"]
 }
 
 export def focused-package-args []: nothing -> list<string> {

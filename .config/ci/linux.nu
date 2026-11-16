@@ -238,9 +238,22 @@ def main [
     | merge (
         if ($cargo_home | path exists) { {NUDOX_CARGO_HOME: $cargo_home} } else { {} }
     )
-    # The active release gate builds exactly the product binaries and the
-    # process harness. Historical workspace tests remain available through
+    # The active release gate builds the product and admits the process driver
+    # from the pinned standalone Keel package. Historical tests remain through
     # `backend test pr`; they are not claimed as replaced by these histories.
+    let runner_matches = (which --all backend-keel-harness | where type == "external")
+    if ($runner_matches | is-empty) {
+        error make {msg: "the compiler shell lacks the pinned standalone backend-keel-harness executable"}
+    }
+    let runner = ($runner_matches | first | get path | path expand --strict)
+    if not ($runner | str starts-with "/nix/store/") {
+        error make {msg: $"Keel must come from the pinned standalone Nix package, got ($runner)"}
+    }
+    let runner_elf = (run-external "readelf" "-h" $runner | complete)
+    if $runner_elf.exit_code != 0 {
+        error make {msg: "the standalone Keel runner must be the actual ELF executable, not a shell wrapper"}
+    }
+    let runner_sha256 = (open --raw $runner | hash sha256)
     let target_dir = $env.CARGO_TARGET_DIR? | default ($env.PWD | path join ".local/target") | path expand
     let host_result = (run-external "rustc" "-vV" | complete)
     if $host_result.exit_code != 0 { error make {msg: "cannot determine native Rust target"} }
@@ -256,11 +269,21 @@ def main [
             with-env $anchors {
                 run-bounded 75min "cargo" "build" "--locked" ...(focused-package-args) "--bins" "--target" $host "--jobs" ($test_jobs | into string)
             }
-            for name in ["backend-locald" "backend-cli" "backend-mcp" "backend-desktop" "backend-keel-harness"] {
+            for name in ["backend-locald" "backend-cli" "backend-mcp" "backend-desktop"] {
                 ^cp ($build_bin_dir | path join $name) ($bin_dir | path join $name)
                 ^chmod 700 ($bin_dir | path join $name)
             }
+            ^cp $runner ($bin_dir | path join "backend-keel-harness")
+            ^chmod 700 ($bin_dir | path join "backend-keel-harness")
+            if (open --raw ($bin_dir | path join "backend-keel-harness") | hash sha256) != $runner_sha256 {
+                error make {msg: "staged Keel executable differs from its pinned Nix artifact"}
+            }
             verify-keel-native $host $target_dir $stage
+            let observation_path = $stage | path join "development-observation.json"
+            open $observation_path
+            | upsert standalone_keel {source: "pinned-nix-input", executable: $runner, sha256: $runner_sha256}
+            | to json
+            | save --force $observation_path
         }
     }
     stop-if-superseded "linux"
@@ -269,7 +292,7 @@ def main [
             mkdir .local/keel-runs
             let run = (^mktemp -d --tmpdir=.local/keel-runs keel.XXXXXX | str trim)
             with-env $test_env {
-                run-bounded 35min "sh" "-c" 'umask 077; exec nu .config/ci/keel.nu --bin-dir "$1" --evidence "$2"' "keel" $bin_dir ($run | path join "evidence")
+                run-bounded 35min "sh" "-c" 'umask 077; exec nu .config/ci/keel.nu --bin-dir "$1" --runner "$1/backend-keel-harness" --evidence "$2"' "keel" $bin_dir ($run | path join "evidence")
             }
         }
     } else { false }
