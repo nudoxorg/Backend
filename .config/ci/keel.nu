@@ -13,13 +13,15 @@ def main [
     let root = $env.FILE_PWD | path dirname | path dirname
     let executable = if $runner != null {
         $runner | path expand
+    } else if ($env.BACKEND_KEEL_HARNESS? | default "") != "" {
+        $env.BACKEND_KEEL_HARNESS | path expand
     } else if $bin_dir != null {
         $bin_dir | path expand | path join "backend-keel-harness"
     } else {
-        error make {msg: "Keel needs --runner or --bin-dir containing backend-keel-harness"}
+        error make {msg: "Keel needs --runner, BACKEND_KEEL_HARNESS, or --bin-dir containing backend-keel-harness"}
     }
     if not ($executable | path exists) {
-        error make {msg: $"Keel runner is absent: ($executable); build backend-keel-harness first"}
+        error make {msg: $"Keel runner is absent: ($executable); enter the pinned compiler shell or pass --runner"}
     }
     if not $list and ($bin_dir == null or $evidence == null) {
         error make {msg: "Keel execution needs --bin-dir and a new --evidence directory"}

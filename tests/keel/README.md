@@ -5,11 +5,15 @@ and never builds or links the product as a test library. Each fixture records
 independently authored source facts, refusal controls and revision histories.
 Expected output is reviewed source; there is deliberately no bless/update flag.
 
+The runner lives in the standalone [nudoxorg/keel](https://github.com/nudoxorg/keel)
+repository, under `adapters/nudox`. Backend's flake pins its revision. Enter the
+compiler shell (`nix develop .#compiler`) to obtain `BACKEND_KEEL_HARNESS`, the
+absolute executable path used by CI. Product definitions remain in this directory.
+
 ```sh
 nix-instantiate --eval --strict --json tests/keel/default.nix > /tmp/keel-cases.json
-cargo build --locked -p backend-keel-harness
-backend-keel-harness --manifest /tmp/keel-cases.json --list
-backend-keel-harness --manifest /tmp/keel-cases.json --bin-dir /path/to/artifacts/bin --evidence /path/to/new-evidence
+"$BACKEND_KEEL_HARNESS" --manifest /tmp/keel-cases.json --list
+"$BACKEND_KEEL_HARNESS" --manifest /tmp/keel-cases.json --bin-dir /path/to/artifacts/bin --evidence /path/to/new-evidence
 ```
 
 `default.nix` is the complete mandatory inventory. `cases.nix` contains live
@@ -60,8 +64,10 @@ cache admission or the verdict. The order file and hash are retained in evidence
 
 ## Driver verification and migration
 
-`cargo test --locked -p backend-keel-harness --test driver` exercises the built
-runner as an external executable. It attacks malformed/vacuous definitions,
+In a standalone Keel checkout, `cargo test --locked -p backend-keel-harness
+--test driver` exercises the built runner as an external executable. Its GitHub
+CI also runs the Linux containment holdout in a delegated cgroup. These checks
+attack malformed/vacuous definitions,
 fixture escape, oracle failure and dependency blocking, independent pass
 retention, dropped-case ordering, timeout cleanup and inherited-pipe cleanup.
 These checks verify harness custody; they do not substitute for product runs.
