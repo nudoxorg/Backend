@@ -1,0 +1,3 @@
+-- café ☕
+CREATE TABLE CAFÉ (id INTEGER PRIMARY KEY, "名前" TEXT);
+SELECT "名前" FROM CAFÉ;

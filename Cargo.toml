@@ -22,6 +22,7 @@ exclude = [
     "tests/__pycache__",
     # T2 surface corpus and reviewed snapshots (data, not a crate).
     "tests/surface",
+    "tests/keel",
     "third_party/tsz",
     # The PG native facade remains isolated until its AGPL intake is resolved.
     "frontends/postgres",
