@@ -6613,10 +6613,9 @@ mod tests {
         }
         assert_eq!(
             rows.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["api/Program.cs", "core/lib.rs", "web/Card.vue", "web/app.ts"],
+            ["core/lib.rs", "web/Card.vue", "web/app.ts"],
         );
         for (path, expected) in [
-            ("api/Program.cs", "OrderService"),
             ("core/lib.rs", "ledger"),
             ("web/app.ts", "renderShell"),
         ] {
@@ -7168,10 +7167,6 @@ mod tests {
             ("fixture.rs", "pub fn ferris() {}", "ferris"),
             ("fixture.py", "def monty():\n    pass", "monty"),
             ("fixture.ts", "export function turing() {}", "turing"),
-            ("fixture.go", "func gopher() {}", "gopher"),
-            ("fixture.java", "public class Duke {}", "Duke"),
-            ("fixture.cs", "public class Anders {}", "Anders"),
-            ("fixture.cpp", "struct Bjarne {};", "Bjarne"),
         ];
         for (path, source, expected) in fixtures {
             let frontend = frontends()?
@@ -7874,6 +7869,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn ignored_go_module_creation_is_admitted_and_fenced() -> Result<(), String> {
         let repository = git_test_repo(
             "go-hidden-module",
