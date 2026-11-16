@@ -79,6 +79,35 @@ in {
           bind.source_root = { pointer = "/revision"; transform = "hex-root"; };
         }
         {
+          id = "guidance-status-before"; kind = "pages"; tool = "backend.status";
+          arguments.detail = "full";
+          minimum_pages = 1; maximum_pages = 1;
+          expect = { exit = 0; json = [
+            (eq "/first/answer" "status")
+            (eq "/first/revision" "\${source_root}")
+          ]; };
+        }
+        {
+          id = "guidance-graph"; kind = "pages"; tool = "backend.graph";
+          arguments = { coordinate = "\${coordinate}"; limit = 1000; detail = "full"; };
+          minimum_pages = 1; maximum_pages = 1;
+          expect = { exit = 0; json = [
+            (eq "/first/answer" "records")
+            (eq "/first/query" "\${coordinate}")
+            (eq "/first/more" false)
+          ]; };
+        }
+        {
+          id = "guidance-source"; kind = "pages"; tool = "backend.source";
+          arguments = { coordinate = "\${coordinate}"; detail = "full"; };
+          minimum_pages = 1; maximum_pages = 1;
+          expect = { exit = 0; json = [
+            (eq "/first/answer" "page")
+            (eq "/first/identity/coordinate" "\${coordinate}")
+            (eq "/first/source/extent" "complete")
+          ]; };
+        }
+        {
           id = "typed-related-call-edges"; kind = "pages"; tool = "backend.related";
           arguments = { coordinate = "\${coordinate}"; limit = 20; };
           minimum_pages = 1; maximum_pages = 16;
@@ -93,6 +122,15 @@ in {
               "\${caller_e}" "\${caller_f}" "\${caller_g}" "\${caller_h}"
             ]; }
             { pointer = "/first/edges"; select = "/to_id"; set_equals = builtins.genList (_: "\${center_id}") 8; }
+          ]; };
+        }
+        {
+          id = "guidance-status-after"; kind = "pages"; tool = "backend.status";
+          arguments.detail = "full";
+          minimum_pages = 1; maximum_pages = 1;
+          expect = { exit = 0; json = [
+            (eq "/first/answer" "status")
+            (eq "/first/revision" "\${source_root}")
           ]; };
         }
         {

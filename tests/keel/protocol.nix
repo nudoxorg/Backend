@@ -54,11 +54,11 @@ in {
     (cli "cli-passive-search-refused" [ "--passive" "search" "needle" ] 64 [ ]
       [ "--passive" "health" "status" ])
     (cli "cli-unknown-option" [ "search" "needle" "--not-an-option" ] 64 [ ]
-      [ "✗ usage" "--not-an-option" "search takes only" ])
+      [ "✗ usage" "--not-an-option" "search takes only" "--limit" ])
     (cli "cli-missing-global-option-value" [ "--project" ] 64 [ ]
       [ "✗ usage" "--project needs a value after it" ])
     (cli "cli-missing-command-operand" [ "show" ] 64 [ ]
-      [ "✗ usage" "usage: nudox show" ])
+      [ "✗ usage" "usage: nudox show [COORDINATE]" ])
     (cli "cli-invalid-page-bound" [ "search" "needle" "--limit" "201" ] 64 [ ]
       [ "✗ usage" "`201` is not a page bound; choose a whole number from 1 to 200" ])
     (cli "cli-invalid-format" [ "--format" "jsonl" ] 64 [ ]
