@@ -4,7 +4,8 @@ let
   native = import ./native.nix;
   protocol = import ./protocol.nix;
   focus = import ./focus.nix;
+  references = import ./references.nix;
 in {
   schema = 1;
-  cases = histories.cases ++ native.cases ++ protocol.cases ++ focus.cases;
+  cases = histories.cases ++ native.cases ++ protocol.cases ++ focus.cases ++ references.cases;
 }
