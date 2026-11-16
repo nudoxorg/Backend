@@ -26,10 +26,12 @@ isolated SQLite workspace's `sqlite-worker`). A missing artifact fails admission
 
 The runner starts a fresh offline owner per history, indexes through the real
 CLI and requires the terminal publication receipt with complete native profile
-coverage. Every query step runs the real CLI and MCP over the same owner. It
-checks the independently authored expected fields, compares full JSON with MCP
-structured content, and compares Markdown with MCP text (only terminal newlines
-are ignored). Bindings copy opaque returned coordinates; no coordinate is
+coverage. Every shared query step declares Standard detail on the real CLI and
+MCP over the same owner. It checks the independently authored expected fields,
+compares full JSON with MCP structured content, and compares Markdown with MCP
+text (only terminal newlines are ignored). Separate checks cover the default
+Summary projection and its compact text contract. Bindings copy opaque returned
+coordinates; no coordinate is
 reconstructed from its spelling. Edits, deletion/re-addition and cold owner
 restarts are explicit steps.
 
