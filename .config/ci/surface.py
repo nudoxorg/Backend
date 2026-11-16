@@ -1555,11 +1555,16 @@ def _exact_symbol_id(dto: dict) -> str | None:
     if not isinstance(proof, dict) or proof.get("kind") != "selected-symbol-id":
         return None
     value = proof.get("value")
-    if (not isinstance(value, list) or len(value) != 32
-            or any(type(byte) is not int or not 0 <= byte <= 255 for byte in value)
-            or not any(value)):
-        raise RuntimeError("snapshot continuation: malformed selected-symbol ID")
-    return bytes(value).hex()
+    # Current product DTOs encode the complete 32-byte key as canonical hex.
+    # Older retained evidence uses a 32-byte JSON array; keep its exact meaning.
+    if isinstance(value, str):
+        if re.fullmatch(r"[0-9a-f]{64}", value) and value != "0" * 64:
+            return value
+    elif (isinstance(value, list) and len(value) == 32
+          and all(type(byte) is int and 0 <= byte <= 255 for byte in value)
+          and any(value)):
+        return bytes(value).hex()
+    raise RuntimeError("snapshot continuation: malformed selected-symbol ID")
 
 
 def _search_record_identity(row: dict) -> str:
@@ -1974,21 +1979,6 @@ def _mcp_structured(reply: dict, label: str) -> dict:
             or not isinstance(reply.get("structuredContent"), dict)):
         raise RuntimeError(f"{label}: MCP refused the offered cursor: {reply}")
     return reply["structuredContent"]
-
-
-def _single_mcp_hop(owner: Owner, project: Path, call: dict, first: dict,
-                    deadline: float, label: str, published_root: str) -> dict:
-    """Measure one offered page using a fresh session and the current absolute deadline."""
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        raise RuntimeError(f"{label}: MCP continuation deadline exceeded")
-    continuation = mcp_continuation_call(call, first)
-    continued, _seconds = run_mcp(owner, project, [continuation], min(10, remaining))
-    if continued["exit"] != 0 or len(continued["calls"]) != 1:
-        raise RuntimeError(f"{label}: MCP continuation session failed")
-    following = _mcp_structured(continued["calls"][0]["reply"], label)
-    require_continuation_reply(first, following, published_root)
-    return following
 
 
 def _replay_cli_cursor(owner: Owner, project: Path, args: list[str], key: str,
@@ -2560,7 +2550,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
             record["answers"][key] = answer
             record["performance"]["seconds"][key] = round(seconds, 2)
         if case.get("mcp"):
-            def prove_session_outline(call, reply, exchange, readiness_exchange, answer_index):
+            def prove_session_continuation(call, reply, exchange, readiness_exchange, answer_index):
                 query = call.get("arguments", {}).get("query")
                 if (call["tool"] == "backend.search" and query in case.get("authored_symbols", {})):
                     ready, _frames = resolve_partial_authored_search(
@@ -2581,19 +2571,19 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                 if (call["tool"] == "backend.search" and query in case.get("authored_symbols", {})):
                     first = ready.get("structuredContent", {})
                 token = require_initial_cursor_shape(first)
-                if call["tool"] != "backend.outline" or token is None:
+                if token is None:
                     return replacement
                 remaining = exchange.deadline - time.monotonic()
                 if remaining <= 0:
-                    raise RuntimeError("backend.outline first-hop deadline exceeded")
+                    raise RuntimeError(f"{call['tool']} first-hop deadline exceeded")
                 continuation = mcp_continuation_call(call, first)
                 following = _mcp_structured(
                     exchange(continuation, min(10, remaining)),
-                    "backend.outline first continuation",
+                    call["tool"] + " first continuation",
                 )
                 require_continuation_reply(first, following, published_root)
                 proven_answers.setdefault(f"mcp:{answer_index}", set()).add(token)
-                log("backend.outline: measured one offered continuation in its issuing session")
+                log(f"{call['tool']}: measured one offered continuation in its issuing session")
                 return replacement
 
             mcp_answer_index = 0
@@ -2601,7 +2591,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                 nonlocal mcp_answer_index
                 answer_index = mcp_answer_index
                 mcp_answer_index += 1
-                return prove_session_outline(call, reply, exchange, readiness_exchange, answer_index)
+                return prove_session_continuation(call, reply, exchange, readiness_exchange, answer_index)
 
             mcp_deadline = time.monotonic() + timeout
             answer, seconds = run_mcp_interactive(owner, project, case["mcp"], timeout,
@@ -2620,10 +2610,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                 first = reply.get("structuredContent", {})
                 token = require_initial_cursor_shape(first)
                 if token is not None and token not in proven_answers.get(f"mcp:{answer_index}", set()):
-                    _single_mcp_hop(owner, project, result["call"], first, mcp_deadline,
-                                    result["call"]["tool"] + " first continuation", published_root)
-                    proven_answers.setdefault(f"mcp:{answer_index}", set()).add(token)
-                    log(f"{result['call']['tool']}: measured one offered continuation in a fresh MCP session")
+                    raise RuntimeError("MCP continuation was not proven in its issuing session")
             record["answers"]["mcp"] = answer
             record["performance"]["seconds"]["mcp"] = round(seconds, 2)
         # Freeze the historical selected-call workload before cursor proof:
