@@ -75,6 +75,30 @@
         "type": "github"
       }
     },
+    "keel": {
+      "inputs": {
+        "fenix": [
+          "fenix"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1794866573,
+        "narHash": "sha256-BzXnjLjkbDopufhGex7E1VCKUMTnzlIlJ5lgss1APFM=",
+        "owner": "nudoxorg",
+        "repo": "keel",
+        "rev": "4d2553870295cffbe60b35ced8b2fef9aef91e68",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nudoxorg",
+        "repo": "keel",
+        "rev": "4d2553870295cffbe60b35ced8b2fef9aef91e68",
+        "type": "github"
+      }
+    },
     "nixos": {
       "locked": {
         "lastModified": 1793238809,
@@ -133,6 +157,7 @@
         "bundle-nixpkgs": "bundle-nixpkgs",
         "fenix": "fenix",
         "git-hooks": "git-hooks",
+        "keel": "keel",
         "nixos": "nixos",
         "nixpkgs": "nixpkgs",
         "nuenv": "nuenv",

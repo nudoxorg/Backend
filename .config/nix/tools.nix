@@ -5,6 +5,7 @@
   pkgs,
   toolchains,
   workspaceRoot,
+  keelHarness ? null,
 }:
 let
   workspaceAvailable = builtins.pathExists (workspaceRoot + "/Cargo.toml");
@@ -933,6 +934,7 @@ in
     linuxDesktopLibraries
     linuxDesktopRuntimePath
     linuxGraphicsEnvironment
+    keelHarness
     nativeCompilers
     pausedNativeCompilers
     pausedAuthorityHelpers
@@ -949,14 +951,16 @@ in
   ]
   ++ qualityTools
   ++ nativeCompilers
-  ++ authorityHelpers;
+  ++ authorityHelpers
+  ++ pkgs.lib.optional (keelHarness != null) keelHarness;
   compiler = [
     (pkgs.lib.hiPrio parallelCargo)
     toolchains.stable
   ]
   ++ qualityTools
   ++ nativeCompilers
-  ++ authorityHelpers;
+  ++ authorityHelpers
+  ++ pkgs.lib.optional (keelHarness != null) keelHarness;
   services = [
     (pkgs.lib.hiPrio parallelCargo)
     toolchains.stable
@@ -985,6 +989,7 @@ in
   ++ pausedNativeCompilers
   ++ authorityHelpers
   ++ pausedAuthorityHelpers
+  ++ pkgs.lib.optional (keelHarness != null) keelHarness
   ++ serviceTools
   ++ observabilityTools
   ++ verifierTools;

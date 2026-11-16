@@ -129,7 +129,11 @@ let
         rules = control.lint.syntax;
       };
       toolchains = import ./toolchains.nix { inherit inputs pkgs system; };
-      tools = import ./tools.nix { inherit pkgs toolchains workspaceRoot; };
+      tools = import ./tools.nix {
+        inherit pkgs toolchains workspaceRoot;
+        # The configuration-only consumer has no product flake input.
+        keelHarness = if inputs ? keel then inputs.keel.packages.${system}.keel-nudox-harness else null;
+      };
       gui = import ./gui.nix {
         inherit pkgs control workspaceRoot;
         resolvedSourceHashes = tools.gpuiOutputHashes;

@@ -12,6 +12,11 @@
       url = "github:nix-community/fenix/8d20dd64ad45ed4b5179a37cec75fff9f732e78d";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    keel = {
+      url = "github:nudoxorg/keel/4d2553870295cffbe60b35ced8b2fef9aef91e68";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.fenix.follows = "fenix";
+    };
     nuenv = {
       url = "github:xav-ie/nuenv/ba517a66dc4e8322855617262c3972892190908b";
       inputs.nixpkgs.follows = "nixpkgs";

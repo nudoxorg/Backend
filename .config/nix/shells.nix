@@ -132,10 +132,16 @@ let
       esac
     fi
   '';
+  # The staged driver is copied from this exact pinned binary, preserving the
+  # executable identity attested by Keel and the adapter itself.
+  keelEnv = pkgs.lib.optionalAttrs (tools.keelHarness != null) {
+    BACKEND_KEEL_HARNESS = "${tools.keelHarness}/bin/backend-keel-harness";
+  };
   # The one shell people enter (direnv): it also installs the git hooks and
   # carries the six repo verbs (conventions.nix).
   development = pkgs.mkShell (
     common
+    // keelEnv
     // {
       packages =
         tools.development
@@ -159,6 +165,7 @@ let
   );
   compiler = pkgs.mkShell (
     common
+    // keelEnv
     // {
       packages = tools.compiler ++ [
         commands.backend
@@ -188,6 +195,7 @@ let
   complete = pkgs.mkShell (
     common
     // pausedCorpusEnv
+    // keelEnv
     // {
       shellHook = common.shellHook + pausedGoShellHook;
       packages = tools.complete ++ [
