@@ -22,4 +22,5 @@
   "active-rust-paused-source-files"
   "rust-reference-sites"
   "owner-css-sql-history"
+  "typescript-external-source-policy"
 ]
