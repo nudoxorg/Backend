@@ -31,6 +31,8 @@ nix build .#continuous-fuzz.bins.journal-codec
 
 `nix flake check` requires each package to be a derivation, so `.#continuous-fuzz` is a derivation and the four collections are `passthru`. Short `.#` selects the evaluating system (`aarch64-darwin`, `aarch64-linux`, `x86_64-linux`).
 
+`checks.${system}.fuzz-engine-resolution` is the engine derivation stopped after Cargo resolves its graph (`cargo metadata --locked --offline`), so `nix flake check` catches a manifest or vendoring change that breaks the engine without compiling it. It is not `check.continuousFuzz`. No CI lane builds `.#continuous-fuzz` itself: canonical cb92bd655 failed to resolve the engine, because the derivation cut the manifest's `[patch]` tables, and no Backend lane reported it.
+
 | Path | Value |
 | --- | --- |
 | `packages.${system}.continuous-fuzz` | Bundle. `$out/bin/fuzz-<id>`, `$out/engines/fuzz-engine-<id>`, `$out/corpora/<id>/`, `$out/metadata.json` |
