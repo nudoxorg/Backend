@@ -38,7 +38,7 @@ After the current head passes fast checks, the PR runtime job runs:
 |---|---|
 | `concourse/backend-windows-wine` | Windows platform tests under Wine |
 | `concourse/backend-arm64-emu` | ARM64 Linux platform tests under QEMU |
-| `concourse/backend-linux` | Root flake checks and the native `backend test pr` selection |
+| `concourse/backend-linux` | Root flake checks and the mandatory focused Keel integration histories (`--archived` additionally runs `backend test pr`) |
 
 These are currently advisory merge statuses. Main runs fast checks followed by
 all runtime lanes, with an aggregate `concourse/backend` result. The PR aggregate
