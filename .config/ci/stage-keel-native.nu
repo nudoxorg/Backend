@@ -52,17 +52,19 @@ def valid-id [id: string] {
 # calls verify-keel-native after copying those binaries into stage/bin.
 export def prepare-keel-native [host: string, target: path, jobs: int, stage: path] {
     let raw = $target | path join $host "debug"
+    let sqlite_target = $target | path join "keel-sqlite"
+    let sqlite_raw = $sqlite_target | path join $host "debug"
     let bin = $stage | path join "bin"
     let lib = $stage | path join "lib"
     mkdir $bin $lib
     ^chmod 700 $stage $bin $lib
     run-bounded 40min "cargo" "build" "--locked" "--target" $host "--jobs" ($jobs | into string) "-p" "backend-frontend-stylo" "--bin" "backend-stylo-worker"
     run-bounded 20min "cargo" "build" "--locked" "--target" $host "--jobs" ($jobs | into string) "-p" "backend-compile" "--example" "stylo_identity_observer"
-    run-bounded 40min "cargo" "build" "--locked" "--target" $host "--jobs" ($jobs | into string) "--manifest-path" "frontends/sqlite/Cargo.toml" "--bin" "sqlite-worker" "--example" "installed_basis_observer"
+    run-bounded 40min "cargo" "build" "--locked" "--target" $host "--jobs" ($jobs | into string) "--manifest-path" "frontends/sqlite/Cargo.toml" "--target-dir" $sqlite_target "--bin" "sqlite-worker" "--example" "installed_basis_observer"
     let raw_css = $raw | path join "backend-stylo-worker"
-    let raw_sql = $raw | path join "sqlite-worker"
+    let raw_sql = $sqlite_raw | path join "sqlite-worker"
     let css_observer = $raw | path join "examples/stylo_identity_observer"
-    let sql_observer = $raw | path join "examples/installed_basis_observer"
+    let sql_observer = $sqlite_raw | path join "examples/installed_basis_observer"
     let css_lib = library-for $raw_css
     let sql_lib = library-for $raw_sql
     if (digest $css_lib) != (digest $sql_lib) { error make {msg: "CSS and SQLite do not share the same libgcc bytes"} }
@@ -143,7 +145,7 @@ export def verify-keel-native [host: string, target: path, stage: path] {
     let sql = $stage | path join "bin/backend-sqlite-worker"
     let lib = $stage | path join "lib/libgcc_s.so.1"
     let css_observer = $raw | path join "stylo_identity_observer"
-    let sql_observer = $raw | path join "installed_basis_observer"
+    let sql_observer = $target | path join "keel-sqlite" $host "debug/examples/installed_basis_observer"
     if (checked "git" "rev-parse" "HEAD") != $observation.source_revision or (checked "git" "status" "--porcelain") != $observation.source_status or (checked "git" "diff" "--binary" "HEAD" | hash sha256) != $observation.tracked_diff_sha256 {
         error make {msg: "source checkout changed during native owner build"}
     }
