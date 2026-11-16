@@ -2,7 +2,7 @@
 # inside the lean `.#cross` dev shell. Independent of the `backend` command so a
 # compile-only lane never realizes the corpus, native compilers, or GUI closure.
 
-use focused-selection.nu [focused-package-args assert-focused-dependencies]
+use focused-selection.nu [focused-package-args archived-feature-args assert-focused-dependencies]
 
 # Splits the space-separated target list the cross shell exports into triples.
 def split-targets [raw: string]: nothing -> list<string> {
@@ -62,7 +62,7 @@ def main [
         # foreign outputs; parallel Cargo invocations must not share those.
         let target_dir = $target_root | path join $triple
         let started = date now
-        let selection = if $archived { ["--workspace" "--all-targets"] } else { (focused-package-args | append "--bins") }
+        let selection = if $archived { ["--workspace" "--all-targets"] | append (archived-feature-args) } else { (focused-package-args | append "--bins") }
         print $"cross: cargo check --locked --keep-going ($selection | str join ' ') --target ($triple) --jobs ($jobs)"
         # Stream Cargo's own progress and diagnostics straight through. The
         # verdict comes out of the try itself: an env change such as

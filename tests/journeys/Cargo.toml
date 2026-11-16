@@ -10,6 +10,9 @@ publish = false
 default = ["extended-journeys", "gui"]
 extended-journeys = [
     "backend-locald/cluster-process-journey-hooks",
+    "backend-locald/paused-frontends",
+    "backend-cli/paused-frontends",
+    "backend-engine/paused-frontends",
     "dep:backend-semantic",
     "dep:backend-store",
     "dep:backend-version",

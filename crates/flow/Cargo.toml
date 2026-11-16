@@ -13,7 +13,7 @@ blake3.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-backend-engine = { path = "../engine" }
+backend-engine = { path = "../engine", features = ["paused-frontends"] }
 backend-semantic = { path = "../semantic" }
 backend-frontend-clang = { path = "../../frontends/clang" }
 backend-frontend-csharp = { path = "../../frontends/csharp" }

@@ -8,6 +8,11 @@ export def focused-package-args []: nothing -> list<string> {
     focused-packages | each {|name| ["--package" $name] } | flatten
 }
 
+# Workspace-wide archived builds opt in to the retained compiler adapters.
+export def archived-feature-args []: nothing -> list<string> {
+    ["--features" "backend-engine/paused-frontends,backend-local-service/paused-frontends,backend-cli/paused-frontends"]
+}
+
 # The selected normal/build closure must not silently reacquire a paused
 # frontend through a newly added dependency or default feature.
 export def assert-focused-dependencies [target: string]: nothing -> nothing {
