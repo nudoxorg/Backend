@@ -251,3 +251,296 @@ impl Drop for Daemon {
         let _ = self.stop();
     }
 }
+
+/// A single long-lived JSON-lines protocol peer, owned together with its group.
+pub(crate) struct Session {
+    child: Option<Child>,
+    id: u32,
+    writer: Option<mpsc::Sender<(Vec<u8>, mpsc::Sender<Result<(), String>>)>>,
+    responses: mpsc::Receiver<Result<serde_json::Value, String>>,
+    stderr: Option<mpsc::Receiver<Capture>>,
+    stderr_path: std::path::PathBuf,
+    seen_ids: std::collections::HashSet<String>,
+}
+
+impl Session {
+    pub(crate) fn spawn(command: &mut Command, prefix: &Path) -> Result<Self, String> {
+        use std::io::BufRead;
+
+        let mut stdout_name = prefix.as_os_str().to_os_string();
+        stdout_name.push(".stdout");
+        let mut stderr_name = prefix.as_os_str().to_os_string();
+        stderr_name.push(".stderr");
+        let stderr_path = std::path::PathBuf::from(stderr_name);
+        let mut stdout_file = prepare_file(Path::new(&stdout_name))?;
+        let stderr_file = prepare_file(&stderr_path)?;
+        command
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().map_err(|e| {
+            let message = format!("spawn session: {e}");
+            record_error(&stderr_path, &message);
+            message
+        })?;
+        let id = child.id();
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        let (writer, writes) = mpsc::channel::<(Vec<u8>, mpsc::Sender<Result<(), String>>)>();
+        thread::spawn(move || {
+            while let Ok((bytes, ack)) = writes.recv() {
+                let result = stdin
+                    .write_all(&bytes)
+                    .and_then(|()| stdin.flush())
+                    .map_err(|e| format!("write session request: {e}"));
+                let failed = result.is_err();
+                let _ = ack.send(result);
+                if failed {
+                    break;
+                }
+            }
+        });
+        let stdout = child.stdout.take().expect("piped stdout");
+        let (response_tx, responses) = mpsc::sync_channel(32);
+        thread::spawn(move || {
+            let mut reader = std::io::BufReader::new(stdout);
+            let mut total = 0usize;
+            loop {
+                let mut line = Vec::new();
+                let remaining = STREAM_LIMIT.saturating_sub(total);
+                let read = (&mut reader)
+                    .take((remaining + 1) as u64)
+                    .read_until(b'\n', &mut line);
+                let n = match read {
+                    Ok(n) => n,
+                    Err(e) => {
+                        let _ = response_tx.send(Err(format!("read session stdout: {e}")));
+                        break;
+                    }
+                };
+                if n == 0 {
+                    break;
+                }
+                let kept = n.min(remaining);
+                if let Err(e) = stdout_file.write_all(&line[..kept]) {
+                    let _ = response_tx.send(Err(format!("write session stdout: {e}")));
+                    break;
+                }
+                total += kept;
+                if n > remaining {
+                    let _ = response_tx
+                        .send(Err(format!("session stdout exceeded {STREAM_LIMIT} bytes")));
+                    break;
+                }
+                if line.last() != Some(&b'\n') {
+                    let _ = response_tx
+                        .send(Err("session stdout ended with an incomplete line".into()));
+                    break;
+                }
+                let parsed =
+                    serde_json::from_slice(&line).map_err(|e| format!("invalid session JSON: {e}"));
+                let invalid = parsed.is_err();
+                if response_tx.send(parsed).is_err() || invalid {
+                    break;
+                }
+            }
+            let _ = stdout_file.flush();
+        });
+        let stderr = drain(child.stderr.take().expect("piped stderr"), stderr_file);
+        Ok(Self {
+            child: Some(child),
+            id,
+            writer: Some(writer),
+            responses,
+            stderr: Some(stderr),
+            stderr_path,
+            seen_ids: std::collections::HashSet::new(),
+        })
+    }
+
+    fn fail<T>(&mut self, message: String) -> Result<T, String> {
+        self.terminate();
+        record_error(&self.stderr_path, &message);
+        Err(message)
+    }
+
+    fn terminate(&mut self) {
+        self.writer.take();
+        if let Some(mut child) = self.child.take() {
+            let _ = kill_group(self.id);
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    pub(crate) fn exchange(
+        &mut self,
+        request: &serde_json::Value,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, String> {
+        if self.child.is_none() {
+            return Err("session is closed".into());
+        }
+        let expected = request.get("id").cloned();
+        if let Some(ref id) = expected {
+            let key = id.to_string();
+            if self.seen_ids.contains(&key) {
+                return self.fail(format!("duplicate session request id {id}"));
+            }
+        }
+        let mut bytes = match serde_json::to_vec(request) {
+            Ok(bytes) => bytes,
+            Err(e) => return self.fail(format!("serialize session request: {e}")),
+        };
+        if bytes.len() >= STREAM_LIMIT {
+            return self.fail(format!("session request exceeds {STREAM_LIMIT} bytes"));
+        }
+        bytes.push(b'\n');
+        let start = Instant::now();
+        let (ack_tx, ack_rx) = mpsc::channel();
+        if self
+            .writer
+            .as_ref()
+            .expect("open session writer")
+            .send((bytes, ack_tx))
+            .is_err()
+        {
+            return self.fail("session writer stopped".into());
+        }
+        match ack_rx.recv_timeout(timeout.saturating_sub(start.elapsed())) {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return self.fail(e),
+            Err(e) => return self.fail(format!("session write timed out or stopped: {e}")),
+        }
+        let Some(expected) = expected else {
+            return Ok(serde_json::Value::Null);
+        };
+        loop {
+            match self
+                .responses
+                .recv_timeout(timeout.saturating_sub(start.elapsed()))
+            {
+                Ok(Ok(value)) => {
+                    if let Some(id) = value.get("id") {
+                        if *id != expected {
+                            let description = if self.seen_ids.contains(&id.to_string()) {
+                                "duplicate"
+                            } else {
+                                "unexpected"
+                            };
+                            return self.fail(format!(
+                                "{description} session response id {id}; expected {expected}"
+                            ));
+                        }
+                        self.seen_ids.insert(id.to_string());
+                        return Ok(value);
+                    }
+                }
+                Ok(Err(e)) => return self.fail(e),
+                Err(e) => return self.fail(format!("session response timed out or stopped: {e}")),
+            }
+        }
+    }
+
+    pub(crate) fn finish(&mut self) -> Result<(), String> {
+        if self.child.is_none() {
+            return Ok(());
+        }
+        self.writer.take();
+        let start = Instant::now();
+        let mut failure = None;
+        loop {
+            while let Ok(event) = self.responses.try_recv() {
+                match event {
+                    Ok(value) if value.get("id").is_none() => {}
+                    Ok(value) => {
+                        failure.get_or_insert_with(|| {
+                            format!(
+                                "unexpected or duplicate session response id {}",
+                                value["id"]
+                            )
+                        });
+                    }
+                    Err(e) => {
+                        failure.get_or_insert(e);
+                    }
+                }
+            }
+            match self.child.as_mut().expect("open session").try_wait() {
+                Ok(Some(status)) => {
+                    let _ = kill_group(self.id);
+                    self.child.take();
+                    if !status.success() {
+                        failure.get_or_insert_with(|| format!("session exited with {status}"));
+                    }
+                    break;
+                }
+                Ok(None) if start.elapsed() < DRAIN_GRACE => {
+                    thread::sleep(Duration::from_millis(10))
+                }
+                Ok(None) => {
+                    failure.get_or_insert_with(|| "session did not exit after stdin closed".into());
+                    self.terminate();
+                    break;
+                }
+                Err(e) => {
+                    failure.get_or_insert_with(|| format!("wait for session: {e}"));
+                    self.terminate();
+                    break;
+                }
+            }
+        }
+        // Drain remaining messages after the process group is gone, including a
+        // duplicate final response. The deadline also bounds inherited pipes.
+        let drain_start = Instant::now();
+        loop {
+            match self
+                .responses
+                .recv_timeout(DRAIN_GRACE.saturating_sub(drain_start.elapsed()))
+            {
+                Ok(Ok(value)) if value.get("id").is_none() => {}
+                Ok(Ok(value)) => {
+                    failure.get_or_insert_with(|| {
+                        format!(
+                            "unexpected or duplicate session response id {}",
+                            value["id"]
+                        )
+                    });
+                }
+                Ok(Err(e)) => {
+                    failure.get_or_insert(e);
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    failure.get_or_insert_with(|| "session stdout drain did not finish".into());
+                    break;
+                }
+            }
+        }
+        if let Some(stderr) = self.stderr.take() {
+            match stderr.recv_timeout(DRAIN_GRACE.saturating_sub(drain_start.elapsed())) {
+                Ok(capture) => {
+                    if let Some(e) = capture.error {
+                        failure.get_or_insert_with(|| format!("session stderr: {e}"));
+                    }
+                }
+                Err(e) => {
+                    failure
+                        .get_or_insert_with(|| format!("session stderr drain did not finish: {e}"));
+                }
+            }
+        }
+        if let Some(message) = failure {
+            record_error(&self.stderr_path, &message);
+            Err(message)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.terminate();
+    }
+}

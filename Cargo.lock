@@ -1577,6 +1577,7 @@ dependencies = [
 name = "backend-keel-harness"
 version = "0.2.0"
 dependencies = [
+ "blake3",
  "serde",
  "serde_json",
  "sha2 0.10.9",

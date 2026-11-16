@@ -57,6 +57,16 @@ pub(crate) struct Step {
     pub stdin: Option<String>,
     #[serde(default = "timeout")]
     pub timeout_seconds: u64,
+    #[serde(default = "one")]
+    pub minimum_pages: usize,
+    #[serde(default = "max_pages")]
+    pub maximum_pages: usize,
+}
+fn one() -> usize {
+    1
+}
+fn max_pages() -> usize {
+    64
 }
 fn timeout() -> u64 {
     180
@@ -145,6 +155,22 @@ impl Manifest {
             }
             let mut steps = BTreeSet::new();
             for step in &case.steps {
+                if let Some(protocol) = &step.protocol {
+                    if !["stylo", "json", "jsonrpc-lines"].contains(&protocol.as_str()) {
+                        return Err(format!(
+                            "{}: unsupported process protocol {protocol}",
+                            step.id
+                        ));
+                    }
+                }
+                if case.daemon == Some(false)
+                    && ["index", "restart", "query", "cli", "pages"].contains(&step.kind.as_str())
+                {
+                    return Err(format!(
+                        "{}: owner operation requires a daemon world",
+                        step.id
+                    ));
+                }
                 if !valid_id(&step.id) || !steps.insert(&step.id) {
                     return Err(format!(
                         "{}: invalid or duplicate step {}",
@@ -164,7 +190,7 @@ impl Manifest {
                         }
                     }
                     "index" | "restart" => {}
-                    "cli" | "query" | "process" => {
+                    "cli" | "query" | "process" | "pages" => {
                         let e = step.expect.as_ref().ok_or_else(|| {
                             format!(
                                 "{}: executable steps require reviewed expectations",
@@ -179,6 +205,13 @@ impl Manifest {
                                 "{}: exit status alone is not a behavior oracle",
                                 step.id
                             ));
+                        }
+                        if e.stdout_contains
+                            .iter()
+                            .chain(e.stderr_contains.iter())
+                            .any(String::is_empty)
+                        {
+                            return Err(format!("{}: empty output substring is vacuous", step.id));
                         }
                         for a in &e.json {
                             if !a.pointer.is_empty() && !a.pointer.starts_with('/') {
@@ -195,6 +228,17 @@ impl Manifest {
                                     step.id
                                 ));
                             }
+                        }
+                        if step.kind == "pages"
+                            && (step.tool.is_empty()
+                                || step.minimum_pages == 0
+                                || step.minimum_pages > step.maximum_pages
+                                || step.maximum_pages > 256)
+                        {
+                            return Err(format!(
+                                "{}: paged checks need a tool and 1..256 bounded pages",
+                                step.id
+                            ));
                         }
                         if step.kind == "query" && (step.tool.is_empty() || step.cli.is_empty()) {
                             return Err(format!(

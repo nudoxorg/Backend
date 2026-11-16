@@ -33,11 +33,67 @@ let
       { pointer = "/records"; select = "/identity/name"; not_contains = decoy; }
     ]; };
   };
+  unknown = {
+    id = "unknown-coordinate"; kind = "cli";
+    args = [ "show" "/keel-regression-absent::src/lib.rs:999::nothing" ];
+    expect = { exit = 2; json = [ (eq "/answer" "fault") (eq "/slug" "not-found") ]; };
+  };
+  detached = id: retained: removed: {
+    inherit id; kind = "cli"; args = [ "related" "\${coordinate}" ];
+    expect = { exit = 0; json = [
+      { pointer = "/records"; select = "/identity/name"; contains = retained; }
+      { pointer = "/records"; select = "/identity/name"; not_contains = removed; }
+    ]; };
+  };
   index = id: { inherit id; kind = "index"; };
   restart = id: { inherit id; kind = "restart"; };
 in {
   schema = 1;
   cases = [
+    {
+      id = "rust-fanout-and-diamond";
+      language = "rust";
+      node = "engine.lower.rust";
+      files = {
+        "Cargo.toml" = read ./fixtures/rust/Cargo.toml;
+        "src/lib.rs" = read ./fixtures/rust/fanout.rs;
+      };
+      steps = [
+        (index "index-graph")
+        (bindSearch "find-target" "keel_fanout_target")
+        {
+          id = "eight-callers"; kind = "cli"; args = [ "related" "\${coordinate}" ];
+          expect = { exit = 0; json = [
+            { pointer = "/records"; select = "/identity/name"; set_equals = [
+              "keel_fanout_target" "keel_fanout_a" "keel_fanout_b" "keel_fanout_c"
+              "keel_fanout_d" "keel_fanout_e" "keel_fanout_f" "keel_fanout_g" "keel_fanout_h"
+            ]; }
+            { pointer = "/records"; select = "/identity/name"; not_contains = "keel_fanout_decoy"; }
+          ]; };
+        }
+        (bindSearch "find-diamond-junction" "keel_fanout_a")
+        {
+          id = "diamond-incoming"; kind = "cli"; args = [ "related" "\${coordinate}" ];
+          expect = { exit = 0; json = [
+            { pointer = "/records"; select = "/identity/name"; set_equals = [
+              "keel_fanout_a" "keel_fanout_target" "keel_diamond_left" "keel_diamond_right"
+            ]; }
+            { pointer = "/records"; select = "/identity/name"; not_contains = "keel_diamond_top"; }
+          ]; };
+        }
+        (restart "restart-graph")
+        (bindSearch "find-target-after-restart" "keel_fanout_target")
+        {
+          id = "fanout-after-restart"; kind = "cli"; args = [ "related" "\${coordinate}" ];
+          expect = { exit = 0; json = [
+            { pointer = "/records"; select = "/identity/name"; set_equals = [
+              "keel_fanout_target" "keel_fanout_a" "keel_fanout_b" "keel_fanout_c"
+              "keel_fanout_d" "keel_fanout_e" "keel_fanout_f" "keel_fanout_g" "keel_fanout_h"
+            ]; }
+          ]; };
+        }
+      ];
+    }
     {
       id = "rust-call-history";
       language = "rust";
@@ -56,6 +112,11 @@ in {
         (search "find-added" "keel_rust_added")
         (bindSearch "find-revised-leaf" "keel_rust_leaf")
         (related "added-caller" "keel_rust_added" "keel_rust_decoy")
+        { id = "detach-caller"; kind = "write"; files."src/lib.rs" = read ./fixtures/rust/detached.rs; }
+        (index "reindex-detach")
+        (bindSearch "find-detached-leaf" "keel_rust_leaf")
+        (detached "stale-edge-removed" "keel_rust_middle" "keel_rust_added")
+        unknown
         (restart "cold-restart")
         (search "added-survives-restart" "keel_rust_added")
       ];
@@ -78,6 +139,11 @@ in {
         (search "find-added" "keel_python_added")
         (bindSearch "find-revised-leaf" "keel_python_leaf")
         (related "added-caller" "keel_python_added" "keel_python_decoy")
+        { id = "detach-caller"; kind = "write"; files."src/history.py" = read ./fixtures/python/detached.py; }
+        (index "reindex-detach")
+        (bindSearch "find-detached-leaf" "keel_python_leaf")
+        (detached "stale-edge-removed" "keel_python_entry" "keel_python_added")
+        unknown
         (restart "cold-restart")
         (search "added-survives-restart" "keel_python_added")
       ];
@@ -100,6 +166,11 @@ in {
         (search "find-added" "keelJavaScriptAdded")
         (bindSearch "find-revised-leaf" "keelJavaScriptLeaf")
         (related "added-caller" "keelJavaScriptAdded" "keelJavaScriptDecoy")
+        { id = "detach-caller"; kind = "write"; files."src/history.js" = read ./fixtures/javascript/detached.js; }
+        (index "reindex-detach")
+        (bindSearch "find-detached-leaf" "keelJavaScriptLeaf")
+        (detached "stale-edge-removed" "keelJavaScriptEntry" "keelJavaScriptAdded")
+        unknown
         { id = "delete-source"; kind = "write"; remove = [ "src/history.js" ]; }
         (index "reindex-deletion")
         {

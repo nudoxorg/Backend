@@ -2,7 +2,8 @@
 let
   histories = import ./cases.nix;
   native = import ./native.nix;
+  protocol = import ./protocol.nix;
 in {
   schema = 1;
-  cases = histories.cases ++ native.cases;
+  cases = histories.cases ++ native.cases ++ protocol.cases;
 }
