@@ -1,0 +1,222 @@
+{
+  "binaries": {
+    "backend-sqlite-worker": "600ea6fd0bc4bd762ccf25600fd06a735a7918cd460eea391de875338f993842",
+    "backend-stylo-worker": "3ef572fb88bda0de2a8c188fea1a184efde75a65eab4446dc6f8ac6b6ddec9fd"
+  },
+  "cases": [
+    {
+      "duration_ms": 142,
+      "error": null,
+      "evidence_dir": "/root/nudox-keel-native-expanded-evidence-20261116/css-source-observer",
+      "id": "css-source-observer",
+      "language": "css",
+      "node": "frontends.stylo",
+      "status": "pass",
+      "steps": [
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "33b22ed7f25b0da232741f5e07c328a5b9c8e1542c9c3bd03624b06da367d15c"
+          },
+          "duration_ms": 11,
+          "id": "unicode-escapes-and-duplicates",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "dd17087832c3643394400b71d6cfbef1fa47c70f36141b5940df42c2ad21573f"
+          },
+          "duration_ms": 10,
+          "id": "invalid-value-is-partial",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "69fa056ec89661d31782718deb5da80006f3c00d647178e2be6bc6016a32dbb2"
+          },
+          "duration_ms": 10,
+          "id": "record-limit",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "708e4203e3c87ca6bd95f37ca29ad06d1985c8587afb871feae6199b0b02e0be"
+          },
+          "duration_ms": 10,
+          "id": "unsupported-quirks",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "14a53a236ca3d618eedcd92bd0c4b304623384d578d166b4e3422cb9c5d3b18d"
+          },
+          "duration_ms": 11,
+          "id": "observer-root-and-duplicate-sites",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "afcaf01f9636e23d30d62d94dfae1921c345da9dc367ba442560df91d4e38cdd"
+          },
+          "duration_ms": 10,
+          "id": "class-site-skips-comments",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "888b040b89e9ec28b7cf3ac914466dd07eda5e8d5ebe14b38be5d5a7737f1ea7"
+          },
+          "duration_ms": 11,
+          "id": "rejected-rule-does-not-shift-root-ordinals",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "1d6cc873ff99f74ab05ec5a5466a8449b7adea2a2d6645d6b95db17dafa5ead1"
+          },
+          "duration_ms": 10,
+          "id": "bom-is-decoded-before-native-location",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "7a57e89c1ce4c20a72c6e2fd06b35eb7f1236ac0e032dfa7d39c2f31aff004d3"
+          },
+          "duration_ms": 10,
+          "id": "native-location-is-utf16-column",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "cf529b4d6c0539db7dfd43ce3ddfceb70b5b331d8721b235ed14b67193f498ad"
+          },
+          "duration_ms": 11,
+          "id": "native-media-selectors-declarations-dependencies",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "002116f9717ca848be7ee91e2c9079b25cc0276279e1044bb76983dcc9b38c95"
+          },
+          "duration_ms": 10,
+          "id": "imports-are-retained-with-qualifiers-and-never-loaded",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "58e7dc3acea64217261a689fe4c81767588174eca88faac49bbda3a719c7c654"
+          },
+          "duration_ms": 10,
+          "id": "imports-refuse-when-not-authorized",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "1648be8ed9f923bc9f27e26a95a0770a0dbbcc4293c515d9cc93738075562a25"
+          },
+          "duration_ms": 10,
+          "id": "late-import-is-rejected-not-loaded",
+          "status": "pass"
+        }
+      ]
+    },
+    {
+      "duration_ms": 43,
+      "error": null,
+      "evidence_dir": "/root/nudox-keel-native-expanded-evidence-20261116/sqlite-syntactic-outline",
+      "id": "sqlite-syntactic-outline",
+      "language": "sql",
+      "node": "frontends.sql",
+      "status": "pass",
+      "steps": [
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "c845746b14b23dcd40fcc73d897c3e838e7cb9be3902710cf5c62be99368087a"
+          },
+          "duration_ms": 11,
+          "id": "unicode-definitions-and-reads",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "983e23e202cad043457b1d6692aeac32c96b2c0a4893a27f259f7b2c43bfd7a9"
+          },
+          "duration_ms": 10,
+          "id": "unmodeled-pragma",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "a1d4845cc44ea8d39288f508d72b345dca78369e370dedbf09159f62bad554f9"
+          },
+          "duration_ms": 10,
+          "id": "syntax-error",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "b277d033c1a2b22f0105a0590c51872bf4a2f339039ad4231dd913773738f8d4"
+          },
+          "duration_ms": 10,
+          "id": "wrong-protocol-version",
+          "status": "pass"
+        }
+      ]
+    }
+  ],
+  "duration_ms": 186,
+  "manifest_sha256": "635c4ae2534efc9109cb779f7902d91fbc05c91d208c4f5c45ea69e769f02446",
+  "order": null,
+  "schema": 1,
+  "status": "pass"
+}
