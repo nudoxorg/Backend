@@ -21,6 +21,8 @@ pub(crate) struct Case {
     pub steps: Vec<Step>,
     #[serde(default)]
     pub daemon: Option<bool>,
+    #[serde(default)]
+    pub requires: Vec<String>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -321,6 +323,40 @@ impl Manifest {
                     }
                     other => return Err(format!("{}: unknown step kind {other}", step.id)),
                 }
+            }
+        }
+        let known = self
+            .cases
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect::<BTreeSet<_>>();
+        let mut resolved = BTreeSet::new();
+        for case in &self.cases {
+            let requirements = case.requires.iter().collect::<BTreeSet<_>>();
+            if requirements.len() != case.requires.len()
+                || case
+                    .requires
+                    .iter()
+                    .any(|r| r == &case.id || !known.contains(r.as_str()))
+            {
+                return Err(format!(
+                    "{}: duplicate, self, or unknown required case",
+                    case.id
+                ));
+            }
+        }
+        loop {
+            let before = resolved.len();
+            for case in &self.cases {
+                if case.requires.iter().all(|r| resolved.contains(r.as_str())) {
+                    resolved.insert(case.id.as_str());
+                }
+            }
+            if resolved.len() == self.cases.len() {
+                break;
+            }
+            if before == resolved.len() {
+                return Err("case world/foundation dependencies contain a cycle".into());
             }
         }
         Ok(())

@@ -4,6 +4,8 @@ mod assertion;
 #[cfg(unix)]
 mod driver;
 #[cfg(unix)]
+mod isolation;
+#[cfg(unix)]
 mod manifest;
 #[cfg(unix)]
 mod process;
@@ -11,6 +13,9 @@ mod process;
 fn main() -> std::process::ExitCode {
     #[cfg(unix)]
     {
+        if let Some(code) = isolation::exec_helper() {
+            return code;
+        }
         driver::entry()
     }
     #[cfg(not(unix))]

@@ -72,3 +72,19 @@ been replaced. A module is removed only when an equivalent named integration row
 has run against admitted product artifacts. This follows the existing Keel
 TRANSITION plan's evidence gate and keeps uncovered protocol/pagination/crash
 requirements visible throughout the clean-slate move.
+
+The runner exports `--inventory` as canonical JSON containing the manifest and
+case-definition digests, fixture-input digests, declared steps, authority inputs
+and case-to-node mapping. A case's `requires` list declares earlier foundational
+receipts; selection includes that closure, execution respects its topological
+order, and a failed foundation blocks materializing the dependent world.
+Independent cases continue. No blocked case is counted as a pass.
+
+On Linux, set `KEEL_CGROUP_ROOT` to an explicitly delegated child of a cgroup-v2
+mount. Every product process enters its own owned child cgroup before exec; the
+scope kills and waits for all members, including children that create their own
+sessions. `KEEL_REQUIRE_CGROUP=1` refuses to execute without that boundary. CI
+crash and timeout worlds must require it. Reports distinguish `cgroup-v2` from
+the process-group fallback. The explicit Linux containment holdout requires a
+pinned `KEEL_TEST_SETSID` executable and runs with `--ignored`; its absence does
+not establish full process-tree containment.

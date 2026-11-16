@@ -88,6 +88,7 @@ in {
   schema = 1;
   cases = [ {
     id = "owner-css-sql-history"; language = "rust"; node = "engine.lanes";
+    requires = [ "css-source-observer" "sqlite-syntactic-outline" ];
     files = {
       "Cargo.toml" = read ./fixtures/owner-native/Cargo.toml;
       "src/lib.rs" = read ./fixtures/owner-native/lib.rs;

@@ -255,3 +255,83 @@ fn inventory_binds_reviewed_expectations_and_never_writes_execution_evidence() {
     );
     assert!(!world.0.join("evidence").exists());
 }
+
+#[test]
+fn failed_foundation_blocks_dependent_world_and_selection_includes_its_prerequisite() {
+    let world = Sandbox::new();
+    let bad = process_case("foundation", "echo '{\"answer\":\"wrong\"}'");
+    let child = json!({"id":"dependent","language":"protocol","daemon":false,"requires":["foundation"],"steps":[{"id":"must-not-materialize","kind":"write","files":{"sentinel":"unexpected"}}]});
+    let good = process_case("independent", "echo '{\"answer\":\"independent-oracle\"}'");
+    let result = world.invoke(&manifest(vec![child.clone(), good, bad.clone()]), &[]);
+    assert_eq!(result.status.code(), Some(1));
+    let report = world.report();
+    let cases = report["cases"].as_array().expect("case receipts");
+    assert_eq!(
+        cases
+            .iter()
+            .find(|v| v["id"] == "dependent")
+            .expect("dependent")["status"],
+        "blocked"
+    );
+    assert_eq!(
+        cases
+            .iter()
+            .find(|v| v["id"] == "independent")
+            .expect("independent")["status"],
+        "pass"
+    );
+    assert!(
+        !world.0.join("evidence/dependent/project").exists(),
+        "blocked world must not be created"
+    );
+    let selected = Sandbox::new();
+    let result = selected.invoke(&manifest(vec![child, bad]), &["--case", "dependent"]);
+    assert_eq!(result.status.code(), Some(1));
+    let report = selected.report();
+    assert_eq!(report["cases"].as_array().expect("closure").len(), 2);
+    assert_eq!(report["cases"][0]["id"], "foundation");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires delegated KEEL_CGROUP_ROOT and pinned KEEL_TEST_SETSID; explicit containment lane"]
+fn cgroup_contains_a_descendant_that_creates_a_new_session() {
+    let root = std::env::var_os("KEEL_CGROUP_ROOT").expect("explicit delegated cgroup root");
+    let setsid = std::env::var("KEEL_TEST_SETSID").expect("explicit setsid authority");
+    assert!(std::path::Path::new(&setsid).is_absolute());
+    let world = Sandbox::new();
+    let script = format!(
+        "'{}' /bin/sh -c 'echo $$ > detached.pid; sleep 20' & wait",
+        setsid.replace('\'', "'\\''")
+    );
+    let spec = manifest(vec![process_case("detached", &script)]);
+    let path = world.0.join("manifest.json");
+    fs::write(&path, spec.to_string()).expect("manifest");
+    let result = Command::new(env!("CARGO_BIN_EXE_backend-keel-harness"))
+        .arg("--manifest")
+        .arg(path)
+        .arg("--bin-dir")
+        .arg(world.0.join("bins"))
+        .arg("--evidence")
+        .arg(world.0.join("evidence"))
+        .env("KEEL_CGROUP_ROOT", &root)
+        .env("KEEL_REQUIRE_CGROUP", "1")
+        .output()
+        .expect("contained harness process");
+    assert_eq!(result.status.code(), Some(1));
+    let pid = fs::read_to_string(world.0.join("evidence/detached/project/detached.pid"))
+        .expect("detached descendant actually started");
+    assert!(
+        !alive(pid.trim()),
+        "new-session descendant escaped cgroup cleanup"
+    );
+    let report = world.report();
+    assert_eq!(report["containment_policy"]["required"], true);
+    assert_eq!(report["cases"][0]["steps"][0]["status"], "fail");
+    let entries = fs::read_dir(root)
+        .expect("delegated group readable")
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name().to_string_lossy().starts_with("keel-"))
+        .count();
+    assert_eq!(entries, 0, "owned scopes removed after timeout");
+}

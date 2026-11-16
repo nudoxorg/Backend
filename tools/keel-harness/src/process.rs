@@ -17,6 +17,7 @@ pub(crate) struct Output {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub elapsed_ms: u64,
+    pub isolation: serde_json::Value,
 }
 
 fn prepare_file(path: &Path) -> Result<File, String> {
@@ -103,6 +104,10 @@ pub(crate) fn run(
     let mut stderr_name = prefix.as_os_str().to_os_string();
     stderr_name.push(".stderr");
     let stderr_path = std::path::PathBuf::from(stderr_name);
+    let mut scope = crate::isolation::Scope::new()?;
+    let isolation = serde_json::json!({"mode":scope.mode(),"path":scope.path()});
+    let mut scoped_command = scope.command(command)?;
+    let command = &mut scoped_command;
     let stdout_file = prepare_file(&stdout_path)?;
     let stderr_file = prepare_file(&stderr_path)?;
     let start = Instant::now();
@@ -158,6 +163,9 @@ pub(crate) fn run(
             failure.get_or_insert_with(|| format!("reap process: {e}"));
         }
     }
+    if let Err(error) = scope.stop() {
+        failure.get_or_insert_with(|| format!("process containment cleanup: {error}"));
+    }
     let collect = |rx: mpsc::Receiver<Capture>, name: &str| match rx.recv_timeout(DRAIN_GRACE) {
         Ok(capture) => capture,
         Err(e) => Capture {
@@ -182,16 +190,23 @@ pub(crate) fn run(
         stdout: out.bytes,
         stderr: err.bytes,
         elapsed_ms: start.elapsed().as_millis().min(u64::MAX as u128) as u64,
+        isolation,
     })
 }
 
 pub(crate) struct Daemon {
     child: Option<Child>,
     id: u32,
+    scope: crate::isolation::Scope,
+    isolation: serde_json::Value,
 }
 
 impl Daemon {
     pub(crate) fn spawn(command: &mut Command, log: &Path) -> Result<Self, String> {
+        let scope = crate::isolation::Scope::new()?;
+        let isolation = serde_json::json!({"mode":scope.mode(),"path":scope.path()});
+        let mut scoped_command = scope.command(command)?;
+        let command = &mut scoped_command;
         let file = prepare_file(log)?;
         let stderr = file
             .try_clone()
@@ -210,6 +225,8 @@ impl Daemon {
         Ok(Self {
             child: Some(child),
             id,
+            scope,
+            isolation,
         })
     }
 
@@ -222,6 +239,7 @@ impl Daemon {
             Ok(Some(_)) => {
                 let _ = kill_group(self.id);
                 self.child = None;
+                self.scope.stop()?;
                 Ok(false)
             }
             Err(e) => Err(format!("check daemon: {e}")),
@@ -236,7 +254,10 @@ impl Daemon {
             // The group may have already vanished, e.g. after a normal exit.
             let _ = group_result;
         }
-        Ok(())
+        self.scope.stop()
+    }
+    pub(crate) fn isolation(&self) -> &serde_json::Value {
+        &self.isolation
     }
 }
 
@@ -255,12 +276,17 @@ pub(crate) struct Session {
     stderr: Option<mpsc::Receiver<Capture>>,
     stderr_path: std::path::PathBuf,
     seen_ids: std::collections::HashSet<String>,
+    scope: crate::isolation::Scope,
+    isolation: serde_json::Value,
 }
 
 impl Session {
     pub(crate) fn spawn(command: &mut Command, prefix: &Path) -> Result<Self, String> {
         use std::io::BufRead;
-
+        let scope = crate::isolation::Scope::new()?;
+        let isolation = serde_json::json!({"mode":scope.mode(),"path":scope.path()});
+        let mut scoped_command = scope.command(command)?;
+        let command = &mut scoped_command;
         let mut stdout_name = prefix.as_os_str().to_os_string();
         stdout_name.push(".stdout");
         let mut stderr_name = prefix.as_os_str().to_os_string();
@@ -349,9 +375,14 @@ impl Session {
             stderr: Some(stderr),
             stderr_path,
             seen_ids: std::collections::HashSet::new(),
+            scope,
+            isolation,
         })
     }
 
+    pub(crate) fn isolation(&self) -> &serde_json::Value {
+        &self.isolation
+    }
     fn fail<T>(&mut self, message: String) -> Result<T, String> {
         self.terminate();
         record_error(&self.stderr_path, &message);
@@ -364,6 +395,12 @@ impl Session {
             let _ = kill_group(self.id);
             let _ = child.kill();
             let _ = child.wait();
+        }
+        if let Err(error) = self.scope.stop() {
+            record_error(
+                &self.stderr_path,
+                &format!("session containment cleanup: {error}"),
+            );
         }
     }
 
@@ -483,6 +520,9 @@ impl Session {
                     break;
                 }
             }
+        }
+        if let Err(error) = self.scope.stop() {
+            failure.get_or_insert_with(|| format!("session containment cleanup: {error}"));
         }
         // Drain remaining messages after the process group is gone, including a
         // duplicate final response. The deadline also bounds inherited pipes.

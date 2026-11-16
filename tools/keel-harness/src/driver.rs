@@ -486,6 +486,7 @@ impl World {
                 }
             }
         };
+        let isolation = session.isolation().clone();
         session.finish()?;
         if pages < step.minimum_pages {
             return Err(format!(
@@ -504,7 +505,9 @@ impl World {
             &[],
             Some(&aggregate),
         )?;
-        Ok(json!({"pages":pages,"records":aggregate["records"].as_array().map_or(0,Vec::len)}))
+        Ok(
+            json!({"pages":pages,"records":aggregate["records"].as_array().map_or(0,Vec::len),"isolation":isolation}),
+        )
     }
     fn step(&mut self, step: &Step, prefix: &Path) -> Result<Value, String> {
         let timeout = Duration::from_secs(step.timeout_seconds);
@@ -824,7 +827,7 @@ impl World {
             }
         }
         Ok(
-            json!({"exit":output.code,"duration_ms":output.elapsed_ms,"stdout_sha256":hash(&output.stdout),"stderr_sha256":hash(&output.stderr)}),
+            json!({"exit":output.code,"duration_ms":output.elapsed_ms,"stdout_sha256":hash(&output.stdout),"stderr_sha256":hash(&output.stderr),"isolation":output.isolation}),
         )
     }
 }
@@ -850,10 +853,24 @@ fn run() -> Result<bool, String> {
             return Err(format!("unknown --case {id}"));
         }
     }
+    let mut wanted = options.cases.clone();
+    if !wanted.is_empty() {
+        loop {
+            let before = wanted.len();
+            for case in &manifest.cases {
+                if wanted.contains(&case.id) {
+                    wanted.extend(case.requires.iter().cloned());
+                }
+            }
+            if before == wanted.len() {
+                break;
+            }
+        }
+    }
     let mut cases = manifest
         .cases
         .iter()
-        .filter(|c| options.cases.is_empty() || options.cases.contains(&c.id))
+        .filter(|c| wanted.is_empty() || wanted.contains(&c.id))
         .collect::<Vec<_>>();
     let order = if let Some(path) = &options.order {
         let bytes = read(path)?;
@@ -886,13 +903,26 @@ fn run() -> Result<bool, String> {
     } else {
         None
     };
+    let mut ready_order = Vec::new();
+    let mut placed = BTreeSet::new();
+    while ready_order.len() < cases.len() {
+        let next = cases
+            .iter()
+            .find(|case| {
+                !placed.contains(&case.id) && case.requires.iter().all(|r| placed.contains(r))
+            })
+            .ok_or("selected inventory lacks a required foundation")?;
+        placed.insert(next.id.clone());
+        ready_order.push(*next);
+    }
+    cases = ready_order;
     let raw_manifest: Value = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
     let authorities = authority_environment();
     let authority_hash = hash(&serde_json::to_vec(&authorities).map_err(|e| e.to_string())?);
     let inventory_cases = cases.iter().map(|case| {
         let definition=raw_manifest["cases"].as_array().and_then(|rows|rows.iter().find(|v|v["id"]==case.id)).ok_or("inventory case missing definition")?;
         let inputs=case.files.iter().map(|(path,bytes)|(path.clone(),hash(bytes.as_bytes()))).collect::<BTreeMap<_,_>>();
-        Ok(json!({"id":case.id,"node":case.node,"language":case.language,"world":if case.daemon==Some(false){"process"}else{"owner"},"definition_sha256":hash(&serde_json::to_vec(definition).map_err(|e|e.to_string())?),"inputs":inputs,"steps":case.steps.iter().map(|s|json!({"id":s.id,"kind":s.kind})).collect::<Vec<_>>()}))
+        Ok(json!({"id":case.id,"node":case.node,"language":case.language,"requires":case.requires,"world":if case.daemon==Some(false){"process"}else{"owner"},"definition_sha256":hash(&serde_json::to_vec(definition).map_err(|e|e.to_string())?),"inputs":inputs,"steps":case.steps.iter().map(|s|json!({"id":s.id,"kind":s.kind})).collect::<Vec<_>>()}))
     }).collect::<Result<Vec<Value>,String>>()?;
     if options.inventory {
         println!("{}",serde_json::to_string_pretty(&json!({"schema":1,"kind":"keel-contract-inventory","manifest_sha256":hash(&raw),"authority_environment":authorities,"authority_environment_sha256":authority_hash,"cases":inventory_cases})).map_err(|e|e.to_string())?);
@@ -937,13 +967,29 @@ fn run() -> Result<bool, String> {
     let started = Instant::now();
     let mut reports = Vec::new();
     let mut green = true;
+    let mut outcomes = BTreeMap::new();
     for (serial, case) in cases.iter().enumerate() {
         let root = evidence.join(&case.id);
         fs::create_dir(&root).map_err(|e| e.to_string())?;
         let start = Instant::now();
         let mut steps = Vec::new();
         let mut failed = None;
-        let world = World::new(case, &bins, &root, serial).and_then(|mut world| {
+        let mut world_isolation = Value::Null;
+        let blocked = case
+            .requires
+            .iter()
+            .filter(|r| outcomes.get(*r) != Some(&true))
+            .cloned()
+            .collect::<Vec<_>>();
+        let world = if blocked.is_empty() {
+            World::new(case, &bins, &root, serial)
+        } else {
+            Err(format!(
+                "required foundation failed or blocked: {}",
+                blocked.join(", ")
+            ))
+        }
+        .and_then(|mut world| {
             if case.daemon != Some(false) {
                 world.start()?;
             }
@@ -951,9 +997,20 @@ fn run() -> Result<bool, String> {
         });
         match world {
             Err(error) => {
+                if !blocked.is_empty() {
+                    steps = case
+                        .steps
+                        .iter()
+                        .map(|step| json!({"id":step.id,"status":"blocked","blocked_by":blocked}))
+                        .collect();
+                }
                 failed = Some(error);
             }
             Ok(mut world) => {
+                world_isolation = world
+                    .daemon
+                    .as_ref()
+                    .map_or(Value::Null, |daemon| daemon.isolation().clone());
                 for (n, step) in case.steps.iter().enumerate() {
                     if let Some(error) = &failed {
                         steps.push(json!({"id":step.id,"status":"blocked","blocked_by":error}));
@@ -966,15 +1023,27 @@ fn run() -> Result<bool, String> {
                         Err(error)=>{steps.push(json!({"id":step.id,"status":"fail","duration_ms":start.elapsed().as_millis(),"error":error}));failed=Some(step.id.clone());},
                     }
                 }
+                if let Some(mut daemon) = world.daemon.take() {
+                    if let Err(error) = daemon.stop() {
+                        failed = Some(format!("world containment cleanup failed: {error}"));
+                    }
+                }
             }
         }
-        let status = if failed.is_some() { "fail" } else { "pass" };
+        let status = if !blocked.is_empty() {
+            "blocked"
+        } else if failed.is_some() {
+            "fail"
+        } else {
+            "pass"
+        };
         green &= failed.is_none();
+        outcomes.insert(case.id.clone(), status == "pass");
         println!("{status}\t{}\t{}ms", case.id, start.elapsed().as_millis());
-        reports.push(json!({"id":case.id,"node":case.node,"language":case.language,"status":status,"error":failed,"duration_ms":start.elapsed().as_millis(),"steps":steps,"evidence_dir":root}));
+        reports.push(json!({"id":case.id,"node":case.node,"language":case.language,"status":status,"error":failed,"duration_ms":start.elapsed().as_millis(),"steps":steps,"world_isolation":world_isolation,"evidence_dir":root}));
         write_json(
             &evidence.join("report.json"),
-            &json!({"schema":1,"manifest_sha256":hash(&raw),"authority_environment":authorities,"authority_environment_sha256":authority_hash,"inventory":inventory_cases,"binaries":binary_hashes,"order":order,"status":if green{"pass"}else{"fail"},"cases":reports,"duration_ms":started.elapsed().as_millis()}),
+            &json!({"schema":1,"manifest_sha256":hash(&raw),"authority_environment":authorities,"authority_environment_sha256":authority_hash,"inventory":inventory_cases,"containment_policy":{"root":std::env::var_os("KEEL_CGROUP_ROOT"),"required":std::env::var_os("KEEL_REQUIRE_CGROUP").as_deref()==Some(std::ffi::OsStr::new("1"))},"binaries":binary_hashes,"order":order,"status":if green{"pass"}else{"fail"},"cases":reports,"duration_ms":started.elapsed().as_millis()}),
         )?;
     }
     // Detect replacement of an admitted executable during a run. Evidence never
@@ -983,7 +1052,7 @@ fn run() -> Result<bool, String> {
         if hash(&read(&bins.join(binary))?) != *before {
             write_json(
                 &evidence.join("report.json"),
-                &json!({"schema":1,"manifest_sha256":hash(&raw),"authority_environment":authorities,"authority_environment_sha256":authority_hash,"inventory":inventory_cases,"binaries":binary_hashes,"order":order,"status":"fail","artifact_error":format!("artifact {binary} changed while cases were running"),"cases":reports,"duration_ms":started.elapsed().as_millis()}),
+                &json!({"schema":1,"manifest_sha256":hash(&raw),"authority_environment":authorities,"authority_environment_sha256":authority_hash,"inventory":inventory_cases,"containment_policy":{"root":std::env::var_os("KEEL_CGROUP_ROOT"),"required":std::env::var_os("KEEL_REQUIRE_CGROUP").as_deref()==Some(std::ffi::OsStr::new("1"))},"binaries":binary_hashes,"order":order,"status":"fail","artifact_error":format!("artifact {binary} changed while cases were running"),"cases":reports,"duration_ms":started.elapsed().as_millis()}),
             )?;
             return Err(format!(
                 "artifact {binary} changed while cases were running"
