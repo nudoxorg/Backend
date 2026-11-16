@@ -40,8 +40,6 @@ export def assert-focused-dependencies [target: string]: nothing -> nothing {
         | uniq
     )
     if not ($paused | is-empty) {
-        error make {
-            msg: $"focused dependency closure contains paused frontends: ($paused | str join ', ')"
-        }
+        error make {msg: $"focused dependency closure contains paused frontends: ($paused | str join ', ')"}
     }
 }

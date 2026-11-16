@@ -151,11 +151,7 @@ export def prepare-keel-native [
         sqlite: $sqlite
     }
     $observation | to json | save ($stage | path join "development-observation.json")
-    {
-        NUDOX_BUILD_STYLO_WORKER_ID: $css.identity
-        NUDOX_BUILD_SQLITE_WORKER_ID: $sqlite.artifact_identity
-        NUDOX_BUILD_SQLITE_BASIS_JSON: $basis_json
-    }
+    {NUDOX_BUILD_STYLO_WORKER_ID: $css.identity, NUDOX_BUILD_SQLITE_WORKER_ID: $sqlite.artifact_identity, NUDOX_BUILD_SQLITE_BASIS_JSON: $basis_json}
 }
 
 # The owner must bind exactly the bytes that remain beside it after the build.

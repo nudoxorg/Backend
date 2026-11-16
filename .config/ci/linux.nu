@@ -243,21 +243,15 @@ def main [
     # `backend test pr`; they are not claimed as replaced by these histories.
     let declared_runner = $env.BACKEND_KEEL_HARNESS? | default ""
     if ($declared_runner | is-empty) {
-        error make {
-            msg: "the compiler shell must declare BACKEND_KEEL_HARNESS from its pinned standalone Keel input"
-        }
+        error make {msg: "the compiler shell must declare BACKEND_KEEL_HARNESS from its pinned standalone Keel input"}
     }
     let runner = $declared_runner | path expand --strict
     if not ($runner | str starts-with "/nix/store/") {
-        error make {
-            msg: $"Keel must come from the pinned standalone Nix package, got ($runner)"
-        }
+        error make {msg: $"Keel must come from the pinned standalone Nix package, got ($runner)"}
     }
     let runner_elf = run-external "readelf" "-h" $runner | complete
     if $runner_elf.exit_code != 0 {
-        error make {
-            msg: "the standalone Keel runner must be the actual ELF executable, not a shell wrapper"
-        }
+        error make {msg: "the standalone Keel runner must be the actual ELF executable, not a shell wrapper"}
     }
     let runner_sha256 = open --raw $runner | hash sha256
     let target_dir = $env.CARGO_TARGET_DIR? | default ($env.PWD | path join ".local/target") | path expand

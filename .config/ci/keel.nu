@@ -18,22 +18,16 @@ def main [
     } else if $bin_dir != null {
         $bin_dir | path expand | path join "backend-keel-harness"
     } else {
-        error make {
-            msg: "Keel needs --runner, BACKEND_KEEL_HARNESS, or --bin-dir containing backend-keel-harness"
-        }
+        error make {msg: "Keel needs --runner, BACKEND_KEEL_HARNESS, or --bin-dir containing backend-keel-harness"}
     }
     if not ($executable | path exists) {
-        error make {
-            msg: $"Keel runner is absent: ($executable); enter the pinned compiler shell or pass --runner"
-        }
+        error make {msg: $"Keel runner is absent: ($executable); enter the pinned compiler shell or pass --runner"}
     }
     if not $list and ($bin_dir == null or $evidence == null) {
         error make {msg: "Keel execution needs --bin-dir and a new --evidence directory"}
     }
     if $evidence != null and ($evidence | path exists) {
-        error make {
-            msg: "Keel evidence destination already exists; choose a new directory"
-        }
+        error make {msg: "Keel evidence destination already exists; choose a new directory"}
     }
     let model = $root | path join "tests/keel/default.nix"
     let evaluated = (^nix-instantiate --eval --strict --json $model | complete)
@@ -44,9 +38,7 @@ def main [
     # cannot become a successful empty run through a shell pipeline.
     let definition = $evaluated.stdout | from json
     if $definition.schema != 1 or ($definition.cases | is-empty) {
-        error make {
-            msg: "Keel case definitions need schema 1 and a nonempty case inventory"
-        }
+        error make {msg: "Keel case definitions need schema 1 and a nonempty case inventory"}
     }
     let temporary = (^mktemp -d | str trim)
     let manifest = $temporary | path join "manifest.json"
@@ -57,7 +49,8 @@ def main [
             []
         } else {
             [
-                "--order" ($order | path expand)
+                "--order"
+                ($order | path expand)
             ]
         }
         if $list {
