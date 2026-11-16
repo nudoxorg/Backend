@@ -2336,7 +2336,7 @@ fn pinned_query_preparation_disconnect_remains_an_endpoint_fault_with_original_r
 }
 
 #[test]
-fn mcp_all_record_details_use_selectable_bounded_text_without_signature_bodies() {
+fn mcp_standard_records_share_cli_text_while_summary_stays_bounded() {
     let mut row = declaration_row();
     row.signature = Some("fn ferris() { BODY_ONLY_MARKER; }".repeat(64));
     row.score = Some(u32::MAX);
@@ -2354,9 +2354,19 @@ fn mcp_all_record_details_use_selectable_bounded_text_without_signature_bodies()
             None,
             ContinuationTarget::McpTool("backend.search"),
         );
-        assert_eq!(preview, expected);
+        if detail == Detail::Summary {
+            assert_eq!(preview, expected);
+            assert!(!preview.contains("BODY_ONLY_MARKER"));
+        } else {
+            assert_eq!(
+                preview,
+                markdown::answer_with_detail(
+                    &answer, detail, None, ContinuationTarget::CliOption
+                )
+            );
+            assert!(preview.contains("BODY_ONLY_MARKER"));
+        }
         assert!(preview.contains(&format!("`{DECLARATION}`")));
-        assert!(!preview.contains("BODY_ONLY_MARKER"));
         assert!(!preview.contains("4294967295"));
         let encoded = encode_answer(&answer, detail, None, MAX_RESPONSE_BUDGET_BYTES)
             .expect("complete typed detail");

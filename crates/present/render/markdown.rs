@@ -77,10 +77,25 @@ pub fn answer_with_detail(
 ) -> String {
     match value {
         Answer::Page(value) => page_projection(&PageProjection::new(value, detail)),
-        Answer::Records(_) if !matches!(target, ContinuationTarget::CliOption) => {
+        Answer::Records(_)
+            if detail == Detail::Summary
+                && !matches!(target, ContinuationTarget::CliOption) =>
+        {
             summary_with_cursor(value, cursor, target)
         }
-        Answer::Records(value) => records_with_cursor(value, None, cursor, target),
+        Answer::Records(list) => {
+            let rendered = records_with_cursor(list, None, cursor, target);
+            // Explicit standard/full requests retain the same readable facts
+            // on either surface. Large MCP pages still use the bounded,
+            // whole-coordinate preview; their typed records remain complete.
+            if !matches!(target, ContinuationTarget::CliOption)
+                && rendered.len() > MAX_PREVIEW_TEXT_BYTES
+            {
+                summary_with_cursor(value, cursor, target)
+            } else {
+                rendered
+            }
+        }
         Answer::Product(value) => product_projection(value, Some(detail), Some(target)),
         Answer::Outline(value) => {
             let mut text = outline(value);

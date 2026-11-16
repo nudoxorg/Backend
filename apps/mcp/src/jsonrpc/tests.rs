@@ -5442,17 +5442,13 @@ fn standard_mcp_preview_retains_every_structured_coordinate_and_the_cli_projecti
         let coordinate = row["identity"]["coordinate"]
             .as_str()
             .expect("exact coordinate");
-        assert!(
-            text.lines().any(|line| line == format!("  `{coordinate}`")),
-            "{text}"
-        );
+        assert!(text.contains(&format!("`{coordinate}`")), "{text}");
         assert_selected_id_wire(
             &row["identity"]["semantic_data"]["value"],
             symbol_key(coordinate).as_bytes(),
         );
     }
-    assert!(text.contains("showing 1 exact coordinate(s); 0 omitted from text preview"));
-    assert!(text.contains("Full page: `structuredContent.records`"));
+    assert_eq!(text, markdown::answer(&answer));
     assert_eq!(result["structuredContent"]["more"], false);
 }
 
