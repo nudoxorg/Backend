@@ -659,12 +659,14 @@ let
     # Real corpus packages include <brotli/types.h> across translation units;
     # this must come from the compiler closure, not an incidental service tool.
     pkgs.brotli
+    pkgs.binutils
     pkgs.cmake
     pkgs.openssl
     pkgs.pkg-config
     pkgs.sqlite
     pkgs.zlib
-  ];
+  ]
+  ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.patchelf ];
   # The GPUI desktop host resolves X11, Wayland, Vulkan, audio, and udev at
   # build/link time on Linux. They are not part of the headless corpus path,
   # so they stay out of the Darwin closure entirely.
