@@ -4,6 +4,7 @@
 //! Public caller authority plus closed compile terminals and compact output facts.
 
 mod authority;
+#[cfg(feature = "paused-frontends")]
 pub(crate) use authority::go_authority_projection;
 mod compile;
 mod lowering;
@@ -17,14 +18,16 @@ pub use authority::{
 };
 pub(crate) use compile::rust_authority_diagnostic;
 pub use compile::{compile, compile_ir, compile_semantic};
+#[cfg(feature = "paused-frontends")]
+pub use lowering::ClangProjectionFault;
 pub use lowering::ParentageState;
-pub use lowering::{ClangProjectionFault, FactFault, FactRejection, SourceSpanFact, TypeChildLane};
+pub use lowering::{FactFault, FactRejection, SourceSpanFact, TypeChildLane};
+#[cfg(all(test, unix))]
+pub(crate) use request::NativeRecipe;
 pub use request::{
     CompileControl, CompileRequest, CompileScratch, DeclarationScope, PackageDeclarationScopeFault,
     SemanticAuthorityInput,
 };
-#[cfg(all(test, unix))]
-pub(crate) use request::NativeRecipe;
 pub(crate) use request::{SourceLease, WorkPermit, WorkStopped};
 pub use terminal::{
     CompileFailure, CompileOutput, CompiledFragment, CompiledIr, CompiledSemantic,
@@ -37,10 +40,10 @@ pub use toolchain::{
 };
 
 pub use backend_semantic::ir::SourceIdentity;
+pub(super) use backend_semantic::vocabulary::LoweringUnsupported;
 pub use backend_semantic::vocabulary::{
     CompileRecipeFact, InvalidUtf8Fact, MAX_NATIVE_WORKER_PANIC_BYTES, NativeTool, NativeWorker,
     NativeWorkerPanic, NativeWorkerPanicClass, NativeWorkerPanicMessage,
 };
-pub(super) use backend_semantic::vocabulary::LoweringUnsupported;
 #[cfg(all(test, unix))]
 pub(super) use backend_semantic::vocabulary::{NativeArtifactRole, NativeWorkPhase};

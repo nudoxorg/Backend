@@ -17,16 +17,21 @@ use crate::driver::{
     CompileControl, ExternalToolchain, NotExternalToolchain, SemanticAuthorityInput,
     ToolchainSelection,
 };
+#[cfg(feature = "paused-frontends")]
 use backend_frontend_clang::ClangAuthorityEnvironment;
+#[cfg(feature = "paused-frontends")]
 use backend_frontend_csharp::legacy::{
     CSharpAuthorityConfiguration, CSharpAuthorityControl, CSharpAuthorityError,
     CSharpAuthorityRequest, CSharpCapturedConfig, CSharpCapturedSource, CSharpExecutionLease,
     CSharpOracle,
 };
+#[cfg(feature = "paused-frontends")]
 use backend_frontend_go::legacy::oracle::{
     GoPackageAuthorityWitness, GoPackageAuthorityWitnessError,
 };
+#[cfg(feature = "paused-frontends")]
 use backend_frontend_go::legacy::{ConfiguredGoOracle, OracleError};
+#[cfg(feature = "paused-frontends")]
 use backend_frontend_java::legacy::harness::{
     Harness, HarnessError, HarnessRequest, JavaSource, JdkToolchain,
 };
@@ -58,6 +63,7 @@ use super::typescript_host::TypeScriptProjectHost;
 #[derive(Clone, Copy, Debug)]
 pub struct PackageAuthorityConfiguration<'config> {
     /// Exact driver, resource, include, and loaded libclang selection for C/C++.
+    #[cfg(feature = "paused-frontends")]
     pub clang: Option<&'config ClangAuthorityEnvironment>,
     /// TypeScript checker that stages the explicitly selected package root.
     pub typescript: Option<&'config ExplicitTypeScriptChecker>,
@@ -68,12 +74,16 @@ pub struct PackageAuthorityConfiguration<'config> {
     /// Rust Analyzer/Cargo authority configuration.
     pub rust: Option<RustPackageAuthorityConfiguration<'config>>,
     /// Go package oracle selected by the application owner.
+    #[cfg(feature = "paused-frontends")]
     pub go: Option<&'config ConfiguredGoOracle>,
     /// Typed Go-only host admission failure retained by the application owner.
+    #[cfg(feature = "paused-frontends")]
     pub go_unavailable: Option<super::LocalRuntimeGoAuthorityFailure>,
     /// Roslyn helper producer selected by the application owner.
+    #[cfg(feature = "paused-frontends")]
     pub csharp: Option<CSharpPackageAuthorityConfiguration<'config>>,
     /// Java doclet/JDK authority configuration.
+    #[cfg(feature = "paused-frontends")]
     pub java: Option<JavaPackageAuthorityConfiguration<'config>>,
     /// Largest borrowed Go or Java authority image this owner will retain.
     pub maximum_image_bytes: usize,
@@ -85,20 +95,26 @@ impl PackageAuthorityConfiguration<'static> {
     /// Every package profile reaches a typed unavailable terminal unless its
     /// caller selects the corresponding explicit authority configuration.
     pub const UNAVAILABLE: Self = Self {
+        #[cfg(feature = "paused-frontends")]
         clang: None,
         typescript: None,
         typescript_project_host: None,
         python_checker: super::LocalRuntimePythonCheckerAdmission::Unconfigured,
         rust: None,
+        #[cfg(feature = "paused-frontends")]
         go: None,
+        #[cfg(feature = "paused-frontends")]
         go_unavailable: None,
+        #[cfg(feature = "paused-frontends")]
         csharp: None,
+        #[cfg(feature = "paused-frontends")]
         java: None,
         maximum_image_bytes: 0,
     };
 }
 
 /// Explicit Roslyn authority configuration for one compiler-owner lifetime.
+#[cfg(feature = "paused-frontends")]
 #[derive(Clone, Copy, Debug)]
 pub struct CSharpPackageAuthorityConfiguration<'config> {
     /// Producer bound to the exact published Roslyn helper assembly.
@@ -153,6 +169,7 @@ impl RustPackageAuthorityConfiguration<'_> {
 
 /// Explicit Java authority inputs.  The source path is converted to a package
 /// relative name only after the request proves containment under `package_root`.
+#[cfg(feature = "paused-frontends")]
 #[derive(Clone, Copy, Debug)]
 pub struct JavaPackageAuthorityConfiguration<'config> {
     /// Caller-validated JDK used to compile the embedded extractor and source.
@@ -176,10 +193,13 @@ pub struct PackageAuthorityRequest<'request, 'config> {
     /// Exact source bytes read by the package resolver.
     pub source: &'request [u8],
     /// Exact captured Java siblings available to javac without becoming explicit image inputs.
+    #[cfg(feature = "paused-frontends")]
     pub java_sourcepath: &'request [JavaSource<'request>],
     /// Captured members for one exact C# compilation unit.
+    #[cfg(feature = "paused-frontends")]
     pub csharp_sources: Option<&'request [CSharpCapturedSource<'request>]>,
     /// Owner-captured C# project and configuration probes, if admitted.
+    #[cfg(feature = "paused-frontends")]
     pub csharp_config: Option<&'request [CSharpCapturedConfig<'request>]>,
     /// Exact native compilation unit selected by the admitted package target.
     pub unit_key: &'request CompilationUnitKeyV2,
@@ -200,6 +220,7 @@ pub struct PackageAuthorityRequest<'request, 'config> {
 /// pointer can outlive the transaction that owns it.
 pub enum PackageAuthorityOwner<'workspace> {
     /// C or C++ compilation with the exact selected libclang authority.
+    #[cfg(feature = "paused-frontends")]
     Clang {
         /// Exact C-family profile admitted by the caller.
         profile: LanguageProfile,
@@ -244,6 +265,7 @@ pub enum PackageAuthorityOwner<'workspace> {
         unit_key: CompilationUnitKeyV2,
     },
     /// Go authority image owned for the driver's borrowed image input.
+    #[cfg(feature = "paused-frontends")]
     Go {
         /// Exact checked profile.
         profile: LanguageProfile,
@@ -251,6 +273,7 @@ pub enum PackageAuthorityOwner<'workspace> {
         image: Box<[u8]>,
     },
     /// Roslyn authority image owned for the driver's borrowed image input.
+    #[cfg(feature = "paused-frontends")]
     CSharp {
         /// Exact checked profile.
         profile: LanguageProfile,
@@ -267,6 +290,7 @@ pub enum PackageAuthorityOwner<'workspace> {
         execution: CSharpExecutionLease,
     },
     /// Java authority image and its doclet session retained until lowering.
+    #[cfg(feature = "paused-frontends")]
     Java {
         /// Exact checked profile.
         profile: LanguageProfile,
@@ -302,6 +326,7 @@ impl PackageAuthorityOwner<'_> {
         source_path: &'source Path,
     ) -> SemanticAuthorityInput<'source> {
         match self {
+            #[cfg(feature = "paused-frontends")]
             Self::Clang { project, .. } => SemanticAuthorityInput::Clang { project },
             Self::TypeScript { report, .. } => SemanticAuthorityInput::TypeScript { report },
             Self::Python { report, .. } => SemanticAuthorityInput::Python { report },
@@ -327,8 +352,11 @@ impl PackageAuthorityOwner<'_> {
                 target: rust_cargo_target(unit_key),
                 maximum_source_bytes: *maximum_source_bytes,
             },
+            #[cfg(feature = "paused-frontends")]
             Self::Go { image, .. } => SemanticAuthorityInput::Go { image },
+            #[cfg(feature = "paused-frontends")]
             Self::CSharp { image, .. } => SemanticAuthorityInput::CSharp { image },
+            #[cfg(feature = "paused-frontends")]
             Self::Java { image, .. } => SemanticAuthorityInput::Java { image },
         }
     }
@@ -337,19 +365,18 @@ impl PackageAuthorityOwner<'_> {
     #[must_use]
     pub const fn profile(&self) -> LanguageProfile {
         match self {
-            Self::Clang { profile, .. }
-            | Self::Python { profile, .. }
+            Self::Python { profile, .. }
             | Self::Rust { profile, .. }
-            | Self::RustBorrowed { profile, .. }
-            | Self::Go { profile, .. }
-            | Self::CSharp { profile, .. }
-            | Self::Java { profile, .. } => *profile,
+            | Self::RustBorrowed { profile, .. } => *profile,
+            #[cfg(feature = "paused-frontends")]
+            Self::Clang { profile, .. } | Self::Go { profile, .. } | Self::CSharp { profile, .. } | Self::Java { profile, .. } => *profile,
             Self::TypeScript { profile, .. } => LanguageProfile::TypeScript(*profile),
         }
     }
 
     /// Returns the same-attempt SDK resolver receipt retained with a C# image.
     #[must_use]
+    #[cfg(feature = "paused-frontends")]
     pub fn csharp_resolver_receipt(
         &self,
     ) -> Option<&backend_frontend_csharp::legacy::CSharpResolverReceipt> {
@@ -363,6 +390,7 @@ impl PackageAuthorityOwner<'_> {
 
     /// Returns independently owned selected-reference custody for C# replay.
     #[must_use]
+    #[cfg(feature = "paused-frontends")]
     pub fn csharp_resolver_snapshot(
         &self,
     ) -> Option<&Arc<backend_frontend_csharp::legacy::CSharpResolvedReferenceSnapshot>> {
@@ -385,7 +413,7 @@ impl PackageAuthorityOwner<'_> {
 pub fn enter_package_authority<'request, 'config>(
     request: PackageAuthorityRequest<'request, 'config>,
 ) -> Result<PackageAuthorityOwner<'static>, PackageAuthorityError> {
-    enter_package_authority_with_go_authority_witness(request, None)
+    enter_package_authority_with_retained_rust_workspace(request, #[cfg(feature = "paused-frontends")] None, None)
 }
 
 /// Go authority shared by every source of one package request.
@@ -396,6 +424,7 @@ pub fn enter_package_authority<'request, 'config>(
 /// in [`Self::finish`]. Entering authority per source repeated all of that for
 /// every file, so a Go package's indexing time grew with its file count times the
 /// cost of re-hashing the Go installation and re-listing its dependency graph.
+#[cfg(feature = "paused-frontends")]
 pub(crate) struct GoPackageAuthority<'run> {
     session: backend_frontend_go::legacy::oracle::GoPackageAuthoritySession<'run>,
     profile: LanguageProfile,
@@ -404,6 +433,7 @@ pub(crate) struct GoPackageAuthority<'run> {
     maximum_image_bytes: usize,
 }
 
+#[cfg(feature = "paused-frontends")]
 impl<'run> GoPackageAuthority<'run> {
     /// Admits the package of `first` (any one of its sources) and plans the
     /// oracle runs for `sources`, the files whose images will be requested.
@@ -515,6 +545,7 @@ impl<'run> GoPackageAuthority<'run> {
     }
 }
 
+#[cfg(feature = "paused-frontends")]
 fn require_go_module_language(
     profile: LanguageProfile,
     bytes: &[u8],
@@ -695,8 +726,10 @@ fn require_python_checker(
     }
 }
 
+#[cfg(feature = "paused-frontends")]
 pub(crate) fn enter_package_authority_with_go_authority_witness<'request, 'config>(
     request: PackageAuthorityRequest<'request, 'config>,
+    #[cfg(feature = "paused-frontends")]
     captured_go_authority: Option<&GoPackageAuthorityWitness>,
 ) -> Result<PackageAuthorityOwner<'static>, PackageAuthorityError> {
     enter_package_authority_with_retained_rust_workspace(request, captured_go_authority, None)
@@ -704,11 +737,13 @@ pub(crate) fn enter_package_authority_with_go_authority_witness<'request, 'confi
 
 pub(crate) fn enter_package_authority_with_rust_workspace<'request, 'config, 'workspace>(
     request: PackageAuthorityRequest<'request, 'config>,
+    #[cfg(feature = "paused-frontends")]
     captured_go_authority: Option<&GoPackageAuthorityWitness>,
     rust_workspace: &'workspace RustWorkspace,
 ) -> Result<PackageAuthorityOwner<'workspace>, PackageAuthorityError> {
     enter_package_authority_with_retained_rust_workspace(
         request,
+        #[cfg(feature = "paused-frontends")]
         captured_go_authority,
         Some(rust_workspace),
     )
@@ -716,6 +751,7 @@ pub(crate) fn enter_package_authority_with_rust_workspace<'request, 'config, 'wo
 
 fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'workspace>(
     request: PackageAuthorityRequest<'request, 'config>,
+    #[cfg(feature = "paused-frontends")]
     captured_go_authority: Option<&GoPackageAuthorityWitness>,
     rust_workspace: Option<&'workspace RustWorkspace>,
 ) -> Result<PackageAuthorityOwner<'workspace>, PackageAuthorityError> {
@@ -751,6 +787,7 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
 
     let owner =
         match request.profile {
+            #[cfg(feature = "paused-frontends")]
             profile @ (LanguageProfile::C(_) | LanguageProfile::Cxx(_)) => {
                 let environment = request.configuration.clang.ok_or(
                     PackageAuthorityError::AdapterUnavailable {
@@ -952,6 +989,7 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                     }
                 }
             }
+            #[cfg(feature = "paused-frontends")]
             LanguageProfile::Go(_) => {
                 let oracle = match request.configuration.go {
                     Some(oracle) => oracle,
@@ -1022,6 +1060,7 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                     image,
                 }
             }
+            #[cfg(feature = "paused-frontends")]
             LanguageProfile::Java(profile) => {
                 let configuration = request.configuration.java.ok_or(
                     PackageAuthorityError::AdapterUnavailable {
@@ -1078,6 +1117,7 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                     _session: session,
                 }
             }
+            #[cfg(feature = "paused-frontends")]
             LanguageProfile::CSharp(profile) => {
                 let configuration = request.configuration.csharp.ok_or(
                     PackageAuthorityError::AdapterUnavailable {
@@ -1155,6 +1195,10 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                     resolver_snapshot,
                     execution,
                 }
+            }
+            #[cfg(not(feature = "paused-frontends"))]
+            profile @ (LanguageProfile::C(_) | LanguageProfile::Cxx(_) | LanguageProfile::Go(_) | LanguageProfile::Java(_) | LanguageProfile::CSharp(_)) => {
+                return Err(PackageAuthorityError::AdapterUnavailable { profile, stage: PackageAuthorityStage::Admission });
             }
         };
     checkpoint(
@@ -1497,12 +1541,15 @@ pub enum PackageAuthorityError {
     #[error(transparent)]
     RustProject(#[from] RustAuthorityError),
     /// Clang project admission returned its exact terminal.
+    #[cfg(feature = "paused-frontends")]
     #[error(transparent)]
     ClangProject(#[from] backend_frontend_clang::ClangAuthorityError),
     /// Go authority-image production returned its exact terminal.
+    #[cfg(feature = "paused-frontends")]
     #[error(transparent)]
     GoOracle(#[from] OracleError),
     /// The exact Go authority filesystem witness could not be captured or revalidated.
+    #[cfg(feature = "paused-frontends")]
     #[error(transparent)]
     GoAuthorityWitness(#[from] GoPackageAuthorityWitnessError),
     /// A Go installation was selected but failed admission; unrelated language owners remain usable.
@@ -1514,14 +1561,16 @@ pub enum PackageAuthorityError {
         cause: super::LocalRuntimeGoAuthorityFailure,
     },
     /// Roslyn authority-image production returned its exact terminal.
+    #[cfg(feature = "paused-frontends")]
     #[error(transparent)]
     CSharp(#[from] CSharpAuthorityError),
     /// Java harness preparation or image extraction returned its exact terminal.
+    #[cfg(feature = "paused-frontends")]
     #[error(transparent)]
     JavaHarness(#[from] HarnessError),
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "paused-frontends"))]
 mod tests {
     #[test]
     fn rust_crate_authority_forwards_exact_cargo_target_name_and_root() {

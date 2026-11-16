@@ -2,7 +2,9 @@
 
 use std::{io, path::Path, str};
 
+#[cfg(feature = "paused-frontends")]
 use backend_frontend_go::legacy::GoOracleConfigurationError;
+#[cfg(feature = "paused-frontends")]
 use backend_frontend_java::legacy::harness::HarnessError;
 use backend_frontend_python::legacy::PyreflyExecutableError;
 use backend_frontend_rust::legacy::LoadError as RustLoadError;
@@ -197,12 +199,15 @@ pub enum LocalCompilerHostError {
     #[error(transparent)]
     NativePythonAuthority(#[from] backend_frontend_python::legacy::checker::CheckerError),
     /// Go authority rejected its explicit producer.
+    #[cfg(feature = "paused-frontends")]
     #[error(transparent)]
     GoAuthority(#[from] GoOracleConfigurationError),
     /// Clang authority could not bind the selected driver and libclang paths.
+    #[cfg(feature = "paused-frontends")]
     #[error(transparent)]
     ClangAuthority(#[from] backend_frontend_clang::ClangAuthorityError),
     /// Java authority rejected its explicit JDK.
+    #[cfg(feature = "paused-frontends")]
     #[error(transparent)]
     JavaAuthority(#[from] HarnessError),
     /// A package-root row was invalid.

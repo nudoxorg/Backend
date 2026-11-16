@@ -91,6 +91,7 @@ pub enum AuthorityDiagnosticFault {
 #[derive(Debug, thiserror::Error)]
 pub enum AuthorityFailure<'diagnostic> {
     /// Direct libclang collection did not yield complete C or C++ facts.
+    #[cfg(feature = "paused-frontends")]
     #[error("direct libclang authority failed")]
     Clang {
         /// Bounded source diagnostic retained by the Clang authority.
@@ -176,6 +177,7 @@ pub enum AuthorityFailure<'diagnostic> {
         end: u32,
     },
     /// The real Go package/type authority boundary did not yield complete facts.
+    #[cfg(feature = "paused-frontends")]
     #[error("Go semantic authority failed")]
     Go {
         /// Bounded source diagnostic retained by the Go authority.
@@ -185,6 +187,7 @@ pub enum AuthorityFailure<'diagnostic> {
         cause: backend_frontend_go::legacy::OracleError,
     },
     /// The fixed Go authority image failed before lending semantic facts.
+    #[cfg(feature = "paused-frontends")]
     #[error("Go authority image failed")]
     GoImage {
         /// Bounded source diagnostic retained by the Go authority.
@@ -194,6 +197,7 @@ pub enum AuthorityFailure<'diagnostic> {
         cause: backend_frontend_go::legacy::ImageError,
     },
     /// A Go image was produced for a source other than the compile request.
+    #[cfg(feature = "paused-frontends")]
     #[error("Go authority image source binding differs from the compile request")]
     GoSourceBinding {
         /// Bounded source diagnostic retained by the Go authority.
@@ -204,6 +208,7 @@ pub enum AuthorityFailure<'diagnostic> {
         observed: [u8; 32],
     },
     /// The Roslyn authority boundary did not yield complete facts.
+    #[cfg(feature = "paused-frontends")]
     #[error("C# semantic authority failed")]
     CSharp {
         /// Bounded source diagnostic retained by the C# authority.
@@ -213,6 +218,7 @@ pub enum AuthorityFailure<'diagnostic> {
         cause: backend_frontend_csharp::legacy::DecodeError,
     },
     /// The fixed Roslyn authority image failed before lending declarations.
+    #[cfg(feature = "paused-frontends")]
     #[error("C# authority image failed")]
     CSharpImage {
         /// Bounded source diagnostic retained by the Roslyn authority.
@@ -222,6 +228,7 @@ pub enum AuthorityFailure<'diagnostic> {
         cause: backend_frontend_csharp::legacy::ImageError,
     },
     /// A Roslyn image was generated for a source other than the compile request.
+    #[cfg(feature = "paused-frontends")]
     #[error("C# authority image source binding differs from the compile request")]
     CSharpSourceBinding {
         /// Bounded source diagnostic retained by the Roslyn authority.
@@ -232,6 +239,7 @@ pub enum AuthorityFailure<'diagnostic> {
         observed: [u8; 32],
     },
     /// A Roslyn declaration identifier span cannot name the bound source bytes.
+    #[cfg(feature = "paused-frontends")]
     #[error("C# authority declaration span differs from the compile source")]
     CSharpSpan {
         /// Bounded source diagnostic retained by the Roslyn authority.
@@ -242,6 +250,7 @@ pub enum AuthorityFailure<'diagnostic> {
         end: u32,
     },
     /// The validated javac authority image did not yield complete facts.
+    #[cfg(feature = "paused-frontends")]
     #[error("Java semantic authority failed")]
     Java {
         /// Bounded source diagnostic retained by the Java authority.
@@ -251,6 +260,7 @@ pub enum AuthorityFailure<'diagnostic> {
         cause: backend_frontend_java::legacy::ImageError,
     },
     /// The source-bound javac authority envelope failed before yielding facts.
+    #[cfg(feature = "paused-frontends")]
     #[error("Java source-bound authority image failed")]
     JavaBoundImage {
         /// Bounded source diagnostic retained by the javac authority.
@@ -260,6 +270,7 @@ pub enum AuthorityFailure<'diagnostic> {
         cause: backend_frontend_java::legacy::BoundImageError,
     },
     /// A source-bound javac image was generated for a different Java release.
+    #[cfg(feature = "paused-frontends")]
     #[error("Java authority image release differs from the requested profile")]
     JavaRelease {
         /// Bounded source diagnostic retained by the javac authority.
@@ -270,6 +281,7 @@ pub enum AuthorityFailure<'diagnostic> {
         observed: backend_frontend_java::legacy::JavaRelease,
     },
     /// A source-bound javac image was generated for source bytes other than this request.
+    #[cfg(feature = "paused-frontends")]
     #[error("Java authority image source binding differs from the compile request")]
     JavaSourceBinding {
         /// Bounded source diagnostic retained by the javac authority.
@@ -297,6 +309,7 @@ impl<'diagnostic> AuthorityFailure<'diagnostic> {
     #[must_use]
     pub fn projection(&self) -> AuthorityFailureProjection<'diagnostic> {
         match self {
+            #[cfg(feature = "paused-frontends")]
             Self::Clang { diagnostic, cause } => AuthorityFailureProjection {
                 phase: clang_phase(cause),
                 class: clang_class(cause),
@@ -339,31 +352,37 @@ impl<'diagnostic> AuthorityFailure<'diagnostic> {
                 class: AuthorityDiagnosticClass::Projection,
                 diagnostic: *diagnostic,
             },
+            #[cfg(feature = "paused-frontends")]
             Self::Go { diagnostic, cause } => AuthorityFailureProjection {
                 phase: go_phase(cause),
                 class: go_class(cause),
                 diagnostic: *diagnostic,
             },
+            #[cfg(feature = "paused-frontends")]
             Self::GoImage { diagnostic, cause } => AuthorityFailureProjection {
                 phase: go_image_phase(cause),
                 class: go_image_class(cause),
                 diagnostic: *diagnostic,
             },
+            #[cfg(feature = "paused-frontends")]
             Self::GoSourceBinding { diagnostic, .. } => AuthorityFailureProjection {
                 phase: AuthorityPhase::Project,
                 class: AuthorityDiagnosticClass::Projection,
                 diagnostic: *diagnostic,
             },
+            #[cfg(feature = "paused-frontends")]
             Self::CSharp { diagnostic, cause } => AuthorityFailureProjection {
                 phase: csharp_phase(cause),
                 class: csharp_class(cause),
                 diagnostic: *diagnostic,
             },
+            #[cfg(feature = "paused-frontends")]
             Self::CSharpImage { diagnostic, cause } => AuthorityFailureProjection {
                 phase: csharp_image_phase(cause),
                 class: csharp_image_class(cause),
                 diagnostic: *diagnostic,
             },
+            #[cfg(feature = "paused-frontends")]
             Self::CSharpSourceBinding { diagnostic, .. } | Self::CSharpSpan { diagnostic, .. } => {
                 AuthorityFailureProjection {
                     phase: AuthorityPhase::Project,
@@ -371,16 +390,19 @@ impl<'diagnostic> AuthorityFailure<'diagnostic> {
                     diagnostic: *diagnostic,
                 }
             }
+            #[cfg(feature = "paused-frontends")]
             Self::Java { diagnostic, cause } => AuthorityFailureProjection {
                 phase: java_phase(cause),
                 class: java_class(cause),
                 diagnostic: *diagnostic,
             },
+            #[cfg(feature = "paused-frontends")]
             Self::JavaBoundImage { diagnostic, cause } => AuthorityFailureProjection {
                 phase: java_bound_phase(cause),
                 class: java_bound_class(cause),
                 diagnostic: *diagnostic,
             },
+            #[cfg(feature = "paused-frontends")]
             Self::JavaRelease { diagnostic, .. } | Self::JavaSourceBinding { diagnostic, .. } => {
                 AuthorityFailureProjection {
                     phase: AuthorityPhase::Project,
@@ -401,42 +423,44 @@ impl<'diagnostic> AuthorityFailure<'diagnostic> {
         self,
         profile: LanguageProfile,
     ) -> Result<Self, AuthorityProfileMismatch<'diagnostic>> {
-        let accepted = matches!(
-            (&self, profile),
+        let accepted = match (&self, profile) {
+            (Self::Rust { .. }, LanguageProfile::Rust(_)) => true,
             (
-                Self::Clang { .. },
-                LanguageProfile::C(_) | LanguageProfile::Cxx(_)
-            ) | (Self::Rust { .. }, LanguageProfile::Rust(_))
-                | (
-                    Self::TypeScript { .. }
-                        | Self::TypeScriptTsz { .. }
-                        | Self::TypeScriptUtf8 { .. }
-                        | Self::TypeScriptSpan { .. },
-                    LanguageProfile::TypeScript(_)
-                )
-                | (
-                    Self::Python { .. } | Self::PythonChecker { .. } | Self::PythonSpan { .. },
-                    LanguageProfile::Python(_)
-                )
-                | (
-                    Self::Go { .. } | Self::GoImage { .. } | Self::GoSourceBinding { .. },
-                    LanguageProfile::Go(_)
-                )
-                | (
-                    Self::CSharp { .. }
-                        | Self::CSharpImage { .. }
-                        | Self::CSharpSourceBinding { .. }
-                        | Self::CSharpSpan { .. },
-                    LanguageProfile::CSharp(_)
-                )
-                | (
-                    Self::Java { .. }
-                        | Self::JavaBoundImage { .. }
-                        | Self::JavaRelease { .. }
-                        | Self::JavaSourceBinding { .. },
-                    LanguageProfile::Java(_)
-                )
-        );
+                Self::TypeScript { .. }
+                | Self::TypeScriptTsz { .. }
+                | Self::TypeScriptUtf8 { .. }
+                | Self::TypeScriptSpan { .. },
+                LanguageProfile::TypeScript(_),
+            ) => true,
+            (
+                Self::Python { .. } | Self::PythonChecker { .. } | Self::PythonSpan { .. },
+                LanguageProfile::Python(_),
+            ) => true,
+            #[cfg(feature = "paused-frontends")]
+            (Self::Clang { .. }, LanguageProfile::C(_) | LanguageProfile::Cxx(_)) => true,
+            #[cfg(feature = "paused-frontends")]
+            (
+                Self::Go { .. } | Self::GoImage { .. } | Self::GoSourceBinding { .. },
+                LanguageProfile::Go(_),
+            ) => true,
+            #[cfg(feature = "paused-frontends")]
+            (
+                Self::CSharp { .. }
+                | Self::CSharpImage { .. }
+                | Self::CSharpSourceBinding { .. }
+                | Self::CSharpSpan { .. },
+                LanguageProfile::CSharp(_),
+            ) => true,
+            #[cfg(feature = "paused-frontends")]
+            (
+                Self::Java { .. }
+                | Self::JavaBoundImage { .. }
+                | Self::JavaRelease { .. }
+                | Self::JavaSourceBinding { .. },
+                LanguageProfile::Java(_),
+            ) => true,
+            _ => false,
+        };
         if accepted {
             Ok(self)
         } else {
@@ -458,6 +482,7 @@ pub struct AuthorityProfileMismatch<'diagnostic> {
     pub failure: AuthorityFailure<'diagnostic>,
 }
 
+#[cfg(feature = "paused-frontends")]
 fn clang_phase(cause: &backend_frontend_clang::legacy::CollectError) -> AuthorityPhase {
     match cause {
         backend_frontend_clang::legacy::CollectError::Parse { .. }
@@ -481,6 +506,7 @@ fn clang_phase(cause: &backend_frontend_clang::legacy::CollectError) -> Authorit
     }
 }
 
+#[cfg(feature = "paused-frontends")]
 fn clang_class(cause: &backend_frontend_clang::legacy::CollectError) -> AuthorityDiagnosticClass {
     match clang_phase(cause) {
         AuthorityPhase::Parse => AuthorityDiagnosticClass::Syntax,
@@ -499,8 +525,12 @@ fn rust_phase(cause: &backend_frontend_rust::legacy::RustAuthorityError) -> Auth
         | backend_frontend_rust::legacy::RustAuthorityError::SourceNotLoaded { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::DetachedSource { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::AmbiguousSourceOwner { .. }
-        | backend_frontend_rust::legacy::RustAuthorityError::CargoTargetSourceRootMissing { .. }
-        | backend_frontend_rust::legacy::RustAuthorityError::CargoTargetSourceNotCaptured { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::CargoTargetSourceRootMissing {
+            ..
+        }
+        | backend_frontend_rust::legacy::RustAuthorityError::CargoTargetSourceNotCaptured {
+            ..
+        }
         | backend_frontend_rust::legacy::RustAuthorityError::EditionMismatch { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::MissingSemanticFact { .. } => {
             AuthorityPhase::Resolve
@@ -555,10 +585,12 @@ fn rust_class(
     match cause {
         backend_frontend_rust::legacy::RustAuthorityError::DetachedSource { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::AmbiguousSourceOwner { .. }
-        | backend_frontend_rust::legacy::RustAuthorityError::CargoTargetSourceRootMissing { .. }
-        | backend_frontend_rust::legacy::RustAuthorityError::CargoTargetSourceNotCaptured { .. } => {
-            AuthorityDiagnosticClass::SourceScope
+        | backend_frontend_rust::legacy::RustAuthorityError::CargoTargetSourceRootMissing {
+            ..
         }
+        | backend_frontend_rust::legacy::RustAuthorityError::CargoTargetSourceNotCaptured {
+            ..
+        } => AuthorityDiagnosticClass::SourceScope,
         _ => match rust_phase(cause) {
             AuthorityPhase::Resolve => AuthorityDiagnosticClass::Binding,
             AuthorityPhase::TypeCheck => AuthorityDiagnosticClass::Type,
@@ -625,12 +657,14 @@ fn python_class(
     }
 }
 
+#[cfg(feature = "paused-frontends")]
 pub(crate) fn go_authority_projection(
     cause: &backend_frontend_go::legacy::OracleError,
 ) -> (AuthorityPhase, AuthorityDiagnosticClass) {
     (go_phase(cause), go_class(cause))
 }
 
+#[cfg(feature = "paused-frontends")]
 fn go_phase(cause: &backend_frontend_go::legacy::OracleError) -> AuthorityPhase {
     match cause {
         backend_frontend_go::legacy::OracleError::Decode { .. } => AuthorityPhase::Parse,
@@ -664,6 +698,7 @@ fn go_phase(cause: &backend_frontend_go::legacy::OracleError) -> AuthorityPhase 
     }
 }
 
+#[cfg(feature = "paused-frontends")]
 fn go_class(cause: &backend_frontend_go::legacy::OracleError) -> AuthorityDiagnosticClass {
     match go_phase(cause) {
         AuthorityPhase::Parse => AuthorityDiagnosticClass::Syntax,
@@ -674,6 +709,7 @@ fn go_class(cause: &backend_frontend_go::legacy::OracleError) -> AuthorityDiagno
     }
 }
 
+#[cfg(feature = "paused-frontends")]
 fn go_image_phase(cause: &backend_frontend_go::legacy::ImageError) -> AuthorityPhase {
     match cause {
         backend_frontend_go::legacy::ImageError::Header(_)
@@ -682,6 +718,7 @@ fn go_image_phase(cause: &backend_frontend_go::legacy::ImageError) -> AuthorityP
     }
 }
 
+#[cfg(feature = "paused-frontends")]
 fn go_image_class(cause: &backend_frontend_go::legacy::ImageError) -> AuthorityDiagnosticClass {
     match go_image_phase(cause) {
         AuthorityPhase::Parse => AuthorityDiagnosticClass::Syntax,
@@ -692,14 +729,17 @@ fn go_image_class(cause: &backend_frontend_go::legacy::ImageError) -> AuthorityD
     }
 }
 
+#[cfg(feature = "paused-frontends")]
 fn csharp_phase(_cause: &backend_frontend_csharp::legacy::DecodeError) -> AuthorityPhase {
     AuthorityPhase::Parse
 }
 
+#[cfg(feature = "paused-frontends")]
 fn csharp_class(_cause: &backend_frontend_csharp::legacy::DecodeError) -> AuthorityDiagnosticClass {
     AuthorityDiagnosticClass::Syntax
 }
 
+#[cfg(feature = "paused-frontends")]
 fn csharp_image_phase(cause: &backend_frontend_csharp::legacy::ImageError) -> AuthorityPhase {
     match cause {
         backend_frontend_csharp::legacy::ImageError::Header(_)
@@ -715,6 +755,7 @@ fn csharp_image_phase(cause: &backend_frontend_csharp::legacy::ImageError) -> Au
     }
 }
 
+#[cfg(feature = "paused-frontends")]
 fn csharp_image_class(
     cause: &backend_frontend_csharp::legacy::ImageError,
 ) -> AuthorityDiagnosticClass {
@@ -727,6 +768,7 @@ fn csharp_image_class(
     }
 }
 
+#[cfg(feature = "paused-frontends")]
 fn java_phase(cause: &backend_frontend_java::legacy::ImageError) -> AuthorityPhase {
     match cause {
         backend_frontend_java::legacy::ImageError::Header(_)
@@ -745,6 +787,7 @@ fn java_phase(cause: &backend_frontend_java::legacy::ImageError) -> AuthorityPha
     }
 }
 
+#[cfg(feature = "paused-frontends")]
 fn java_class(cause: &backend_frontend_java::legacy::ImageError) -> AuthorityDiagnosticClass {
     match java_phase(cause) {
         AuthorityPhase::Parse => AuthorityDiagnosticClass::Syntax,
@@ -755,6 +798,7 @@ fn java_class(cause: &backend_frontend_java::legacy::ImageError) -> AuthorityDia
     }
 }
 
+#[cfg(feature = "paused-frontends")]
 fn java_bound_phase(cause: &backend_frontend_java::legacy::BoundImageError) -> AuthorityPhase {
     match cause {
         backend_frontend_java::legacy::BoundImageError::Header(_)
@@ -763,6 +807,7 @@ fn java_bound_phase(cause: &backend_frontend_java::legacy::BoundImageError) -> A
     }
 }
 
+#[cfg(feature = "paused-frontends")]
 fn java_bound_class(
     cause: &backend_frontend_java::legacy::BoundImageError,
 ) -> AuthorityDiagnosticClass {
@@ -775,7 +820,7 @@ fn java_bound_class(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "paused-frontends"))]
 mod go_authority_projection_tests {
     use super::{AuthorityDiagnosticClass, AuthorityPhase, go_authority_projection};
     use backend_frontend_go::legacy::OracleError;

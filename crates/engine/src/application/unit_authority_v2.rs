@@ -13,6 +13,7 @@ use crate::compiler_input_tree_v2::{
     CompilerInputMerkleTreeV2, CompilerInputTreeKindV2, CompilerInputTreeRecordV2,
     CompilerWorkspaceFileRoleV2,
 };
+#[cfg(feature = "paused-frontends")]
 use backend_frontend_go::legacy::{GoOracleInvocationModeV1, GoOracleInvocationOptionsV1};
 use backend_frontend_python::legacy::PyreflyInvocationOptionsV1;
 use backend_semantic::vocabulary::{Language, LanguageProfile, Stage};
@@ -700,6 +701,7 @@ impl PortableOptionSnapshotV2 {
     /// # Errors
     /// Returns UnsupportedClosure(GoOracleBinary) for a separately installed
     /// oracle binary.
+    #[cfg(feature = "paused-frontends")]
     pub fn from_go_oracle_options(
         options: GoOracleInvocationOptionsV1,
     ) -> Result<Self, UnitAuthorityV2Error> {
@@ -1512,6 +1514,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn go_oracle_binary_is_a_typed_unsupported_closure() {
         use backend_frontend_go::legacy::{GoOracle, GoOracleConfiguration};
 

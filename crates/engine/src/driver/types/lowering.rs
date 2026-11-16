@@ -6,6 +6,7 @@
 //! never by borrow. Name bytes stay inspectable at the collector boundary
 //! that produced them.
 
+#[cfg(feature = "paused-frontends")]
 use backend_frontend_clang::legacy::{
     DeclarationId as ClangDeclarationId, SourceSpan as ClangSourceSpan, SymbolIdentity,
     TypeId as ClangTypeId, TypeKind as ClangTypeKind, TypeQualifiers as ClangTypeQualifiers,
@@ -334,6 +335,7 @@ pub struct FactRejection {
 /// These are authority coordinates, not compact emission coordinates: the
 /// driver reports precisely what libclang supplied rather than restating a
 /// rejected native fact as an unsupported language declaration.
+#[cfg(feature = "paused-frontends")]
 #[derive(Debug)]
 pub enum ClangProjectionFault {
     /// An authority source span escaped the entered source lease.

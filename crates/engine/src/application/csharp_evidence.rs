@@ -1,5 +1,3 @@
-#![cfg(feature = "paused-frontends")]
-
 //! Strict claim-only replay of a staged C# invocation aggregate.
 //! Decoding never selects a compiler publication, a source row, or an image.
 
@@ -7,6 +5,7 @@ use backend_semantic::vocabulary::LanguageProfile;
 use backend_version::{ContentId, SourceFactDomain};
 use sha2::{Digest, Sha256};
 
+#[cfg(feature = "paused-frontends")]
 use super::compiler::csharp_config_probe_paths;
 use crate::compiler_input_manifest_v2::CompilationUnitKeyV2;
 
@@ -47,6 +46,12 @@ pub struct CSharpEvidenceClaim<'a> {
     /// the sources that compiled but every invocation lists all members; the caller
     /// must join the members to the selected sources and the unit's coverage gaps.
     pub members: Vec<CSharpEvidenceMember>,
+}
+
+/// C# evidence cannot be admitted while its frontend is paused.
+#[cfg(not(feature = "paused-frontends"))]
+pub fn decode_csharp_evidence(_bytes: &[u8]) -> Option<CSharpEvidenceClaim<'_>> {
+    None
 }
 
 #[derive(serde::Deserialize)]
@@ -139,6 +144,7 @@ where
 /// Correlates a helper's same-invocation reference claims with the private
 /// assembly bytes captured for the compilation. This is not toolchain or
 /// process authentication, and cannot by itself admit a selected unit.
+#[cfg(feature = "paused-frontends")]
 pub(super) fn references_match_snapshot(
     bytes: &[u8],
     expected: &[backend_frontend_csharp::legacy::CSharpTargetingReference],
@@ -188,6 +194,7 @@ impl<'a> Frames<'a> {
 /// Strictly decodes bounded CSE1 framing and cross-checks source/config sidecars.
 /// Caller must still authenticate compiler attempt, image membership, selected
 /// publication, toolchain/helper, current M0 source, and invocation provenance.
+#[cfg(feature = "paused-frontends")]
 pub fn decode_csharp_evidence(bytes: &[u8]) -> Option<CSharpEvidenceClaim<'_>> {
     if bytes.len() > backend_semantic::ir::MAX_CSHARP_INVOCATION_EVIDENCE_BYTES {
         return None;
@@ -453,7 +460,7 @@ fn hex_sha(bytes: &[u8; 32]) -> String {
     output
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "paused-frontends"))]
 mod tests {
     use super::*;
     use backend_semantic::vocabulary::CSharpVersion;

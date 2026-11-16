@@ -7,10 +7,15 @@ use std::{
 };
 
 use arrayvec::ArrayVec;
+#[cfg(feature = "paused-frontends")]
 use backend_frontend_clang::ClangAuthorityEnvironment;
+#[cfg(feature = "paused-frontends")]
 use backend_frontend_csharp::legacy::{CSharpOracle, DEFAULT_SOURCE_LIMIT};
+#[cfg(feature = "paused-frontends")]
 use backend_frontend_go::legacy::GoOracleConfiguration;
+#[cfg(feature = "paused-frontends")]
 use backend_frontend_go::legacy::oracle::GoOracleConfigurationError;
+#[cfg(feature = "paused-frontends")]
 use backend_frontend_java::legacy::harness::JdkToolchain;
 use backend_frontend_python::legacy::Pyrefly;
 use backend_frontend_rust::legacy::{RustToolchain, SourceByteLimit};
@@ -28,12 +33,14 @@ use crate::application::toolchain_probe::{
 };
 use crate::application::typescript_host::{TypeScriptProjectHost, is_module_tsc_script};
 use crate::application::{
-    DeferredGoAuthority, DeferredRustToolchain, LocalRuntimeCSharpAuthority,
-    LocalRuntimeGoAuthorityFailure, LocalRuntimeJavaAuthority, LocalRuntimePackageAuthority,
+    DeferredRustToolchain, LocalRuntimeGoAuthorityFailure, LocalRuntimePackageAuthority,
     LocalRuntimePackageRoot, LocalRuntimePythonCheckerAdmission,
     LocalRuntimePythonCheckerProbeFailure, LocalRuntimeRustAuthority,
     LocalRuntimeRustToolchainSelection, LocalRuntimeToolchain, PyreflyToolchainIdentity,
 };
+
+#[cfg(feature = "paused-frontends")]
+use crate::application::{DeferredGoAuthority, LocalRuntimeCSharpAuthority, LocalRuntimeJavaAuthority};
 
 impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
     pub(super) fn package_roots(
@@ -60,6 +67,8 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 LocalHostVariable::NudoxGenericRoot,
             ),
         ] {
+            #[cfg(not(feature = "paused-frontends"))]
+            if matches!(ecosystem, PackageEcosystem::Golang | PackageEcosystem::Maven | PackageEcosystem::Nuget) { continue; }
             let selected = if ecosystem == PackageEcosystem::Golang {
                 self.go_module_cache_directory(home, true)
             } else {
@@ -73,7 +82,10 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 Ok(Some(path)) => roots.push(LocalRuntimePackageRoot::new(ecosystem, path)?),
                 Ok(None) => {}
                 Err(error) if ecosystem == PackageEcosystem::Golang => {
-                    go_failure = Some(go_authority_failure(&error));
+                    #[cfg(feature = "paused-frontends")]
+                    { go_failure = Some(go_authority_failure(&error)); }
+                    #[cfg(not(feature = "paused-frontends"))]
+                    { return Err(error); }
                 }
                 Err(error) => return Err(error),
             }
@@ -92,8 +104,10 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         probe_limits: ToolchainProbeLimits,
         go_discovery_failure: Option<LocalRuntimeGoAuthorityFailure>,
     ) -> Result<(LocalRuntimePackageAuthority, TypeScriptProjectHost), LocalCompilerHostError> {
+        #[cfg(feature = "paused-frontends")]
         let libclang =
             self.file_or_directory(LocalHostVariable::LibclangPath, LocalHostPathRole::Libclang)?;
+        #[cfg(feature = "paused-frontends")]
         let clang = match (executables.clang.as_deref(), libclang.as_deref()) {
             (Some(driver), Some(libclang)) => {
                 Some(ClangAuthorityEnvironment::probe(driver, libclang)?)
@@ -220,6 +234,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             }
             _ => None,
         };
+        #[cfg(feature = "paused-frontends")]
         let (deferred_go, go_unavailable) = match (executables.go.as_deref(), go_discovery_failure)
         {
             (Some(go), None) => {
@@ -254,6 +269,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             (Some(_), Some(failure)) => (None, Some(failure)),
             (None, failure) => (None, failure),
         };
+        #[cfg(feature = "paused-frontends")]
         let java = match (executables.java.as_ref(), jdk_root) {
             (Some(_), Some(root)) => Some(LocalRuntimeJavaAuthority {
                 toolchain: JdkToolchain::from_owned_root(root)?,
@@ -261,11 +277,13 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             }),
             _ => None,
         };
+        #[cfg(feature = "paused-frontends")]
         let roslyn_helper = self.executable(
             LocalHostVariable::NudoxRoslynHelper,
             LocalHostPathRole::RoslynHelper,
             ArrayVec::new(),
         )?;
+        #[cfg(feature = "paused-frontends")]
         let csharp = match (executables.csharp.as_ref(), roslyn_helper) {
             (Some(_), Some(helper)) => Some(LocalRuntimeCSharpAuthority {
                 producer: CSharpOracle::new(helper),
@@ -282,6 +300,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         };
         Ok((
             LocalRuntimePackageAuthority {
+                #[cfg(feature = "paused-frontends")]
                 clang,
                 typescript,
                 python_checker,
@@ -290,10 +309,15 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 )),
                 deferred_native_python,
                 rust,
+                #[cfg(feature = "paused-frontends")]
                 go: None,
+                #[cfg(feature = "paused-frontends")]
                 deferred_go,
+                #[cfg(feature = "paused-frontends")]
                 go_unavailable,
+                #[cfg(feature = "paused-frontends")]
                 csharp,
+                #[cfg(feature = "paused-frontends")]
                 java,
                 maximum_image_bytes: Some(nonzero(AUTHORITY_IMAGE_BYTES)),
             },
@@ -370,6 +394,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         })
     }
 
+    #[cfg(feature = "paused-frontends")]
     fn go_root(
         &self,
         go: &Path,
@@ -398,6 +423,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
     }
 }
 
+#[cfg(feature = "paused-frontends")]
 pub(crate) fn go_authority_failure(
     error: &LocalCompilerHostError,
 ) -> LocalRuntimeGoAuthorityFailure {
@@ -449,6 +475,7 @@ pub(crate) fn go_authority_failure(
 
 /// An installed package cache is optional: the vendored oracle itself needs no downloads.
 /// Project dependencies remain subject to the normal captured input admission policy.
+#[cfg(feature = "paused-frontends")]
 fn selected_go_module_cache(
     selected: Option<&Path>,
     native_work_directory: &Path,
@@ -658,7 +685,7 @@ impl NativeExecutables {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "paused-frontends"))]
 mod invocation_selection_tests {
     use super::{NativeExecutables, selected_go_module_cache};
     use crate::application::{

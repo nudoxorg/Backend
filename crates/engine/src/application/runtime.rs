@@ -32,11 +32,15 @@ use crate::driver::{
 use crate::publication::{binding::CompilationBindingFacts, manifest::CompilationManifestFacts};
 use arrayvec::ArrayVec;
 use backend_compile::{EmbeddingCacheSession, EmbeddingExecutable};
+#[cfg(feature = "paused-frontends")]
 use backend_frontend_csharp::legacy::{CSharpAuthorityConfiguration, CSharpOracle};
+#[cfg(feature = "paused-frontends")]
 use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
+#[cfg(feature = "paused-frontends")]
 use backend_frontend_go::legacy::{
     ConfiguredGoOracle, GoOracleControl, GoOracleInvocationModeV1, OracleError,
 };
+#[cfg(feature = "paused-frontends")]
 use backend_frontend_java::legacy::harness::JdkToolchain;
 use backend_frontend_python::legacy::Pyrefly;
 use backend_frontend_python::legacy::checker::NativePythonProjectAuthority;
@@ -59,8 +63,10 @@ use backend_version::{
 };
 use thiserror::Error;
 
+#[cfg(feature = "paused-frontends")]
 #[path = "runtime/deferred_go.rs"]
 mod deferred_go;
+#[cfg(feature = "paused-frontends")]
 pub use deferred_go::DeferredGoAuthority;
 
 const COMPILER_LANE_COUNT: usize = 2;
@@ -122,8 +128,7 @@ use crate::application::toolchain_probe::{
 };
 use crate::application::typescript_host::TypeScriptProjectHost;
 use crate::application::{
-    ActivatedSemanticPackage, CSharpPackageAuthorityConfiguration,
-    JavaPackageAuthorityConfiguration, LocalCompiler, LocalCompilerConfig, LocalCompilerControl,
+    ActivatedSemanticPackage, LocalCompiler, LocalCompilerConfig, LocalCompilerControl,
     LocalCompilerOpenError, LocalCompilerPath, LocalCompilerScratch, LocalCompilerScratchError,
     LocalCompilerTimeout, LocalPackageRoot, LocalPackageRootError, LocalPackageRootSet,
     LocalPackageRootSetError, LocalToolchainSet, LocalToolchainSetError, MAX_LOCAL_PACKAGE_ROOTS,
@@ -131,6 +136,8 @@ use crate::application::{
     PackageSemanticError, PackageSource, PackageSourceSet, PackageSourceSetError,
     PublishedSemanticPackage, RustPackageAuthorityConfiguration, StagedSemanticArtifact,
 };
+#[cfg(feature = "paused-frontends")]
+use crate::application::{CSharpPackageAuthorityConfiguration, JavaPackageAuthorityConfiguration};
 use crate::compiler_input_manifest_v2::{CompilationUnitKeyV2, CompilerPackageTargetV2};
 use crate::publication::StagedSemanticObjectClaim;
 
@@ -1685,6 +1692,7 @@ impl LocalCompilerCapabilities {
                 {
                     LocalCompilerCapabilityState::Deferred
                 }
+                #[cfg(feature = "paused-frontends")]
                 None if profile.language() == Language::Go
                     && configuration
                         .package_authority
@@ -1898,9 +1906,11 @@ fn package_authority_fingerprint(
             }
             _ => return None,
         },
+        #[cfg(feature = "paused-frontends")]
         Language::Go => {
             identity.update(&authority.admitted_go()?.local_configuration_fingerprint());
         }
+        #[cfg(feature = "paused-frontends")]
         Language::Java => {
             let java = authority.java.as_ref()?;
             identity.update(
@@ -1913,6 +1923,7 @@ fn package_authority_fingerprint(
                 update_path_identity(&mut identity, path);
             }
         }
+        #[cfg(feature = "paused-frontends")]
         Language::CSharp => {
             let csharp = authority.csharp.as_ref()?;
             identity.update(
@@ -1939,6 +1950,7 @@ fn package_authority_fingerprint(
             ]);
             identity.update(&(csharp.maximum_source_bytes as u64).to_be_bytes());
         }
+        #[cfg(feature = "paused-frontends")]
         Language::Clang => {
             let clang = authority.clang.as_ref()?;
             let driver = runtime?.executable_path()?;
@@ -1954,6 +1966,8 @@ fn package_authority_fingerprint(
                 clang.system_include_dirs().iter().map(PathBuf::as_path),
             ));
         }
+        #[cfg(not(feature = "paused-frontends"))]
+        Language::Go | Language::Java | Language::CSharp | Language::Clang => return None,
     }
     match authority.maximum_image_bytes {
         Some(bound) => {
@@ -2051,6 +2065,7 @@ fn compiler_environment_identity_for_projection(
     let mut environment = blake3::Hasher::new();
     environment.update(b"compiler-application.execution-environment.v3\0");
     environment.update(&<[u8; 2]>::from(profile));
+    #[cfg(feature = "paused-frontends")]
     if matches!(profile, LanguageProfile::CSharp(_)) {
         environment.update(backend_frontend_csharp::legacy::CSHARP_GLOBALIZATION_POLICY_ID.as_bytes());
     }
@@ -2083,6 +2098,7 @@ fn capability_setup_issue(
     runtime: Option<&LocalRuntimeToolchain>,
     authority: &LocalRuntimePackageAuthority,
 ) -> Option<CompilerToolIssue> {
+    #[cfg(feature = "paused-frontends")]
     if profile.language() == Language::Go && authority.go_failure().is_some() {
         return Some(CompilerToolIssue {
             requirement: CompilerToolRequirement::Native(NativeTool::GoCompiler),
@@ -2164,6 +2180,7 @@ fn portable_invocation_options_digest(
             ]);
             update_string_list_identity(&mut options, &rust.features);
         }
+        #[cfg(feature = "paused-frontends")]
         Language::CSharp => {
             let csharp = authority.csharp.as_ref()?;
             // The reference tree is a semantic input but has no portable content identity in the
@@ -2182,6 +2199,7 @@ fn portable_invocation_options_digest(
                 u8::from(csharp.include_non_public),
             ]);
         }
+        #[cfg(feature = "paused-frontends")]
         Language::Clang => {
             // clang-sys 1.9.1 cannot prove that its in-process runtime loader
             // opened this configured path. Keep C-family execution local until
@@ -2216,6 +2234,7 @@ fn portable_invocation_options_digest(
                 adapter.portable_invocation_options().arguments(),
             );
         }
+        #[cfg(feature = "paused-frontends")]
         Language::Go => {
             let oracle = authority.admitted_go()?;
             if oracle.portable_invocation_options().mode() != GoOracleInvocationModeV1::GoToolchain
@@ -2228,6 +2247,7 @@ fn portable_invocation_options_digest(
             options.update(b"go-vendored-oracle-v1\0");
             options.update(portable.helper_source_identity()?.as_ref());
         }
+        #[cfg(feature = "paused-frontends")]
         Language::Java => {
             let java = authority.java.as_ref()?;
             if !java.classpath.is_empty() {
@@ -2242,6 +2262,8 @@ fn portable_invocation_options_digest(
             }
             options.update(b"java-jdk-empty-classpath-v1\0");
         }
+        #[cfg(not(feature = "paused-frontends"))]
+        Language::Go | Language::Java | Language::CSharp | Language::Clang => return None,
     }
     Some(*options.finalize().as_bytes())
 }
@@ -3317,6 +3339,7 @@ pub struct LocalRuntimeRustAuthority {
 }
 
 /// Owned Java authority configuration retained for the worker lifetime.
+#[cfg(feature = "paused-frontends")]
 #[derive(Debug)]
 pub struct LocalRuntimeJavaAuthority {
     /// Exact owned JDK authority.
@@ -3344,6 +3367,7 @@ impl PyreflyToolchainIdentity {
 }
 
 /// Owned Roslyn helper policy retained for the compiler worker lifetime.
+#[cfg(feature = "paused-frontends")]
 #[derive(Debug)]
 pub struct LocalRuntimeCSharpAuthority {
     /// Producer bound to the exact published helper assembly.
@@ -3371,6 +3395,7 @@ pub struct LocalRuntimeCSharpAuthority {
 pub struct LocalRuntimePackageAuthority {
     /// Explicit Clang driver, resource/sysroot, and selected libclang paths.
     /// Missing or unverified native-library selection withholds C-family authority.
+    #[cfg(feature = "paused-frontends")]
     pub clang: Option<backend_frontend_clang::ClangAuthorityEnvironment>,
     /// TypeScript checker authority.
     pub typescript: Option<ExplicitTypeScriptChecker>,
@@ -3384,26 +3409,33 @@ pub struct LocalRuntimePackageAuthority {
     /// Rust Analyzer/Cargo authority.
     pub rust: Option<LocalRuntimeRustAuthority>,
     /// Go package oracle authority.
+    #[cfg(feature = "paused-frontends")]
     pub go: Option<ConfiguredGoOracle>,
     /// Frozen owner-shared Go selection, admitted by the first Go requester.
+    #[cfg(feature = "paused-frontends")]
     pub deferred_go: Option<Arc<DeferredGoAuthority>>,
     /// Retained Go-only admission failure; it never prevents unrelated owners from starting.
+    #[cfg(feature = "paused-frontends")]
     pub go_unavailable: Option<LocalRuntimeGoAuthorityFailure>,
     /// C# Roslyn helper authority.
+    #[cfg(feature = "paused-frontends")]
     pub csharp: Option<LocalRuntimeCSharpAuthority>,
     /// Java JDK/doclet authority.
+    #[cfg(feature = "paused-frontends")]
     pub java: Option<LocalRuntimeJavaAuthority>,
     /// Exact maximum retained Go or Java authority image bytes.
     pub maximum_image_bytes: Option<NonZeroUsize>,
 }
 
 impl LocalRuntimePackageAuthority {
+    #[cfg(feature = "paused-frontends")]
     fn admitted_go(&self) -> Option<&ConfiguredGoOracle> {
         self.go
             .as_ref()
             .or_else(|| self.deferred_go.as_ref().and_then(|go| go.admitted()))
     }
 
+    #[cfg(feature = "paused-frontends")]
     fn go_failure(&self) -> Option<LocalRuntimeGoAuthorityFailure> {
         self.go_unavailable
             .or_else(|| self.deferred_go.as_ref().and_then(|go| go.failure()))
@@ -3597,6 +3629,7 @@ impl LocalCompilerRuntimeConfiguration {
         {
             return Err(LocalCompilerRuntimeConfigurationError::NativePythonAdmissionPair);
         }
+        #[cfg(feature = "paused-frontends")]
         if let Some(go) = &package_authority.deferred_go
             && (package_authority.go.is_some()
                 || package_authority.go_unavailable.is_some()
@@ -3986,7 +4019,9 @@ impl LocalCompilerClient {
             &configuration,
         )));
         let typescript_empty_host = configuration.typescript_project_host.clone();
+        #[cfg(feature = "paused-frontends")]
         let go_authority = configuration.package_authority.go.clone();
+        #[cfg(feature = "paused-frontends")]
         let deferred_go = configuration.package_authority.deferred_go.clone();
         let native_python = configuration
             .package_authority
@@ -4036,8 +4071,10 @@ impl LocalCompilerClient {
                         input_witnesses,
                         python_snapshots: Mutex::new(PythonSnapshotCache::default()),
                         typescript_snapshot: Mutex::new(TypeScriptSnapshotCache::default()),
+                        #[cfg(feature = "paused-frontends")]
                         go_authority,
                         typescript_empty_host,
+                        #[cfg(feature = "paused-frontends")]
                         deferred_go,
                         native_python,
                         python_interpreter,
@@ -4180,6 +4217,7 @@ impl LocalCompilerClient {
         let facts = request.facts();
         let mut lease = RequestLease::acquire(&self.shared, self.client_id, facts)?;
         let admission_deadline = self.wait_for_toolchain(facts, &lease.cancelled)?;
+        #[cfg(feature = "paused-frontends")]
         if facts.language == Language::Go
             && let Some(deferred) = &self.shared.deferred_go
         {
@@ -4262,15 +4300,23 @@ impl LocalCompilerClient {
         facts: RequestFacts,
         cancelled: &AtomicBool,
     ) -> Result<Option<Instant>, CompilerTerminal> {
+        #[cfg(not(feature = "paused-frontends"))]
+        if matches!(facts.language, Language::Clang | Language::CSharp | Language::Go | Language::Java) {
+            return Err(CompilerTerminal::Unavailable { language: facts.language, stage: facts.stage });
+        }
         const PROBE_WAIT: Duration = Duration::from_secs(6);
         const SIGNAL_WAIT: Duration = Duration::from_millis(25);
         let native_python = (facts.language == Language::Python)
             .then_some(self.shared.native_python.as_ref())
             .flatten();
+        #[cfg(feature = "paused-frontends")]
         let deferred_go = (facts.language == Language::Go)
             .then_some(self.shared.deferred_go.as_ref())
             .flatten();
+        #[cfg(feature = "paused-frontends")]
         let request_admission = native_python.is_some() || deferred_go.is_some();
+        #[cfg(not(feature = "paused-frontends"))]
+        let request_admission = native_python.is_some();
         let deadline = Instant::now()
             .checked_add(if request_admission {
                 *self.shared.native_python_timeout
@@ -4313,6 +4359,7 @@ impl LocalCompilerClient {
                 )
                 .map_err(|cause| facts.terminal(cause))?;
         }
+        #[cfg(feature = "paused-frontends")]
         if deferred_go.is_some() {
             let probe_deadline = deadline.min(Instant::now() + PROBE_WAIT);
             while self.capabilities().for_profile(facts.profile).state()
@@ -4330,6 +4377,7 @@ impl LocalCompilerClient {
                 thread::sleep(SIGNAL_WAIT);
             }
         }
+        #[cfg(feature = "paused-frontends")]
         if let Some(deferred) = deferred_go.filter(|_| {
             !matches!(
                 self.capabilities().for_profile(facts.profile).state(),
@@ -4366,7 +4414,10 @@ impl LocalCompilerClient {
             if !matches!(state, LocalCompilerCapabilityState::Probing)
                 && !(request_admission && state == LocalCompilerCapabilityState::Deferred)
             {
+                #[cfg(feature = "paused-frontends")]
                 return Ok(deferred_go.map(|_| deadline));
+                #[cfg(not(feature = "paused-frontends"))]
+                return Ok(None);
             }
             if !self.shared.alive.load(Ordering::Acquire) {
                 debug_compiler_owner(0, "request-owner-dead", "operation=wait-toolchain");
@@ -4457,6 +4508,7 @@ impl LocalCompilerClient {
         request.go_compile_deadline = self
             .wait_for_toolchain(facts, &lease.cancelled)
             .map_err(PackageSemanticRuntimeError::Runtime)?;
+        #[cfg(feature = "paused-frontends")]
         let go_authority_witness =
             self.capture_go_authority_witness(&mut request, &lease.cancelled)?;
         let (response, returned) = sync_channel(1);
@@ -4468,6 +4520,7 @@ impl LocalCompilerClient {
         })?;
         match sender.try_send(RuntimeCommand::CompilePackageSources {
             request,
+            #[cfg(feature = "paused-frontends")]
             go_authority_witness,
             response,
             cancelled: Arc::clone(&lease.cancelled),
@@ -4534,6 +4587,7 @@ impl LocalCompilerClient {
         request.go_compile_deadline = self
             .wait_for_toolchain(facts, &lease.cancelled)
             .map_err(PackageSemanticRuntimeError::Runtime)?;
+        #[cfg(feature = "paused-frontends")]
         let go_authority_witness =
             self.capture_go_authority_witness(&mut request, &lease.cancelled)?;
         let (response, returned) = sync_channel(1);
@@ -4545,6 +4599,7 @@ impl LocalCompilerClient {
         })?;
         match sender.try_send(RuntimeCommand::CompilePackageSourcesStaged {
             request,
+            #[cfg(feature = "paused-frontends")]
             go_authority_witness,
             response,
             cancelled: Arc::clone(&lease.cancelled),
@@ -4578,6 +4633,7 @@ impl LocalCompilerClient {
 
     // Dependency listing belongs to the requesting index worker, so a slow Go
     // child cannot block the compiler owner's status, cancellation, or peers.
+    #[cfg(feature = "paused-frontends")]
     fn capture_go_authority_witness(
         &self,
         request: &mut OwnedPackageSourceSet,
@@ -4779,8 +4835,10 @@ struct RuntimeShared {
     input_witnesses: Arc<CompilerInputWitnessStore>,
     python_snapshots: Mutex<PythonSnapshotCache>,
     typescript_snapshot: Mutex<TypeScriptSnapshotCache>,
+    #[cfg(feature = "paused-frontends")]
     go_authority: Option<ConfiguredGoOracle>,
     typescript_empty_host: Option<TypeScriptProjectHost>,
+    #[cfg(feature = "paused-frontends")]
     deferred_go: Option<Arc<DeferredGoAuthority>>,
     native_python: Option<Arc<DeferredNativePython>>,
     python_interpreter: Option<Arc<super::host::PythonInterpreterHostAdmission>>,
@@ -5023,6 +5081,7 @@ mod rust_target_selector_admission_tests {
     /// to a private .NET host and the helper built from the tested source.
     #[test]
     #[ignore = "requires explicitly configured private .NET and Roslyn helper"]
+    #[cfg(feature = "paused-frontends")]
     fn captured_csharp_queue_stages_same_attempt_evidence() {
         use backend_semantic::vocabulary::{CSharpVersion, NativeTool};
         use std::num::NonZeroUsize;
@@ -5205,6 +5264,7 @@ mod rust_target_selector_admission_tests {
     /// complete-project fixture above.
     #[test]
     #[ignore = "requires explicitly configured private .NET and Roslyn helper"]
+    #[cfg(feature = "paused-frontends")]
     fn captured_csharp_partial_project_claims_only_the_files_that_compiled() {
         use backend_semantic::vocabulary::{CSharpVersion, NativeTool};
         use std::num::NonZeroUsize;
@@ -5522,12 +5582,14 @@ enum RuntimeCommand {
     },
     CompilePackageSources {
         request: OwnedPackageSourceSet,
+        #[cfg(feature = "paused-frontends")]
         go_authority_witness: Option<GoPackageAuthorityWitness>,
         response: SyncSender<Result<PublishedSemanticPackage, PackageSemanticRuntimeError>>,
         cancelled: Arc<AtomicBool>,
     },
     CompilePackageSourcesStaged {
         request: OwnedPackageSourceSet,
+        #[cfg(feature = "paused-frontends")]
         go_authority_witness: Option<GoPackageAuthorityWitness>,
         response: SyncSender<Result<StagedSemanticPackage, PackageSemanticRuntimeError>>,
         cancelled: Arc<AtomicBool>,
@@ -5568,6 +5630,7 @@ enum LaneJob {
         request: OwnedPackageSourceSet,
         response: PackageCompileResponse,
         cancelled: Arc<AtomicBool>,
+        #[cfg(feature = "paused-frontends")]
         go_authority_witness: Option<GoPackageAuthorityWitness>,
         execution_identity: Option<LocalCompilerExecutionIdentity>,
         plane_execution_seed: Option<LocalCompilerPlaneExecutionSeed>,
@@ -5803,12 +5866,14 @@ fn run_worker_generation(
             .map(AsRef::as_ref)
             .collect::<Vec<&str>>()
     });
+    #[cfg(feature = "paused-frontends")]
     let java_classpath_storage = configuration.package_authority.java.as_ref().map(|java| {
         java.classpath
             .iter()
             .map(AsRef::as_ref)
             .collect::<Vec<&Path>>()
     });
+    #[cfg(feature = "paused-frontends")]
     let csharp_reference_storage = configuration
         .package_authority
         .csharp
@@ -5817,6 +5882,7 @@ fn run_worker_generation(
             csharp.additional_reference_directories.iter()
                 .map(AsRef::as_ref).collect::<Vec<&Path>>()
         });
+    #[cfg(feature = "paused-frontends")]
     let csharp_define_storage = configuration
         .package_authority
         .csharp
@@ -5828,6 +5894,7 @@ fn run_worker_generation(
                 .map(AsRef::as_ref)
                 .collect::<Vec<&str>>()
         });
+    #[cfg(feature = "paused-frontends")]
     let csharp_using_storage = configuration
         .package_authority
         .csharp
@@ -5851,12 +5918,14 @@ fn run_worker_generation(
             },
         }
     });
+    #[cfg(feature = "paused-frontends")]
     let java = configuration.package_authority.java.as_ref().map(|java| {
         JavaPackageAuthorityConfiguration {
             toolchain: &java.toolchain,
             classpath: java_classpath_storage.as_deref().unwrap_or_default(),
         }
     });
+    #[cfg(feature = "paused-frontends")]
     let csharp = configuration
         .package_authority
         .csharp
@@ -5885,14 +5954,19 @@ fn run_worker_generation(
             resolved_reference_snapshot: None,
         });
     let authority = PackageAuthorityConfiguration {
+        #[cfg(feature = "paused-frontends")]
         clang: configuration.package_authority.clang.as_ref(),
         typescript: configuration.package_authority.typescript.as_ref(),
         typescript_project_host: configuration.typescript_project_host.as_ref(),
         python_checker: configuration.package_authority.admitted_python_checker(),
         rust,
+        #[cfg(feature = "paused-frontends")]
         go: configuration.package_authority.admitted_go(),
+        #[cfg(feature = "paused-frontends")]
         go_unavailable: configuration.package_authority.go_failure(),
+        #[cfg(feature = "paused-frontends")]
         csharp,
+        #[cfg(feature = "paused-frontends")]
         java,
         maximum_image_bytes: configuration
             .package_authority
@@ -6236,11 +6310,13 @@ fn dispatch_runtime_command(
         }
         RuntimeCommand::CompilePackageSources {
             request,
+            #[cfg(feature = "paused-frontends")]
             go_authority_witness,
             response,
             cancelled,
         } => queue_package_sources(
             request,
+            #[cfg(feature = "paused-frontends")]
             go_authority_witness,
             PackageCompileResponse::Published(response),
             cancelled,
@@ -6256,11 +6332,13 @@ fn dispatch_runtime_command(
         ),
         RuntimeCommand::CompilePackageSourcesStaged {
             request,
+            #[cfg(feature = "paused-frontends")]
             go_authority_witness,
             response,
             cancelled,
         } => queue_package_sources(
             request,
+            #[cfg(feature = "paused-frontends")]
             go_authority_witness,
             PackageCompileResponse::Staged(response),
             cancelled,
@@ -6409,6 +6487,7 @@ fn dispatch_runtime_command(
 #[allow(clippy::too_many_arguments)]
 fn queue_package_sources(
     request: OwnedPackageSourceSet,
+    #[cfg(feature = "paused-frontends")]
     go_authority_witness: Option<GoPackageAuthorityWitness>,
     response: PackageCompileResponse,
     cancelled: Arc<AtomicBool>,
@@ -6424,11 +6503,14 @@ fn queue_package_sources(
 ) {
     let facts = request.facts();
     let capability = capabilities.for_profile(facts.profile);
+    #[cfg(feature = "paused-frontends")]
     let mut package_authority_fingerprint = go_authority_witness.as_ref().and_then(|witness| {
         capability
             .local_authority_fingerprint()
             .map(|base| package_go_authority_fingerprint(base, witness))
     });
+    #[cfg(not(feature = "paused-frontends"))]
+    let mut package_authority_fingerprint = None;
     if let Some(environment) = &request.python_environment {
         package_authority_fingerprint = capability.local_authority_fingerprint().map(|base| {
             let mut identity = blake3::Hasher::new();
@@ -6438,8 +6520,11 @@ fn queue_package_sources(
             *identity.finalize().as_bytes()
         });
     }
+    #[cfg(feature = "paused-frontends")]
     let reusable_go_authority =
         go_authority_witness_allows_semantic_reuse(facts.language, go_authority_witness.as_ref());
+    #[cfg(not(feature = "paused-frontends"))]
+    let reusable_go_authority = true;
     let reservation_bytes = staged_output_reservation(
         facts.profile,
         request.sources.len(),
@@ -6490,8 +6575,11 @@ fn queue_package_sources(
             return;
         }
     };
+    #[cfg(feature = "paused-frontends")]
     let portable_go_authority =
         go_authority_witness_is_portable(facts.language, go_authority_witness.as_ref());
+    #[cfg(not(feature = "paused-frontends"))]
+    let portable_go_authority = true;
     let execution_identity = portable_go_authority
         .then(|| {
             capability.execution_identity_for_unit(
@@ -6523,6 +6611,7 @@ fn queue_package_sources(
         request,
         response,
         cancelled,
+        #[cfg(feature = "paused-frontends")]
         go_authority_witness,
         execution_identity,
         plane_execution_seed,
@@ -6550,6 +6639,7 @@ fn queue_package_sources(
     }
 }
 
+#[cfg(feature = "paused-frontends")]
 fn package_go_authority_fingerprint(
     base: [u8; 32],
     witness: &GoPackageAuthorityWitness,
@@ -6561,6 +6651,7 @@ fn package_go_authority_fingerprint(
     *identity.finalize().as_bytes()
 }
 
+#[cfg(feature = "paused-frontends")]
 fn go_authority_witness_is_portable(
     language: Language,
     witness: Option<&GoPackageAuthorityWitness>,
@@ -6568,6 +6659,7 @@ fn go_authority_witness_is_portable(
     language != Language::Go || witness.is_some_and(|witness| !witness.requires_local_execution())
 }
 
+#[cfg(feature = "paused-frontends")]
 fn go_authority_witness_allows_semantic_reuse(
     language: Language,
     witness: Option<&GoPackageAuthorityWitness>,
@@ -6912,6 +7004,7 @@ fn run_lane(
                 request,
                 response,
                 cancelled,
+                #[cfg(feature = "paused-frontends")]
                 go_authority_witness,
                 execution_identity,
                 plane_execution_seed,
@@ -7012,16 +7105,20 @@ fn run_lane(
                                 }
                                 None => package,
                             };
+                            #[cfg(feature = "paused-frontends")]
                             let captured_csharp_config = request.csharp_config.as_ref().map(|probes| probes.iter().map(|probe| backend_frontend_csharp::legacy::CSharpCapturedConfig {
                                 path: &probe.path, text: probe.text.as_deref(),
                             }).collect::<Vec<_>>());
+                            #[cfg(feature = "paused-frontends")]
                             let package = match captured_csharp_config.as_deref() {
                                 Some(config) => package.with_csharp_config(config)?,
                                 None => package,
                             };
+                            #[cfg(feature = "paused-frontends")]
                             let captured_sdk_probes = request.csharp_sdk_probes.as_ref().map(|probes| probes.iter().map(|probe| backend_frontend_csharp::legacy::CSharpSdkProbe {
                                 path: &probe.path, text: probe.text.as_deref(),
                             }).collect::<Vec<_>>());
+                            #[cfg(feature = "paused-frontends")]
                             let package = match captured_sdk_probes.as_deref() {
                                 Some(probes) => package.with_csharp_sdk_probes(probes),
                                 None => package,
@@ -7032,6 +7129,7 @@ fn run_lane(
                                     request.go_compile_deadline,
                                     request.go_witness_deadline_phase,
                                 );
+                            #[cfg(feature = "paused-frontends")]
                             let package = match go_authority_witness.as_ref() {
                                 Some(witness) => package.with_go_authority_witness(witness),
                                 None => package,
@@ -7438,7 +7536,7 @@ mod input_witness_store_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "paused-frontends"))]
 mod go_profile_capability_tests {
     use super::*;
     use backend_semantic::vocabulary::GoVersion;
@@ -7638,6 +7736,7 @@ mod portable_recipe_tests {
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn failed_optional_go_admission_is_a_go_only_probe_failure() {
         let profile = LanguageProfile::Go(GoVersion::Go125);
         let compiler = LocalRuntimeToolchain::resolved(
@@ -7781,7 +7880,7 @@ mod portable_recipe_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "paused-frontends"))]
 mod clang_native_authority_tests {
     use super::*;
     use backend_semantic::vocabulary::CStandard;
@@ -7854,7 +7953,7 @@ mod clang_native_authority_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "paused-frontends"))]
 mod go_workspace_identity_tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -8106,8 +8205,10 @@ mod request_lease_tests {
             input_witnesses: Arc::new(CompilerInputWitnessStore::new(root.join("witnesses"))),
             python_snapshots: Mutex::new(PythonSnapshotCache::default()),
             typescript_snapshot: Mutex::new(TypeScriptSnapshotCache::default()),
+            #[cfg(feature = "paused-frontends")]
             go_authority: None,
             typescript_empty_host: None,
+            #[cfg(feature = "paused-frontends")]
             deferred_go: None,
             native_python: None,
             python_interpreter: None,

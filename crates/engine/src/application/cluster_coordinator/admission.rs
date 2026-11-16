@@ -1309,6 +1309,7 @@ mod tests {
     };
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn multi_source_result_uses_per_source_recipes_and_rejects_wrong_tool()
     -> Result<(), Box<dyn std::error::Error>> {
         // C compiles only under an explicit libclang authority (281ec6686,

@@ -230,6 +230,7 @@ pub enum SemanticAuthorityInput<'source> {
     /// package root that keys project-local cross-file references; system and
     /// out-of-root targets remain opaque but stable. This is deliberately a
     /// borrow of the project owner, which retains libclang discovery state.
+    #[cfg(feature = "paused-frontends")]
     Clang {
         /// Checked project root and its exact entry translation unit.
         project: &'source backend_frontend_clang::ClangProject,
@@ -239,6 +240,7 @@ pub enum SemanticAuthorityInput<'source> {
     /// This is the narrow buffer-only Generate lane. It carries the configured
     /// driver and libclang selection that must be verified on the calling
     /// thread before any Clang FFI; `None` never means ambient libclang.
+    #[cfg(feature = "paused-frontends")]
     ClangBuffer {
         /// Runtime-selected driver, resource, include, and libclang paths.
         environment: &'source backend_frontend_clang::ClangAuthorityEnvironment,
@@ -264,16 +266,19 @@ pub enum SemanticAuthorityInput<'source> {
         maximum_source_bytes: backend_frontend_rust::legacy::SourceByteLimit,
     },
     /// Validated `go/packages` authority image bound to the exact request source.
+    #[cfg(feature = "paused-frontends")]
     Go {
         /// Borrowed fixed-width authority bytes emitted by the configured Go producer.
         image: &'source [u8],
     },
     /// Validated Roslyn authority image bound to the exact request source.
+    #[cfg(feature = "paused-frontends")]
     CSharp {
         /// Borrowed fixed-width authority bytes emitted by the configured Roslyn helper.
         image: &'source [u8],
     },
     /// Source-bound validated javac authority image for the exact request source.
+    #[cfg(feature = "paused-frontends")]
     Java {
         /// Borrowed fixed-envelope bytes emitted by the configured javac producer.
         image: &'source [u8],

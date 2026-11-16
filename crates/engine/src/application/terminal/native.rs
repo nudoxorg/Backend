@@ -82,6 +82,7 @@ pub(crate) fn compile_terminal(error: CompileFailure<'_>) -> CompilerTerminal {
                 element_count: u32::try_from(element_count).unwrap_or(u32::MAX),
             }),
         ),
+        #[cfg(feature = "paused-frontends")]
         CompileFailure::ClangProjection { source_identity, recipe, .. } => compile_from_driver(
             source_identity,
             recipe,

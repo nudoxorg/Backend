@@ -566,6 +566,7 @@ pub enum CompileFailure<'diagnostic> {
         element_count: usize,
     },
     /// Clang projection rejected one exact authority fact before canonical admission.
+    #[cfg(feature = "paused-frontends")]
     #[error("{recipe:?} Clang projection failed: {fault:?}")]
     ClangProjection {
         /// Identity of the exact source bytes submitted for this compilation.

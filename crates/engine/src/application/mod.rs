@@ -6,6 +6,7 @@
 mod cluster_coordinator;
 mod compiler;
 mod csharp_evidence;
+#[cfg(feature = "paused-frontends")]
 mod csharp_sdk_options;
 pub use csharp_evidence::{decode_csharp_evidence, CSharpEvidenceClaim, CSharpEvidenceConfig, CSharpEvidenceMember, CSharpEvidenceSource};
 mod compiler_terminal_text;
@@ -94,7 +95,6 @@ pub use self::host::{
     installed_rust_system_locations,
 };
 pub use self::package_authority::{
-    CSharpPackageAuthorityConfiguration, JavaPackageAuthorityConfiguration,
     PackageAuthorityConfiguration, PackageAuthorityError, PackageAuthorityOwner,
     PackageAuthorityRequest, PackageAuthorityStage, RustPackageAuthorityConfiguration,
     enter_package_authority,
@@ -102,13 +102,13 @@ pub use self::package_authority::{
 pub use self::package_source::MAX_LOCAL_PACKAGE_SOURCE_BYTES;
 pub(crate) use self::runtime::{AdmittedRustRequestAuthority, LocalCompilerPlaneExecutionSeed};
 pub use self::runtime::{
-    CompilerSessionLineage, DeferredGoAuthority, DeferredNativePython, DeferredRustToolchain,
+    CompilerSessionLineage, DeferredNativePython, DeferredRustToolchain,
     ExactInputWitness, LocalCompilerCapabilities, LocalCompilerCapability,
     LocalCompilerCapabilityState, LocalCompilerClient, LocalCompilerExecutionIdentity,
     LocalCompilerPlaneExecutionIdentity, LocalCompilerPlaneRecipeIdentity,
     LocalCompilerRuntimeConfiguration, LocalCompilerRuntimeConfigurationError,
-    LocalCompilerRuntimeOpenError, LocalCompilerRuntimePaths, LocalRuntimeCSharpAuthority,
-    LocalRuntimeGoAuthorityFailure, LocalRuntimeJavaAuthority, LocalRuntimePackageAuthority,
+    LocalCompilerRuntimeOpenError, LocalCompilerRuntimePaths,
+    LocalRuntimeGoAuthorityFailure, LocalRuntimePackageAuthority,
     LocalRuntimePackageRoot, LocalRuntimePackageRootFacts, LocalRuntimePythonCheckerAdmission,
     LocalRuntimePythonCheckerProbeFailure, LocalRuntimeRustAuthority,
     LocalRuntimeRustAuthorityFailure, LocalRuntimeRustToolchainSelection, LocalRuntimeToolchain,
@@ -180,6 +180,7 @@ pub use backend_execution::{
     VerifiedCompilerNodeCapacity, VerifiedRemoteCompiler, VerifierAcceptedFullWorkspaceInput,
     compiler_full_workspace_transfer_work_id, compiler_transfer_work_id,
 };
+#[cfg(feature = "paused-frontends")]
 pub use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
 pub use backend_frontend_rust::legacy::RustCargoMetadataPolicy;
 /// Default Rust Cargo metadata policy shared by locald, scope inspection, and compiler workers.
@@ -192,3 +193,8 @@ pub use backend_library::interface::{
 
 #[cfg(test)]
 mod compiler_coverage_tests;
+
+#[cfg(feature = "paused-frontends")]
+pub use self::runtime::{DeferredGoAuthority, LocalRuntimeCSharpAuthority, LocalRuntimeJavaAuthority};
+#[cfg(feature = "paused-frontends")]
+pub use self::package_authority::{CSharpPackageAuthorityConfiguration, JavaPackageAuthorityConfiguration};

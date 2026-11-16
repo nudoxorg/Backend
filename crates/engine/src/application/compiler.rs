@@ -3,17 +3,22 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! One single-request local compiler specialization over explicit local ownership.
 
+#[cfg(feature = "paused-frontends")]
+use crate::application::package_authority::{
+    GoPackageAuthority, enter_package_authority_with_go_authority_witness,
+};
 use crate::compiler_attempt_v2::CompilationAttemptId;
 use crate::compiler_input_manifest_v2::{CompilationUnitKeyV2, CompilerPackageTargetV2};
 use crate::compiler_read_observation_v2::{
     CompilerReadObservationChannelV2, CompilerReadObservationEventClassV2,
     CompilerReadObservationProducerV2, CompilerReadObservationRecorderV2,
 };
+#[cfg(feature = "paused-frontends")]
+use crate::driver::go_authority_projection;
 use crate::driver::{
     AuthorityFailure, CompileControl, CompileOutput, CompileRequest, CompileScratch,
     CompiledFragment, DeclarationScope, PackageDeclarationScopeFault, ResolvedToolchain,
-    ToolchainSelection, compile_semantic as compile_fused_semantic, go_authority_projection,
-    rust_authority_diagnostic,
+    ToolchainSelection, compile_semantic as compile_fused_semantic, rust_authority_diagnostic,
 };
 use crate::publication::{
     OpenSemanticPublicationScratch, PreparedSemanticOutput, PublishControl, PublishedCompilation,
@@ -25,6 +30,7 @@ use backend_compile::{
     EmbeddingCacheSession, EmbeddingCoordinates, EmbeddingExecutable, EmbeddingExecutionIdentity,
     EmbeddingNormalization, EmbeddingPurpose, RustCargoWorkspaceFactsV1,
 };
+#[cfg(feature = "paused-frontends")]
 use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
 use backend_frontend_python::legacy::checker::CheckerError as PythonCheckerError;
 use backend_frontend_rust::legacy::{
@@ -47,8 +53,7 @@ use backend_frontend_typescript::{TszFileWorkPolicy, TszProject, TszProjectCheck
 // shared state, and therefore every image, a function of the program alone.
 // Parse, bind and merge are separate stages with their existing execution
 // controls.
-const TSZ_CHECKER_WORKERS_PER_COMPILER_LANE: std::num::NonZeroUsize =
-    std::num::NonZeroUsize::MIN;
+const TSZ_CHECKER_WORKERS_PER_COMPILER_LANE: std::num::NonZeroUsize = std::num::NonZeroUsize::MIN;
 
 use backend_library::interface::{
     CompilerAttempt, CompilerCapability, CompilerCause, CompilerFragmentFailure, CompilerReadiness,
@@ -78,14 +83,17 @@ use backend_version::{
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
-    fs,
-    io,
+    fs, io,
     path::{Path, PathBuf},
-    sync::{Arc, atomic::{AtomicBool, Ordering}},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Instant,
 };
 use thiserror::Error;
 
+#[cfg(feature = "paused-frontends")]
 use backend_frontend_java::legacy::harness::JavaSource;
 use backend_replication::{
     ProducedSemanticTypedPlaneContentV3, SemanticTypedPlaneBoundaryPoliciesV3,
@@ -94,10 +102,7 @@ use backend_replication::{
 use sha2::{Digest, Sha256};
 
 use crate::application::executor::StagedOutputLease;
-use crate::application::package_authority::{
-    GoPackageAuthority, enter_package_authority_with_go_authority_witness,
-    enter_package_authority_with_rust_workspace,
-};
+use crate::application::package_authority::enter_package_authority_with_rust_workspace;
 use crate::application::{
     AdmittedRustRequestAuthority, LocalCompilerConfig, LocalCompilerControl,
     LocalCompilerExecutionIdentity, LocalCompilerOpenError, LocalCompilerPath,
@@ -561,17 +566,27 @@ impl<'source> PackageSource<'source> {
 
 /// Exact ordered in-package project and ancestor configuration probes.
 pub(crate) fn csharp_config_probe_paths(unit: &CompilationUnitKeyV2) -> Option<Vec<String>> {
-    let CompilationUnitKeyV2::CSharpProject { project_path } = unit else { return None; };
+    let CompilationUnitKeyV2::CSharpProject { project_path } = unit else {
+        return None;
+    };
     let path: &str = project_path.as_ref();
     PackageSource::validate_path(path).ok()?;
-    if !path.to_ascii_lowercase().ends_with(".csproj") { return None; }
+    if !path.to_ascii_lowercase().ends_with(".csproj") {
+        return None;
+    }
     let mut result = vec![path.to_owned()];
     let mut directory = path.rsplit_once('/').map_or("", |(directory, _)| directory);
     for _ in 0..8 {
-        let prefix = if directory.is_empty() { String::new() } else { format!("{directory}/") };
+        let prefix = if directory.is_empty() {
+            String::new()
+        } else {
+            format!("{directory}/")
+        };
         result.push(format!("{prefix}Directory.Build.props"));
         result.push(format!("{prefix}Directory.Build.targets"));
-        if directory.is_empty() { return Some(result); }
+        if directory.is_empty() {
+            return Some(result);
+        }
         directory = directory.rsplit_once('/').map_or("", |(parent, _)| parent);
     }
     None
@@ -584,13 +599,17 @@ pub struct PackageSourceSet<'source> {
     package_target: CompilerPackageTargetV2,
     package_root: &'source Path,
     sources: &'source [PackageSource<'source>],
-    csharp_config: Option<&'source [backend_frontend_csharp::legacy::CSharpCapturedConfig<'source>]>,
+    #[cfg(feature = "paused-frontends")]
+    csharp_config:
+        Option<&'source [backend_frontend_csharp::legacy::CSharpCapturedConfig<'source>]>,
+    #[cfg(feature = "paused-frontends")]
     csharp_sdk_probes: Option<&'source [backend_frontend_csharp::legacy::CSharpSdkProbe<'source>]>,
     python_raw_sources: Option<
         &'source [backend_frontend_python::legacy::checker::PythonProjectBytesSource<'source>],
     >,
     input_claim: Option<SemanticInputWitness>,
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
+    #[cfg(feature = "paused-frontends")]
     go_authority_witness: Option<&'source GoPackageAuthorityWitness>,
     go_compile_deadline: Option<std::time::Instant>,
     go_witness_deadline_phase: Option<&'static str>,
@@ -664,11 +683,14 @@ impl<'source> PackageSourceSet<'source> {
             package_target: package_target.clone(),
             package_root,
             sources,
+            #[cfg(feature = "paused-frontends")]
             csharp_config: None,
+            #[cfg(feature = "paused-frontends")]
             csharp_sdk_probes: None,
             python_raw_sources: None,
             input_claim: None,
             embedding_provisioning_failure: None,
+            #[cfg(feature = "paused-frontends")]
             go_authority_witness: None,
             go_compile_deadline: None,
             go_witness_deadline_phase: None,
@@ -680,6 +702,7 @@ impl<'source> PackageSourceSet<'source> {
 
     /// Attaches owner-captured C# project/configuration probes to an exact unit.
     /// This is an input claim, not source or publication authority.
+    #[cfg(feature = "paused-frontends")]
     pub fn with_csharp_config(
         mut self,
         config: &'source [backend_frontend_csharp::legacy::CSharpCapturedConfig<'source>],
@@ -687,19 +710,35 @@ impl<'source> PackageSourceSet<'source> {
         let expected = csharp_config_probe_paths(self.package_target.unit_key())
             .ok_or(PackageSourceSetError::NativeCSharpProfileMismatch)?;
         if !matches!(self.request.target.profile, LanguageProfile::CSharp(_))
-            || config.len() != expected.len() || config.first().is_none_or(|probe| probe.text.is_none())
-            || config.iter().zip(expected.iter()).any(|(probe, path)| probe.path != path) {
+            || config.len() != expected.len()
+            || config.first().is_none_or(|probe| probe.text.is_none())
+            || config
+                .iter()
+                .zip(expected.iter())
+                .any(|(probe, path)| probe.path != path)
+        {
             return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
         }
-        let size = config.iter().try_fold(0usize, |total, probe| {
-            total.checked_add(probe.path.len())?.checked_add(probe.text.map_or(0, str::len))
-        }).ok_or(PackageSourceSetError::NativeCSharpProfileMismatch)?;
-        if size > 2 * 1024 * 1024 { return Err(PackageSourceSetError::NativeCSharpProfileMismatch); }
+        let size = config
+            .iter()
+            .try_fold(0usize, |total, probe| {
+                total
+                    .checked_add(probe.path.len())?
+                    .checked_add(probe.text.map_or(0, str::len))
+            })
+            .ok_or(PackageSourceSetError::NativeCSharpProfileMismatch)?;
+        if size > 2 * 1024 * 1024 {
+            return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
+        }
         self.csharp_config = Some(config);
         Ok(self)
     }
 
-    pub(crate) fn with_csharp_sdk_probes(mut self, probes: &'source [backend_frontend_csharp::legacy::CSharpSdkProbe<'source>]) -> Self {
+    #[cfg(feature = "paused-frontends")]
+    pub(crate) fn with_csharp_sdk_probes(
+        mut self,
+        probes: &'source [backend_frontend_csharp::legacy::CSharpSdkProbe<'source>],
+    ) -> Self {
         self.csharp_sdk_probes = Some(probes);
         self
     }
@@ -810,6 +849,7 @@ impl<'source> PackageSourceSet<'source> {
         self
     }
 
+    #[cfg(feature = "paused-frontends")]
     pub(crate) fn with_go_authority_witness(
         mut self,
         witness: &'source GoPackageAuthorityWitness,
@@ -1763,18 +1803,24 @@ impl StagedSemanticPackage {
 
     /// Same-attempt C# project/configuration presence and absence claims.
     #[must_use]
+    #[cfg(feature = "paused-frontends")]
+    #[cfg(feature = "paused-frontends")]
     pub fn csharp_config_probes(&self) -> &[StagedCSharpConfigProbe] {
         &self.staged.csharp_config
     }
 
     /// Same-attempt C# invocation claims. These are not selected source authority.
     #[must_use]
+    #[cfg(feature = "paused-frontends")]
+    #[cfg(feature = "paused-frontends")]
     pub fn csharp_invocation_evidence(&self) -> &[StagedCSharpInvocationEvidence] {
         &self.staged.csharp_evidence
     }
 
     /// Exact typed SDK resolver receipt retained by the selected C# owner.
     #[must_use]
+    #[cfg(feature = "paused-frontends")]
+    #[cfg(feature = "paused-frontends")]
     pub fn csharp_resolver_receipt(
         &self,
     ) -> Option<&backend_frontend_csharp::legacy::CSharpResolverReceipt> {
@@ -1785,21 +1831,28 @@ impl StagedSemanticPackage {
     /// claim-only until publication replays them against independently owned
     /// selected-reference custody.
     #[must_use]
+    #[cfg(feature = "paused-frontends")]
+    #[cfg(feature = "paused-frontends")]
     pub fn csharp_resolver_receipt_sidecar(&self) -> Option<Box<[u8]>> {
         self.csharp_resolver_receipt()?.encode().ok()
     }
 
     /// Independently owned selected-reference custody retained for replay.
     #[must_use]
+    #[cfg(feature = "paused-frontends")]
+    #[cfg(feature = "paused-frontends")]
     pub fn csharp_resolver_snapshot(
         &self,
-    ) -> Option<&std::sync::Arc<backend_frontend_csharp::legacy::CSharpResolvedReferenceSnapshot>> {
+    ) -> Option<&std::sync::Arc<backend_frontend_csharp::legacy::CSharpResolvedReferenceSnapshot>>
+    {
         self.staged.csharp_resolver_snapshot.as_ref()
     }
 
     /// Exact source-bound helper/runtime owners retained by this staged attempt.
     /// These leases alone are not publication or read-completeness authority.
     #[must_use]
+    #[cfg(feature = "paused-frontends")]
+    #[cfg(feature = "paused-frontends")]
     pub fn csharp_execution_leases(
         &self,
     ) -> &[backend_frontend_csharp::legacy::CSharpSourceExecutionLease] {
@@ -1809,19 +1862,27 @@ impl StagedSemanticPackage {
     /// The execution lease only when exactly one source owner was retained.
     /// Multi-source callers must inspect [`Self::csharp_execution_leases`].
     #[must_use]
+    #[cfg(feature = "paused-frontends")]
+    #[cfg(feature = "paused-frontends")]
     pub fn csharp_execution_lease(
         &self,
     ) -> Option<&backend_frontend_csharp::legacy::CSharpExecutionLease> {
-        let [only] = self.staged.csharp_execution.entries() else { return None; };
+        let [only] = self.staged.csharp_execution.entries() else {
+            return None;
+        };
         Some(only.execution())
     }
 
     /// Builds a bounded claim-only C# evidence aggregate tied to these staged
     /// image bytes and this exact input. Publication selection is still required.
+    #[cfg(feature = "paused-frontends")]
+    #[cfg(feature = "paused-frontends")]
     pub fn csharp_invocation_evidence_object(&self, input: [u8; 32]) -> Option<Vec<u8>> {
         use backend_semantic::ir::{ImageProvenance, SemanticCoreReader};
         let unit = self.staged.csharp_unit.as_deref()?;
-        let unit_key = CompilationUnitKeyV2::CSharpProject { project_path: unit.into() };
+        let unit_key = CompilationUnitKeyV2::CSharpProject {
+            project_path: unit.into(),
+        };
         let expected_probes = csharp_config_probe_paths(&unit_key)?;
         let runtime = self.admitted_runtime().ok()?;
         if !matches!(self.profile, LanguageProfile::CSharp(_)) || *self.input.input_root() != input
@@ -1833,21 +1894,43 @@ impl StagedSemanticPackage {
             || self.staged.csharp_evidence.len() != self.artifacts.len()
             // Only files Roslyn reported errors in may be missing; the claim lists the
             // files that compiled and the caller joins the rest through these gaps.
-            || self.staged.coverage_gaps.iter().any(|gap| gap.cause != PackageSourceCoverageGapCause::CSharpSourceDoesNotCompile) {
+            || self.staged.coverage_gaps.iter().any(|gap| gap.cause != PackageSourceCoverageGapCause::CSharpSourceDoesNotCompile)
+        {
             return None;
         }
         let mut images = BTreeMap::new();
         for (ordinal, artifact) in self.artifacts.iter().enumerate() {
-            let observed = self.with_semantic_reader(ordinal, |reader, _| -> Result<_, io::Error> {
-                let ImageProvenance::Captured { source, recipe, scope, .. } = reader.image_facts().provenance else {
-                    return Err(io::Error::other("C# image provenance unavailable"));
-                };
-                if recipe.tool != NativeTool::CSharpCompiler || recipe.profile != self.profile
-                    || recipe.toolchain.as_ref() != &runtime.toolchain { return Err(io::Error::other("wrong C# producer")); }
-                let path = reader.atom(scope.path).ok_or_else(|| io::Error::other("C# source path unavailable"))?;
-                Ok((String::from_utf8(path.to_vec()).map_err(io::Error::other)?, source))
-            }).ok()?;
-            if observed.1 != artifact.source() || images.insert(observed.0, (observed.1, artifact.semantic_image())).is_some() {
+            let observed = self
+                .with_semantic_reader(ordinal, |reader, _| -> Result<_, io::Error> {
+                    let ImageProvenance::Captured {
+                        source,
+                        recipe,
+                        scope,
+                        ..
+                    } = reader.image_facts().provenance
+                    else {
+                        return Err(io::Error::other("C# image provenance unavailable"));
+                    };
+                    if recipe.tool != NativeTool::CSharpCompiler
+                        || recipe.profile != self.profile
+                        || recipe.toolchain.as_ref() != &runtime.toolchain
+                    {
+                        return Err(io::Error::other("wrong C# producer"));
+                    }
+                    let path = reader
+                        .atom(scope.path)
+                        .ok_or_else(|| io::Error::other("C# source path unavailable"))?;
+                    Ok((
+                        String::from_utf8(path.to_vec()).map_err(io::Error::other)?,
+                        source,
+                    ))
+                })
+                .ok()?;
+            if observed.1 != artifact.source()
+                || images
+                    .insert(observed.0, (observed.1, artifact.semantic_image()))
+                    .is_some()
+            {
                 return None;
             }
         }
@@ -1856,18 +1939,33 @@ impl StagedSemanticPackage {
         let mut total = 0usize;
         fn charge(total: &mut usize, length: usize) -> Option<()> {
             *total = total.checked_add(4)?.checked_add(length)?;
-            if *total > backend_semantic::ir::MAX_CSHARP_INVOCATION_EVIDENCE_BYTES { return None; }
+            if *total > backend_semantic::ir::MAX_CSHARP_INVOCATION_EVIDENCE_BYTES {
+                return None;
+            }
             Some(())
         }
-        for length in [4, 32, 32, 2, unit.len(), 4] { charge(&mut total, length)?; }
+        for length in [4, 32, 32, 2, unit.len(), 4] {
+            charge(&mut total, length)?;
+        }
         for probe in self.staged.csharp_config.iter() {
             charge(&mut total, probe.path.len())?;
             charge(&mut total, 1)?;
-            if let Some(text) = &probe.text { charge(&mut total, text.len())?; }
+            if let Some(text) = &probe.text {
+                charge(&mut total, text.len())?;
+            }
         }
         charge(&mut total, 4)?;
         for invocation in self.staged.csharp_evidence.iter() {
-            for length in [invocation.path.len(), 32, 4, 32, 32, 32, 4, invocation.evidence.len()] {
+            for length in [
+                invocation.path.len(),
+                32,
+                4,
+                32,
+                32,
+                32,
+                4,
+                invocation.evidence.len(),
+            ] {
                 charge(&mut total, length)?;
             }
         }
@@ -1876,26 +1974,41 @@ impl StagedSemanticPackage {
         fn add(output: &mut Vec<u8>, value: &[u8]) -> Option<()> {
             let length = u32::try_from(value.len()).ok()?;
             let total = output.len().checked_add(4)?.checked_add(value.len())?;
-            if total > backend_semantic::ir::MAX_CSHARP_INVOCATION_EVIDENCE_BYTES { return None; }
-            output.extend_from_slice(&length.to_be_bytes()); output.extend_from_slice(value); Some(())
+            if total > backend_semantic::ir::MAX_CSHARP_INVOCATION_EVIDENCE_BYTES {
+                return None;
+            }
+            output.extend_from_slice(&length.to_be_bytes());
+            output.extend_from_slice(value);
+            Some(())
         }
         add(&mut bytes, b"CSE1")?;
         add(&mut bytes, self.target_identity.as_ref())?;
         add(&mut bytes, &input)?;
         add(&mut bytes, &<[u8; 2]>::from(self.profile))?;
         add(&mut bytes, unit.as_bytes())?;
-        add(&mut bytes, &(u32::try_from(self.staged.csharp_config.len()).ok()?).to_be_bytes())?;
+        add(
+            &mut bytes,
+            &(u32::try_from(self.staged.csharp_config.len()).ok()?).to_be_bytes(),
+        )?;
         for probe in self.staged.csharp_config.iter() {
             add(&mut bytes, probe.path.as_bytes())?;
             match &probe.text {
-                Some(text) => { add(&mut bytes, &[1])?; add(&mut bytes, text.as_bytes())?; },
+                Some(text) => {
+                    add(&mut bytes, &[1])?;
+                    add(&mut bytes, text.as_bytes())?;
+                }
                 None => add(&mut bytes, &[0])?,
             }
         }
-        add(&mut bytes, &(u32::try_from(self.staged.csharp_evidence.len()).ok()?).to_be_bytes())?;
+        add(
+            &mut bytes,
+            &(u32::try_from(self.staged.csharp_evidence.len()).ok()?).to_be_bytes(),
+        )?;
         for invocation in self.staged.csharp_evidence.iter() {
             let (source, image) = images.remove(invocation.path.as_ref())?;
-            if source != invocation.source { return None; }
+            if source != invocation.source {
+                return None;
+            }
             add(&mut bytes, invocation.path.as_bytes())?;
             add(&mut bytes, source.identity.as_ref())?;
             add(&mut bytes, &source.byte_len.to_be_bytes())?;
@@ -1905,8 +2018,33 @@ impl StagedSemanticPackage {
             add(&mut bytes, &image.byte_length.to_be_bytes())?;
             add(&mut bytes, &invocation.evidence)?;
         }
-        if !images.is_empty() || bytes.len() != total { return None; }
+        if !images.is_empty() || bytes.len() != total {
+            return None;
+        }
         Some(bytes)
+    }
+
+    #[cfg(not(feature = "paused-frontends"))]
+    #[must_use]
+    pub fn csharp_config_probes(&self) -> &[StagedCSharpConfigProbe] {
+        &[]
+    }
+
+    #[cfg(not(feature = "paused-frontends"))]
+    #[must_use]
+    pub fn csharp_invocation_evidence(&self) -> &[StagedCSharpInvocationEvidence] {
+        &[]
+    }
+
+    #[cfg(not(feature = "paused-frontends"))]
+    #[must_use]
+    pub fn csharp_resolver_receipt_sidecar(&self) -> Option<Box<[u8]>> {
+        None
+    }
+
+    #[cfg(not(feature = "paused-frontends"))]
+    pub fn csharp_invocation_evidence_object(&self, _input: [u8; 32]) -> Option<Vec<u8>> {
+        None
     }
 
     /// Exact compiler-observed coverage causes, authenticated with this publication.
@@ -1921,13 +2059,24 @@ impl StagedSemanticPackage {
     }
 
     /// Source-line claims captured from selected TypeScript compiler inputs.
-    pub fn native_typescript_lines(&self) -> impl Iterator<Item = &backend_semantic::native_source_lines::NativeSourceLineFile> + Clone {
-        self.staged.artifacts.iter().filter_map(|artifact| artifact.native_lines.as_ref())
+    pub fn native_typescript_lines(
+        &self,
+    ) -> impl Iterator<Item = &backend_semantic::native_source_lines::NativeSourceLineFile> + Clone
+    {
+        self.staged
+            .artifacts
+            .iter()
+            .filter_map(|artifact| artifact.native_lines.as_ref())
     }
     /// Number of staged artifact slots, used to budget canonical line ordering.
-    pub fn native_typescript_line_slots(&self) -> usize { self.staged.artifacts.len() }
+    pub fn native_typescript_line_slots(&self) -> usize {
+        self.staged.artifacts.len()
+    }
     /// Returns a line claim for one exact staged artifact ordinal.
-    pub fn native_typescript_line_at(&self, ordinal: usize) -> Option<&backend_semantic::native_source_lines::NativeSourceLineFile> {
+    pub fn native_typescript_line_at(
+        &self,
+        ordinal: usize,
+    ) -> Option<&backend_semantic::native_source_lines::NativeSourceLineFile> {
         self.staged.artifacts.get(ordinal)?.native_lines.as_ref()
     }
 
@@ -2470,6 +2619,12 @@ pub struct ActivatedSemanticPackage {
 /// Typed package-wide compilation or publication terminal.
 #[derive(Debug, Error)]
 pub enum PackageSemanticError {
+    /// The release profile intentionally does not execute this historical language.
+    #[error("{language:?} support is paused in this build")]
+    PausedLanguage {
+        /// Historical language identity retained for persisted compatibility.
+        language: backend_semantic::vocabulary::Language,
+    },
     /// Canonical package lineage could not be constructed.
     #[error("package lineage is malformed")]
     Lineage,
@@ -2481,6 +2636,7 @@ pub enum PackageSemanticError {
     TypeScriptWorkRestart,
     /// A Go package's authority filesystem inputs could not be admitted.
     #[error(transparent)]
+    #[cfg(feature = "paused-frontends")]
     GoAuthorityWitness(#[from] backend_frontend_go::legacy::oracle::GoPackageAuthorityWitnessError),
     /// A fresh compiler workspace did not reproduce the closure selected before capture.
     #[error("Rust Cargo target source closure changed after target resolution")]
@@ -2539,6 +2695,7 @@ pub enum PackageSemanticError {
     },
     /// Restored compile references are unavailable or do not match the captured project.
     #[error("C# restored references unavailable: {0}")]
+    #[cfg(feature = "paused-frontends")]
     CSharpRestore(#[source] backend_frontend_csharp::legacy::RestoreError),
     /// No source of the package compiled in any language profile.
     #[error(
@@ -2892,8 +3049,8 @@ fn typescript_source_gap_diagnostic(
 
     let raw_source = std::str::from_utf8(source).ok()?;
     let _owner = raw_source.get(usize::try_from(*start).ok()?..usize::try_from(*end).ok()?)?;
-    let owner_name = raw_source
-        .get(usize::try_from(*name_start).ok()?..usize::try_from(*name_end).ok()?)?;
+    let owner_name =
+        raw_source.get(usize::try_from(*name_start).ok()?..usize::try_from(*name_end).ok()?)?;
     if owner_name.is_empty()
         || *start >= *end
         || *name_start < *start
@@ -3117,25 +3274,48 @@ mod source_degradation_tests {
             class: AuthorityDiagnosticClass::Type,
             diagnostic: None,
         });
-        assert!(csharp_source_compile_errors(Language::CSharp, &compile_errors, source()));
+        assert!(csharp_source_compile_errors(
+            Language::CSharp,
+            &compile_errors,
+            source()
+        ));
         // Another language's type-level refusal keeps its own policy.
-        assert!(!csharp_source_compile_errors(Language::Go, &compile_errors, source()));
-        assert!(!csharp_source_compile_errors(Language::TypeScript, &compile_errors, source()));
+        assert!(!csharp_source_compile_errors(
+            Language::Go,
+            &compile_errors,
+            source()
+        ));
+        assert!(!csharp_source_compile_errors(
+            Language::TypeScript,
+            &compile_errors,
+            source()
+        ));
         // A terminal about a different source is not this source's failure.
         let other = SourceAuthority {
             identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"package b"),
             byte_len: 9,
         };
-        assert!(!csharp_source_compile_errors(Language::CSharp, &compile_errors, other));
+        assert!(!csharp_source_compile_errors(
+            Language::CSharp,
+            &compile_errors,
+            other
+        ));
         // A fault of the runtime or the helper (it concerns every file) stays a refusal.
         for (phase, class) in [
             (AuthorityPhase::Open, AuthorityDiagnosticClass::Authority),
-            (AuthorityPhase::TypeCheck, AuthorityDiagnosticClass::Authority),
+            (
+                AuthorityPhase::TypeCheck,
+                AuthorityDiagnosticClass::Authority,
+            ),
             (AuthorityPhase::Open, AuthorityDiagnosticClass::Binding),
         ] {
             assert!(!csharp_source_compile_errors(
                 Language::CSharp,
-                &compile(CompilerCause::Authority { phase, class, diagnostic: None }),
+                &compile(CompilerCause::Authority {
+                    phase,
+                    class,
+                    diagnostic: None
+                }),
                 source(),
             ));
         }
@@ -3160,7 +3340,10 @@ mod source_degradation_tests {
             .expect("a source-local failure degrades");
         assert_eq!(gaps.len(), 1);
         assert_eq!(gaps[0].relative_path(), "src/Api/Restored.cs");
-        assert_eq!(gaps[0].cause(), PackageSourceCoverageGapCause::CSharpSourceDoesNotCompile);
+        assert_eq!(
+            gaps[0].cause(),
+            PackageSourceCoverageGapCause::CSharpSourceDoesNotCompile
+        );
         assert!(gaps[0].cause().to_string().contains("restore packages"));
         assert!(degraded.into_refusal_when_nothing_compiled(0).is_some());
     }
@@ -3373,20 +3556,18 @@ mod source_degradation_tests {
         let name_start = source.find("Layout").expect("owner name") as u32;
         let name_end = name_start + "Layout".len() as u32;
         let terminal = compile(CompilerCause::Lowering(
-            backend_library::interface::LoweringCause::new(
-                LoweringUnsupported::FactRejected {
-                    fact: 0,
-                    name_len: u64::from(name_end - name_start),
-                    cause: ProjectionAdmissionFault::TypeProjectionCycle {
-                        type_id: 0xfeed,
-                        owner_span: Some(ProjectionSpan { start, end }),
-                        owner_name_span: Some(ProjectionSpan {
-                            start: name_start,
-                            end: name_end,
-                        }),
-                    },
+            backend_library::interface::LoweringCause::new(LoweringUnsupported::FactRejected {
+                fact: 0,
+                name_len: u64::from(name_end - name_start),
+                cause: ProjectionAdmissionFault::TypeProjectionCycle {
+                    type_id: 0xfeed,
+                    owner_span: Some(ProjectionSpan { start, end }),
+                    owner_name_span: Some(ProjectionSpan {
+                        start: name_start,
+                        end: name_end,
+                    }),
                 },
-            ),
+            }),
         ));
 
         assert!(matches!(
@@ -3403,64 +3584,58 @@ mod source_degradation_tests {
             }) if owner_end == end && owner_name_start == name_start && owner_name_end == name_end && owner_name == "Layout"
         ));
         let out_of_bounds = compile(CompilerCause::Lowering(
-            backend_library::interface::LoweringCause::new(
-                LoweringUnsupported::FactRejected {
-                    fact: 0,
-                    name_len: u64::from(name_end - name_start),
-                    cause: ProjectionAdmissionFault::TypeProjectionCycle {
-                        type_id: 0xfeed,
-                        owner_span: Some(ProjectionSpan {
-                            start,
-                            end: source.len() as u32 + 1,
-                        }),
-                        owner_name_span: Some(ProjectionSpan {
-                            start: name_start,
-                            end: name_end,
-                        }),
-                    },
+            backend_library::interface::LoweringCause::new(LoweringUnsupported::FactRejected {
+                fact: 0,
+                name_len: u64::from(name_end - name_start),
+                cause: ProjectionAdmissionFault::TypeProjectionCycle {
+                    type_id: 0xfeed,
+                    owner_span: Some(ProjectionSpan {
+                        start,
+                        end: source.len() as u32 + 1,
+                    }),
+                    owner_name_span: Some(ProjectionSpan {
+                        start: name_start,
+                        end: name_end,
+                    }),
                 },
-            ),
+            }),
         ));
         assert!(typescript_source_gap_diagnostic(&out_of_bounds, source.as_bytes()).is_none());
 
         let out_of_bounds_name = compile(CompilerCause::Lowering(
-            backend_library::interface::LoweringCause::new(
-                LoweringUnsupported::FactRejected {
-                    fact: 0,
-                    name_len: 1,
-                    cause: ProjectionAdmissionFault::TypeProjectionCycle {
-                        type_id: 0xfeed,
-                        owner_span: Some(ProjectionSpan { start, end }),
-                        owner_name_span: Some(ProjectionSpan {
-                            start: source.len() as u32,
-                            end: source.len() as u32 + 1,
-                        }),
-                    },
+            backend_library::interface::LoweringCause::new(LoweringUnsupported::FactRejected {
+                fact: 0,
+                name_len: 1,
+                cause: ProjectionAdmissionFault::TypeProjectionCycle {
+                    type_id: 0xfeed,
+                    owner_span: Some(ProjectionSpan { start, end }),
+                    owner_name_span: Some(ProjectionSpan {
+                        start: source.len() as u32,
+                        end: source.len() as u32 + 1,
+                    }),
                 },
-            ),
+            }),
         ));
         assert!(typescript_source_gap_diagnostic(&out_of_bounds_name, source.as_bytes()).is_none());
 
         let unicode_source = "  export type Layout = \"λ\";\n";
         let lambda_byte = unicode_source.find('λ').expect("unicode fixture") as u32;
         let invalid_utf8_name = compile(CompilerCause::Lowering(
-            backend_library::interface::LoweringCause::new(
-                LoweringUnsupported::FactRejected {
-                    fact: 0,
-                    name_len: 1,
-                    cause: ProjectionAdmissionFault::TypeProjectionCycle {
-                        type_id: 0xfeed,
-                        owner_span: Some(ProjectionSpan {
-                            start,
-                            end: unicode_source.find('\n').expect("owner line") as u32,
-                        }),
-                        owner_name_span: Some(ProjectionSpan {
-                            start: lambda_byte + 1,
-                            end: lambda_byte + 2,
-                        }),
-                    },
+            backend_library::interface::LoweringCause::new(LoweringUnsupported::FactRejected {
+                fact: 0,
+                name_len: 1,
+                cause: ProjectionAdmissionFault::TypeProjectionCycle {
+                    type_id: 0xfeed,
+                    owner_span: Some(ProjectionSpan {
+                        start,
+                        end: unicode_source.find('\n').expect("owner line") as u32,
+                    }),
+                    owner_name_span: Some(ProjectionSpan {
+                        start: lambda_byte + 1,
+                        end: lambda_byte + 2,
+                    }),
                 },
-            ),
+            }),
         ));
         assert!(
             typescript_source_gap_diagnostic(&invalid_utf8_name, unicode_source.as_bytes())
@@ -3470,20 +3645,18 @@ mod source_degradation_tests {
         let source_with_tail = format!("{source}extra");
         let tail_start = source_with_tail.find("extra").expect("tail fixture") as u32;
         let not_contained = compile(CompilerCause::Lowering(
-            backend_library::interface::LoweringCause::new(
-                LoweringUnsupported::FactRejected {
-                    fact: 0,
-                    name_len: 5,
-                    cause: ProjectionAdmissionFault::TypeProjectionCycle {
-                        type_id: 0xfeed,
-                        owner_span: Some(ProjectionSpan { start, end }),
-                        owner_name_span: Some(ProjectionSpan {
-                            start: tail_start,
-                            end: tail_start + 5,
-                        }),
-                    },
+            backend_library::interface::LoweringCause::new(LoweringUnsupported::FactRejected {
+                fact: 0,
+                name_len: 5,
+                cause: ProjectionAdmissionFault::TypeProjectionCycle {
+                    type_id: 0xfeed,
+                    owner_span: Some(ProjectionSpan { start, end }),
+                    owner_name_span: Some(ProjectionSpan {
+                        start: tail_start,
+                        end: tail_start + 5,
+                    }),
                 },
-            ),
+            }),
         ));
         assert!(
             typescript_source_gap_diagnostic(&not_contained, source_with_tail.as_bytes()).is_none()
@@ -3502,20 +3675,18 @@ mod source_degradation_tests {
         let name_start = source.find("Layout").expect("owner name") as u32;
         let name_end = name_start + "Layout".len() as u32;
         let terminal = compile(CompilerCause::Lowering(
-            backend_library::interface::LoweringCause::new(
-                LoweringUnsupported::FactRejected {
-                    fact: 0,
-                    name_len: u64::from(name_end - name_start),
-                    cause: ProjectionAdmissionFault::TypeProjectionCycle {
-                        type_id: 0xfeed,
-                        owner_span: Some(ProjectionSpan { start, end }),
-                        owner_name_span: Some(ProjectionSpan {
-                            start: name_start,
-                            end: name_end,
-                        }),
-                    },
+            backend_library::interface::LoweringCause::new(LoweringUnsupported::FactRejected {
+                fact: 0,
+                name_len: u64::from(name_end - name_start),
+                cause: ProjectionAdmissionFault::TypeProjectionCycle {
+                    type_id: 0xfeed,
+                    owner_span: Some(ProjectionSpan { start, end }),
+                    owner_name_span: Some(ProjectionSpan {
+                        start: name_start,
+                        end: name_end,
+                    }),
                 },
-            ),
+            }),
         ));
         assert!(matches!(
             typescript_source_gap_diagnostic(&terminal, source.as_bytes()),
@@ -3585,11 +3756,15 @@ pub(crate) enum PackageExecutionAuthority {
 /// contributed to a C# compile: the installed SDK location, the selected
 /// framework and compiler options, reference directories, usings, defines,
 /// and the captured global.json and project configuration texts.
-fn captured_sdk_global_json<'a>(probes: &[backend_frontend_csharp::legacy::CSharpSdkProbe<'a>]) -> Option<&'a str> {
+#[cfg(feature = "paused-frontends")]
+fn captured_sdk_global_json<'a>(
+    probes: &[backend_frontend_csharp::legacy::CSharpSdkProbe<'a>],
+) -> Option<&'a str> {
     // SDK probe validation requires nearest-first project ancestor order.
     probes.iter().find_map(|probe| probe.text)
 }
 
+#[cfg(feature = "paused-frontends")]
 fn csharp_sdk_observation_fingerprint(
     observed: &backend_frontend_csharp::legacy::CSharpSdkObservation,
     probes: &[backend_frontend_csharp::legacy::CSharpSdkProbe<'_>],
@@ -3602,12 +3777,18 @@ fn csharp_sdk_observation_fingerprint(
     }
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"compiler.csharp.sdk-observation.v2\0");
-    text(&mut hasher, backend_frontend_csharp::legacy::CSHARP_GLOBALIZATION_POLICY_ID);
+    text(
+        &mut hasher,
+        backend_frontend_csharp::legacy::CSHARP_GLOBALIZATION_POLICY_ID,
+    );
     text(&mut hasher, &observed.sdk_directory.to_string_lossy());
     text(&mut hasher, requested_framework);
     text(&mut hasher, &observed.target_framework);
     text(&mut hasher, &observed.nullable);
-    hasher.update(&[u8::from(observed.allow_unsafe), u8::from(observed.outside_root_unknown)]);
+    hasher.update(&[
+        u8::from(observed.allow_unsafe),
+        u8::from(observed.outside_root_unknown),
+    ]);
     text(&mut hasher, &observed.language_version);
     text(&mut hasher, &observed.output_type);
     hasher.update(&(observed.targeting_directories.len() as u64).to_be_bytes());
@@ -3700,13 +3881,18 @@ pub(crate) struct StagedPackageCompilation {
     coverage_gaps: Box<[PackageSourceCoverageGap]>,
     image_plan: Box<[crate::publication::manifest::SemanticImageRegion]>,
     semantic_images: Box<[u8]>,
+    #[cfg(feature = "paused-frontends")]
     csharp_evidence: Box<[StagedCSharpInvocationEvidence]>,
-    csharp_resolver_receipt:
-        Option<backend_frontend_csharp::legacy::CSharpResolverReceipt>,
+    #[cfg(feature = "paused-frontends")]
+    csharp_resolver_receipt: Option<backend_frontend_csharp::legacy::CSharpResolverReceipt>,
+    #[cfg(feature = "paused-frontends")]
     csharp_resolver_snapshot:
         Option<std::sync::Arc<backend_frontend_csharp::legacy::CSharpResolvedReferenceSnapshot>>,
+    #[cfg(feature = "paused-frontends")]
     csharp_execution: backend_frontend_csharp::legacy::CSharpSourceExecutionLeases,
+    #[cfg(feature = "paused-frontends")]
     csharp_config: Box<[StagedCSharpConfigProbe]>,
+    #[cfg(feature = "paused-frontends")]
     csharp_unit: Option<Box<str>>,
     package_identity: [u8; 32],
     target_identity: ContentId<backend_version::CompilationTargetDomain>,
@@ -3743,10 +3929,14 @@ pub struct StagedCSharpConfigProbe {
 impl StagedCSharpConfigProbe {
     /// Exact package-relative probe path.
     #[must_use]
-    pub fn path(&self) -> &str { &self.path }
+    pub fn path(&self) -> &str {
+        &self.path
+    }
     /// Captured UTF-8 text, or an observed absence.
     #[must_use]
-    pub fn text(&self) -> Option<&str> { self.text.as_deref() }
+    pub fn text(&self) -> Option<&str> {
+        self.text.as_deref()
+    }
 }
 
 /// Claim-only evidence from one C# helper invocation, retained through staging.
@@ -3756,27 +3946,41 @@ pub struct StagedCSharpInvocationEvidence {
     input_content: [u8; 32],
     source_sha256: [u8; 32],
     evidence: Box<[u8]>,
+    #[cfg(feature = "paused-frontends")]
     execution: backend_frontend_csharp::legacy::CSharpExecutionLease,
 }
 impl StagedCSharpInvocationEvidence {
     /// Captured package-relative source binding.
     #[must_use]
-    pub fn path(&self) -> &str { &self.path }
+    pub fn path(&self) -> &str {
+        &self.path
+    }
     /// SourceFact-domain identity and length measured from this exact source buffer.
     #[must_use]
-    pub const fn source(&self) -> backend_semantic::ir::SourceIdentity { self.source }
+    pub const fn source(&self) -> backend_semantic::ir::SourceIdentity {
+        self.source
+    }
     /// InputContentSchema object version measured from that same buffer.
     #[must_use]
-    pub const fn input_content(&self) -> [u8; 32] { self.input_content }
+    pub const fn input_content(&self) -> [u8; 32] {
+        self.input_content
+    }
     /// Roslyn source-binding SHA-256 measured from that same buffer.
     #[must_use]
-    pub const fn source_sha256(&self) -> [u8; 32] { self.source_sha256 }
+    pub const fn source_sha256(&self) -> [u8; 32] {
+        self.source_sha256
+    }
     /// Checked helper sidecar; selected authority requires a separate owner join.
     #[must_use]
-    pub fn evidence(&self) -> &[u8] { &self.evidence }
+    pub fn evidence(&self) -> &[u8] {
+        &self.evidence
+    }
     /// The exact execution owner of the invocation that produced this evidence.
     #[must_use]
-    pub fn execution_lease(&self) -> &backend_frontend_csharp::legacy::CSharpExecutionLease { &self.execution }
+    #[cfg(feature = "paused-frontends")]
+    pub fn execution_lease(&self) -> &backend_frontend_csharp::legacy::CSharpExecutionLease {
+        &self.execution
+    }
 }
 
 struct StagedPythonProjectWitness {
@@ -4126,6 +4330,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 timeout: *timeout,
             }
         })?;
+        #[cfg(feature = "paused-frontends")]
         let authority = match (request.profile, self.package_authority.clang) {
             (
                 backend_semantic::vocabulary::LanguageProfile::C(_)
@@ -4134,6 +4339,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             ) => crate::driver::SemanticAuthorityInput::ClangBuffer { environment },
             _ => crate::driver::SemanticAuthorityInput::None,
         };
+        #[cfg(not(feature = "paused-frontends"))]
+        let authority = crate::driver::SemanticAuthorityInput::None;
         self.stage_prepared(
             request,
             source,
@@ -4217,8 +4424,11 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             package_root: &resolved.package_root,
             source_path: &resolved.source_path,
             source: &resolved.bytes,
+            #[cfg(feature = "paused-frontends")]
             java_sourcepath: &[],
+            #[cfg(feature = "paused-frontends")]
             csharp_sources: None,
+            #[cfg(feature = "paused-frontends")]
             csharp_config: None,
             unit_key: &unit_key,
             profile: application_request.profile,
@@ -4337,6 +4547,15 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             })?;
         let request = package.request.as_ref();
         let target = package.request.target;
+        #[cfg(not(feature = "paused-frontends"))]
+        if !matches!(
+            target.profile,
+            LanguageProfile::Rust(_) | LanguageProfile::Python(_) | LanguageProfile::TypeScript(_)
+        ) {
+            return Err(PackageSemanticError::PausedLanguage {
+                language: target.profile.language(),
+            });
+        }
         let mut input = package
             .input_claim
             .unwrap_or_else(|| package_source_input_witness(&package));
@@ -4375,6 +4594,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 }
             })?,
         };
+        #[cfg(feature = "paused-frontends")]
         if target.profile.language() == backend_semantic::vocabulary::Language::Go {
             let stop = backend_frontend_go::legacy::GoOracleControl::new(
                 Some(cancelled),
@@ -4481,66 +4701,157 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         // The SDK probe runs only on an explicitly captured simple unit. Its
         // observed paths/options remain attempt-local and never inherit a
         // startup fingerprint or establish input-closure authority.
+        #[allow(unused_mut)]
         let mut sdk_fingerprint: Option<[u8; 32]> = None;
+        #[cfg(feature = "paused-frontends")]
         let mut captured_global_json: Option<&str> = None;
+        #[cfg(feature = "paused-frontends")]
         let mut restored_csharp_references = None;
+        #[cfg(feature = "paused-frontends")]
         let sdk_observation = if let Some(probes) = package.csharp_sdk_probes {
             captured_global_json = captured_sdk_global_json(probes);
-            let config = package.csharp_config.ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "captured C# project configuration" })?;
+            let config =
+                package
+                    .csharp_config
+                    .ok_or(PackageSemanticError::CSharpSdkUnavailable {
+                        reason: "captured C# project configuration",
+                    })?;
             let options = super::csharp_sdk_options::simple_csharp_sdk_options(
-                config.first().and_then(|entry| entry.text).ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "captured C# project configuration" })?,
+                config.first().and_then(|entry| entry.text).ok_or(
+                    PackageSemanticError::CSharpSdkUnavailable {
+                        reason: "captured C# project configuration",
+                    },
+                )?,
                 config.iter().skip(1).all(|entry| entry.text.is_none()),
-            ).ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "unsupported C# SDK project options" })?;
-            let CompilationUnitKeyV2::CSharpProject { project_path } = package.package_target.unit_key() else {
-                return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK project unit" });
+            )
+            .ok_or(PackageSemanticError::CSharpSdkUnavailable {
+                reason: "unsupported C# SDK project options",
+            })?;
+            let CompilationUnitKeyV2::CSharpProject { project_path } =
+                package.package_target.unit_key()
+            else {
+                return Err(PackageSemanticError::CSharpSdkUnavailable {
+                    reason: "C# SDK project unit",
+                });
             };
             if !options.package_references.is_empty() || !options.project_references.is_empty() {
                 let project = package.package_root.join(project_path.as_ref());
-                let directory = project.parent().ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "C# project directory unavailable" })?;
-                let expected_packages = options.package_references.iter().map(|(id, version)| (id.as_str(), version.as_str())).collect::<Vec<_>>();
-                let expected_projects = options.project_references.iter().map(String::as_str).collect::<Vec<_>>();
-                let expected_include_assets = options.include_assets.iter().map(|(id, assets)| (id.as_str(), assets.as_str())).collect::<Vec<_>>();
-                restored_csharp_references = Some(backend_frontend_csharp::legacy::resolve_project_assets_with_metadata(
-                    &directory.join("obj/project.assets.json"), package.package_root, &options.target_framework,
-                    &expected_packages, &expected_projects, &expected_include_assets,
-                ).map_err(PackageSemanticError::CSharpRestore)?);
+                let directory =
+                    project
+                        .parent()
+                        .ok_or(PackageSemanticError::CSharpSdkUnavailable {
+                            reason: "C# project directory unavailable",
+                        })?;
+                let expected_packages = options
+                    .package_references
+                    .iter()
+                    .map(|(id, version)| (id.as_str(), version.as_str()))
+                    .collect::<Vec<_>>();
+                let expected_projects = options
+                    .project_references
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>();
+                let expected_include_assets = options
+                    .include_assets
+                    .iter()
+                    .map(|(id, assets)| (id.as_str(), assets.as_str()))
+                    .collect::<Vec<_>>();
+                restored_csharp_references = Some(
+                    backend_frontend_csharp::legacy::resolve_project_assets_with_metadata(
+                        &directory.join("obj/project.assets.json"),
+                        package.package_root,
+                        &options.target_framework,
+                        &expected_packages,
+                        &expected_projects,
+                        &expected_include_assets,
+                    )
+                    .map_err(PackageSemanticError::CSharpRestore)?,
+                );
             }
-            let toolchain = match self.toolchain(first_application_request) {
-                Ok(ToolchainSelection::ResolvedNative(toolchain)) => toolchain.external().map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK host unavailable" })?,
-                _ => return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK host unavailable" }),
-            };
+            let toolchain =
+                match self.toolchain(first_application_request) {
+                    Ok(ToolchainSelection::ResolvedNative(toolchain)) => toolchain
+                        .external()
+                        .map_err(|_| PackageSemanticError::CSharpSdkUnavailable {
+                            reason: "C# SDK host unavailable",
+                        })?,
+                    _ => {
+                        return Err(PackageSemanticError::CSharpSdkUnavailable {
+                            reason: "C# SDK host unavailable",
+                        });
+                    }
+                };
             // Restore reports effective references, including SDK implicit
             // frameworks. The captured project grammar rejects explicit
             // FrameworkReference items; do not turn restore observations into
             // declarations. Refuse any framework not implicit for this SDK.
             if let Some(references) = restored_csharp_references.as_ref() {
-                if !super::csharp_sdk_options::restored_frameworks_are_implicit(options.kind, &references.framework_references) {
-                    return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# restored framework reference provenance unavailable" });
+                if !super::csharp_sdk_options::restored_frameworks_are_implicit(
+                    options.kind,
+                    &references.framework_references,
+                ) {
+                    return Err(PackageSemanticError::CSharpSdkUnavailable {
+                        reason: "C# restored framework reference provenance unavailable",
+                    });
                 }
             }
             let properties = options.properties.clone();
             let observed = backend_frontend_csharp::legacy::observe_csharp_sdk_with(
-                toolchain.executable(), project_path, probes, options.kind, &options.target_framework,
-                options.implicit_usings, &properties, control.deadline, cancelled,
-            ).map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK observation unavailable" })?;
+                toolchain.executable(),
+                project_path,
+                probes,
+                options.kind,
+                &options.target_framework,
+                options.implicit_usings,
+                &properties,
+                control.deadline,
+                cancelled,
+            )
+            .map_err(|_| PackageSemanticError::CSharpSdkUnavailable {
+                reason: "C# SDK observation unavailable",
+            })?;
             // With no global.json inside the captured root the installed SDK's own
             // default applies; a pin above the captured root is not observable
             // here. The flag is sealed into the plane identity so the result never
             // claims more than the SDK actually used.
             let expected_language = match target.profile {
-                LanguageProfile::CSharp(backend_semantic::vocabulary::CSharpVersion::CSharp10) => "10.0",
-                LanguageProfile::CSharp(backend_semantic::vocabulary::CSharpVersion::CSharp11) => "11.0",
-                LanguageProfile::CSharp(backend_semantic::vocabulary::CSharpVersion::CSharp12) => "12.0",
-                LanguageProfile::CSharp(backend_semantic::vocabulary::CSharpVersion::CSharp13) => "13.0",
-                LanguageProfile::CSharp(backend_semantic::vocabulary::CSharpVersion::CSharp14) => "14.0",
-                _ => return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK language profile unsupported" }),
+                LanguageProfile::CSharp(backend_semantic::vocabulary::CSharpVersion::CSharp10) => {
+                    "10.0"
+                }
+                LanguageProfile::CSharp(backend_semantic::vocabulary::CSharpVersion::CSharp11) => {
+                    "11.0"
+                }
+                LanguageProfile::CSharp(backend_semantic::vocabulary::CSharpVersion::CSharp12) => {
+                    "12.0"
+                }
+                LanguageProfile::CSharp(backend_semantic::vocabulary::CSharpVersion::CSharp13) => {
+                    "13.0"
+                }
+                LanguageProfile::CSharp(backend_semantic::vocabulary::CSharpVersion::CSharp14) => {
+                    "14.0"
+                }
+                _ => {
+                    return Err(PackageSemanticError::CSharpSdkUnavailable {
+                        reason: "C# SDK language profile unsupported",
+                    });
+                }
             };
-            if observed.language_version != expected_language { return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK language profile differs" }); }
+            if observed.language_version != expected_language {
+                return Err(PackageSemanticError::CSharpSdkUnavailable {
+                    reason: "C# SDK language profile differs",
+                });
+            }
             // The SDK facts are observations of this host's installed SDK, so
             // no portable execution identity may stand for them. They are
             // sealed into the host-local plane identity below instead.
             execution_identity = None;
-            let mut fingerprint = csharp_sdk_observation_fingerprint(&observed, probes, config, &options.target_framework);
+            let mut fingerprint = csharp_sdk_observation_fingerprint(
+                &observed,
+                probes,
+                config,
+                &options.target_framework,
+            );
             if let Some(references) = restored_csharp_references.as_ref() {
                 let mut hasher = blake3::Hasher::new();
                 hasher.update(b"compiler.csharp.restored-sdk-observation.v1\0");
@@ -4550,32 +4861,69 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             }
             sdk_fingerprint = Some(fingerprint);
             Some(observed)
-        } else { None };
+        } else {
+            None
+        };
+        #[cfg(feature = "paused-frontends")]
         let csharp_project_path = match package.package_target.unit_key() {
             CompilationUnitKeyV2::CSharpProject { project_path } => Some(project_path),
             _ => None,
         };
+        #[cfg(feature = "paused-frontends")]
         let mut resolver_owner = None;
+        #[cfg(feature = "paused-frontends")]
         if let Some(observed) = sdk_observation.as_ref() {
             let mut candidates = Vec::new();
             for directory in &observed.targeting_directories {
-                for (index, entry) in fs::read_dir(directory).map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK candidate directory unavailable" })?.enumerate() {
-                    if index >= 16384 { return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK candidate directory limit" }); }
-                    let path = entry.map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK candidate unavailable" })?.path();
+                for (index, entry) in fs::read_dir(directory)
+                    .map_err(|_| PackageSemanticError::CSharpSdkUnavailable {
+                        reason: "C# SDK candidate directory unavailable",
+                    })?
+                    .enumerate()
+                {
+                    if index >= 16384 {
+                        return Err(PackageSemanticError::CSharpSdkUnavailable {
+                            reason: "C# SDK candidate directory limit",
+                        });
+                    }
+                    let path = entry
+                        .map_err(|_| PackageSemanticError::CSharpSdkUnavailable {
+                            reason: "C# SDK candidate unavailable",
+                        })?
+                        .path();
                     if path.extension().is_some_and(|extension| extension == "dll") {
-                        if candidates.len() >= 8192 { return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK candidate limit" }); }
+                        if candidates.len() >= 8192 {
+                            return Err(PackageSemanticError::CSharpSdkUnavailable {
+                                reason: "C# SDK candidate limit",
+                            });
+                        }
                         candidates.push(path);
                     }
                 }
             }
-            if candidates.is_empty() { return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK resolver candidates unavailable" }); }
-            let _project_path = csharp_project_path.ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK project path unavailable" })?;
+            if candidates.is_empty() {
+                return Err(PackageSemanticError::CSharpSdkUnavailable {
+                    reason: "C# SDK resolver candidates unavailable",
+                });
+            }
+            let _project_path =
+                csharp_project_path.ok_or(PackageSemanticError::CSharpSdkUnavailable {
+                    reason: "C# SDK project path unavailable",
+                })?;
             let global_json = captured_global_json;
-            let toolchain = match self.toolchain(first_application_request) {
-                Ok(ToolchainSelection::ResolvedNative(toolchain)) => toolchain.external()
-                    .map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK host unavailable" })?,
-                _ => return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK host unavailable" }),
-            };
+            let toolchain =
+                match self.toolchain(first_application_request) {
+                    Ok(ToolchainSelection::ResolvedNative(toolchain)) => toolchain
+                        .external()
+                        .map_err(|_| PackageSemanticError::CSharpSdkUnavailable {
+                            reason: "C# SDK host unavailable",
+                        })?,
+                    _ => {
+                        return Err(PackageSemanticError::CSharpSdkUnavailable {
+                            reason: "C# SDK host unavailable",
+                        });
+                    }
+                };
             let snapshot = backend_frontend_csharp::legacy::resolve_references_with_sdk(
                 toolchain.executable(),
                 &observed.target_framework,
@@ -4587,11 +4935,18 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 &observed.output_type,
                 &[],
                 &candidates,
-                restored_csharp_references.as_ref().map_or(&[][..], |references| references.files.as_slice()),
-                restored_csharp_references.as_ref().map(|references| references.assets_bytes()),
+                restored_csharp_references
+                    .as_ref()
+                    .map_or(&[][..], |references| references.files.as_slice()),
+                restored_csharp_references
+                    .as_ref()
+                    .map(|references| references.assets_bytes()),
                 control.deadline,
                 cancelled,
-            ).map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK reference resolution unavailable" })?;
+            )
+            .map_err(|_| PackageSemanticError::CSharpSdkUnavailable {
+                reason: "C# SDK reference resolution unavailable",
+            })?;
             if let Some(fingerprint) = sdk_fingerprint.as_mut() {
                 let mut hasher = blake3::Hasher::new();
                 hasher.update(b"compiler.csharp.resolved-snapshot.v1\0");
@@ -4601,31 +4956,84 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             }
             resolver_owner = Some(Arc::new(snapshot));
         }
-        let mut sdk_using_names = sdk_observation.as_ref().map(|observation| observation.usings.iter().map(String::as_str).collect::<Vec<_>>());
-        let mut sdk_define_names = sdk_observation.as_ref().map(|observation| observation.defines.iter().map(String::as_str).collect::<Vec<_>>());
+        #[cfg(feature = "paused-frontends")]
+        let mut sdk_using_names = sdk_observation.as_ref().map(|observation| {
+            observation
+                .usings
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        });
+        #[cfg(feature = "paused-frontends")]
+        let mut sdk_define_names = sdk_observation.as_ref().map(|observation| {
+            observation
+                .defines
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        });
         let mut package_authority_configuration = self.package_authority;
+        #[cfg(feature = "paused-frontends")]
         if let Some(csharp) = package_authority_configuration.csharp.as_mut() {
             csharp.resolved_reference_snapshot = resolver_owner.as_deref();
         }
+        #[cfg(feature = "paused-frontends")]
         if sdk_observation.is_some() {
-            let csharp = package_authority_configuration.csharp.as_mut().ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "C# helper unavailable" })?;
-            if csharp.configuration.reference_directory.is_some() || !csharp.configuration.additional_reference_directories.is_empty() || resolver_owner.is_none() {
-                return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "conflicting C# reference selection" });
+            let csharp = package_authority_configuration.csharp.as_mut().ok_or(
+                PackageSemanticError::CSharpSdkUnavailable {
+                    reason: "C# helper unavailable",
+                },
+            )?;
+            if csharp.configuration.reference_directory.is_some()
+                || !csharp
+                    .configuration
+                    .additional_reference_directories
+                    .is_empty()
+                || resolver_owner.is_none()
+            {
+                return Err(PackageSemanticError::CSharpSdkUnavailable {
+                    reason: "conflicting C# reference selection",
+                });
             }
-            let names = sdk_using_names.as_mut().ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK usings unavailable" })?;
+            let names =
+                sdk_using_names
+                    .as_mut()
+                    .ok_or(PackageSemanticError::CSharpSdkUnavailable {
+                        reason: "C# SDK usings unavailable",
+                    })?;
             names.extend_from_slice(csharp.configuration.extra_usings);
-            let defines = sdk_define_names.as_mut().ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK defines unavailable" })?;
+            let defines =
+                sdk_define_names
+                    .as_mut()
+                    .ok_or(PackageSemanticError::CSharpSdkUnavailable {
+                        reason: "C# SDK defines unavailable",
+                    })?;
             defines.extend_from_slice(csharp.configuration.define_symbols);
             csharp.configuration.define_symbols = defines;
             csharp.configuration.exact_define_symbols = true;
-            csharp.configuration.target_framework = sdk_observation.as_ref().map(|observation| observation.target_framework.as_str());
-            csharp.configuration.exact_nullable = sdk_observation.as_ref().map(|observation| observation.nullable.as_str());
-            csharp.configuration.exact_unsafe = sdk_observation.as_ref().map(|observation| observation.allow_unsafe);
-            csharp.configuration.exact_output_type = sdk_observation.as_ref().map(|observation| observation.output_type.as_str());
-            csharp.configuration.exact_sdk_kind = sdk_observation.as_ref().map(|observation| match observation.sdk_kind {
-                backend_frontend_csharp::legacy::CSharpSdkKind::Standard => "Microsoft.NET.Sdk",
-                backend_frontend_csharp::legacy::CSharpSdkKind::Web => "Microsoft.NET.Sdk.Web",
-            });
+            csharp.configuration.target_framework = sdk_observation
+                .as_ref()
+                .map(|observation| observation.target_framework.as_str());
+            csharp.configuration.exact_nullable = sdk_observation
+                .as_ref()
+                .map(|observation| observation.nullable.as_str());
+            csharp.configuration.exact_unsafe = sdk_observation
+                .as_ref()
+                .map(|observation| observation.allow_unsafe);
+            csharp.configuration.exact_output_type = sdk_observation
+                .as_ref()
+                .map(|observation| observation.output_type.as_str());
+            csharp.configuration.exact_sdk_kind =
+                sdk_observation
+                    .as_ref()
+                    .map(|observation| match observation.sdk_kind {
+                        backend_frontend_csharp::legacy::CSharpSdkKind::Standard => {
+                            "Microsoft.NET.Sdk"
+                        }
+                        backend_frontend_csharp::legacy::CSharpSdkKind::Web => {
+                            "Microsoft.NET.Sdk.Web"
+                        }
+                    });
             // The admitted project grammar excludes explicit FrameworkReference items.
             csharp.configuration.exact_framework_references = Some(&[]);
             csharp.configuration.reference_directory = None;
@@ -4993,8 +5401,11 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         package_root: package.package_root,
                         source_path: &first_source_path,
                         source: first_source.source.as_bytes(),
+                        #[cfg(feature = "paused-frontends")]
                         java_sourcepath: &[],
+                        #[cfg(feature = "paused-frontends")]
                         csharp_sources: None,
+                        #[cfg(feature = "paused-frontends")]
                         csharp_config: None,
                         unit_key: package.package_target.unit_key(),
                         profile: target.profile,
@@ -5242,15 +5653,26 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         let mut native_typescript_headers = Vec::new();
         let mut native_header_budget = 32 * 1024 * 1024usize;
         let mut native_lines_budget = 64 * 1024 * 1024usize;
+        #[cfg(feature = "paused-frontends")]
         let mut csharp_evidence = Vec::new();
+        #[cfg(feature = "paused-frontends")]
         let mut csharp_resolver_receipt = None;
+        #[cfg(feature = "paused-frontends")]
         let mut csharp_resolver_snapshot = None;
-        let mut csharp_execution = backend_frontend_csharp::legacy::CSharpSourceExecutionLeases::default();
+        #[cfg(feature = "paused-frontends")]
+        let mut csharp_execution =
+            backend_frontend_csharp::legacy::CSharpSourceExecutionLeases::default();
+        #[cfg(feature = "paused-frontends")]
         let csharp_config = package.csharp_config.map_or_else(Vec::new, |probes| {
-            probes.iter().map(|probe| StagedCSharpConfigProbe {
-                path: probe.path.into(), text: probe.text.map(Into::into),
-            }).collect::<Vec<_>>()
+            probes
+                .iter()
+                .map(|probe| StagedCSharpConfigProbe {
+                    path: probe.path.into(),
+                    text: probe.text.map(Into::into),
+                })
+                .collect::<Vec<_>>()
         });
+        #[cfg(feature = "paused-frontends")]
         let mut csharp_evidence_bytes = 0usize;
         let mut fragment_bytes = 0_usize;
         let mut semantic_bytes = 0_usize;
@@ -5571,8 +5993,11 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         package_root: package.package_root,
                         source_path: &source_path,
                         source: first_source.source.as_bytes(),
+                        #[cfg(feature = "paused-frontends")]
                         java_sourcepath: &[],
+                        #[cfg(feature = "paused-frontends")]
                         csharp_sources: None,
+                        #[cfg(feature = "paused-frontends")]
                         csharp_config: None,
                         unit_key: package.package_target.unit_key(),
                         profile: target.profile,
@@ -5580,6 +6005,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         control,
                         configuration: self.package_authority,
                     },
+                    #[cfg(feature = "paused-frontends")]
                     package.go_authority_witness,
                     lease.workspace(),
                 )
@@ -5609,7 +6035,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         // A Go package is admitted once and its sources are loaded one directory at
         // a time: entering authority per source re-proved the toolchain and the
         // dependency closure and re-ran the loader for every file.
+        #[cfg(feature = "paused-frontends")]
         let go_first_source_path = package.package_root.join(first_source.relative_path);
+        #[cfg(feature = "paused-frontends")]
         let mut go_authority = if target.profile.language()
             == backend_semantic::vocabulary::Language::Go
             && package_authority_configuration.go.is_some_and(|oracle| {
@@ -5639,8 +6067,11 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         package_root: package.package_root,
                         source_path: &go_first_source_path,
                         source: first_source.source.as_bytes(),
+                        #[cfg(feature = "paused-frontends")]
                         java_sourcepath: &[],
+                        #[cfg(feature = "paused-frontends")]
                         csharp_sources: None,
+                        #[cfg(feature = "paused-frontends")]
                         csharp_config: None,
                         unit_key: package.package_target.unit_key(),
                         profile: target.profile,
@@ -5648,6 +6079,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         control,
                         configuration: package_authority_configuration,
                     },
+                    #[cfg(feature = "paused-frontends")]
                     package.go_authority_witness,
                     &go_sources,
                 )
@@ -5821,6 +6253,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     }
                 })?;
             let source_path = package.package_root.join(source.relative_path);
+            #[cfg(feature = "paused-frontends")]
             let java_sourcepath = if matches!(target.profile, LanguageProfile::Java(_)) {
                 package
                     .compilation_sources()
@@ -5833,15 +6266,19 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             } else {
                 Vec::new()
             };
+            #[cfg(feature = "paused-frontends")]
             let csharp_sources = matches!(target.profile, LanguageProfile::CSharp(_)).then(|| {
                 package
                     .compilation_sources()
-                    .map(|captured| backend_frontend_csharp::legacy::CSharpCapturedSource {
-                        path: captured.relative_path(),
-                        text: captured.source(),
-                    })
+                    .map(
+                        |captured| backend_frontend_csharp::legacy::CSharpCapturedSource {
+                            path: captured.relative_path(),
+                            text: captured.source(),
+                        },
+                    )
                     .collect::<Vec<_>>()
             });
+            #[cfg(feature = "paused-frontends")]
             let go_owner = match go_authority.as_mut() {
                 Some(go) => match go.owner(&source_path) {
                     Ok(owner) => Some(owner),
@@ -5866,73 +6303,86 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             };
             // Reserve the maximum possible next C# snapshot before invoking
             // its producer. Previously staged owners remain held throughout.
+            #[cfg(feature = "paused-frontends")]
             if matches!(target.profile, LanguageProfile::CSharp(_)) {
-                csharp_execution.ensure_capacity_for_next()
-                    .map_err(|_| PackageSemanticError::Capacity { lane: "C# execution snapshot budget" })?;
+                csharp_execution.ensure_capacity_for_next().map_err(|_| {
+                    PackageSemanticError::Capacity {
+                        lane: "C# execution snapshot budget",
+                    }
+                })?;
             }
+            #[cfg(not(feature = "paused-frontends"))]
+            let go_owner = None;
             let transient_authority = if go_owner.is_some() {
                 go_owner
             } else if rust_workspace_authority.is_none()
                 && typescript_project.is_none()
                 && python_project.is_none()
             {
-                match enter_package_authority_with_go_authority_witness(
-                        PackageAuthorityRequest {
-                            package_root: package.package_root,
-                            source_path: &source_path,
-                            source: source.source.as_bytes(),
-                            java_sourcepath: &java_sourcepath,
-                            csharp_sources: csharp_sources.as_deref(),
-                            csharp_config: package.csharp_config,
-                            unit_key: package.package_target.unit_key(),
-                            profile: target.profile,
-                            toolchain,
-                            control,
-                            configuration: package_authority_configuration,
-                        },
-                        package.go_authority_witness,
+                let request = PackageAuthorityRequest {
+                    package_root: package.package_root,
+                    source_path: &source_path,
+                    source: source.source.as_bytes(),
+                    #[cfg(feature = "paused-frontends")]
+                    java_sourcepath: &java_sourcepath,
+                    #[cfg(feature = "paused-frontends")]
+                    csharp_sources: csharp_sources.as_deref(),
+                    #[cfg(feature = "paused-frontends")]
+                    csharp_config: package.csharp_config,
+                    unit_key: package.package_target.unit_key(),
+                    profile: target.profile,
+                    toolchain,
+                    control,
+                    configuration: package_authority_configuration,
+                };
+                #[cfg(feature = "paused-frontends")]
+                let entered = enter_package_authority_with_go_authority_witness(
+                    request,
+                    package.go_authority_witness,
+                );
+                #[cfg(not(feature = "paused-frontends"))]
+                let entered = enter_package_authority(request);
+                match entered.map_err(|cause| {
+                    package_authority_terminal(
+                        package.package_target.target(),
+                        application_request,
+                        source_authority,
+                        toolchain,
+                        cause,
                     )
-                    .map_err(|cause| {
-                        package_authority_terminal(
-                            package.package_target.target(),
-                            application_request,
+                }) {
+                    Ok(owner) => Some(owner),
+                    // Roslyn compiles every file of a C# project together. When it
+                    // reports errors in this exact file (an unrestored package, a
+                    // missing reference) only this file is unreliable: it becomes a
+                    // coverage gap with its reason and the files that compile keep
+                    // their facts. A fault of the runtime or helper, a deadline or a
+                    // cancellation stays a refusal, and a project in which no file
+                    // compiled still refuses with the first terminal.
+                    Err(terminal)
+                        if csharp_source_compile_errors(
+                            target.profile.language(),
+                            &terminal,
                             source_authority,
-                            toolchain,
-                            cause,
-                        )
-                    }) {
-                        Ok(owner) => Some(owner),
-                        // Roslyn compiles every file of a C# project together. When it
-                        // reports errors in this exact file (an unrestored package, a
-                        // missing reference) only this file is unreliable: it becomes a
-                        // coverage gap with its reason and the files that compile keep
-                        // their facts. A fault of the runtime or helper, a deadline or a
-                        // cancellation stays a refusal, and a project in which no file
-                        // compiled still refuses with the first terminal.
-                        Err(terminal)
-                            if csharp_source_compile_errors(
-                                target.profile.language(),
-                                &terminal,
-                                source_authority,
-                            ) =>
-                        {
-                            degraded.degrade_with_cause(
-                                terminal,
-                                source.relative_path,
-                                source_authority,
-                                PackageSourceCoverageGapCause::CSharpSourceDoesNotCompile,
-                                None,
-                                &mut coverage_gaps,
-                            )?;
-                            continue;
-                        }
-                        Err(terminal) => {
-                            return Err(PackageSemanticError::Compile {
-                                path: source.relative_path.into(),
-                                terminal: Box::new(terminal),
-                            });
-                        }
+                        ) =>
+                    {
+                        degraded.degrade_with_cause(
+                            terminal,
+                            source.relative_path,
+                            source_authority,
+                            PackageSourceCoverageGapCause::CSharpSourceDoesNotCompile,
+                            None,
+                            &mut coverage_gaps,
+                        )?;
+                        continue;
                     }
+                    Err(terminal) => {
+                        return Err(PackageSemanticError::Compile {
+                            path: source.relative_path.into(),
+                            terminal: Box::new(terminal),
+                        });
+                    }
+                }
             } else {
                 None
             };
@@ -6094,7 +6544,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 // none of whose sources compile still refuses with the first
                 // terminal.
                 Err(terminal)
-                    if target.profile.language() == backend_semantic::vocabulary::Language::Rust
+                    if target.profile.language()
+                        == backend_semantic::vocabulary::Language::Rust
                         && matches!(
                             &terminal,
                             CompilerTerminal::Compile {
@@ -6127,10 +6578,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         });
                     }
                     report_typescript_compatibility_gap(source.relative_path, &terminal);
-                    let diagnostic = typescript_source_gap_diagnostic(
-                        &terminal,
-                        source.source.as_bytes(),
-                    );
+                    let diagnostic =
+                        typescript_source_gap_diagnostic(&terminal, source.source.as_bytes());
                     degraded.degrade_with_diagnostic(
                         terminal,
                         source.relative_path,
@@ -6159,31 +6608,47 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             // Each C# source creates its own private execution snapshot. Keep
             // the exact owner that produced this source's image; equal manifest
             // digests cannot substitute for the actual owner-held lease.
+            #[cfg(feature = "paused-frontends")]
             if matches!(target.profile, LanguageProfile::CSharp(_)) {
                 let execution = match transient_authority.as_ref() {
-                    Some(super::package_authority::PackageAuthorityOwner::CSharp { execution, .. }) => execution,
-                    _ => return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# execution owner unavailable" }),
+                    Some(super::package_authority::PackageAuthorityOwner::CSharp {
+                        execution,
+                        ..
+                    }) => execution,
+                    _ => {
+                        return Err(PackageSemanticError::CSharpSdkUnavailable {
+                            reason: "C# execution owner unavailable",
+                        });
+                    }
                 };
                 use sha2::{Digest, Sha256};
                 let source_sha256 = Sha256::digest(source.source.as_bytes()).into();
-                csharp_execution.retain(source.relative_path, source_sha256, execution)
-                    .map_err(|_| PackageSemanticError::Capacity { lane: "C# source execution custody" })?;
+                csharp_execution
+                    .retain(source.relative_path, source_sha256, execution)
+                    .map_err(|_| PackageSemanticError::Capacity {
+                        lane: "C# source execution custody",
+                    })?;
             }
+            #[cfg(feature = "paused-frontends")]
             if let Some(snapshot) = resolver_owner.as_ref() {
                 let receipt = match transient_authority.as_ref() {
                     Some(super::package_authority::PackageAuthorityOwner::CSharp {
-                        resolver_receipt: Some(receipt), ..
+                        resolver_receipt: Some(receipt),
+                        ..
                     }) => Some(receipt),
                     _ => None,
                 };
                 if let Some(receipt) = receipt {
                     let owner_snapshot = match transient_authority.as_ref() {
                         Some(super::package_authority::PackageAuthorityOwner::CSharp {
-                            resolver_snapshot: Some(snapshot), ..
+                            resolver_snapshot: Some(snapshot),
+                            ..
                         }) => snapshot,
-                        _ => return Err(PackageSemanticError::CSharpSdkUnavailable {
-                            reason: "C# selected reference custody unavailable",
-                        }),
+                        _ => {
+                            return Err(PackageSemanticError::CSharpSdkUnavailable {
+                                reason: "C# selected reference custody unavailable",
+                            });
+                        }
                     };
                     csharp_resolver_snapshot = match csharp_resolver_snapshot {
                         Some(previous) if !std::sync::Arc::ptr_eq(&previous, owner_snapshot) => {
@@ -6208,45 +6673,87 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         Some(previous) => Some(previous),
                         None => Some(receipt.clone()),
                     };
+                } else {
+                    return Err(PackageSemanticError::CSharpSdkUnavailable {
+                        reason: "C# resolver receipt unavailable",
+                    });
                 }
-                else { return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# resolver receipt unavailable" }); }
                 let evidence = match transient_authority.as_ref() {
-                    Some(super::package_authority::PackageAuthorityOwner::CSharp { evidence: Some(evidence), .. }) => evidence,
-                    _ => return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# reference evidence unavailable" }),
+                    Some(super::package_authority::PackageAuthorityOwner::CSharp {
+                        evidence: Some(evidence),
+                        ..
+                    }) => evidence,
+                    _ => {
+                        return Err(PackageSemanticError::CSharpSdkUnavailable {
+                            reason: "C# reference evidence unavailable",
+                        });
+                    }
                 };
-                let selected_references = snapshot.targeting_references().map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# selected reference custody unavailable" })?;
-                if !super::csharp_evidence::references_match_snapshot(evidence, &selected_references) {
-                    return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# reference evidence differs from snapshot" });
+                let selected_references = snapshot.targeting_references().map_err(|_| {
+                    PackageSemanticError::CSharpSdkUnavailable {
+                        reason: "C# selected reference custody unavailable",
+                    }
+                })?;
+                if !super::csharp_evidence::references_match_snapshot(
+                    evidence,
+                    &selected_references,
+                ) {
+                    return Err(PackageSemanticError::CSharpSdkUnavailable {
+                        reason: "C# reference evidence differs from snapshot",
+                    });
                 }
             }
             // Retain same-invocation claims for both caller-supplied and
             // SDK-observed references. The aggregate is not closure authority.
+            #[cfg(feature = "paused-frontends")]
             if let Some(super::package_authority::PackageAuthorityOwner::CSharp {
-                evidence: Some(evidence), execution, ..
-            }) = transient_authority.as_ref() {
+                evidence: Some(evidence),
+                execution,
+                ..
+            }) = transient_authority.as_ref()
+            {
                 csharp_evidence_bytes = csharp_evidence_bytes
                     .checked_add(evidence.len())
                     .and_then(|total| total.checked_add(source.relative_path.len()))
-                    .and_then(|total| total.checked_add(std::mem::size_of::<StagedCSharpInvocationEvidence>()))
-                    .ok_or(PackageSemanticError::Capacity { lane: "C# invocation evidence" })?;
+                    .and_then(|total| {
+                        total.checked_add(std::mem::size_of::<StagedCSharpInvocationEvidence>())
+                    })
+                    .ok_or(PackageSemanticError::Capacity {
+                        lane: "C# invocation evidence",
+                    })?;
                 if csharp_evidence_bytes > 32 * 1024 * 1024 {
-                    return Err(PackageSemanticError::Capacity { lane: "C# invocation evidence" });
+                    return Err(PackageSemanticError::Capacity {
+                        lane: "C# invocation evidence",
+                    });
                 }
-                csharp_evidence.try_reserve(1).map_err(PackageSemanticError::Allocation)?;
+                csharp_evidence
+                    .try_reserve(1)
+                    .map_err(PackageSemanticError::Allocation)?;
                 let mut copy = Vec::new();
-                copy.try_reserve_exact(evidence.len()).map_err(PackageSemanticError::Allocation)?;
+                copy.try_reserve_exact(evidence.len())
+                    .map_err(PackageSemanticError::Allocation)?;
                 copy.extend_from_slice(evidence);
-                let verified = backend_compile::VerifiedSourceText::capture(source.source.as_bytes())
-                    .map_err(|_| PackageSemanticError::Capacity { lane: "C# invocation source" })?;
-                let source_identity = backend_semantic::ir::SourceIdentity::from_bytes(source.source.as_bytes())
-                    .ok_or(PackageSemanticError::Capacity { lane: "C# invocation source" })?;
+                let verified =
+                    backend_compile::VerifiedSourceText::capture(source.source.as_bytes())
+                        .map_err(|_| PackageSemanticError::Capacity {
+                            lane: "C# invocation source",
+                        })?;
+                let source_identity =
+                    backend_semantic::ir::SourceIdentity::from_bytes(source.source.as_bytes())
+                        .ok_or(PackageSemanticError::Capacity {
+                            lane: "C# invocation source",
+                        })?;
                 if source_identity != compiled.source {
-                    return Err(PackageSemanticError::Capacity { lane: "C# invocation source identity" });
+                    return Err(PackageSemanticError::Capacity {
+                        lane: "C# invocation source identity",
+                    });
                 }
                 use sha2::{Digest, Sha256};
                 let source_sha256 = Sha256::digest(source.source.as_bytes()).into();
-                if !csharp_execution.get(source.relative_path, source_sha256)
-                    .is_some_and(|retained| retained.same_snapshot(execution)) {
+                if !csharp_execution
+                    .get(source.relative_path, source_sha256)
+                    .is_some_and(|retained| retained.same_snapshot(execution))
+                {
                     return Err(PackageSemanticError::CSharpSdkUnavailable {
                         reason: "C# evidence execution owner mismatch",
                     });
@@ -6329,7 +6836,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 ),
             );
             let native_lines = if tsz_package_membership.contains_key(source.relative_path()) {
-                let budget = tsz_budget.as_ref().ok_or(PackageSemanticError::Capacity { lane: "TypeScript source lines budget" })?;
+                let budget = tsz_budget.as_ref().ok_or(PackageSemanticError::Capacity {
+                    lane: "TypeScript source lines budget",
+                })?;
                 super::typescript_program_lane::capture_source_lines(source.source, source.relative_path(), compiled.source, budget, &mut native_lines_budget)
                     .map_err(|_| {
                         if let Some(cause) = budget.stop_reason() {
@@ -6344,7 +6853,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                             }
                         } else { PackageSemanticError::Capacity { lane: "TypeScript source lines capture" } }
                     })?
-            } else { None };
+            } else {
+                None
+            };
             artifacts.push(StagedPackageArtifact {
                 native_lines,
                 source: compiled.source,
@@ -6394,6 +6905,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 )),
             });
         }
+        #[cfg(feature = "paused-frontends")]
         if let Some(go) = go_authority.take() {
             // Every image of this package is only publishable while the inputs it
             // was produced from still match their admitted witness.
@@ -6780,13 +7292,23 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             coverage_gaps: coverage_gaps.into_boxed_slice(),
             image_plan: image_plan.into_boxed_slice(),
             semantic_images: semantic_images.into_boxed_slice(),
+            #[cfg(feature = "paused-frontends")]
             csharp_evidence: csharp_evidence.into_boxed_slice(),
+            #[cfg(feature = "paused-frontends")]
             csharp_resolver_receipt,
+            #[cfg(feature = "paused-frontends")]
             csharp_resolver_snapshot,
+            #[cfg(feature = "paused-frontends")]
             csharp_execution,
+            #[cfg(feature = "paused-frontends")]
             csharp_config: csharp_config.into_boxed_slice(),
+            #[cfg(feature = "paused-frontends")]
             csharp_unit: match package.package_target.unit_key() {
-                CompilationUnitKeyV2::CSharpProject { project_path } if package.csharp_config.is_some() => Some(project_path.clone()),
+                CompilationUnitKeyV2::CSharpProject { project_path }
+                    if package.csharp_config.is_some() =>
+                {
+                    Some(project_path.clone())
+                }
                 _ => None,
             },
             package_identity: *package.request.as_ref().identity.as_ref(),
@@ -8109,7 +8631,9 @@ fn rust_source_scope_gap_cause(terminal: &CompilerTerminal) -> PackageSourceCove
             ..
         } if matches!(
             diagnostic.rust_source_scope_failure,
-            Some(backend_library::interface::RustSourceScopeFailureKind::AmbiguousSourceOwner { .. })
+            Some(
+                backend_library::interface::RustSourceScopeFailureKind::AmbiguousSourceOwner { .. }
+            )
         ) =>
         {
             PackageSourceCoverageGapCause::RustSourceSharedByCargoTargets
@@ -8129,18 +8653,27 @@ fn package_authority_terminal(
     toolchain: ToolchainSelection<'_>,
     cause: PackageAuthorityError,
 ) -> CompilerTerminal {
-    if matches!(
+    #[cfg(feature = "paused-frontends")]
+    let go_cancelled = matches!(
         &cause,
-        PackageAuthorityError::PythonPyrefly(PythonCheckerError::Cancelled { .. })
-            | PackageAuthorityError::GoOracle(backend_frontend_go::legacy::OracleError::Cancelled)
-    ) || super::compiler_typescript_failure::failure_kind(&cause)
-        .is_some_and(|failure| failure.is_cancelled())
+        PackageAuthorityError::GoOracle(backend_frontend_go::legacy::OracleError::Cancelled)
+    );
+    #[cfg(not(feature = "paused-frontends"))]
+    let go_cancelled = false;
+    if go_cancelled
+        || matches!(
+            &cause,
+            PackageAuthorityError::PythonPyrefly(PythonCheckerError::Cancelled { .. })
+        )
+        || super::compiler_typescript_failure::failure_kind(&cause)
+            .is_some_and(|failure| failure.is_cancelled())
     {
         return CompilerTerminal::PackageCancelled {
             target,
             phase: PackageCompilePhase::Authority,
         };
     }
+    #[cfg(feature = "paused-frontends")]
     if let PackageAuthorityError::GoOracle(error) = &cause
         && let Some(phase) = backend_frontend_go::legacy::GoOracleControl::deadline_phase(error)
     {
@@ -8240,6 +8773,7 @@ fn package_authority_terminal(
             let typescript_admission = super::compiler_typescript_failure::admission_detail(&cause);
             let typescript_cause = super::compiler_typescript_failure::failure_cause(&cause);
             let go_failure = match &cause {
+                #[cfg(feature = "paused-frontends")]
                 PackageAuthorityError::GoOracle(
                     backend_frontend_go::legacy::OracleError::DependencyClosureUnavailable {
                         failure,
@@ -8277,12 +8811,18 @@ fn package_authority_terminal(
             eprintln!(
                 "nudox: compiler authority refused phase={phase:?} class={class:?} detail={:?}{}{}",
                 message.text,
-                if message.truncated { " (truncated)" } else { "" },
+                if message.truncated {
+                    " (truncated)"
+                } else {
+                    ""
+                },
                 // The bounded text above keeps only the tail of the compiler's output; name
                 // the first unresolved reference whole, as a partial publication keeps no
                 // other record of the files it left out.
-                csharp_unresolved_facts(&cause)
-                    .map_or_else(String::new, |facts| format!(" first-unresolved={:?}", facts.detail())),
+                csharp_unresolved_facts(&cause).map_or_else(String::new, |facts| format!(
+                    " first-unresolved={:?}",
+                    facts.detail()
+                )),
             );
             let diagnostic = backend_library::interface::CompilerDiagnostic::from_native(
                 message.text.as_bytes(),
@@ -8317,7 +8857,10 @@ fn package_authority_terminal(
                 },
             });
             let diagnostic = diagnostic.map(|diagnostic| {
-                match (csharp_unresolved_facts(&cause), csharp_host_format_failure(&cause)) {
+                match (
+                    csharp_unresolved_facts(&cause),
+                    csharp_host_format_failure(&cause),
+                ) {
                     (Some(facts), _) => diagnostic.with_csharp_unresolved(facts),
                     (None, Some(failure)) => diagnostic.with_csharp_host_format(failure),
                     (None, None) => diagnostic,
@@ -8352,6 +8895,7 @@ fn package_authority_terminal(
 /// closed shape the compiler outcome carries; `None` when the helper named none or its
 /// summary does not fit that shape.
 /// Why the configured dotnet file cannot run the compiler stage, when that was the refusal.
+#[cfg(feature = "paused-frontends")]
 pub(crate) fn csharp_host_format_failure(
     cause: &PackageAuthorityError,
 ) -> Option<backend_library::interface::CSharpHostFormatFailure> {
@@ -8365,6 +8909,7 @@ pub(crate) fn csharp_host_format_failure(
     }
 }
 
+#[cfg(feature = "paused-frontends")]
 pub(crate) fn csharp_unresolved_facts(
     cause: &PackageAuthorityError,
 ) -> Option<backend_library::interface::CSharpUnresolvedReferenceFacts> {
@@ -8764,8 +9309,9 @@ fn package_authority_projection(
         | PackageAuthorityError::NativePythonToolchainIdentityMismatch { .. }
         | PackageAuthorityError::GoAuthorityInputsChanged { .. }
         | PackageAuthorityError::GoModuleLanguage { .. }
-        | PackageAuthorityError::GoAuthorityUnavailable { .. }
-        | PackageAuthorityError::ClangProject(_) => (Phase::Open, Class::Binding),
+        | PackageAuthorityError::GoAuthorityUnavailable { .. } => (Phase::Open, Class::Binding),
+        #[cfg(feature = "paused-frontends")]
+        PackageAuthorityError::ClangProject(_) => (Phase::Open, Class::Binding),
         PackageAuthorityError::PythonSyntax(_) => (Phase::Parse, Class::Syntax),
         PackageAuthorityError::PythonPyrefly(PythonCheckerError::ProjectConfiguration {
             ..
@@ -8781,19 +9327,24 @@ fn package_authority_projection(
         | PackageAuthorityError::RustWorkspaceWitnessUnavailable { .. } => {
             (Phase::Resolve, Class::Authority)
         }
+        #[cfg(feature = "paused-frontends")]
         PackageAuthorityError::GoOracle(cause) => go_authority_projection(cause),
         // Roslyn bound the project and reported errors: a type-level refusal of this
         // project's inputs, not a fault of the compiler runtime.
+        #[cfg(feature = "paused-frontends")]
         PackageAuthorityError::CSharp(
             backend_frontend_csharp::legacy::CSharpAuthorityError::CompilationIncomplete { .. },
         ) => (Phase::TypeCheck, Class::Type),
+        #[cfg(feature = "paused-frontends")]
         PackageAuthorityError::CSharp(_) => (Phase::TypeCheck, Class::Authority),
         PackageAuthorityError::TypeScript(_) => (Phase::TypeCheck, Class::Authority),
         PackageAuthorityError::TypeScriptTsz(_) => (Phase::Resolve, Class::Authority),
         PackageAuthorityError::TypeScriptProjectHost(_) => (Phase::TypeCheck, Class::Authority),
-        PackageAuthorityError::JavaHarness(_)
-        | PackageAuthorityError::GoAuthorityWitness(_)
-        | PackageAuthorityError::ImageTooLarge { .. }
+        #[cfg(feature = "paused-frontends")]
+        PackageAuthorityError::JavaHarness(_) | PackageAuthorityError::GoAuthorityWitness(_) => {
+            (Phase::Open, Class::Authority)
+        }
+        PackageAuthorityError::ImageTooLarge { .. }
         | PackageAuthorityError::RustToolchainAdmission { .. }
         | PackageAuthorityError::ToolchainUnavailable { .. }
         | PackageAuthorityError::Cancelled { .. }
@@ -8853,15 +9404,31 @@ const fn toolchain_terminal(
 #[cfg(test)]
 mod tests {
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn nearest_present_captured_global_json_wins() {
         use backend_frontend_csharp::legacy::CSharpSdkProbe;
         let probes = [
-            CSharpSdkProbe { path: "a/b/global.json", text: None },
-            CSharpSdkProbe { path: "a/global.json", text: Some("ancestor pin") },
-            CSharpSdkProbe { path: "global.json", text: Some("root pin") },
+            CSharpSdkProbe {
+                path: "a/b/global.json",
+                text: None,
+            },
+            CSharpSdkProbe {
+                path: "a/global.json",
+                text: Some("ancestor pin"),
+            },
+            CSharpSdkProbe {
+                path: "global.json",
+                text: Some("root pin"),
+            },
         ];
-        assert_eq!(super::captured_sdk_global_json(&probes), Some("ancestor pin"));
-        let absent = [CSharpSdkProbe { path: "global.json", text: None }];
+        assert_eq!(
+            super::captured_sdk_global_json(&probes),
+            Some("ancestor pin")
+        );
+        let absent = [CSharpSdkProbe {
+            path: "global.json",
+            text: None,
+        }];
         assert_eq!(super::captured_sdk_global_json(&absent), None);
     }
 
@@ -8886,6 +9453,7 @@ mod tests {
     use thiserror::Error;
 
     use crate::application::{LocalToolchainSet, LocalToolchainSetError, PackageAuthorityError};
+    #[cfg(feature = "paused-frontends")]
     use backend_frontend_go::legacy::OracleError;
     use backend_frontend_rust::legacy::RustAuthorityError;
 
@@ -8899,6 +9467,7 @@ mod tests {
     use backend_version::{ContentId, SourceFactDomain};
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn go_package_fragments_admit_materialized_over_64_mib_without_widening_other_profiles() {
         use backend_semantic::vocabulary::GoVersion;
         // Exercise real resident fragment lengths beyond the former aggregate cap.
@@ -9070,6 +9639,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn go_oracle_workspace_setup_errors_keep_open_authority_projection_and_cause_detail() {
         let directory_error =
             PackageAuthorityError::GoOracle(OracleError::GoOracleSourceDirectory(
@@ -9098,6 +9668,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn go_package_queue_keeps_capture_deadline_and_cancellation_precedence() {
         use crate::application::{
             LocalCompilerConfig, LocalCompilerControl, LocalCompilerTimeout, LocalPackageRootSet,
@@ -9202,6 +9773,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn go_absolute_deadline_keeps_typed_deadline_and_phase_not_external_cancel() {
         let request = super::ApplicationCompilerRequest {
             profile: LanguageProfile::Go(backend_semantic::vocabulary::GoVersion::Go125),
@@ -9286,6 +9858,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn go_dependency_refusal_preserves_exact_safe_cause_and_normal_setup_command() {
         use backend_frontend_go::legacy::oracle::GoDependencyClosureFailure;
         use backend_library::interface::GoAuthorityFailureKind;
@@ -9330,6 +9903,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn csharp_missing_roslyn_authority_is_configuration_admission_not_absent_build_support() {
         use backend_semantic::vocabulary::{CSharpVersion, Language};
 
@@ -9389,6 +9963,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn csharp_refused_compilation_names_its_first_unresolved_reference() {
         use backend_frontend_csharp::legacy::{
             CSharpAuthorityError, CSharpRestoreState, CSharpUnresolvedReference,
@@ -9444,8 +10019,14 @@ mod tests {
         else {
             panic!("a refused C# compilation is a type-level refusal");
         };
-        let facts = diagnostic.csharp_unresolved.as_ref().expect("named reference");
-        assert_eq!((facts.code(), facts.symbol(), facts.line()), (246, "DbContext", 15));
+        let facts = diagnostic
+            .csharp_unresolved
+            .as_ref()
+            .expect("named reference");
+        assert_eq!(
+            (facts.code(), facts.symbol(), facts.line()),
+            (246, "DbContext", 15)
+        );
         assert_eq!(facts.path(), "src/Api/Data/AppDbContext.cs");
         assert_eq!(facts.project(), Some("src/Api/Api.csproj"));
         let failure = backend_library::PackageCompilerFailure::from_package_terminal(
@@ -9485,6 +10066,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn csharp_launcher_script_host_is_named_in_the_refusal() {
         use backend_frontend_csharp::legacy::CSharpAuthorityError;
         use backend_semantic::vocabulary::CSharpVersion;
@@ -9521,8 +10103,16 @@ mod tests {
         };
         let failure = refused(true);
         assert_eq!(failure.kind_tag(), "csharp_host_launcher_script");
-        assert!(failure.detail().contains("launcher script"), "{}", failure.detail());
-        assert!(!failure.detail().contains("/toolchain"), "{}", failure.detail());
+        assert!(
+            failure.detail().contains("launcher script"),
+            "{}",
+            failure.detail()
+        );
+        assert!(
+            !failure.detail().contains("/toolchain"),
+            "{}",
+            failure.detail()
+        );
         let encoded = failure.encode_bounded_json().unwrap();
         assert_eq!(
             backend_library::PackageCompilerFailure::decode_bounded_json(&encoded).unwrap(),
@@ -10689,6 +11279,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "paused-frontends")]
     fn csharp_project_units_select_distinct_source_roots_and_reject_missing_roots() {
         let request = PackageCompileRequest::new(
             GenerateTarget {
@@ -11202,4 +11793,18 @@ mod staged_identity_recipe_tests {
             build.recipe()
         );
     }
+}
+
+#[cfg(not(feature = "paused-frontends"))]
+pub(crate) fn csharp_host_format_failure(
+    _cause: &PackageAuthorityError,
+) -> Option<backend_library::interface::CSharpHostFormatFailure> {
+    None
+}
+
+#[cfg(not(feature = "paused-frontends"))]
+pub(crate) fn csharp_unresolved_facts(
+    _cause: &PackageAuthorityError,
+) -> Option<backend_library::interface::CSharpUnresolvedReferenceFacts> {
+    None
 }

@@ -8,6 +8,7 @@ publish = false
 
 [features]
 cluster-process-journey-hooks = []
+paused-frontends = ["backend-frontend-clang", "backend-frontend-csharp", "backend-frontend-go", "backend-frontend-java"]
 
 [dependencies]
 backend-advisory = { path = "../advisory" }
@@ -25,10 +26,10 @@ backend-compile = { path = "../compile" }
 flate2.workspace = true
 backend-library = { path = "../library" }
 backend-platform = { path = "../platform" }
-backend-frontend-clang = { path = "../../frontends/clang" }
-backend-frontend-csharp = { path = "../../frontends/csharp" }
-backend-frontend-go = { path = "../../frontends/go" }
-backend-frontend-java = { path = "../../frontends/java" }
+backend-frontend-clang = { path = "../../frontends/clang", optional = true }
+backend-frontend-csharp = { path = "../../frontends/csharp", optional = true }
+backend-frontend-go = { path = "../../frontends/go", optional = true }
+backend-frontend-java = { path = "../../frontends/java", optional = true }
 backend-frontend-python = { path = "../../frontends/python" }
 backend-frontend-rust = { path = "../../frontends/rust" }
 backend-frontend-typescript = { path = "../../frontends/typescript" }
@@ -66,10 +67,7 @@ nix = { version = "0.30.1", default-features = false, features = ["socket", "use
 
 [dev-dependencies]
 allocation-counter.workspace = true
-backend-frontend-typescript = {
-    path = "../../frontends/typescript",
-    features = ["tsz-semantic-session-test-support"],
-}
+backend-frontend-typescript = { path = "../../frontends/typescript", features = ["tsz-semantic-session-test-support"] }
 futures-core.workspace = true
 tempfile.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }

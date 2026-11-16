@@ -42,6 +42,7 @@ use crate::application::{
     LocalRuntimeGoAuthorityFailure, ToolchainProbeLimits,
 };
 
+#[cfg(feature = "paused-frontends")]
 pub(crate) use authority::go_authority_failure;
 pub use capture::CapturedLocalHostEnvironment;
 pub use error::LocalCompilerHostError;
@@ -470,7 +471,10 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         };
         let mut paths =
             Vec::with_capacity(LocalHostVariable::CLOSED_ENVIRONMENT_SNAPSHOT_ROLE_COUNT);
+        #[cfg(feature = "paused-frontends")]
         let mut go_failure = self.go_authority_failure;
+        #[cfg(not(feature = "paused-frontends"))]
+        let go_failure: Option<LocalRuntimeGoAuthorityFailure> = None;
         let mut python_checker_failure = self.environment.python_checker_failure().cloned();
         for variable in LocalHostVariable::closed_environment_snapshot_roles() {
             if matches!(
@@ -579,6 +583,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         } else {
             self.capture_installed_python_paths(&mut paths, home.as_deref())?;
         }
+        #[cfg(feature = "paused-frontends")]
         for (variable, role, tool) in [(
             LocalHostVariable::NudoxGo,
             LocalHostPathRole::Native(NativeTool::GoCompiler),
@@ -631,9 +636,11 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 }
             }
         }
+        #[cfg(feature = "paused-frontends")]
         let go_selected = paths
             .iter()
             .any(|(variable, _)| *variable == LocalHostVariable::NudoxGo);
+        #[cfg(feature = "paused-frontends")]
         match self.go_module_cache_directory(home.as_deref(), go_selected) {
             Ok(Some(go_root)) => paths.push((LocalHostVariable::NudoxGoRoot, go_root)),
             Ok(None) => {}
@@ -644,6 +651,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             }
         }
 
+        #[cfg(feature = "paused-frontends")]
         if let Some(value) = self.environment.value(LocalHostVariable::NudoxGoOracle) {
             let path = PathBuf::from(value);
             let admitted = if path.is_absolute() {
@@ -777,11 +785,14 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         let probe_limits =
             ToolchainProbeLimits::new(VERSION_PROBE_TIMEOUT, nonzero(VERSION_PROBE_STREAM_BYTES))?;
         let home = self.optional_absolute_path(LocalHostVariable::Home)?;
+        #[cfg(feature = "paused-frontends")]
         let jdk_root = self.directory(
             LocalHostVariable::NudoxJdk,
             LocalHostPathRole::JdkRoot,
             self.jdk_candidates(home.as_deref()),
         )?;
+        #[cfg(not(feature = "paused-frontends"))]
+        let jdk_root = None;
         let typescript_host = self.typescript_host_selection(home.as_deref())?;
         let native_typescript = typescript_host.direct_native;
         let use_external_python_checker = self
@@ -789,6 +800,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             .value(LocalHostVariable::NudoxPyrefly)
             .is_some()
             || self.environment.python_checker_failure().is_some();
+        #[cfg(feature = "paused-frontends")]
         let (go, mut go_discovery_failure) = match self.executable(
             LocalHostVariable::NudoxGo,
             LocalHostPathRole::Native(NativeTool::GoCompiler),
@@ -800,9 +812,12 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 Some(LocalRuntimeGoAuthorityFailure::ExecutableUnavailable),
             ),
         };
+        #[cfg(feature = "paused-frontends")]
         if self.go_authority_failure.is_some() {
             go_discovery_failure = self.go_authority_failure;
         }
+        #[cfg(not(feature = "paused-frontends"))]
+        let mut go_discovery_failure = None;
         let cargo_home_deferred = self.environment.cargo_home_selection()
             == LocalHostCargoHomeSelection::DeferredDefault;
         let (cargo_home, cargo_home_deferred) = if cargo_home_deferred {
@@ -839,11 +854,14 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             )?,
             cargo_home,
             cargo_home_deferred,
+            #[cfg(feature = "paused-frontends")]
             clang: self.executable(
                 LocalHostVariable::NudoxClang,
                 LocalHostPathRole::Native(NativeTool::Clang),
                 self.executable_candidates(home.as_deref(), NativeTool::Clang),
             )?,
+            #[cfg(not(feature = "paused-frontends"))]
+            clang: None,
             python: if use_external_python_checker {
                 self.executable(
                     LocalHostVariable::NudoxPython,
@@ -854,17 +872,26 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 None
             },
             typescript: typescript_host.compiler.clone(),
+            #[cfg(feature = "paused-frontends")]
             go,
+            #[cfg(not(feature = "paused-frontends"))]
+            go: None,
+            #[cfg(feature = "paused-frontends")]
             java: self.executable(
                 LocalHostVariable::NudoxJavaCompiler,
                 LocalHostPathRole::Native(NativeTool::JavaCompiler),
                 self.java_candidates(home.as_deref(), jdk_root.as_deref()),
             )?,
+            #[cfg(not(feature = "paused-frontends"))]
+            java: None,
+            #[cfg(feature = "paused-frontends")]
             csharp: self.executable(
                 LocalHostVariable::NudoxDotnet,
                 LocalHostPathRole::Native(NativeTool::CSharpCompiler),
                 self.executable_candidates(home.as_deref(), NativeTool::CSharpCompiler),
             )?,
+            #[cfg(not(feature = "paused-frontends"))]
+            csharp: None,
         };
         let mut toolchains = if admit_toolchains_now {
             executables.admitted_toolchain_rows(

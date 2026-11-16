@@ -143,6 +143,7 @@ fn collect_transaction<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
 ) -> Result<CollectedFacts<'source, 'cancel>, CompileFailure<'diagnostic>> {
     let prepared = prepare(request)?;
     let plan = match &prepared.authority {
+        #[cfg(feature = "paused-frontends")]
         EnteredAuthority::Go { image } => {
             lower::go::controlled_resource_plan(prepared.lease.bytes(), image, prepared.permit)
                 .map_err(|cause| match cause {
@@ -248,6 +249,7 @@ struct PreparedCompile<'source, 'cancel> {
 /// rejected before this value exists, so lowerers receive only their one
 /// meaningful native or checked authority shape.
 enum EnteredAuthority<'source> {
+    #[cfg(feature = "paused-frontends")]
     Clang {
         profile: LanguageProfile,
         project: Option<&'source backend_frontend_clang::ClangProject>,
@@ -277,16 +279,15 @@ enum EnteredAuthority<'source> {
         target: Option<backend_frontend_rust::legacy::RustCargoTarget<'source>>,
         maximum_source_bytes: backend_frontend_rust::legacy::SourceByteLimit,
     },
-    Go {
-        image: &'source [u8],
-    },
+    #[cfg(feature = "paused-frontends")]
+    Go { image: &'source [u8] },
+    #[cfg(feature = "paused-frontends")]
     Java {
         profile: backend_semantic::vocabulary::JavaRelease,
         image: &'source [u8],
     },
-    CSharp {
-        image: &'source [u8],
-    },
+    #[cfg(feature = "paused-frontends")]
+    CSharp { image: &'source [u8] },
 }
 
 /// The one post-entry language contract.  `EnteredAuthority` is the only
@@ -312,27 +313,26 @@ trait LanguageSpec: language_spec_seal::Sealed {
     ) -> Result<(), CompileFailure<'diagnostic>>;
 }
 
+#[cfg(feature = "paused-frontends")]
 struct ClangSpec;
 struct TypeScriptSpec;
 struct PythonSpec;
 struct RustSpec;
+#[cfg(feature = "paused-frontends")]
 struct GoSpec;
+#[cfg(feature = "paused-frontends")]
 struct JavaSpec;
+#[cfg(feature = "paused-frontends")]
 struct CSharpSpec;
 
 macro_rules! seal_specs {
     ($($spec:ty),+ $(,)?) => { $(impl language_spec_seal::Sealed for $spec {})+ };
 }
-seal_specs!(
-    ClangSpec,
-    TypeScriptSpec,
-    PythonSpec,
-    RustSpec,
-    GoSpec,
-    JavaSpec,
-    CSharpSpec
-);
+seal_specs!(TypeScriptSpec, PythonSpec, RustSpec);
+#[cfg(feature = "paused-frontends")]
+seal_specs!(ClangSpec, GoSpec, JavaSpec, CSharpSpec);
 
+#[cfg(feature = "paused-frontends")]
 impl LanguageSpec for ClangSpec {
     type Authority<'source> = (
         LanguageProfile,
@@ -542,6 +542,7 @@ impl RustSpec {
     }
 }
 
+#[cfg(feature = "paused-frontends")]
 impl LanguageSpec for GoSpec {
     type Authority<'source> = &'source [u8];
     type Extension = backend_semantic::ir::GoFacts;
@@ -557,6 +558,7 @@ impl LanguageSpec for GoSpec {
     }
 }
 
+#[cfg(feature = "paused-frontends")]
 impl LanguageSpec for JavaSpec {
     type Authority<'source> = (backend_semantic::vocabulary::JavaRelease, &'source [u8]);
     type Extension = backend_semantic::ir::JavaFacts;
@@ -572,6 +574,7 @@ impl LanguageSpec for JavaSpec {
     }
 }
 
+#[cfg(feature = "paused-frontends")]
 impl LanguageSpec for CSharpSpec {
     type Authority<'source> = &'source [u8];
     type Extension = backend_semantic::ir::CSharpFacts;
@@ -714,6 +717,7 @@ fn enter_authority<'source, 'diagnostic>(
         profile,
     };
     match (profile, input) {
+        #[cfg(feature = "paused-frontends")]
         (LanguageProfile::C(profile), SemanticAuthorityInput::Clang { project }) => {
             Ok(EnteredAuthority::Clang {
                 profile: LanguageProfile::C(profile),
@@ -721,6 +725,7 @@ fn enter_authority<'source, 'diagnostic>(
                 environment: project.environment(),
             })
         }
+        #[cfg(feature = "paused-frontends")]
         (LanguageProfile::C(profile), SemanticAuthorityInput::ClangBuffer { environment }) => {
             Ok(EnteredAuthority::Clang {
                 profile: LanguageProfile::C(profile),
@@ -729,6 +734,7 @@ fn enter_authority<'source, 'diagnostic>(
             })
         }
         (LanguageProfile::C(_), SemanticAuthorityInput::None) => Err(required()),
+        #[cfg(feature = "paused-frontends")]
         (LanguageProfile::Cxx(profile), SemanticAuthorityInput::Clang { project }) => {
             Ok(EnteredAuthority::Clang {
                 profile: LanguageProfile::Cxx(profile),
@@ -736,6 +742,7 @@ fn enter_authority<'source, 'diagnostic>(
                 environment: project.environment(),
             })
         }
+        #[cfg(feature = "paused-frontends")]
         (LanguageProfile::Cxx(profile), SemanticAuthorityInput::ClangBuffer { environment }) => {
             Ok(EnteredAuthority::Clang {
                 profile: LanguageProfile::Cxx(profile),
@@ -809,14 +816,17 @@ fn enter_authority<'source, 'diagnostic>(
             maximum_source_bytes,
         }),
         (LanguageProfile::Rust(_), SemanticAuthorityInput::None) => Err(required()),
+        #[cfg(feature = "paused-frontends")]
         (LanguageProfile::Go(_), SemanticAuthorityInput::Go { image }) => {
             Ok(EnteredAuthority::Go { image })
         }
         (LanguageProfile::Go(_), SemanticAuthorityInput::None) => Err(required()),
+        #[cfg(feature = "paused-frontends")]
         (LanguageProfile::Java(profile), SemanticAuthorityInput::Java { image }) => {
             Ok(EnteredAuthority::Java { profile, image })
         }
         (LanguageProfile::Java(_), SemanticAuthorityInput::None) => Err(required()),
+        #[cfg(feature = "paused-frontends")]
         (LanguageProfile::CSharp(_), SemanticAuthorityInput::CSharp { image }) => {
             Ok(EnteredAuthority::CSharp { image })
         }
@@ -847,6 +857,7 @@ fn emit_facts<'source, 'cancel, 'diagnostic>(
 ) -> Result<(), CompileFailure<'diagnostic>> {
     checkpoint(prepared.permit, prepared.recipe)?;
     match &prepared.authority {
+        #[cfg(feature = "paused-frontends")]
         EnteredAuthority::Clang {
             profile,
             project,
@@ -893,10 +904,13 @@ fn emit_facts<'source, 'cancel, 'diagnostic>(
             diagnostic_output,
             facts,
         )?,
+        #[cfg(feature = "paused-frontends")]
         EnteredAuthority::Go { image, .. } => GoSpec::collect(image, prepared, None, facts)?,
+        #[cfg(feature = "paused-frontends")]
         EnteredAuthority::Java { profile, image } => {
             JavaSpec::collect(&(*profile, *image), prepared, None, facts)?;
         }
+        #[cfg(feature = "paused-frontends")]
         EnteredAuthority::CSharp { image, .. } => {
             CSharpSpec::collect(image, prepared, None, facts)?
         }
@@ -916,12 +930,18 @@ fn emit_facts<'source, 'cancel, 'diagnostic>(
     // proof. Each authority succeeded, so the collected-empty product is
     // the honest parity output — rejecting it would contradict an
     // authority that succeeded.
+    #[cfg(feature = "paused-frontends")]
+    let paused_empty = matches!(
+        prepared.authority,
+        EnteredAuthority::Go { .. } | EnteredAuthority::Clang { .. }
+    );
+    #[cfg(not(feature = "paused-frontends"))]
+    let paused_empty = false;
     if facts.len() == 0
+        && !paused_empty
         && !matches!(
             prepared.authority,
-            EnteredAuthority::Go { .. }
-                | EnteredAuthority::Clang { .. }
-                | EnteredAuthority::Rust { .. }
+            EnteredAuthority::Rust { .. }
                 | EnteredAuthority::RustWorkspace { .. }
                 // A module whose only content is an anonymous default export
                 // (`export default { … }` in a tool config) or side-effect
@@ -1370,6 +1390,7 @@ impl std::fmt::Write for BoundedAuthorityMessage<'_> {
     }
 }
 
+#[cfg(feature = "paused-frontends")]
 fn go_terminal<'diagnostic>(
     source_identity: SourceIdentity,
     recipe: CompileRecipeFact,
@@ -1408,6 +1429,7 @@ fn go_terminal<'diagnostic>(
     }
 }
 
+#[cfg(feature = "paused-frontends")]
 fn csharp_terminal<'diagnostic>(
     source_identity: SourceIdentity,
     recipe: CompileRecipeFact,
@@ -1457,6 +1479,7 @@ fn csharp_terminal<'diagnostic>(
     }
 }
 
+#[cfg(feature = "paused-frontends")]
 fn java_terminal<'diagnostic>(
     source_identity: SourceIdentity,
     recipe: CompileRecipeFact,
@@ -1507,6 +1530,7 @@ fn java_terminal<'diagnostic>(
     }
 }
 
+#[cfg(feature = "paused-frontends")]
 fn clang_terminal<'diagnostic>(
     source_identity: SourceIdentity,
     recipe: CompileRecipeFact,
