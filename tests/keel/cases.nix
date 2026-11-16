@@ -198,6 +198,21 @@ in {
       };
       steps = [
         (index "initial-index")
+        {
+          id = "index-alias-background-intent"; kind = "cli";
+          args = [ "index" "." "--execution-intent" "background" "--wait" "--wait-timeout" "180" ];
+          expect = { exit = 0; json = [
+            (eq "/index_operation/state" "known")
+            (eq "/index_operation/detail/state/state" "published")
+          ]; };
+        }
+        {
+          id = "package-graph-at-public-maximum"; kind = "cli";
+          args = [ "package-graph" "pkg:cargo/keel-rust-history@0.1.0" "dependencies" "--limit" "128" ];
+          expect = { exit = 0; json = [
+            (eq "/package_graph_page/limit" 128)
+          ]; };
+        }
         (bindSearch "find-leaf" "keel_rust_leaf")
         {
           id = "default-cli-summary-identity"; kind = "cli";
