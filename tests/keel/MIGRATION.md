@@ -1,9 +1,10 @@
 # CLI and MCP test migration inventory
 
-This is a cutover map, not authorization to delete tests today. Remove a Rust
-case only after its replacement row runs the built product processes and its
-expected result is reviewed. Keep implementation-level protocol laws until the
-new runner has a named protocol row that drives the real process boundary.
+The requested end state is a clean-slate integration suite. This map sequences
+the replacement work: carry each requirement into an independently authored law
+and run it through built product processes, then delete its superseded Rust test.
+The user has authorized that retirement. The sequencing keeps unimplemented
+protocol, crash and pagination requirements visible during the rewrite.
 
 ## Existing process coverage
 

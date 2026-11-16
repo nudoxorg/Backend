@@ -1805,7 +1805,7 @@ impl<P: Product> Server<P> {
             if let Some(structured) = result.get_mut("structuredContent").and_then(Value::as_object_mut) {
                 let edges = page.snapshot.graph_relations.as_deref().unwrap_or(&[]).iter().map(|edge| {
                     let label = |id| page.snapshot.root.rows().iter().find(|row| row.id == id).map(|row| row.label.as_str()).unwrap_or("");
-                    json!({"from": label(edge.from), "to": label(edge.to), "relation": edge.relation, "confidence": edge.confidence})
+                    json!({"from": label(edge.from), "to": label(edge.to), "from_id": edge.from.stable_key(), "to_id": edge.to.stable_key(), "relation": edge.relation, "confidence": edge.confidence})
                 }).collect::<Vec<_>>();
                 // Preserve one structured copy of each edge in this surface.
                 structured.remove("related_edges");
@@ -1816,6 +1816,31 @@ impl<P: Product> Server<P> {
                 }
                 if edges.len() > 10 { edge_preview.push_str("\n- More edges are available in structuredContent.edges."); }
                 structured.insert("edges".to_owned(), json!(edges));
+                // The neighborhood root changes with each page. Its source basis
+                // and semantic revision bind all pages to one owner observation;
+                // neither pagination nor a lack of withheld edges certifies a
+                // complete call graph.
+                let basis = page.snapshot.root.basis();
+                let address = selector.address();
+                let center = page.snapshot.root.rows().iter().find(|row| match row.id {
+                    backend_library::RowId::Symbol(id) => address.matches(id)
+                        || (!address.is_selected() && backend_library::symbol_key(row.label.as_str()).to_bytes() == address.claimed_bytes()),
+                    _ => false,
+                }).ok_or_else(|| RpcError::tool("related page center is absent from its admitted snapshot"))?;
+                structured.insert("related_basis".to_owned(), json!({
+                    "schema": 1,
+                    "source_view_root": backend_library::encode_id(basis.root.as_bytes()),
+                    "source_object": backend_library::encode_id(basis.object.as_bytes()),
+                    "branch": backend_library::encode_id(basis.branch.as_bytes()),
+                    "log": backend_library::encode_id(basis.log.as_bytes()),
+                    "source_schema": basis.schema,
+                    "sequence": page.snapshot.root.frontier().sequence,
+                    "semantic_revision": backend_library::encode_id(&page.semantic_revision),
+                    "neighborhood_root": backend_library::encode_id(page.snapshot.root.root().as_bytes()),
+                    "center_id": center.id.stable_key(),
+                    "coordinate": center.label.as_str(),
+                    "relation_coverage": "unknown"
+                }));
                 structured.insert("related_evidence_withheld".to_owned(), json!(page.withheld));
                 structured.insert("more".to_owned(), json!(next.is_some()));
                 if let Some(token) = &next {
