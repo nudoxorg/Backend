@@ -27,7 +27,7 @@ def main [
     if $evidence != null and ($evidence | path exists) {
         error make {msg: "Keel evidence destination already exists; choose a new directory"}
     }
-    let model = $root | path join "tests/keel/cases.nix"
+    let model = $root | path join "tests/keel/default.nix"
     let evaluated = (^nix-instantiate --eval --strict --json $model | complete)
     if $evaluated.exit_code != 0 {
         error make {msg: $"Keel case definitions did not evaluate: ($evaluated.stderr)"}
