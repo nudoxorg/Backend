@@ -241,11 +241,11 @@ def main [
     # The active release gate builds the product and admits the process driver
     # from the pinned standalone Keel package. Historical tests remain through
     # `backend test pr`; they are not claimed as replaced by these histories.
-    let runner_matches = (which --all backend-keel-harness | where type == "external")
-    if ($runner_matches | is-empty) {
-        error make {msg: "the compiler shell lacks the pinned standalone backend-keel-harness executable"}
+    let declared_runner = ($env.BACKEND_KEEL_HARNESS? | default "")
+    if ($declared_runner | is-empty) {
+        error make {msg: "the compiler shell must declare BACKEND_KEEL_HARNESS from its pinned standalone Keel input"}
     }
-    let runner = ($runner_matches | first | get path | path expand --strict)
+    let runner = ($declared_runner | path expand --strict)
     if not ($runner | str starts-with "/nix/store/") {
         error make {msg: $"Keel must come from the pinned standalone Nix package, got ($runner)"}
     }
