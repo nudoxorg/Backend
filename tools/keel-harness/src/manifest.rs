@@ -40,7 +40,7 @@ pub(crate) struct Step {
     #[serde(default)]
     pub remove: Vec<String>,
     #[serde(default)]
-    pub bind: BTreeMap<String, String>,
+    pub bind: BTreeMap<String, Binding>,
     #[serde(default)]
     pub expect: Option<Expect>,
     #[serde(default)]
@@ -61,12 +61,72 @@ pub(crate) struct Step {
     pub minimum_pages: usize,
     #[serde(default = "max_pages")]
     pub maximum_pages: usize,
+    #[serde(default)]
+    pub wait_for: bool,
 }
 fn one() -> usize {
     1
 }
 fn max_pages() -> usize {
     64
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum Binding {
+    Pointer(String),
+    Transform { pointer: String, transform: String },
+}
+impl Binding {
+    pub(crate) fn pointer(&self) -> &str {
+        match self {
+            Self::Pointer(p) | Self::Transform { pointer: p, .. } => p,
+        }
+    }
+    pub(crate) fn value(&self, value: &Value) -> Result<Value, String> {
+        let found = value
+            .pointer(self.pointer())
+            .cloned()
+            .ok_or_else(|| format!("binding lacks {}", self.pointer()))?;
+        match self {
+            Self::Pointer(_) => Ok(found),
+            Self::Transform { transform, .. } if transform == "hex-root" => {
+                let value = found
+                    .as_str()
+                    .filter(|v| {
+                        v.len() == 64
+                            && v.bytes()
+                                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+                    })
+                    .ok_or("hex-root needs an exact64lowercasehex root")?;
+                Ok(Value::String(value.to_owned()))
+            }
+            Self::Transform { transform, .. } if transform == "selected-symbol-key" => {
+                if found["kind"] != "selected-symbol-id" {
+                    return Err(
+                        "selected-symbol-key needs the exact selected-symbol-id object".into(),
+                    );
+                }
+                let bytes = found["bytes"]
+                    .as_array()
+                    .filter(|b| b.len() == 32)
+                    .ok_or("selected symbol identity must contain32bytes")?;
+                let mut out = String::from("symbol:");
+                for byte in bytes {
+                    use std::fmt::Write;
+                    let byte = byte
+                        .as_u64()
+                        .and_then(|v| u8::try_from(v).ok())
+                        .ok_or("invalid selected symbol byte")?;
+                    write!(&mut out, "{byte:02x}").map_err(|e| e.to_string())?;
+                }
+                Ok(Value::String(out))
+            }
+            Self::Transform { transform, .. } => {
+                Err(format!("unknown identity binding transform {transform}"))
+            }
+        }
+    }
 }
 fn timeout() -> u64 {
     180
@@ -155,6 +215,12 @@ impl Manifest {
             }
             let mut steps = BTreeSet::new();
             for step in &case.steps {
+                if step.wait_for && step.kind != "query" {
+                    return Err(format!(
+                        "{}: wait_for is an explicit query-convergence contract",
+                        step.id
+                    ));
+                }
                 if let Some(protocol) = &step.protocol {
                     if !["stylo", "json", "jsonrpc-lines"].contains(&protocol.as_str()) {
                         return Err(format!(

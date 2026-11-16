@@ -14,6 +14,13 @@ let
   bindSearch = id: name: (search id name) // {
     bind = { coordinate = "/records/0/identity/coordinate"; };
   };
+  callerIdentity = suffix: {
+    id = "caller-identity-${suffix}"; kind = "query";
+    cli = [ "search" "keel_fanout_${suffix}" "--limit" "20" ];
+    tool = "backend.search"; arguments = { query = "keel_fanout_${suffix}"; limit = 20; };
+    bind."caller_${suffix}" = { pointer = "/records/0/identity/semantic_data"; transform = "selected-symbol-key"; };
+    expect = { exit = 0; json = [ (eq "/records/0/identity/name" "keel_fanout_${suffix}") ]; };
+  };
   show = id: name: path: {
     inherit id;
     kind = "cli";
@@ -60,7 +67,34 @@ in {
       };
       steps = [
         (index "index-graph")
-        (bindSearch "find-target" "keel_fanout_target")
+        ((bindSearch "find-target" "keel_fanout_target") // { bind = {
+          coordinate = "/records/0/identity/coordinate";
+          center_id = { pointer = "/records/0/identity/semantic_data"; transform = "selected-symbol-key"; };
+        }; })
+        (callerIdentity "a") (callerIdentity "b") (callerIdentity "c") (callerIdentity "d")
+        (callerIdentity "e") (callerIdentity "f") (callerIdentity "g") (callerIdentity "h")
+        {
+          id = "pin-related-source-root"; kind = "cli"; args = [ "status" ];
+          expect = { exit = 0; json = [ (eq "/answer" "status") ]; };
+          bind.source_root = { pointer = "/revision"; transform = "hex-root"; };
+        }
+        {
+          id = "typed-related-call-edges"; kind = "pages"; tool = "backend.related";
+          arguments = { coordinate = "\${coordinate}"; limit = 20; };
+          minimum_pages = 1; maximum_pages = 16;
+          expect = { exit = 0; json = [
+            (eq "/first/related_basis/schema" 1)
+            (eq "/first/related_basis/center_id" "\${center_id}")
+            (eq "/first/related_basis/coordinate" "\${coordinate}")
+            (eq "/first/related_basis/source_view_root" "\${source_root}")
+            (eq "/first/related_basis/relation_coverage" "unknown")
+            { pointer = "/first/edges"; select = "/from_id"; set_equals = [
+              "\${caller_a}" "\${caller_b}" "\${caller_c}" "\${caller_d}"
+              "\${caller_e}" "\${caller_f}" "\${caller_g}" "\${caller_h}"
+            ]; }
+            { pointer = "/first/edges"; select = "/to_id"; set_equals = builtins.genList (_: "\${center_id}") 8; }
+          ]; };
+        }
         {
           id = "eight-callers"; kind = "cli"; args = [ "related" "\${coordinate}" ];
           expect = { exit = 0; json = [

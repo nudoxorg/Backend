@@ -39,18 +39,26 @@ in {
   schema = 1;
   cases = [
     (cli "cli-root-help" [ "--help" ] 0
-      [ "Usage: backend [OPTIONS] <COMMAND> [OPERANDS]" "--limit COUNT" ] [ ])
+      [ "Usage: nudox [OPTIONS] <COMMAND> [OPERANDS]" "--limit COUNT" "library" "registry" "home" "session" "system" "surface <JSON>" "--format human|markdown|json" "--passive" "nudox add ." "nudox mcp-config" "no config writes or service start" ] [ ])
     (cli "cli-command-help-after-global-options"
       [ "--project" "/tmp/keel-probe" "search" "--help" ] 0
-      [ "backend search" "operands" ] [ ])
+      [ "nudox search" "operands" ] [ ])
     (cli "cli-unknown-command" [ "not-a-command" ] 64 [ ]
-      [ "✗ usage" "`not-a-command` is not a command" "backend --help" ])
+      [ "✗ usage" "`not-a-command` is not a command" "nudox --help" ])
+    (cli "cli-nearest-command" [ "serch" "ferris" ] 64 [ ]
+      [ "✗ usage" "did you mean `search`" ])
+    (cli "cli-document-alias-missing-operand" [ "document" ] 64 [ ]
+      [ "usage: nudox document [COORDINATE] [--selected-id SELECTED_ID] [--cursor CURSOR]" ])
+    (cli "cli-unpaged-bound" [ "packages" "--limit" "20" ] 64 [ ]
+      [ "does not take a page bound" ])
+    (cli "cli-passive-search-refused" [ "--passive" "search" "needle" ] 64 [ ]
+      [ "--passive" "health" "status" ])
     (cli "cli-unknown-option" [ "search" "needle" "--not-an-option" ] 64 [ ]
       [ "✗ usage" "`--not-an-option`" "search takes only" ])
     (cli "cli-missing-global-option-value" [ "--project" ] 64 [ ]
       [ "✗ usage" "--project needs a value after it" ])
     (cli "cli-missing-command-operand" [ "show" ] 64 [ ]
-      [ "✗ usage" "usage: backend show" ])
+      [ "✗ usage" "usage: nudox show" ])
     (cli "cli-invalid-page-bound" [ "search" "needle" "--limit" "201" ] 64 [ ]
       [ "✗ usage" "`201` is not a page bound; choose a whole number from 1 to 200" ])
     (cli "cli-invalid-format" [ "--format" "jsonl" ] 64 [ ]

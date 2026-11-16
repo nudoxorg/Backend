@@ -208,3 +208,50 @@ fn parent_exit_does_not_wait_for_a_descendant_holding_stdout() {
         String::from_utf8_lossy(&result.stderr)
     );
 }
+
+#[test]
+fn copied_identity_bindings_preserve_json_and_symbol_bytes_across_real_processes() {
+    let world = Sandbox::new();
+    let identity = json!({"kind":"selected-symbol-id","bytes":(0u8..32).collect::<Vec<_>>()});
+    let emit = format!("printf '%s' '{}'", json!({"identity":identity}));
+    let case = json!({"id":"typed-binding","language":"protocol","daemon":false,"steps":[
+        {"id":"capture","kind":"process","binary":"probe","args":["-c",emit],"expect":{"exit":0,"json":[{"pointer":"/identity","equals":identity}]},"bind":{"copied":"/identity","key":{"pointer":"/identity","transform":"selected-symbol-key"}}},
+        {"id":"consume","kind":"process","binary":"probe","args":["-c","IFS= read -r value; printf '%s' \"$value\""],"input":{"identity":"${copied}","key":"${key}"},"expect":{"exit":0,"json":[{"pointer":"/identity","equals":"${copied}"},{"pointer":"/key","equals":"symbol:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}]}}
+    ]});
+    let result = world.invoke(&manifest(vec![case]), &[]);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(world.report()["cases"][0]["steps"][1]["status"], "pass");
+}
+
+#[test]
+fn inventory_binds_reviewed_expectations_and_never_writes_execution_evidence() {
+    let world = Sandbox::new();
+    let mut spec = manifest(vec![process_case(
+        "inventory",
+        "echo '{\"answer\":\"independent-oracle\"}'",
+    )]);
+    let first = world.invoke(&spec, &["--inventory"]);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first: Value = serde_json::from_slice(&first.stdout).expect("typed inventory");
+    assert_eq!(first["kind"], "keel-contract-inventory");
+    assert_eq!(first["cases"][0]["world"], "process");
+    spec["cases"][0]["steps"][0]["expect"]["json"][0]["equals"] =
+        json!("different-reviewed-contract");
+    let second = world.invoke(&spec, &["--inventory"]);
+    assert!(second.status.success());
+    let second: Value = serde_json::from_slice(&second.stdout).expect("inventory");
+    assert_ne!(first["manifest_sha256"], second["manifest_sha256"]);
+    assert_ne!(
+        first["cases"][0]["definition_sha256"],
+        second["cases"][0]["definition_sha256"]
+    );
+    assert!(!world.0.join("evidence").exists());
+}

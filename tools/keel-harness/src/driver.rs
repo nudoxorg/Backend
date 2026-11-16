@@ -22,12 +22,44 @@ fn write_json(path: &Path, value: &Value) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
     fs::write(path, bytes).map_err(|e| format!("write {}: {e}", path.display()))
 }
+fn authority_environment() -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    const AUTHORITY_ENV: &[&str] = &[
+        "PATH",
+        "TMPDIR",
+        "RUSTC",
+        "COMPILER_STABLE_TOOLCHAIN",
+        "COMPILER_PYTHON_COMPILER",
+        "NUDOX_CARGO",
+        "NUDOX_CARGO_HOME",
+        "NUDOX_RUSTC",
+        "NUDOX_RUST_SYSROOT",
+        "NUDOX_PYTHON",
+        "NUDOX_PYREFLY",
+        "NUDOX_PYREFLY_BIN",
+        "LIBRARY_PATH",
+        "DYLD_LIBRARY_PATH",
+        "LD_LIBRARY_PATH",
+        "SSL_CERT_FILE",
+    ];
+    for (name, value) in std::env::vars() {
+        if AUTHORITY_ENV.contains(&name.as_str())
+            || name.starts_with("NIX_CFLAGS_")
+            || name.starts_with("NIX_LDFLAGS")
+            || name.starts_with("NIX_CC_WRAPPER_TARGET_HOST_")
+        {
+            env.insert(name, value);
+        }
+    }
+    env
+}
 struct Options {
     manifest: PathBuf,
     bins: PathBuf,
     evidence: PathBuf,
     cases: BTreeSet<String>,
     list: bool,
+    inventory: bool,
     order: Option<PathBuf>,
 }
 fn options() -> Result<Options, String> {
@@ -35,14 +67,19 @@ fn options() -> Result<Options, String> {
     let mut paths = BTreeMap::new();
     let mut cases = BTreeSet::new();
     let mut list = false;
+    let mut inventory = false;
     while let Some(arg) = args.next() {
+        if arg == "--inventory" {
+            inventory = true;
+            continue;
+        }
         if arg == "--list" {
             list = true;
             continue;
         }
         if arg == "--help" {
             println!(
-                "backend-keel-harness --manifest FILE [--bin-dir DIR --evidence NEW-DIR] [--case ID] [--order FILE] [--list]\nEvaluated Nix cases; real CLI/MCP/native-worker processes; no snapshot update mode."
+                "backend-keel-harness --manifest FILE [--bin-dir DIR --evidence NEW-DIR] [--case ID] [--order FILE] [--list | --inventory]\nEvaluated Nix cases; real CLI/MCP/native-worker processes; no snapshot update mode."
             );
             std::process::exit(0);
         }
@@ -61,7 +98,7 @@ fn options() -> Result<Options, String> {
     let manifest = paths.remove("--manifest").ok_or("--manifest is required")?;
     let bins = paths.remove("--bin-dir").unwrap_or_default();
     let evidence = paths.remove("--evidence").unwrap_or_default();
-    if !list && (bins.as_os_str().is_empty() || evidence.as_os_str().is_empty()) {
+    if !list && !inventory && (bins.as_os_str().is_empty() || evidence.as_os_str().is_empty()) {
         return Err("--bin-dir and --evidence are required for execution".into());
     }
     Ok(Options {
@@ -70,6 +107,7 @@ fn options() -> Result<Options, String> {
         evidence,
         cases,
         list,
+        inventory,
         order: paths.remove("--order"),
     })
 }
@@ -81,7 +119,7 @@ struct World {
     env: BTreeMap<String, String>,
     daemon: Option<process::Daemon>,
     generation: usize,
-    bindings: BTreeMap<String, String>,
+    bindings: BTreeMap<String, Value>,
 }
 impl World {
     fn new(case: &Case, bins: &Path, root: &Path, serial: usize) -> Result<Self, String> {
@@ -92,32 +130,7 @@ impl World {
         let mut env = BTreeMap::new();
         // Native tool authorities are explicit inputs of the Nix world. Application
         // selection, credentials and user state cannot leak into a fresh owner.
-        const AUTHORITY_ENV: &[&str] = &[
-            "PATH",
-            "TMPDIR",
-            "RUSTC",
-            "COMPILER_STABLE_TOOLCHAIN",
-            "COMPILER_PYTHON_COMPILER",
-            "NUDOX_CARGO",
-            "NUDOX_RUSTC",
-            "NUDOX_RUST_SYSROOT",
-            "NUDOX_PYTHON",
-            "NUDOX_PYREFLY",
-            "NUDOX_PYREFLY_BIN",
-            "LIBRARY_PATH",
-            "DYLD_LIBRARY_PATH",
-            "LD_LIBRARY_PATH",
-            "SSL_CERT_FILE",
-        ];
-        for (name, value) in std::env::vars() {
-            if AUTHORITY_ENV.contains(&name.as_str())
-                || name.starts_with("NIX_CFLAGS_")
-                || name.starts_with("NIX_LDFLAGS")
-                || name.starts_with("NIX_CC_WRAPPER_TARGET_HOST_")
-            {
-                env.insert(name, value);
-            }
-        }
+        env.extend(authority_environment());
         for (key, sub) in [
             ("HOME", ""),
             ("XDG_CONFIG_HOME", ".config"),
@@ -166,7 +179,10 @@ impl World {
             return Err(format!("endpoint already exists: {}", endpoint.display()));
         }
         let mut bindings = BTreeMap::new();
-        bindings.insert("project".into(), project.to_string_lossy().into_owned());
+        bindings.insert(
+            "project".into(),
+            Value::String(project.to_string_lossy().into_owned()),
+        );
         let mut world = Self {
             root: root.to_path_buf(),
             project,
@@ -191,7 +207,9 @@ impl World {
     fn expand(&self, value: &str) -> Result<String, String> {
         let mut out = value.to_owned();
         for (name, value) in &self.bindings {
-            out = out.replace(&format!("${{{name}}}"), value);
+            if let Some(value) = value.as_str() {
+                out = out.replace(&format!("${{{name}}}"), value);
+            }
         }
         if out.contains("${") {
             return Err(format!("unbound placeholder in {out:?}"));
@@ -200,7 +218,14 @@ impl World {
     }
     fn expand_json(&self, value: &Value) -> Result<Value, String> {
         Ok(match value {
-            Value::String(s) => Value::String(self.expand(s)?),
+            Value::String(s) => {
+                if let Some(name) = s.strip_prefix("${").and_then(|v| v.strip_suffix('}')) {
+                    if let Some(value) = self.bindings.get(name) {
+                        return Ok(value.clone());
+                    }
+                }
+                Value::String(self.expand(s)?)
+            }
             Value::Array(a) => Value::Array(
                 a.iter()
                     .map(|v| self.expand_json(v))
@@ -213,6 +238,62 @@ impl World {
             ),
             other => other.clone(),
         })
+    }
+    fn check(
+        &self,
+        expect: &manifest::Expect,
+        code: Option<i32>,
+        stdout: &[u8],
+        stderr: &[u8],
+        value: Option<&Value>,
+    ) -> Result<(), String> {
+        let assertions = expect
+            .json
+            .iter()
+            .map(|a| {
+                Ok(manifest::Assertion {
+                    pointer: a.pointer.clone(),
+                    select: a.select.clone(),
+                    absent: a.absent,
+                    equals: a.equals.as_ref().map(|v| self.expand_json(v)).transpose()?,
+                    contains: a
+                        .contains
+                        .as_ref()
+                        .map(|v| self.expand_json(v))
+                        .transpose()?,
+                    not_contains: a
+                        .not_contains
+                        .as_ref()
+                        .map(|v| self.expand_json(v))
+                        .transpose()?,
+                    set_equals: a
+                        .set_equals
+                        .as_ref()
+                        .map(|values| {
+                            values
+                                .iter()
+                                .map(|v| self.expand_json(v))
+                                .collect::<Result<Vec<_>, _>>()
+                        })
+                        .transpose()?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let expanded = manifest::Expect {
+            exit: expect.exit,
+            json: assertions,
+            stdout_contains: expect
+                .stdout_contains
+                .iter()
+                .map(|v| self.expand(v))
+                .collect::<Result<_, _>>()?,
+            stderr_contains: expect
+                .stderr_contains
+                .iter()
+                .map(|v| self.expand(v))
+                .collect::<Result<_, _>>()?,
+        };
+        assertion::check(&expanded, code, stdout, stderr, value)
     }
     fn files(&mut self, files: &BTreeMap<String, String>, remove: &[String]) -> Result<(), String> {
         for path in remove {
@@ -414,7 +495,7 @@ impl World {
         }
         let aggregate = json!({"pages":pages,"records":records,"first":first,"last":last});
         write_json(&prefix.with_extension("aggregate.json"), &aggregate)?;
-        assertion::check(
+        self.check(
             step.expect
                 .as_ref()
                 .ok_or("paged check lacks expectation")?,
@@ -427,6 +508,42 @@ impl World {
     }
     fn step(&mut self, step: &Step, prefix: &Path) -> Result<Value, String> {
         let timeout = Duration::from_secs(step.timeout_seconds);
+        if !step.wait_for {
+            return self.step_once(step, prefix, timeout);
+        }
+        let deadline = Instant::now() + timeout;
+        let mut attempt = 0usize;
+        loop {
+            let mut name = prefix.as_os_str().to_os_string();
+            name.push(format!("-attempt-{attempt}"));
+            match self.step_once(
+                step,
+                Path::new(&name),
+                deadline.saturating_duration_since(Instant::now()),
+            ) {
+                Ok(result) => return Ok(json!({"convergence_attempts":attempt+1,"result":result})),
+                Err(error) if Instant::now() >= deadline => {
+                    return Err(format!(
+                        "query predicate never converged before its absolute deadline: {error}"
+                    ));
+                }
+                Err(error) => {
+                    fs::write(prefix.with_extension("last-readiness-error"), error)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(30));
+            attempt += 1;
+        }
+    }
+    fn step_once(
+        &mut self,
+        step: &Step,
+        prefix: &Path,
+        timeout: Duration,
+    ) -> Result<Value, String> {
+        let until = Instant::now() + timeout;
+        let time_left = || until.saturating_duration_since(Instant::now());
         if step.kind == "pages" {
             return self.pages(step, prefix);
         }
@@ -449,7 +566,7 @@ impl World {
                     "--wait-timeout".into(),
                     step.timeout_seconds.to_string(),
                 ];
-                let output = self.cli(&args, "json", timeout, prefix)?;
+                let output = self.cli(&args, "json", time_left(), prefix)?;
                 let value: Value = serde_json::from_slice(&output.stdout)
                     .map_err(|e| format!("index returned non-JSON: {e}"))?;
                 let detail = &value["index_operation"]["detail"];
@@ -482,7 +599,7 @@ impl World {
                     return Err("published view_root malformed".into());
                 }
                 if let Some(expect) = &step.expect {
-                    assertion::check(
+                    self.check(
                         expect,
                         output.code,
                         &output.stdout,
@@ -496,8 +613,8 @@ impl World {
             _ => {}
         }
         let output = match step.kind.as_str() {
-            "cli" => self.cli(&step.args, "json", timeout, prefix)?,
-            "query" => self.cli(&step.cli, "json", timeout, prefix)?,
+            "cli" => self.cli(&step.args, "json", time_left(), prefix)?,
+            "query" => self.cli(&step.cli, "json", time_left(), prefix)?,
             "process" => {
                 let mut command = self.command(&step.binary);
                 for arg in &step.args {
@@ -542,7 +659,7 @@ impl World {
                         .map(|s| self.expand(s).map(String::into_bytes))
                         .transpose()?
                 };
-                process::run(&mut command, input, timeout, prefix)?
+                process::run(&mut command, input, time_left(), prefix)?
             }
             _ => return Err("validated step kind became unknown".into()),
         };
@@ -600,7 +717,7 @@ impl World {
             }
         }
         let expect = step.expect.as_ref().ok_or("missing expectation")?;
-        assertion::check(
+        self.check(
             expect,
             output.code,
             &output.stdout,
@@ -632,7 +749,7 @@ impl World {
             let mcp = process::run(
                 &mut command,
                 Some(input.into_bytes()),
-                timeout,
+                time_left(),
                 &prefix.with_extension("mcp"),
             )?;
             if mcp.code != Some(0) {
@@ -680,7 +797,7 @@ impl World {
             let markdown = self.cli(
                 &step.cli,
                 "markdown",
-                timeout,
+                time_left(),
                 &prefix.with_extension("markdown"),
             )?;
             if markdown.code != Some(expect.exit) {
@@ -702,12 +819,8 @@ impl World {
         }
         if !step.bind.is_empty() {
             let value = value.as_ref().ok_or("bindings require JSON")?;
-            for (name, pointer) in &step.bind {
-                let s = value
-                    .pointer(pointer)
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| format!("binding {name}: missing string at {pointer}"))?;
-                self.bindings.insert(name.clone(), s.to_owned());
+            for (name, binding) in &step.bind {
+                self.bindings.insert(name.clone(), binding.value(value)?);
             }
         }
         Ok(
@@ -773,6 +886,18 @@ fn run() -> Result<bool, String> {
     } else {
         None
     };
+    let raw_manifest: Value = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
+    let authorities = authority_environment();
+    let authority_hash = hash(&serde_json::to_vec(&authorities).map_err(|e| e.to_string())?);
+    let inventory_cases = cases.iter().map(|case| {
+        let definition=raw_manifest["cases"].as_array().and_then(|rows|rows.iter().find(|v|v["id"]==case.id)).ok_or("inventory case missing definition")?;
+        let inputs=case.files.iter().map(|(path,bytes)|(path.clone(),hash(bytes.as_bytes()))).collect::<BTreeMap<_,_>>();
+        Ok(json!({"id":case.id,"node":case.node,"language":case.language,"world":if case.daemon==Some(false){"process"}else{"owner"},"definition_sha256":hash(&serde_json::to_vec(definition).map_err(|e|e.to_string())?),"inputs":inputs,"steps":case.steps.iter().map(|s|json!({"id":s.id,"kind":s.kind})).collect::<Vec<_>>()}))
+    }).collect::<Result<Vec<Value>,String>>()?;
+    if options.inventory {
+        println!("{}",serde_json::to_string_pretty(&json!({"schema":1,"kind":"keel-contract-inventory","manifest_sha256":hash(&raw),"authority_environment":authorities,"authority_environment_sha256":authority_hash,"cases":inventory_cases})).map_err(|e|e.to_string())?);
+        return Ok(true);
+    }
     if options.list {
         for case in cases {
             println!("{}\t{}\t{}", case.id, case.language, case.node);
@@ -849,7 +974,7 @@ fn run() -> Result<bool, String> {
         reports.push(json!({"id":case.id,"node":case.node,"language":case.language,"status":status,"error":failed,"duration_ms":start.elapsed().as_millis(),"steps":steps,"evidence_dir":root}));
         write_json(
             &evidence.join("report.json"),
-            &json!({"schema":1,"manifest_sha256":hash(&raw),"binaries":binary_hashes,"order":order,"status":if green{"pass"}else{"fail"},"cases":reports,"duration_ms":started.elapsed().as_millis()}),
+            &json!({"schema":1,"manifest_sha256":hash(&raw),"authority_environment":authorities,"authority_environment_sha256":authority_hash,"inventory":inventory_cases,"binaries":binary_hashes,"order":order,"status":if green{"pass"}else{"fail"},"cases":reports,"duration_ms":started.elapsed().as_millis()}),
         )?;
     }
     // Detect replacement of an admitted executable during a run. Evidence never
@@ -858,7 +983,7 @@ fn run() -> Result<bool, String> {
         if hash(&read(&bins.join(binary))?) != *before {
             write_json(
                 &evidence.join("report.json"),
-                &json!({"schema":1,"manifest_sha256":hash(&raw),"binaries":binary_hashes,"order":order,"status":"fail","artifact_error":format!("artifact {binary} changed while cases were running"),"cases":reports,"duration_ms":started.elapsed().as_millis()}),
+                &json!({"schema":1,"manifest_sha256":hash(&raw),"authority_environment":authorities,"authority_environment_sha256":authority_hash,"inventory":inventory_cases,"binaries":binary_hashes,"order":order,"status":"fail","artifact_error":format!("artifact {binary} changed while cases were running"),"cases":reports,"duration_ms":started.elapsed().as_millis()}),
             )?;
             return Err(format!(
                 "artifact {binary} changed while cases were running"
