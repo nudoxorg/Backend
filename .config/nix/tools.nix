@@ -637,7 +637,7 @@ let
       }
     else
       null;
-  # Complete seven-language compiler set plus the native libraries the
+  # Available compiler authorities plus the native libraries the
   # workspace's compiled frontends load at build or run time. Every attribute
   # below was probed against the pinned nixpkgs revision on all three declared
   # systems; the few Linux-only GUI dependencies of the desktop surface are
@@ -710,7 +710,23 @@ let
       VK_ICD_FILENAMES = lavapipe;
     }
   );
-  nativeCompilers = builtins.attrValues compilers ++ nativeLibraries ++ linuxDesktopLibraries;
+  # Keep paused language authorities out of the default compiler closure.
+  # Clang and libclang remain build infrastructure for native dependencies.
+  nativeCompilers =
+    builtins.attrValues (
+      builtins.removeAttrs compilers [
+        "dotnet"
+        "go"
+        "jdk"
+      ]
+    )
+    ++ nativeLibraries
+    ++ linuxDesktopLibraries;
+  pausedNativeCompilers = [
+    compilers.dotnet
+    compilers.go
+    compilers.jdk
+  ];
   # Go semantic oracle. The coordinate is the workspace's own vendored Go
   # module (`frontends/go/src/legacy/oracle`). Its dependencies
   # (`golang.org/x/{tools,mod,sync} v0.30.0/v0.23.0/v0.11.0`) are committed in
@@ -893,9 +909,9 @@ let
   # Semantic-authority helpers must be realized by the shell that exports
   # their absolute paths, otherwise the environment variable would name a store
   # path that nothing built.
-  authorityHelpers =
+  authorityHelpers = pkgs.lib.optional (typescriptChecker != null) typescriptChecker;
+  pausedAuthorityHelpers =
     pkgs.lib.optional (goOracle != null) goOracle
-    ++ pkgs.lib.optional (typescriptChecker != null) typescriptChecker
     ++ pkgs.lib.optional (roslynHelper != null) roslynHelper;
 in
 {
@@ -916,6 +932,8 @@ in
     linuxDesktopRuntimePath
     linuxGraphicsEnvironment
     nativeCompilers
+    pausedNativeCompilers
+    pausedAuthorityHelpers
     qualityTools
     roslynHelper
     serviceTools
@@ -962,7 +980,9 @@ in
   ]
   ++ qualityTools
   ++ nativeCompilers
+  ++ pausedNativeCompilers
   ++ authorityHelpers
+  ++ pausedAuthorityHelpers
   ++ serviceTools
   ++ observabilityTools
   ++ verifierTools;

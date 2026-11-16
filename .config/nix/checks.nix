@@ -41,6 +41,32 @@ let
     printf '%s\n' validated > "$out/share/surface-cargo-lock-contract"
   '';
   localHostRuntimeContract =
+    let
+      focused = import ./corpus-env.nix {
+        inherit pkgs tools toolchains;
+        corpus = null;
+        captureNativeCompilerShellEnv = false;
+      };
+      archived = import ./corpus-env.nix {
+        inherit pkgs tools toolchains;
+        corpus = null;
+        captureNativeCompilerShellEnv = false;
+        includePausedFrontends = true;
+      };
+      paused = [
+        "NUDOX_CLANG"
+        "NUDOX_DOTNET"
+        "NUDOX_GO"
+        "NUDOX_JAVAC"
+        "NUDOX_JDK"
+      ];
+      compilerPaths = map (package: package.drvPath) tools.nativeCompilers;
+      pausedPaths = map (package: package.drvPath) tools.pausedNativeCompilers;
+    in
+    assert builtins.all (
+      name: !(builtins.hasAttr name focused) && builtins.hasAttr name archived
+    ) paused;
+    assert builtins.all (path: !(builtins.elem path compilerPaths)) pausedPaths;
     if builtins.pathExists (workspaceRoot + "/Cargo.toml") then
       pkgs.runCommand "nudox-local-host-runtime-contract"
         {

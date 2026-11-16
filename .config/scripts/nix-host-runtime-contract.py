@@ -121,6 +121,22 @@ def main() -> None:
             "shared Nix environment must retain the linked native TSZ default; "
             f"unexpected overrides={sorted(overridden_native_tsz)}"
         )
+    # Paused authorities remain declared for the opt-in archive shell, but
+    # must be guarded rather than exported by the focused environment.
+    if not re.search(r"includePausedFrontends\s*\?\s*false", corpus_env):
+        fail("paused frontend environment must default to disabled")
+    paused_block = re.search(
+        r"pausedToolchainEnv\s*=\s*pkgs\.lib\.optionalAttrs\s+includePausedFrontends\s*\{(.*?)\n\s*\};",
+        corpus_env,
+        re.S,
+    )
+    if paused_block is None:
+        fail("paused toolchain exports must be conditional")
+    paused_exports = {"NUDOX_CLANG", "NUDOX_DOTNET", "NUDOX_GO", "NUDOX_JAVAC", "NUDOX_JDK"}
+    block_names = set(re.findall(r"^\s*([A-Z][A-Z0-9_]*)\s*=", paused_block.group(1), re.M))
+    if not paused_exports <= block_names:
+        fail(f"paused authority exports escaped their guard: {sorted(paused_exports - block_names)}")
+
     observed_host_names = declared_nix & host_names
     required_host_names = host_names - supplied_by_process_or_profile - native_tsz_defaults
     if observed_host_names != required_host_names:
@@ -189,7 +205,7 @@ def main() -> None:
 
     print(
         "local-host runtime contract: "
-        f"{len(host_names)} closed names; {len(required_host_names)} pinned or shell-resolved; "
+        f"{len(host_names)} closed names; {len(required_host_names)} declared (including archived authorities); "
         f"{len(supplied_by_process_or_profile)} process/profile-owned; "
         f"{len(aliases)} live frontend compatibility adapters"
     )

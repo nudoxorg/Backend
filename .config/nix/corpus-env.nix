@@ -1,14 +1,13 @@
-# Native-toolchain and corpus environment shared by every consumer that runs
-# the seven-language test suite: the interactive `.#complete` shell
-# (`shells.nix`) and the `backend`/`backendVerifier` command wrappers
-# (`commands.nix`). Kept in one place so the gate and the interactive shell
-# can never drift apart on which compiler or corpus a test sees.
+# Native-toolchain and corpus environment shared by shells and command wrappers.
+# Paused frontends are available only when explicitly requested by the archived
+# `.#complete` shell; focused product commands use the default environment.
 {
   pkgs,
   tools,
   toolchains,
   corpus,
   captureNativeCompilerShellEnv ? true,
+  includePausedFrontends ? false,
 }:
 let
   inherit (tools) compilers;
@@ -115,12 +114,12 @@ let
     # through this adapter name. LocalHost uses the typed alias above.
     NUDOX_TYPESCRIPT_CHECKER_BIN = "${tools.typescriptChecker}/bin/nudox-typescript-checker";
   };
-  optionalOracleEnv = pkgs.lib.optionalAttrs (tools.goOracle != null) {
+  optionalOracleEnv = pkgs.lib.optionalAttrs (includePausedFrontends && tools.goOracle != null) {
     NUDOX_GO_ORACLE = "${tools.goOracle}/bin/oracle";
     # The standalone frontend still uses this compatibility name.
     NUDOX_GO_ORACLE_BIN = "${tools.goOracle}/bin/oracle";
   };
-  optionalRoslynEnv = pkgs.lib.optionalAttrs (tools.roslynHelper != null) {
+  optionalRoslynEnv = pkgs.lib.optionalAttrs (includePausedFrontends && tools.roslynHelper != null) {
     NUDOX_ROSLYN_HELPER = "${tools.roslynHelper}/lib/nudox-roslyn-helper/oracle.dll";
   };
   # Real package sources for the seven-language corpus. Every value names a
@@ -131,25 +130,29 @@ let
     NUDOX_RUST_CORPUS_DIR = "${corpus.rust}";
     NUDOX_TYPESCRIPT_CORPUS_DIR = "${corpus.typescript}";
     NUDOX_PYTHON_CORPUS_DIR = "${corpus.python}";
+  };
+  pausedCorpusEnv = pkgs.lib.optionalAttrs (includePausedFrontends && corpus != null) {
     NUDOX_GO_CORPUS_DIR = "${corpus.go}";
     NUDOX_JAVA_CORPUS_DIR = "${corpus.java}";
     NUDOX_CSHARP_CORPUS_DIR = "${corpus.csharp}";
     NUDOX_CLANG_CORPUS_DIR = "${corpus.clang}";
   };
+  pausedToolchainEnv = pkgs.lib.optionalAttrs includePausedFrontends {
+    COMPILER_CLANG_COMPILER = "${compilers.clang}/bin/clang";
+    COMPILER_CSHARP_COMPILER = "${compilers.dotnet}/share/dotnet/dotnet";
+    COMPILER_GO_COMPILER = "${compilers.go}/bin/go";
+    COMPILER_JAVA_COMPILER = "${compilers.jdk}/bin/javac";
+    NUDOX_CLANG = "${compilers.clang}/bin/clang";
+    NUDOX_CSHARP_DOTNET = "${compilers.dotnet}/share/dotnet/dotnet";
+    NUDOX_DOTNET = "${compilers.dotnet}/share/dotnet/dotnet";
+    NUDOX_GO = "${compilers.go}/bin/go";
+    NUDOX_JAVAC = "${compilers.jdk}/bin/javac";
+    NUDOX_JDK = compilers.jdk.home;
+  };
 in
 {
-  # The C# host values below name the SDK's real ELF muxer, not `bin/dotnet`: in
-  # the pinned nixpkgs `bin/dotnet` is a launcher script, and the producer holds
-  # the execution host in private custody, which only an ELF executable can be.
-  # Absolute native-toolchain authorities for the seven-language corpus. Every
-  # value names a pinned nixpkgs binary; nothing is discovered from ambient
-  # `PATH`. `RUSTC` and `COMPILER_STABLE_TOOLCHAIN` both resolve to the pinned
-  # Fenix 1.97.1 toolchain, and `NUDOX_JDK` names a JDK root whose `bin/javac`
-  # is the Java authority.
-  COMPILER_CLANG_COMPILER = "${compilers.clang}/bin/clang";
-  COMPILER_CSHARP_COMPILER = "${compilers.dotnet}/share/dotnet/dotnet";
-  COMPILER_GO_COMPILER = "${compilers.go}/bin/go";
-  COMPILER_JAVA_COMPILER = "${compilers.jdk}/bin/javac";
+  # Focused native-toolchain authorities use pinned store paths. The paused
+  # C# host above names the SDK's real executable, not its launcher script.
   COMPILER_PYTHON_COMPILER = "${compilers.python}/bin/python3";
   # Tests that execute coreutils after ProcessEnvironment::env_clear() must
   # pass an absolute executable, not rely on the host's /bin layout or PATH.
@@ -157,12 +160,6 @@ in
   COMPILER_STABLE_TOOLCHAIN = "${toolchains.stable}";
   COMPILER_TYPESCRIPT_COMPILER = "${compilers.typescript}/bin/tsc";
   LIBCLANG_PATH = "${compilers.libclang.lib}/lib";
-  NUDOX_CLANG = "${compilers.clang}/bin/clang";
-  NUDOX_CSHARP_DOTNET = "${compilers.dotnet}/share/dotnet/dotnet";
-  NUDOX_DOTNET = "${compilers.dotnet}/share/dotnet/dotnet";
-  NUDOX_GO = "${compilers.go}/bin/go";
-  NUDOX_JAVAC = "${compilers.jdk}/bin/javac";
-  NUDOX_JDK = compilers.jdk.home;
   NUDOX_PYREFLY = "${compilers.pyrefly}/bin/pyrefly";
   NUDOX_PYREFLY_BIN = "${compilers.pyrefly}/bin/pyrefly";
   NUDOX_PYTHON = "${compilers.python}/bin/python3";
@@ -195,4 +192,6 @@ in
 // optionalOracleEnv
 // optionalRoslynEnv
 // optionalCorpusEnv
+// pausedCorpusEnv
+// pausedToolchainEnv
 // (if captureNativeCompilerShellEnv then nativeCompilerShellEnvVars else { })

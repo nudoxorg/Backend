@@ -39,12 +39,9 @@ let
     ../nu/main.nu
   ];
   source = builtins.concatStringsSep "\n\n" (map builtins.readFile sourceParts);
-  # Native-toolchain and corpus authorities for the seven-language corpus,
-  # shared with the interactive `.#complete` shell (`shells.nix`) so
-  # `backend test workspace` sees the same compilers and corpus data that
-  # tests pass under interactively. Referencing these store paths from the
-  # wrapper derivation also makes them gate dependencies, so `nix store gc`
-  # cannot strand the corpora between runs.
+  # Focused native-toolchain and corpus authorities, shared with the default
+  # compiler shells. Paused language authorities live in the explicit
+  # `.#complete` shell and are not dependencies of this command wrapper.
   nativeTestEnv = import ./corpus-env.nix {
     inherit
       pkgs

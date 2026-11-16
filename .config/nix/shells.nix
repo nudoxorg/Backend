@@ -13,9 +13,8 @@
   conventions,
 }:
 let
-  # Native-toolchain and corpus authorities for the seven-language corpus,
-  # shared with the `backend`/`backendVerifier` command wrappers in
-  # `commands.nix` so the gate sees exactly what this shell sees.
+  # Focused native-toolchain and corpus authorities shared with the
+  # `backend`/`backendVerifier` command wrappers.
   corpusEnv = import ./corpus-env.nix {
     inherit
       pkgs
@@ -23,6 +22,16 @@ let
       toolchains
       corpus
       ;
+  };
+  # Explicit archived frontend environment for opt-in legacy QA.
+  pausedCorpusEnv = import ./corpus-env.nix {
+    inherit
+      pkgs
+      tools
+      toolchains
+      corpus
+      ;
+    includePausedFrontends = true;
   };
   # The artifact-driven T2 shell runs the pinned native compilers as packages,
   # so their setup hooks populate NIX_* flags when the shell starts. Avoid
@@ -110,6 +119,8 @@ let
         /*) if [ -d "$cargo_home" ]; then export NUDOX_CARGO_HOME="$cargo_home"; fi ;;
       esac
     fi
+  '';
+  pausedGoShellHook = ''
     # LocalHost accepts the Go module cache only as an explicit absolute
     # authority. Resolve it through the pinned Go executable at shell entry
     # so an existing workspace cache is admitted without guessing from PATH;
@@ -176,7 +187,9 @@ let
   );
   complete = pkgs.mkShell (
     common
+    // pausedCorpusEnv
     // {
+      shellHook = common.shellHook + pausedGoShellHook;
       packages = tools.complete ++ [
         commands.backendVerifier
         gui.toolsBundle
