@@ -1612,6 +1612,8 @@ fn report_run_result(result: Result<RunReport, ProcessError>) -> ExitCode {
 /// can select it explicitly with `--profile builtin` or [`PROFILE_ENV`].
 #[must_use]
 pub fn main_entry() -> ExitCode {
+    #[cfg(target_os = "linux")]
+    crate::builtin::install_startup_ambient_snapshot();
     let args = std::env::args().skip(1);
     #[cfg(unix)]
     let (bootstrap, args) = match backend_runtime::SpawnedOwnerBootstrap::extract(args) {

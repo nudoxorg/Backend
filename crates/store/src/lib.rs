@@ -109,7 +109,7 @@ pub use durable::{
     ObjectWriteReceipt, OwnedRelationNodeLoader, PhysicalAllocationBudget,
     PinnedStoredClosureReceipt, PublicationAuthorityError, PublicationBase, PublicationDescriptor,
     RelationNodeChild, RelationNodeRead, RelationNodeWriteStats, SelectedHead,
-    StorePublicationAuthority, WeakPublicationAuthority, StoredClosureReceipt, StreamingClosureBudget, WorkspaceHistoryError,
+    StorePublicationAuthority, WeakPublicationAuthority, StoredClosureReceipt, StreamingClosureBudget, WorkspaceHistoryError, RetirementSelectedHead, RetirementGcPin,
     StreamingClosureBuilder, TransactionId, TreeReadStats, TreeWriteStats, VerifiedClosureMember,
     BoundedObjectReader, IdentityHashError, VerifiedObjectEnvelope, VerifiedObjectView, WorkspaceFileDurable, WorkspaceFilePrepared,
     untrusted_object_id_for_encoded_value, untrusted_object_id_for_encoded_value_checkpointed, untrusted_object_id_for_encoded_parts_checkpointed,

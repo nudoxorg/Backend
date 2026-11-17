@@ -312,6 +312,56 @@ impl fmt::Display for DiscoveryError {
 
 impl std::error::Error for DiscoveryError {}
 
+struct StartupAbsentGitInputs {
+    global: PathBuf,
+    configs_current: fn() -> bool,
+}
+static STARTUP_ABSENT_GLOBAL_EXCLUDES: std::sync::OnceLock<StartupAbsentGitInputs> = std::sync::OnceLock::new();
+
+/// Install the owner's immutable global-excludes selection before discovery.
+/// The owner must admit its environment snapshot and verify configuration
+/// inputs separately; an installed path is checked for absence on every walk.
+pub fn install_startup_absent_global_excludes(path: PathBuf, configs_current: fn() -> bool) -> Result<(), ()> {
+    STARTUP_ABSENT_GLOBAL_EXCLUDES.set(StartupAbsentGitInputs { global: path, configs_current }).map_err(|_| ())
+}
+
+fn visit_policy_identity(
+    generated: bool,
+    scope: SourceSelectionScope,
+    respect_ignore: bool,
+    case_insensitive: bool,
+    includes: &[String],
+    excludes: &[String],
+    absent_global: Option<&Path>,
+    mut write: impl FnMut(&[u8]),
+) {
+    write(b"nudox.discovery-policy.v1\0");
+    write(&[u8::from(generated), match scope { SourceSelectionScope::Generic => 0, SourceSelectionScope::PythonPackages => 1 }, u8::from(respect_ignore), u8::from(case_insensitive)]);
+    for patterns in [includes, excludes] {
+        write(&(patterns.len() as u64).to_be_bytes());
+        for pattern in patterns {
+            write(&(pattern.len() as u64).to_be_bytes());
+            write(pattern.as_bytes());
+        }
+    }
+    if let Some(path) = absent_global {
+        let path = path.as_os_str().as_encoded_bytes();
+        write(b"nudox.bound-absent-global-excludes.v1\0");
+        write(&(path.len() as u64).to_be_bytes());
+        write(path);
+    }
+}
+
+/// Stream the identity of the owner's startup-bound standard source policy.
+/// The caller must separately verify that its admitted snapshot is still
+/// eligible; this function does not read or validate any filesystem inputs.
+pub fn visit_startup_bound_source_policy_identity(write: impl FnMut(&[u8])) -> bool {
+    let Some(snapshot) = STARTUP_ABSENT_GLOBAL_EXCLUDES.get() else { return false };
+    visit_policy_identity(true, SourceSelectionScope::PythonPackages, true, cfg!(windows),
+        &[], &[], Some(&snapshot.global), write);
+    true
+}
+
 /// A reusable product discovery policy.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiscoveryPolicy {
@@ -321,6 +371,9 @@ pub struct DiscoveryPolicy {
     case_insensitive: bool,
     includes: Vec<String>,
     excludes: Vec<String>,
+    // Opt-in snapshot binding for the no-global-ignore subset. The default
+    // remains the ignore crate's usual process-environment lookup.
+    absent_global_excludes: Option<PathBuf>,
 }
 
 impl Default for DiscoveryPolicy {
@@ -334,20 +387,15 @@ impl DiscoveryPolicy {
     /// This describes configured discovery rules, not current ignore-file bytes.
     #[must_use]
     pub fn source_scope_identity_bytes(&self) -> Vec<u8> {
-        let mut out = b"nudox.discovery-policy.v1\0".to_vec();
-        out.extend_from_slice(&[
-            u8::from(self.generated_defaults),
-            match self.source_scope { SourceSelectionScope::Generic => 0, SourceSelectionScope::PythonPackages => 1 },
-            u8::from(self.respect_gitignore), u8::from(self.case_insensitive),
-        ]);
-        for patterns in [&self.includes, &self.excludes] {
-            out.extend_from_slice(&(patterns.len() as u64).to_be_bytes());
-            for pattern in patterns {
-                out.extend_from_slice(&(pattern.len() as u64).to_be_bytes());
-                out.extend_from_slice(pattern.as_bytes());
-            }
-        }
+        let mut out = Vec::new();
+        self.visit_source_scope_identity(|bytes| out.extend_from_slice(bytes));
         out
+    }
+
+    fn visit_source_scope_identity(&self, write: impl FnMut(&[u8])) {
+        visit_policy_identity(self.generated_defaults, self.source_scope, self.respect_gitignore,
+            self.case_insensitive, &self.includes, &self.excludes,
+            self.absent_global_excludes.as_deref(), write);
     }
 
     /// Creates the production policy for a local source tree.
@@ -360,6 +408,10 @@ impl DiscoveryPolicy {
             case_insensitive: cfg!(windows),
             includes: Vec::new(),
             excludes: Vec::new(),
+            absent_global_excludes: STARTUP_ABSENT_GLOBAL_EXCLUDES
+                .get()
+                .filter(|snapshot| missing_file(&snapshot.global) && (snapshot.configs_current)())
+                .map(|snapshot| snapshot.global.clone()),
         }
     }
 
@@ -383,6 +435,23 @@ impl DiscoveryPolicy {
     pub fn respect_gitignore(mut self, enabled: bool) -> Self {
         self.respect_gitignore = enabled;
         self
+    }
+
+    /// Bind this walk to an explicitly selected, absent global excludes file.
+    /// A present or inaccessible file fails the walk. Callers must separately
+    /// establish the config/environment snapshot that selected the path.
+    #[must_use]
+    pub fn absent_global_excludes(mut self, path: PathBuf) -> Self {
+        self.absent_global_excludes = Some(path);
+        self
+    }
+
+    /// Whether this policy is bound to the owner's installed startup path.
+    #[must_use]
+    pub fn uses_startup_global_excludes(&self) -> bool {
+        self.respect_gitignore && self.absent_global_excludes.as_ref()
+            .zip(STARTUP_ABSENT_GLOBAL_EXCLUDES.get())
+            .is_some_and(|(selected, startup)| selected == &startup.global)
     }
 
     /// Selects host case behavior for repository rules and overrides.
@@ -656,10 +725,27 @@ impl DiscoveryPolicy {
         let empty_context = PythonSourceContext::default();
         let overrides = self.overrides(&root);
         let include_overrides = self.include_overrides(&root);
-        let initial_error = match (&overrides, &include_overrides) {
+        let mut initial_error = match (&overrides, &include_overrides) {
             (Err(error), _) | (_, Err(error)) => Some(error.clone()),
             (Ok(_), Ok(_)) => context_error,
         };
+        let absent_global = self
+            .respect_gitignore
+            .then(|| self.absent_global_excludes.clone())
+            .flatten();
+        if let Some(path) = &absent_global {
+            if !missing_file(path) {
+                initial_error = Some(DiscoveryError::Io {
+                    path: path.clone(),
+                    detail: "bound global excludes is present or inaccessible".into(),
+                });
+            } else if !startup_config_current(path) {
+                initial_error = Some(DiscoveryError::Io {
+                    path: path.clone(),
+                    detail: "bound Git config changed or is inaccessible".into(),
+                });
+            }
+        }
         if let Ok(overrides) = overrides {
             builder.overrides(overrides);
         }
@@ -673,7 +759,7 @@ impl DiscoveryPolicy {
             .parents(self.respect_gitignore)
             .ignore(self.respect_gitignore)
             .git_ignore(self.respect_gitignore)
-            .git_global(self.respect_gitignore)
+            .git_global(self.respect_gitignore && absent_global.is_none())
             .git_exclude(self.respect_gitignore)
             .require_git(false)
             .ignore_case_insensitive(self.case_insensitive)
@@ -699,6 +785,7 @@ impl DiscoveryPolicy {
             initial_error,
             context_capture,
             context_validated: false,
+            absent_global,
         }
     }
 }
@@ -743,6 +830,17 @@ const AMBIENT_IGNORE_FILE_LIMIT: u64 = 1024 * 1024;
 const AMBIENT_IGNORE_TOTAL_LIMIT: u64 = 16 * 1024 * 1024;
 const AMBIENT_IGNORE_NAMES: [&str; 4] = [".ignore", ".gitignore", ".nudoxignore", ".git/info/exclude"];
 
+fn missing_file(path: &Path) -> bool {
+    matches!(std::fs::metadata(path), Err(error) if matches!(
+        error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    ))
+}
+
+fn startup_config_current(global: &Path) -> bool {
+    let Some(snapshot) = STARTUP_ABSENT_GLOBAL_EXCLUDES.get() else { return true };
+    snapshot.global.as_path() != global || (snapshot.configs_current)()
+}
+
 impl DiscoveryPolicy {
     /// Reads the ambient ignore inputs `walk(root)` consults.
     ///
@@ -755,11 +853,11 @@ impl DiscoveryPolicy {
         root: &Path,
         directories: &[PathBuf],
     ) -> Option<AmbientIgnoreInputs> {
-        self.ambient_ignore_inputs_with(
-            root,
-            directories,
-            ignore::gitignore::gitconfig_excludes_path(),
-        )
+        let global = self
+            .absent_global_excludes
+            .clone()
+            .or_else(|| ignore::gitignore::gitconfig_excludes_path());
+        self.ambient_ignore_inputs_with(root, directories, global)
     }
 
     fn ambient_ignore_inputs_with(
@@ -821,6 +919,7 @@ pub struct Discovery {
     initial_error: Option<DiscoveryError>,
     context_capture: Option<std::sync::Arc<PythonSourceContextCapture>>,
     context_validated: bool,
+    absent_global: Option<PathBuf>,
 }
 
 impl fmt::Debug for Discovery {
@@ -843,6 +942,20 @@ impl Iterator for Discovery {
             let Some(result) = self.inner.next() else {
                 if !self.context_validated {
                     self.context_validated = true;
+                    if let Some(path) = &self.absent_global {
+                        if !missing_file(path) {
+                            return Some(Err(DiscoveryError::Io {
+                                path: path.clone(),
+                                detail: "bound global excludes became present or inaccessible".into(),
+                            }));
+                        }
+                        if !startup_config_current(path) {
+                            return Some(Err(DiscoveryError::Io {
+                                path: path.clone(),
+                                detail: "bound Git config changed or became inaccessible".into(),
+                            }));
+                        }
+                    }
                     if let Some(capture) = &self.context_capture {
                         if let Err(error) = capture.validate_current(&self.root) {
                             return Some(Err(error));

@@ -153,6 +153,48 @@ impl FileStore {
     /// node-sized wire payload.
     pub const BOUNDED_MANIFEST_WORK_WIRE_COPIES: usize = 3;
 
+    /// Prove one closure member under the shared retirement ledger. This
+    /// adapter keeps the legacy counter private and supplies callbacks that
+    /// never credit it; no untrusted callback can increase the reservation.
+    /// Manifest keys and values are fixed-width, so the underlying gate's
+    /// per-node wire-copy debit covers their streaming typed admission.
+    pub fn contains_closure_member_retirement(
+        &self,
+        pin: &super::super::GcPinGuard,
+        closure: ClosureId,
+        member: crate::UntrustedObjectId,
+        max_depth: usize,
+        budget: &backend_version::retirement_budget::RetirementBudget,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<(bool, u64), StoreError> {
+        if max_depth == 0 || max_depth > 32 { return Err(StoreError::Bounds); }
+        let nodes = max_depth.checked_add(1).ok_or(StoreError::Bounds)?;
+        let stack = 4096usize.checked_add(96 + 80 + 128 + 128)
+            .and_then(|n| n.checked_add(Self::BOUNDED_MANIFEST_WORK_OBJECT_BYTES))
+            .ok_or(StoreError::Bounds)?;
+        let per_node = Self::BOUNDED_MANIFEST_WORK_NODE_BYTES.checked_mul(2)
+            .and_then(|n| n.checked_add(32)).ok_or(StoreError::Bounds)?;
+        let bytes = nodes.checked_mul(per_node).and_then(|n| n.checked_add(stack)).ok_or(StoreError::Bounds)?;
+        let _reservation = budget.reserve(bytes).map_err(|_| StoreError::Bounds)?;
+        let mut local = bytes;
+        // Bound even short, single-byte reads and retries. Each path level has
+        // at most one node, a fixed relation reference, and their open/read
+        // checkpoints. Interrupted I/O consumes the same token.
+        let mut work = nodes.checked_mul(Self::BOUNDED_MANIFEST_WORK_OBJECT_BYTES.checked_add(4096).ok_or(StoreError::Bounds)?)
+            .and_then(|n| n.checked_mul(4)).ok_or(StoreError::Bounds)?;
+        fn fixed_manifest_preflight(_: &backend_version::CanonicalNodeView<'_>, _: &mut usize) -> Result<(), StoreError> {
+            Ok(())
+        }
+        let before_read = |_: &mut usize| {
+            if cancelled() { return Err(StoreError::Bounds); }
+            work = work.checked_sub(1).ok_or(StoreError::Bounds)?;
+            Ok(())
+        };
+        self.contains_closure_member_bounded(pin, closure, member, max_depth, &mut local,
+            before_read, fixed_manifest_preflight)
+    }
+
+
     /// Tests membership in a selected closure without materializing members.
     ///
     /// The Unix implementation debits fixed locator/envelope stack before
@@ -378,8 +420,20 @@ impl FileStore {
         expected_row_count: Option<u64>,
         stats: &mut ManifestReadStats,
     ) -> Result<CheckedCanonicalRoot<ManifestRelation>, StoreError> {
+        // The object ID is untrusted until admission. Enforce the relation
+        // envelope limit before materializing the payload, even for the
+        // initial version lookup; generic read_object permits larger objects.
+        let version = self.with_verified_relation_object(
+            crate::UntrustedObjectId::from_bytes(*object_id.as_bytes()),
+            |view| {
+                if view.schema() != SchemaIdentity::of_relation::<ManifestRelation>() {
+                    return Err(StoreError::Corrupt);
+                }
+                Ok(*view.version())
+            },
+        )?;
         let claim = UntrustedId::<ManifestRelation>::from_wire(
-            self.read_object(object_id)?.version().as_ref(),
+            version.as_ref(),
             IdContext::relation::<ManifestRelation>(),
         )
         .map_err(|_| StoreError::Corrupt)?;

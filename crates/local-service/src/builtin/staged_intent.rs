@@ -932,6 +932,114 @@ pub(super) fn visit_staged_scope(
     visit_staged_scope_ids(store, manifest_id, closure, expected, budget, exact_count, cancellation, visit).map(|_| ())
 }
 
+/// Narrow V17 stage traversal: no raw source or SQL receipts and at most one
+/// page for each of the two intent sections. Every member, including the
+/// manifest, is separately proven in the exact pinned closure. This does not
+/// itself decode or authorize the intent; the visitor must reserve any bytes
+/// retained beyond its call. A sealed control frontier binds the selected
+/// pack's physical identity facts to the same ledger and closure. Visitor
+/// callbacks may only collect untrusted data: no admission or publication
+/// may occur until this function has returned successfully.
+pub(super) fn visit_empty_retirement_scope<V>(
+    store: &FileStore,
+    manifest_id: ObjectId,
+    closure: backend_store::ClosureId,
+    expected: StageBasis,
+    artifact_budget: ArtifactBudget,
+    budget: &backend_version::retirement_budget::RetirementBudget,
+    controls: Option<&backend_engine::workspace::retirement_controls::RetirementControlFrontier>,
+    bookkeeping: usize,
+    cancelled: &dyn Fn() -> bool,
+    mut visit: V,
+) -> Result<(), StoreError>
+where V: FnMut(EvidenceKind, &[u8]) -> Result<(), StoreError>,
+{
+    // A selected control capability already owns a pin acquired before its
+    // publication lock. Reacquiring here could invert the collector's lock order.
+    let owned_pin = if let Some(controls) = controls {
+        if !controls.belongs_to(store, budget, closure) { return Err(StoreError::Bounds); }
+        None
+    } else {
+        Some(store.pin_garbage_collection_retirement(budget, bookkeeping, cancelled)?)
+    };
+    let pin = match controls {
+        Some(controls) => controls.pin(),
+        None => owned_pin.as_ref().ok_or(StoreError::Bounds)?.pin(),
+    };
+    let _sink_reservation = budget.reserve(store.retirement_arc_clone_bytes(bookkeeping).ok_or(StoreError::Bounds)?)
+        .map_err(|_| StoreError::Bounds)?;
+    let sink = store.artifact_sink(artifact_budget);
+    let manifest_claim = UntrustedObjectId::from_bytes(*manifest_id.as_bytes());
+    let (member, closure_count) = store.contains_closure_member_retirement(pin, closure, manifest_claim, 32, budget, cancelled)?;
+    if !member { return Err(StoreError::Corrupt); }
+    let manifest = sink.read_retirement_object(manifest_claim, SchemaIdentity::new(0x96, 13, 1), SQL_MANIFEST_BYTES, budget, bookkeeping, cancelled)?;
+    let verify_bytes = manifest.get().len().checked_mul(3).and_then(|n| n.checked_add(bookkeeping.checked_mul(3)?)).ok_or(StoreError::Bounds)?;
+    let _verify = budget.reserve(verify_bytes).map_err(|_| StoreError::Bounds)?;
+    if typed::<StagedManifest>(manifest.get()).id() != manifest_id { return Err(StoreError::Corrupt); }
+    let (basis, chains, sql) = decode_manifest_any(manifest.get())?;
+    drop(_verify);
+    if basis != expected || sql.is_some() || chains[EvidenceKind::RawSource.slot()].pages != 0
+        || chains[EvidenceKind::SourceRows.slot()].pages != 1
+        || chains[EvidenceKind::CompleteFacts.slot()].pages > 1 {
+        return Err(StoreError::NeedsScopedRebuild);
+    }
+    let expected_count = 1u64.checked_add(chains[1].pages).and_then(|n| n.checked_add(chains[2].pages)).ok_or(StoreError::Bounds)?;
+    let mut seen = [None; 3];
+    seen[0] = Some(manifest_id);
+    let mut seen_len = 1usize;
+    for kind in [EvidenceKind::SourceRows, EvidenceKind::CompleteFacts] {
+        let chain = chains[kind.slot()];
+        if chain.pages == 0 { continue; }
+        let claim = UntrustedObjectId::from_bytes(chain.tail);
+        let (member, count) = store.contains_closure_member_retirement(pin, closure, claim, 32, budget, cancelled)?;
+        if !member || count != closure_count { return Err(StoreError::Corrupt); }
+        let bytes = sink.read_retirement_object(claim, kind.schema(), PAGE_HEADER + PAGE_BYTES, budget, bookkeeping, cancelled)?;
+        let verify_bytes = bytes.get().len().checked_mul(3).and_then(|n| n.checked_add(bookkeeping.checked_mul(3)?)).ok_or(StoreError::Bounds)?;
+        let verify = budget.reserve(verify_bytes).map_err(|_| StoreError::Bounds)?;
+        let id = kind.object(bytes.get()).id();
+        if id.as_bytes() != claim.as_bytes() || seen[..seen_len].contains(&Some(id)) { return Err(StoreError::Corrupt); }
+        seen[seen_len] = Some(id); seen_len += 1;
+        drop(verify);
+        let value = bytes.get();
+        if value.len() <= PAGE_HEADER || &value[..4] != b"BSP1"
+            || value[4..12] != 0u64.to_be_bytes() || value[12..44] != [0; 32]
+            || u64::try_from(value.len() - PAGE_HEADER).map_err(|_| StoreError::Bounds)? != chain.bytes {
+            return Err(StoreError::Corrupt);
+        }
+        if cancelled() { return Err(StoreError::Bounds); }
+        visit(kind, &value[PAGE_HEADER..])?;
+    }
+    let mut union_count = expected_count;
+    if let Some(controls) = controls {
+        if !controls.belongs_to(store, budget, closure) { return Err(StoreError::Bounds); }
+        if controls.len() > backend_engine::application::MAX_MANIFEST_ENTRIES {
+            return Err(StoreError::Bounds);
+        }
+        let mut control_count = 0u64;
+        controls.visit(|id, schema| {
+            if cancelled() { return Err(StoreError::Bounds); }
+            control_count = control_count.checked_add(1).ok_or(StoreError::Bounds)?;
+            if control_count > controls.len() as u64 { return Err(StoreError::Corrupt); }
+            if schema.domain() == 0x96
+                && matches!(schema.ty(), 10..=14)
+                && id != manifest_id {
+                return Err(StoreError::Corrupt);
+            }
+            let claim = UntrustedObjectId::from_bytes(*id.as_bytes());
+            let (member, count) = store.contains_closure_member_retirement(pin, closure, claim, 32, budget, cancelled)?;
+            if !member || count != closure_count { return Err(StoreError::Corrupt); }
+            if !seen[..seen_len].contains(&Some(id)) {
+                union_count = union_count.checked_add(1).ok_or(StoreError::Bounds)?;
+            }
+            Ok(())
+        })?;
+        if control_count != controls.len() as u64 { return Err(StoreError::Corrupt); }
+    }
+    if union_count != closure_count { return Err(StoreError::Corrupt); }
+    if cancelled() { return Err(StoreError::Bounds); }
+    Ok(())
+}
+
 /// Authenticates each staged manifest member for an exact union comparison.
 pub(super) fn visit_staged_scope_ids(
     store: &FileStore,
@@ -980,6 +1088,7 @@ pub(super) fn visit_staged_scope_ids(
         let mut pages = Vec::new();
         let mut length = 0u64;
         for ordinal in (0..chain.pages).rev() {
+            check()?;
             let id = sink
                 .verify_closure_member(closure, UntrustedObjectId::from_bytes(cursor))?
                 .ok_or(StoreError::Corrupt)?
@@ -1012,6 +1121,7 @@ pub(super) fn visit_staged_scope_ids(
             return Err(StoreError::Corrupt);
         }
         for id in pages.into_iter().rev() {
+            check()?;
             let (_, bytes) = read_bounded(&sink, id, PAGE_HEADER + PAGE_BYTES)?;
             visit(kind, &bytes[PAGE_HEADER..])?;
         }

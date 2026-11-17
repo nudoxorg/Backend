@@ -151,6 +151,11 @@ pub struct PackageUrl {
 }
 
 impl PackageUrl {
+    /// Validates an exact package URL without allocating its owned spelling.
+    pub fn validate_borrowed(text: &str) -> Result<PackageUrlFacts, PackageUrlError> {
+        parse(text)
+    }
+
     /// Parses and retains an exact canonical, version-pinned package URL.
     pub fn parse(text: impl Into<String>) -> Result<Self, RejectedPackageUrl> {
         Self::try_from(text.into())

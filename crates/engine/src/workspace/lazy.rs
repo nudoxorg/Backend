@@ -332,6 +332,73 @@ where
 impl<R: CanonicalRelation> WorkspacePreflightRelationHandle<R> {
     /// Fixed envelope and hashing scratch, reserved before any store read.
     pub const ENVELOPE_SCRATCH: usize = 256 * 1024;
+
+    /// Stream a bounded page using the shared retirement ledger. The schema
+    /// gate must hold every reservation covering decoded nodes until this
+    /// call returns. The visitor must prospectively reserve retained copies.
+    /// `cursor_bytes` must include the maximum owned cursor allocation and
+    /// its bookkeeping; its reservation travels with the returned cursor.
+    pub fn visit_retirement<P, V>(
+        &self,
+        after: Option<&R::Key>,
+        limit: usize,
+        max_depth: usize,
+        budget: &super::retirement_budget::RetirementBudget,
+        cursor_bytes: usize,
+        preflight: &mut P,
+        visit: &mut V,
+    ) -> Result<super::retirement_budget::Metered<Option<R::Key>>, WorkspaceRelationError>
+    where
+        P: for<'a> FnMut(&backend_version::CanonicalNodeView<'a>, &super::retirement_budget::RetirementBudget) -> Result<(), StoreError>,
+        V: FnMut(&R::Key, R::Value, &super::retirement_budget::RetirementBudget) -> Result<(), StoreError>,
+    {
+        if limit == 0 || limit > 64 || max_depth == 0 || max_depth > 32 {
+            return Err(WorkspaceRelationError::Store(StoreError::Bounds));
+        }
+        let stack = std::mem::size_of::<arrayvec::ArrayVec<backend_version::CommittedChild<R>, 32>>();
+        if stack > 64 * 1024 {
+            return Err(WorkspaceRelationError::Store(StoreError::Bounds));
+        }
+        let scratch = Self::ENVELOPE_SCRATCH.checked_add(stack)
+            .ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
+        let _scratch = budget.reserve(scratch).map_err(|_| WorkspaceRelationError::Store(StoreError::Bounds))?;
+        let cursor = budget.reserve(cursor_bytes).map_err(|_| WorkspaceRelationError::Store(StoreError::Bounds))?;
+        let result = (|| {
+            let mut gate = |node: &backend_version::CanonicalNodeView<'_>| preflight(node, budget);
+            let loader = PreflightLoader { store: &self.store, preflight: RefCell::new(&mut gate) };
+            let tree = LazyTree::open(&loader, self.root).map_err(|error| map_tree_error::<R>(error, None))?;
+            tree.visit_streaming_with_depth_limit(after, limit, max_depth, |key, value| visit(key, value, budget))
+                .map_err(|error| map_tree_error::<R>(error, None))
+        })()?;
+        Ok(cursor.meter(result))
+    }
+
+    /// Prepare a retirement update with a whole-leaf schema gate. The gate
+    /// must keep node charges until this returns; the caller must already hold
+    /// charges for the edit records. The result owns the metadata reservation.
+    pub fn prepare_retirement_update<P>(
+        &self,
+        changes: &[TreeChange<R>],
+        policy: backend_version::LazyTreeUpdateBudget,
+        budget: &super::retirement_budget::RetirementBudget,
+        preflight: &mut P,
+    ) -> Result<super::retirement_budget::Metered<LazyPreparedUpdate<R>>, WorkspaceRelationError>
+    where
+        P: for<'a> FnMut(&backend_version::CanonicalNodeView<'a>, &super::retirement_budget::RetirementBudget) -> Result<(), StoreError>,
+    {
+        let _scratch = budget.reserve(Self::ENVELOPE_SCRATCH)
+            .map_err(|_| WorkspaceRelationError::Store(StoreError::Bounds))?;
+        let metadata = budget.reserve(policy.max_metadata_bytes)
+            .map_err(|_| WorkspaceRelationError::Store(StoreError::Bounds))?;
+        let result = (|| {
+            let mut gate = |node: &backend_version::CanonicalNodeView<'_>| preflight(node, budget);
+            let loader = PreflightLoader { store: &self.store, preflight: RefCell::new(&mut gate) };
+            let tree = LazyTree::open(&loader, self.root).map_err(|error| map_tree_error::<R>(error, None))?;
+            tree.prepare_update_bounded(changes, policy)
+                .map_err(|error| refine_rejection::<R>(map_tree_error::<R>(error, None), changes))
+        })()?;
+        Ok(metadata.meter(result))
+    }
     pub(crate) fn new(store: Arc<FileStore>, root: [u8; 32]) -> Result<Self, WorkspaceRelationError> {
         let root = UntrustedId::from_wire(&root, IdContext::relation::<R>())
             .map_err(|_| WorkspaceRelationError::InvalidRoot)?;
@@ -346,15 +413,15 @@ impl<R: CanonicalRelation> WorkspacePreflightRelationHandle<R> {
     where P: for<'a> FnMut(&backend_version::CanonicalNodeView<'a>, &mut usize) -> Result<(), StoreError> {
         if max_depth == 0 || max_depth > 32 { return Err(WorkspaceRelationError::Store(StoreError::Bounds)); }
         *budget = budget.checked_sub(Self::ENVELOPE_SCRATCH).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
-        let result = {
+        let result = (|| {
             let mut gate = |node: &backend_version::CanonicalNodeView<'_>| preflight(node, budget);
             let loader = PreflightLoader { store: &self.store, preflight: RefCell::new(&mut gate) };
             let tree = LazyTree::open(&loader, self.root).map_err(|error| map_tree_error::<R>(error, None))?;
             tree.lookup_streaming_with_depth_limit(key, max_depth)
-                .map_err(|error| map_tree_error::<R>(error, Some(RelationKeyPrefix::of::<R>(key))))?
-        };
+                .map_err(|error| map_tree_error::<R>(error, Some(RelationKeyPrefix::of::<R>(key))))
+        })();
         *budget = budget.checked_add(Self::ENVELOPE_SCRATCH).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
-        Ok(result)
+        result
     }
 
     /// Reads at most one row with the same preflight and depth guarantees.
@@ -373,14 +440,45 @@ impl<R: CanonicalRelation> WorkspacePreflightRelationHandle<R> {
             .and_then(|n| n.checked_add(64)).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
         let reserve = Self::ENVELOPE_SCRATCH.checked_add(slots).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
         *budget = budget.checked_sub(reserve).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
-        let result = {
+        let result = (|| {
             let mut gate = |node: &backend_version::CanonicalNodeView<'_>| preflight(node, budget);
             let loader = PreflightLoader { store: &self.store, preflight: RefCell::new(&mut gate) };
             let tree = LazyTree::open(&loader, self.root).map_err(|error| map_tree_error::<R>(error, None))?;
-            tree.page_with_depth_limit(after, limit, max_depth).map_err(|error| map_tree_error::<R>(error, None))?
-        };
-        *budget = budget.checked_add(Self::ENVELOPE_SCRATCH).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
-        Ok(result)
+            tree.page_with_depth_limit(after, limit, max_depth).map_err(|error| map_tree_error::<R>(error, None))
+        })();
+        let refund = if result.is_err() { reserve } else { Self::ENVELOPE_SCRATCH };
+        *budget = budget.checked_add(refund).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
+        result
+    }
+
+    /// Prepares an ordered update while the same caller ledger reserves both
+    /// typed-node preflight and the complete path-copy metadata envelope.
+    /// The caller must charge edit records before calling and keep the update
+    /// reservation held until the returned update and all derived outputs are
+    /// dropped. Per-node callback reservations also remain held; the caller
+    /// may release only temporary charges after the operation returns.
+    pub fn prepare_update_bounded<P>(
+        &self,
+        changes: &[TreeChange<R>],
+        policy: backend_version::LazyTreeUpdateBudget,
+        budget: &mut usize,
+        preflight: &mut P,
+    ) -> Result<LazyPreparedUpdate<R>, WorkspaceRelationError>
+    where
+        P: for<'a> FnMut(&backend_version::CanonicalNodeView<'a>, &mut usize) -> Result<(), StoreError>,
+    {
+        let reserve = Self::ENVELOPE_SCRATCH.checked_add(policy.max_metadata_bytes)
+            .ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
+        *budget = budget.checked_sub(reserve).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
+        let result = (|| {
+            let mut gate = |node: &backend_version::CanonicalNodeView<'_>| preflight(node, budget);
+            let loader = PreflightLoader { store: &self.store, preflight: RefCell::new(&mut gate) };
+            let tree = LazyTree::open(&loader, self.root).map_err(|error| map_tree_error::<R>(error, None))?;
+            tree.prepare_update_bounded(changes, policy).map_err(|error| refine_rejection::<R>(map_tree_error::<R>(error, None), changes))
+        })();
+        let refund = if result.is_err() { reserve } else { Self::ENVELOPE_SCRATCH };
+        *budget = budget.checked_add(refund).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
+        result
     }
 
     /// Streams at most 64 owned rows without allocating a sibling/result Vec.
@@ -398,7 +496,7 @@ impl<R: CanonicalRelation> WorkspacePreflightRelationHandle<R> {
         if stack > 64 * 1024 { return Err(WorkspaceRelationError::Store(StoreError::Bounds)); }
         let reserve = Self::ENVELOPE_SCRATCH.checked_add(stack).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
         *budget = budget.checked_sub(reserve).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
-        let result = {
+        let result = (|| {
             let shared = RefCell::new(&mut *budget);
             let mut gate = |node: &backend_version::CanonicalNodeView<'_>| {
                 let mut budget = shared.borrow_mut();
@@ -409,10 +507,10 @@ impl<R: CanonicalRelation> WorkspacePreflightRelationHandle<R> {
             tree.visit_streaming_with_depth_limit(after, limit, max_depth, |key, value| {
                 let mut budget = shared.borrow_mut();
                 visit(key, value, &mut **budget)
-            }).map_err(|error| map_tree_error::<R>(error, None))?
-        };
+            }).map_err(|error| map_tree_error::<R>(error, None))
+        })();
         *budget = budget.checked_add(reserve).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
-        Ok(result)
+        result
     }
 }
 

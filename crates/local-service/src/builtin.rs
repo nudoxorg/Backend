@@ -66,6 +66,10 @@ const ECHO_AUTHORITY_SECRET: [u8; 32] = [0x5a; 32];
 mod index_work_observation;
 #[path = "builtin/ingest.rs"]
 mod ingest;
+#[cfg(target_os = "linux")]
+pub(crate) fn install_startup_ambient_snapshot() {
+    ingest::install_startup_ambient_snapshot();
+}
 mod native_ts_admission;
 mod native_ts_headers;
 mod owner_receipt_context;
@@ -75,6 +79,7 @@ mod sql_admission;
 mod sql_intent;
 mod csharp_intent;
 mod native_ts_retirement_receipt;
+mod native_ts_retirement_pointer;
 mod sql_receipt;
 mod sql_receipt_index;
 mod sql_catalog;
@@ -485,6 +490,7 @@ pub(super) struct LazyClosureUpdate<'a> {
     pub(super) sql_receipt_index_objects: &'a [TypedObject],
     pub(super) sql_receipt_index_pointer: Option<&'a TypedObject>,
     pub(super) sql_receipt: Option<&'a TypedObject>,
+    pub(super) native_ts_retirement_receipt: Option<&'a TypedObject>,
 }
 
 fn transition_closure_lazy(
@@ -584,6 +590,7 @@ fn transition_closure_lazy(
     }).cloned());
     if let Some(pointer) = update.sql_receipt_index_pointer { objects.push(pointer.clone()); }
     if let Some(receipt) = update.sql_receipt { objects.push(receipt.clone()); }
+    if let Some(receipt) = update.native_ts_retirement_receipt { objects.push(receipt.clone()); }
     let registry = product_relation_registry()?;
     let mut frontier = update
         .capture_objects

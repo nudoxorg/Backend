@@ -150,6 +150,12 @@ impl ClosureManifest {
         self.state.objects()
     }
 
+    /// Visit already-owned control objects without materializing the lazy
+    /// export cache. The caller controls cancellation and work accounting.
+    pub fn visit_objects_borrowed<E>(&self, mut visit: impl FnMut(&TypedObject) -> Result<(), E>) -> Result<(), E> {
+        self.state.lookup.visit_objects_borrowed(&mut visit)
+    }
+
     /// Returns the authenticated number of retained object descriptors.
     ///
     /// This reads the persistent manifest root summary and does not build the

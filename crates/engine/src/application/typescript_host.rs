@@ -23,7 +23,7 @@ mod snapshot_resolver;
 use crate::application::{ToolchainProbeError, ToolchainProbeLimits};
 use crate::driver::{ResolvedToolchain, ToolchainResolutionError};
 
-pub(crate) const MAX_PROJECT_ANCESTORS: usize = 32;
+pub const MAX_PROJECT_ANCESTORS: usize = 32;
 const MAX_PACKAGE_MANIFEST_BYTES: usize = 64 * 1024;
 const MAX_PNPM_WORKSPACE_BYTES: usize = 64 * 1024;
 pub(super) const MAX_PROJECT_CONFIG_FILES: usize = 256;
@@ -45,6 +45,7 @@ const MAX_RESOLVER_DIRECTORY_ENTRIES: usize = 16_384;
 const MAX_RESOLVER_TOTAL_DIRECTORY_ENTRIES: usize = 65_536;
 const MAX_RESOLVER_METADATA_BYTES: usize = 64 * 1024 * 1024;
 const MAX_RESOLVER_DEPTH: usize = 32;
+const MAX_EMPTY_NATIVE_PATH_BYTES: usize = 4096;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ConfigDependencyKind {
@@ -1961,6 +1962,112 @@ struct TypeScriptCompilerApiWitness {
 }
 
 impl TypeScriptProjectWitness {
+    /// Captures only a no-config native project for an empty inferred-root
+    /// proof. The only filesystem probes are the root tsconfig and angular
+    /// markers; no directory iterator, manifest parser, or source scan runs.
+    fn capture_native_empty_controlled(
+        project_root: &Path,
+        control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+    ) -> Result<Self, TypeScriptProjectHostError> {
+        control()?;
+        if project_root.as_os_str().as_encoded_bytes().len() > MAX_EMPTY_NATIVE_PATH_BYTES {
+            return Err(TypeScriptProjectHostError::CompilerIoClosureMismatch {
+                detail: "empty native TypeScript root exceeds the path bound".into(),
+            });
+        }
+        let project_root = canonical_directory(project_root)?;
+        if project_root.as_os_str().as_encoded_bytes().len() > MAX_EMPTY_NATIVE_PATH_BYTES {
+            return Err(TypeScriptProjectHostError::CompilerIoClosureMismatch {
+                detail: "canonical empty native TypeScript root exceeds the path bound".into(),
+            });
+        }
+        for marker in ["tsconfig.json", "angular.json"] {
+            control()?;
+            let path = project_root.join(marker);
+            if path.as_os_str().as_encoded_bytes().len() > MAX_EMPTY_NATIVE_PATH_BYTES {
+                return Err(TypeScriptProjectHostError::CompilerIoClosureMismatch {
+                    detail: "empty native TypeScript marker path exceeds the path bound".into(),
+                });
+            }
+            match fs::symlink_metadata(&path) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    return Err(TypeScriptProjectHostError::PackagePath {
+                        path: path.into_boxed_path(),
+                        source,
+                    });
+                }
+                Ok(_) => {
+                    return Err(TypeScriptProjectHostError::CompilerIoClosureMismatch {
+                        detail: format!(
+                            "{marker} is outside the bounded empty native TypeScript proof"
+                        )
+                        .into_boxed_str(),
+                    });
+                }
+            }
+        }
+        let files = Vec::new();
+        let mut hash = Hasher::new();
+        hash.update(b"typescript.native-tsz-project.v1\0");
+        hash.update(backend_frontend_typescript::TSZ_NATIVE_AUTHORITY_IDENTITY);
+        hash.update(&witness_fingerprint(&files));
+        control()?;
+        Ok(Self {
+            authority: TypeScriptWitnessAuthority::Native,
+            project_root: project_root.clone().into_boxed_path(),
+            home_root: None,
+            module_root: project_root.clone().into_boxed_path(),
+            workspace: None,
+            workspace_root: project_root.into_boxed_path(),
+            files: files.into_boxed_slice(),
+            typescript_files: Box::new([]),
+            config_candidates: Box::new([]),
+            selected_build_config_paths: Box::new([]),
+            config_paths: Box::new([]),
+            loaded_source_files: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            fingerprint: *hash.finalize().as_bytes(),
+            resource_proof: None,
+        })
+    }
+
+    /// Revalidates the bounded no-config native host without invoking the
+    /// general compiler host's wider configuration discovery path.
+    pub(crate) fn validate_empty_native_current_controlled(
+        &self,
+        control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+    ) -> Result<(), TypeScriptProjectHostError> {
+        if !matches!(self.authority, TypeScriptWitnessAuthority::Native)
+            || self.home_root.is_some()
+            || self.resource_proof.is_some()
+            || !self.typescript_files.is_empty()
+            || !self.config_candidates.is_empty()
+            || !self.config_paths.is_empty()
+            || !self.selected_build_config_paths.is_empty()
+            || !self
+                .loaded_source_files
+                .lock()
+                .map_err(|_| TypeScriptProjectHostError::WitnessLockPoisoned {
+                    path: self.project_root.clone(),
+                })?
+                .is_empty()
+        {
+            return Err(TypeScriptProjectHostError::CompilerIoClosureMismatch {
+                detail: "empty native TypeScript host is not a no-config native witness".into(),
+            });
+        }
+        let current = Self::capture_native_empty_controlled(&self.project_root, control)?;
+        if current.files != self.files
+            || current.fingerprint != self.fingerprint
+            || current.workspace_root != self.workspace_root
+        {
+            return Err(TypeScriptProjectHostError::WitnessChanged {
+                path: self.project_root.clone(),
+            });
+        }
+        Ok(())
+    }
+
     /// Starts an isolated observation ledger for native construction or replay.
     pub(crate) fn resolver(&self) -> TypeScriptResolverCapability<'_> {
         TypeScriptResolverCapability {
@@ -4090,10 +4197,9 @@ fn select_sole_nested_config<'a>(
         .copied()
         .filter(|candidate| candidate.project_candidate)
         .filter(|candidate| {
-            candidate
-                .path
-                .parent()
-                .is_some_and(|directory| directory != package_root && directory.starts_with(package_root))
+            candidate.path.parent().is_some_and(|directory| {
+                directory != package_root && directory.starts_with(package_root)
+            })
         })
         .collect::<Vec<_>>();
     let directories = below
@@ -4112,7 +4218,11 @@ fn select_sole_nested_config<'a>(
     } else {
         TypeScriptConfigSelectionBasis::RankedAmong
     };
-    Some(TypeScriptConfigSelection { config: first, basis, passed_over: below.len() - 1 })
+    Some(TypeScriptConfigSelection {
+        config: first,
+        basis,
+        passed_over: below.len() - 1,
+    })
 }
 
 /// The config chosen by [`select_project_config_with_basis`].
@@ -5135,6 +5245,37 @@ struct NodeRuntimeIdentity {
 }
 
 impl TypeScriptProjectHost {
+    /// Admits the intentionally narrow native/no-config host used by an
+    /// empty inferred-root proof. Compiler API and home/workspace-wide hosts
+    /// are refused before their broader discovery routines can allocate.
+    pub(crate) fn capture_empty_native_controlled(
+        &self,
+        package_root: &Path,
+        control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+    ) -> Result<std::sync::Arc<TypeScriptProjectWitness>, TypeScriptProjectHostError> {
+        control()?;
+        if !matches!(self.authority, TypeScriptProjectHostAuthority::Native)
+            || self.home_root.is_some()
+        {
+            return Err(TypeScriptProjectHostError::CompilerIoClosureMismatch {
+                detail: "empty native TypeScript proof requires the direct host without a home-root scan".into(),
+            });
+        }
+        let witness =
+            TypeScriptProjectWitness::capture_native_empty_controlled(package_root, control)?;
+        let retained = witness.retained_native_bytes().ok_or_else(|| {
+            TypeScriptProjectHostError::CompilerIoClosureMismatch {
+                detail: "empty native TypeScript host witness accounting failed".into(),
+            }
+        })?;
+        if retained > 1024 * 1024 {
+            return Err(TypeScriptProjectHostError::CompilerIoClosureMismatch {
+                detail: "empty native TypeScript host exceeds its no-config retained bound".into(),
+            });
+        }
+        Ok(std::sync::Arc::new(witness))
+    }
+
     /// Local defaults bind directly to the linked TSZ authority. Host compiler,
     /// Node, report-helper and PATH selection cannot enter this variant.
     pub(crate) fn direct(home_root: Option<PathBuf>, probe_limits: ToolchainProbeLimits) -> Self {
@@ -8472,8 +8613,14 @@ printf 'Version 5.9.3\n'
             .expect("repository with one nested app");
         let selection = select_project_config_with_basis(&fixture.0, &configs)
             .expect("the nested app is the project");
-        assert_eq!(selection.config.path.as_ref(), module_path(&app, "tsconfig.json"));
-        assert_eq!(selection.basis, TypeScriptConfigSelectionBasis::OnlyCandidate);
+        assert_eq!(
+            selection.config.path.as_ref(),
+            module_path(&app, "tsconfig.json")
+        );
+        assert_eq!(
+            selection.basis,
+            TypeScriptConfigSelectionBasis::OnlyCandidate
+        );
     }
 
     #[test]
@@ -8506,7 +8653,10 @@ printf 'Version 5.9.3\n'
         let configs = collect_project_configs(&fixture.0, &fixture.0, &module_root, &[])
             .expect("root and nested configs");
         assert_eq!(
-            select_project_config(&fixture.0, &configs).unwrap().path.as_ref(),
+            select_project_config(&fixture.0, &configs)
+                .unwrap()
+                .path
+                .as_ref(),
             module_path(&fixture.0, "tsconfig.json")
         );
     }

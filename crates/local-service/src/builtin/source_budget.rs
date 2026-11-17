@@ -29,8 +29,10 @@ const IN_FLIGHT_ENV: &str = "NUDOX_SOURCE_MAX_IN_FLIGHT_BYTES";
 const RECORD_BYTES_ENV: &str = "NUDOX_SOURCE_MAX_PROJECT_RECORD_BYTES";
 const RECORDS_ENV: &str = "NUDOX_SOURCE_MAX_PROJECT_RECORDS";
 
-/// One scan's immutable resource limits. The environment can change between
-/// scans, but a single scan always uses one validated policy and identity.
+/// One scan's immutable resource limits. Ordinary scans may reread environment
+/// overrides between scans; the explicit startup-bound discovery mode instead
+/// shares its owner's startup policy for the lifetime of that mode. Restart
+/// the owner to apply source-limit environment changes in that mode.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SourceAdmissionLimits {
     pub(super) max_file_source_bytes: usize,
@@ -67,6 +69,11 @@ pub(super) struct SourceAdmissionPolicy {
     identity: [u8; 32],
 }
 
+// Only an eligible owner bootstrap installs this immutable policy. Ordinary
+// library callers and unsupported bootstraps continue to resolve the process
+// configuration in the existing way.
+static STARTUP_SOURCE_POLICY: std::sync::OnceLock<SourceAdmissionPolicy> = std::sync::OnceLock::new();
+
 impl SourceAdmissionPolicy {
     /// Resolves bounded operator overrides once, then pins the result for the
     /// complete scan. Invalid configuration refuses admission instead of
@@ -86,6 +93,17 @@ impl SourceAdmissionPolicy {
         limits.max_project_records = configured_count(RECORDS_ENV, limits.max_project_records)?;
         Self::new(limits).map_err(|refusal| refusal.to_string())
     }
+
+    /// Resolve the named source-limit overrides before owner operations. Like
+    /// standard environment reads generally, transient startup allocation is
+    /// not bounded by the subsequent retirement ledger.
+    pub(super) fn install_startup() {
+        if STARTUP_SOURCE_POLICY.get().is_none() {
+            if let Ok(policy) = Self::from_environment() { let _ = STARTUP_SOURCE_POLICY.set(policy); }
+        }
+    }
+
+    pub(super) fn startup() -> Option<Self> { STARTUP_SOURCE_POLICY.get().copied() }
 
     pub(super) fn new(limits: SourceAdmissionLimits) -> Result<Self, Refusal> {
         let max_file = limits.max_file_source_bytes;

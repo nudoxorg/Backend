@@ -937,20 +937,22 @@ mod native_web_closure_tests {
         let host = TypeScriptProjectHost::direct(None,
             ToolchainProbeLimits::new(Duration::from_secs(5), NonZeroUsize::new(1024).unwrap()).unwrap());
         let cancelled = std::sync::Arc::new(AtomicBool::new(false));
-        let proof = crate::application::EmptyNativeTypeScriptProgram::capture(&host, &fixture.0, std::sync::Arc::clone(&cancelled)).unwrap();
-        assert_eq!(proof.root(), fixture.0);
-        assert!(proof.matches_cancellation(&cancelled));
-        assert!(!proof.matches_cancellation(&std::sync::Arc::new(AtomicBool::new(false))));
-        proof.validate_current().unwrap();
+        let budget = crate::workspace::retirement_budget::RetirementBudget::new(64 * 1024 * 1024).unwrap();
+        let proof = crate::application::EmptyNativeTypeScriptProgram::capture(&host, &fixture.0, std::sync::Arc::clone(&cancelled), &budget).unwrap();
+        assert_eq!(proof.get().root(), fixture.0.as_path());
+        assert!(proof.get().matches_cancellation(&cancelled));
+        assert!(!proof.get().matches_cancellation(&std::sync::Arc::new(AtomicBool::new(false))));
+        proof.get().validate_current_budgeted(&budget).unwrap();
         cancelled.store(true, std::sync::atomic::Ordering::Release);
-        assert!(proof.validate_current().is_err());
+        assert!(proof.get().validate_current_budgeted(&budget).is_err());
         cancelled.store(false, std::sync::atomic::Ordering::Release);
         fixture.write("added.ts", "export const value = 1;\n");
-        assert!(proof.validate_current().is_err());
-        assert!(crate::application::EmptyNativeTypeScriptProgram::capture(&host, &fixture.0, std::sync::Arc::clone(&cancelled)).is_err());
+        assert!(proof.get().validate_current_budgeted(&budget).is_err());
+        assert!(crate::application::EmptyNativeTypeScriptProgram::capture(&host, &fixture.0, std::sync::Arc::clone(&cancelled), &budget).is_err(),
+            "an added source must not gain empty retirement authority");
         fs::remove_file(fixture.0.join("added.ts")).unwrap();
         fixture.write("other/tsconfig.json", r#"{"files":[]}"#);
-        assert!(crate::application::EmptyNativeTypeScriptProgram::capture(&host, &fixture.0, std::sync::Arc::clone(&cancelled)).is_err(),
+        assert!(crate::application::EmptyNativeTypeScriptProgram::capture(&host, &fixture.0, std::sync::Arc::clone(&cancelled), &budget).is_err(),
             "a second project config must not gain one-program retirement authority");
     }
 
@@ -960,11 +962,12 @@ mod native_web_closure_tests {
         let host = TypeScriptProjectHost::direct(None,
             ToolchainProbeLimits::new(Duration::from_secs(5), NonZeroUsize::new(1024).unwrap()).unwrap());
         let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let budget = crate::workspace::retirement_budget::RetirementBudget::new(64 * 1024 * 1024).unwrap();
         fixture.write("tsconfig.json", r#"{"compilerOptions":{"noLib":true},"files":["missing.ts"]}"#);
-        assert!(crate::application::EmptyNativeTypeScriptProgram::capture(&host, &fixture.0, std::sync::Arc::clone(&cancelled)).is_err(),
+        assert!(crate::application::EmptyNativeTypeScriptProgram::capture(&host, &fixture.0, std::sync::Arc::clone(&cancelled), &budget).is_err(),
             "a missing explicit input is a compiler failure, not an empty scope");
         fixture.write("tsconfig.json", "{ invalid json ");
-        assert!(crate::application::EmptyNativeTypeScriptProgram::capture(&host, &fixture.0, std::sync::Arc::clone(&cancelled)).is_err(),
+        assert!(crate::application::EmptyNativeTypeScriptProgram::capture(&host, &fixture.0, std::sync::Arc::clone(&cancelled), &budget).is_err(),
             "a malformed config cannot retire selected sources");
     }
 

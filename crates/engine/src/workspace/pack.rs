@@ -10,7 +10,7 @@ use backend_store::{
 pub(crate) const WORKSPACE_PACK_KEY: &[u8] = b"backend.workspace.closure-index.v3\0";
 pub(crate) const WORKSPACE_PACK_MAGIC: &[u8] = b"backend.workspace.index.v3\0";
 pub(crate) const WORKSPACE_PACK_LAYOUT: &[u8] = b"backend-engine.workspace-closure-index.v3\0";
-const MAX_AUXILIARY_OBJECTS: usize = 128;
+pub(super) const MAX_AUXILIARY_OBJECTS: usize = 128;
 const AUXILIARY_COUNT_BYTES: usize = 2;
 
 pub(crate) fn workspace_pack_layout() -> LayoutId {
@@ -26,6 +26,87 @@ pub(super) struct WorkspacePackIndex {
     pub(super) auxiliary: Vec<ObjectId>,
     pub(super) catalog_descriptor: Option<ObjectId>,
     pub(super) frontier: AuthenticatedRecoveryFrontier,
+}
+
+/// Exact claims parsed from the selected owner's authenticated one-record
+/// pack. The retained selected capability holds the store process lock and
+/// pin; typed transition/receipt admission remains mandatory.
+pub(super) struct RetirementPackFrontier<'a> {
+    selected: &'a backend_version::retirement_budget::Metered<backend_store::RetirementSelectedHead<'a>>,
+    target: [u8; 32],
+    closure: backend_store::ClosureId,
+    transaction: TransactionId,
+    payloads: [backend_store::UntrustedObjectId; TRANSITION_PAYLOAD_COUNT],
+    auxiliary: [backend_store::UntrustedObjectId; MAX_AUXILIARY_OBJECTS],
+    auxiliary_len: usize,
+}
+
+impl RetirementPackFrontier<'_> {
+    pub(super) fn store(&self) -> &FileStore { self.selected.get().store() }
+    pub(super) fn pin(&self) -> &backend_store::GcPinGuard { self.selected.get().pin() }
+    pub(super) fn closure(&self) -> backend_store::ClosureId { self.closure }
+    pub(super) fn target(&self) -> [u8; 32] { self.target }
+    pub(super) fn transaction(&self) -> TransactionId { self.transaction }
+    pub(super) fn ids(&self) -> impl Iterator<Item = backend_store::UntrustedObjectId> + '_ {
+        self.payloads.iter().chain(self.auxiliary[..self.auxiliary_len].iter()).copied()
+    }
+    pub(super) fn belongs_to_budget(&self, budget: &backend_version::retirement_budget::RetirementBudget) -> bool {
+        budget.owns(self.selected)
+    }
+}
+
+/// Read the selected fixed pack using the owner/store-bound capability. This
+/// is not a typed transition admission and rejects catalog-bearing packs in
+/// this first slice; no caller-selected head or store is accepted.
+pub(super) fn read_retirement_pack_frontier<'a>(
+    selected: &'a backend_version::retirement_budget::Metered<backend_store::RetirementSelectedHead<'a>>,
+    budget: &backend_version::retirement_budget::RetirementBudget,
+    bookkeeping: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<backend_version::retirement_budget::Metered<RetirementPackFrontier<'a>>, StoreError> {
+    if !budget.owns(selected) || cancelled() { return Err(StoreError::Bounds); }
+    let descriptor = selected.get().selected().descriptor();
+    let layout = workspace_pack_layout();
+    if descriptor.layout() != layout { return Err(StoreError::Corrupt); }
+    let value_len = WORKSPACE_PACK_MAGIC.len().checked_add(32usize.checked_mul(4 + TRANSITION_PAYLOAD_COUNT).ok_or(StoreError::Bounds)?)
+        .and_then(|n| n.checked_add(AUXILIARY_COUNT_BYTES + 32 * MAX_AUXILIARY_OBJECTS)).ok_or(StoreError::Bounds)?;
+    let output = budget.reserve(std::mem::size_of::<RetirementPackFrontier<'a>>().checked_add(bookkeeping).ok_or(StoreError::Bounds)?)
+        .map_err(|_| StoreError::Bounds)?;
+    let value = selected.get().store().read_single_entry_pack_retirement(
+        selected.get().pin(), descriptor.pack(), layout, WORKSPACE_PACK_KEY, value_len, budget, bookkeeping, cancelled,
+    )?;
+    let bytes = value.get().as_slice();
+    if bytes.get(..WORKSPACE_PACK_MAGIC.len()) != Some(WORKSPACE_PACK_MAGIC) { return Err(StoreError::Corrupt); }
+    fn take<const N: usize>(bytes: &[u8], at: &mut usize) -> Result<[u8; N], StoreError> {
+        let end = at.checked_add(N).ok_or(StoreError::Bounds)?;
+        let value = bytes.get(*at..end).ok_or(StoreError::Corrupt)?.try_into().map_err(|_| StoreError::Corrupt)?;
+        *at = end;
+        Ok(value)
+    }
+    let mut at = WORKSPACE_PACK_MAGIC.len();
+    let target = take::<32>(bytes, &mut at)?;
+    let closure = take::<32>(bytes, &mut at)?;
+    let transaction = TransactionId::from_bytes(take::<32>(bytes, &mut at)?);
+    if target != descriptor.target() || closure != *descriptor.closure().as_bytes() { return Err(StoreError::Corrupt); }
+    let zero = backend_store::UntrustedObjectId::from_bytes([0; 32]);
+    let mut payloads = [zero; TRANSITION_PAYLOAD_COUNT];
+    for index in 0..TRANSITION_PAYLOAD_COUNT {
+        let id = backend_store::UntrustedObjectId::from_bytes(take::<32>(bytes, &mut at)?);
+        if id == zero || payloads[..index].contains(&id) { return Err(StoreError::Corrupt); }
+        payloads[index] = id;
+    }
+    let count = usize::from(u16::from_be_bytes(take::<2>(bytes, &mut at)?));
+    if count > MAX_AUXILIARY_OBJECTS { return Err(StoreError::Bounds); }
+    let mut auxiliary = [zero; MAX_AUXILIARY_OBJECTS];
+    for index in 0..MAX_AUXILIARY_OBJECTS {
+        let id = backend_store::UntrustedObjectId::from_bytes(take::<32>(bytes, &mut at)?);
+        if index < count {
+            if id == zero || payloads.contains(&id) || (index > 0 && auxiliary[index - 1] >= id) { return Err(StoreError::Corrupt); }
+            auxiliary[index] = id;
+        } else if id != zero { return Err(StoreError::Corrupt); }
+    }
+    if take::<32>(bytes, &mut at)? != [0; 32] || at != bytes.len() || cancelled() { return Err(StoreError::Bounds); }
+    Ok(output.meter(RetirementPackFrontier { selected, target, closure: descriptor.closure(), transaction, payloads, auxiliary, auxiliary_len: count }))
 }
 
 /// A closed witness minted only by canonical selected-pack admission below.

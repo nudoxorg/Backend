@@ -23,6 +23,7 @@ mod runtime;
 mod terminal;
 mod toolchain_probe;
 mod typescript_host;
+pub use self::typescript_host::MAX_PROJECT_ANCESTORS as TYPE_SCRIPT_PROJECT_ANCESTOR_LIMIT;
 mod typescript_program;
 mod typescript_empty;
 pub use self::typescript_empty::EmptyNativeTypeScriptProgram;

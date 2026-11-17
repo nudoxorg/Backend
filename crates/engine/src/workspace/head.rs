@@ -267,6 +267,20 @@ impl WorkspaceSnapshot {
         WorkspaceRelationHandle::open(store, binding.root())
     }
 
+    /// Selects a primary relation root from this checked manifest without
+    /// decoding it. Each read on the returned handle requires caller-provided
+    /// per-node resource admission before typed decoding.
+    pub fn relation_preflight<R: backend_version::CanonicalRelation>(
+        &self,
+    ) -> Result<WorkspacePreflightRelationHandle<R>, WorkspaceRelationError> {
+        let store = self.store.clone().ok_or(WorkspaceRelationError::StoreUnavailable)?;
+        let schema = backend_version::SchemaIdentity::of_relation::<R>();
+        let binding = self.manifest().relations().iter()
+            .find(|binding| binding.schema() == schema)
+            .ok_or(WorkspaceRelationError::MissingRelation)?;
+        WorkspacePreflightRelationHandle::new(store, binding.root())
+    }
+
     /// Opens a canonical relation root named by a typed auxiliary object in
     /// this exact immutable closure. Auxiliary roots are useful for product
     /// state that must commit atomically with a workspace transition while

@@ -4,6 +4,40 @@
 use super::source_budget::SourceAdmissionLimits;
 use super::source_budget::{SourceAdmissionLedger, SourceAdmissionPolicy};
 use super::source_frontier;
+#[cfg(target_os = "linux")]
+#[path = "ingest/bounded_ambient.rs"]
+mod bounded_ambient;
+#[cfg(target_os = "linux")]
+#[path = "ingest/bounded_empty_inventory.rs"]
+mod bounded_empty_inventory;
+#[cfg(target_os = "linux")]
+#[path = "ingest/bounded_empty_scan.rs"]
+mod bounded_empty_scan;
+#[cfg(target_os = "linux")]
+pub(super) use bounded_empty_inventory::AbsentAncestorWorkspaces;
+#[cfg(target_os = "linux")]
+pub(super) use bounded_empty_scan::BoundedEmptyNativeScan;
+
+/// Capture a metered narrow empty native scan without invoking an ignore walker.
+#[cfg(target_os = "linux")]
+pub(super) fn capture_bounded_empty_native_scan(
+    root: &Path,
+    project: [u8; 32],
+    source_policy: SourceAdmissionPolicy,
+    cancellation: &Arc<AtomicBool>,
+    budget: &backend_version::retirement_budget::RetirementBudget,
+) -> Result<backend_version::retirement_budget::Metered<BoundedEmptyNativeScan>, &'static str> {
+    bounded_empty_scan::capture(root, project, source_policy, cancellation, budget)
+}
+#[cfg(target_os = "linux")]
+pub(super) fn install_startup_ambient_snapshot() {
+    if bounded_empty_inventory::install_startup_proc_binding().is_ok() {
+        bounded_ambient::install_startup_snapshot();
+        if bounded_ambient::startup_snapshot().is_some() {
+            SourceAdmissionPolicy::install_startup();
+        }
+    }
+}
 #[path = "ingest/go_project.rs"]
 mod go_project;
 #[path = "ingest/vue.rs"]
@@ -458,6 +492,9 @@ pub(super) struct NativeTsCapture {
     fixed_discovery_policy: bool,
     source_policy: SourceAdmissionPolicy,
     project_source_version: Option<[u8; 32]>,
+    // Set only at the scan's construction boundary, before the mutable
+    // IndexSnapshot fields are returned to callers.
+    scan_structural_empty: Option<bool>,
     cancellation: Option<Arc<AtomicBool>>,
     /// Digest of the ambient ignore inputs the discovery walk consulted, together
     /// with the walked directories whose repository excludes it read. Present only
@@ -470,13 +507,18 @@ pub(super) struct NativeTsCapture {
 struct AmbientIgnoreWitness {
     digest: [u8; 32],
     directories: Vec<PathBuf>,
+    startup_policy_bound: bool,
 }
 
 impl AmbientIgnoreWitness {
     /// Reads the inputs again; `None` when any cannot be read as a bounded file.
     fn observe(root: &Path, policy: &DiscoveryPolicy, directories: Vec<PathBuf>) -> Option<Self> {
         let inputs = policy.ambient_ignore_inputs(root, &directories)?;
-        Some(Self { digest: *blake3::hash(&inputs.canonical_bytes()).as_bytes(), directories })
+        Some(Self {
+            digest: *blake3::hash(&inputs.canonical_bytes()).as_bytes(),
+            directories,
+            startup_policy_bound: policy.uses_startup_global_excludes(),
+        })
     }
 }
 
@@ -554,12 +596,13 @@ impl RevalidatedNativeTsCapture {
 /// A separate, replayable negative witness. It is constructed only for an
 /// empty native scan and inventories even paths omitted by normal discovery.
 /// It is not compiler authority or permission to retire selected rows.
-pub(super) struct EmptyNativeTsWalk {
+pub(crate) struct EmptyNativeTsWalk {
     project: [u8; 32],
     root: PathBuf,
     project_source_version: [u8; 32],
     fence: CompilerRevisionFence,
     ambient: AmbientIgnoreWitness,
+    require_absent_ambient: bool,
     entries: Vec<CompilerWorkspaceEntry>,
     cancellation: Arc<AtomicBool>,
 }
@@ -567,19 +610,126 @@ pub(super) struct EmptyNativeTsWalk {
 impl EmptyNativeTsWalk {
     pub(super) fn project(&self) -> [u8; 32] { self.project }
     pub(super) fn canonical_root(&self) -> &Path { &self.root }
+    pub(super) fn entries(&self) -> &[CompilerWorkspaceEntry] { &self.entries }
+    /// Capture the strict no-marker ancestor subset for the actual canonical
+    /// home boundary selected by the compiler host. The owner must bind the
+    /// returned ledger-owned fence to that host and revalidate it at grant.
+    #[cfg(target_os = "linux")]
+    pub(super) fn capture_absent_ancestor_workspaces(
+        &self,
+        home: Option<&Path>,
+        budget: &backend_version::retirement_budget::RetirementBudget,
+    ) -> Result<backend_version::retirement_budget::Metered<AbsentAncestorWorkspaces>, &'static str> {
+        bounded_empty_inventory::capture_absent_ancestor_workspaces(
+            &self.root, home, budget, 64, &self.cancellation,
+        )
+    }
+    /// Confined, budgeted root manifest bytes for a paired compiler host.
+    /// The caller must revalidate the inventory and bind the same bytes to the
+    /// actual host's workspace-selection input before granting authority.
+    #[cfg(target_os = "linux")]
+    pub(super) fn read_bounded_root_package(
+        &self,
+        budget: &backend_version::retirement_budget::RetirementBudget,
+    ) -> Result<Option<backend_version::retirement_budget::Metered<Vec<u8>>>, &'static str> {
+        let root = bounded_empty_inventory::open_root(&self.fence.requested_root, &self.root)?;
+        bounded_empty_inventory::read_root_package(&root, &self.entries, budget, 64, &self.cancellation)
+    }
+    /// Refuse every config candidate the normal native host may inspect in
+    /// the supported no-manifest, no-config project-root subset. The caller
+    /// must first revalidate this walk and bind the host's selected root.
+    pub(super) fn validate_empty_native_host_inputs(&self) -> Result<(), &'static str> {
+        for entry in &self.entries {
+            let path = entry.path.as_str();
+            let name = path.rsplit('/').next().unwrap_or(path);
+            if name == "tsconfig.json" || (name.starts_with("tsconfig.") && name.ends_with(".json"))
+                || matches!(path, "angular.json" | "package.json" | "pnpm-workspace.yaml") {
+                return Err("empty native host has configuration or workspace inputs");
+            }
+        }
+        Ok(())
+    }
+    /// Check the candidate host input set while binding an optional root
+    /// package to fresh, same-ledger descriptor-confined bytes. The compiler
+    /// must still parse those bytes under the normal host's rules and bind its
+    /// selected workspace; this check alone is not compiler authority.
+    #[cfg(target_os = "linux")]
+    pub(super) fn validate_empty_native_host_inputs_with_package(
+        &self,
+        budget: &backend_version::retirement_budget::RetirementBudget,
+        package: Option<&backend_version::retirement_budget::Metered<Vec<u8>>>,
+    ) -> Result<(), &'static str> {
+        for entry in &self.entries {
+            let path = entry.path.as_str();
+            let name = path.rsplit('/').next().unwrap_or(path);
+            if name == "tsconfig.json" || (name.starts_with("tsconfig.") && name.ends_with(".json"))
+                || matches!(path, "angular.json" | "pnpm-workspace.yaml") {
+                return Err("empty native host has unsupported configuration or workspace inputs");
+            }
+        }
+        if package.is_some_and(|bytes| !budget.owns(bytes)) {
+            return Err("package bytes belong to another retirement budget");
+        }
+        let current = self.read_bounded_root_package(budget)?;
+        match (package, current.as_ref()) {
+            (None, None) => Ok(()),
+            (Some(expected), Some(actual)) if expected.get() == actual.get() => Ok(()),
+            _ => Err("package manifest input changed"),
+        }
+    }
     pub(super) fn project_source_version(&self) -> [u8; 32] { self.project_source_version }
     pub(super) fn matches_cancellation(&self, cancellation: &Arc<AtomicBool>) -> bool {
         Arc::ptr_eq(&self.cancellation, cancellation)
     }
     pub(super) fn checked_retained_bytes(&self) -> Option<usize> {
-        let mut total = std::mem::size_of::<Self>()
-            .checked_add(self.root.capacity())?
-            .checked_add(self.fence.checked_retained_bytes()?)?
-            .checked_add(self.entries.capacity().checked_mul(std::mem::size_of::<CompilerWorkspaceEntry>())?)?
-            .checked_add(self.ambient.directories.capacity().checked_mul(std::mem::size_of::<PathBuf>())?)?;
-        for entry in &self.entries { total = total.checked_add(entry.path.capacity())?.checked_add(2 * std::mem::size_of::<usize>())?; }
-        for path in &self.ambient.directories { total = total.checked_add(path.capacity())?.checked_add(2 * std::mem::size_of::<usize>())?; }
+        fn allocation(total: &mut usize, bytes: usize) -> Option<()> {
+            if bytes != 0 {
+                *total = total.checked_add(bytes)?.checked_add(2 * std::mem::size_of::<usize>())?;
+            }
+            Some(())
+        }
+        // The fence includes its own inline size; counting it a second time is
+        // conservative. Charge each allocation independently, including the
+        // three previously omitted container/root allocations.
+        let mut total = std::mem::size_of::<Self>().checked_add(self.fence.checked_retained_bytes()?)?;
+        allocation(&mut total, self.root.capacity())?;
+        allocation(&mut total, self.entries.capacity().checked_mul(std::mem::size_of::<CompilerWorkspaceEntry>())?)?;
+        allocation(&mut total, self.ambient.directories.capacity().checked_mul(std::mem::size_of::<PathBuf>())?)?;
+        for entry in &self.entries { allocation(&mut total, entry.path.capacity())?; }
+        for path in &self.ambient.directories { allocation(&mut total, path.capacity())?; }
         total.checked_add(3 * std::mem::size_of::<usize>())
+    }
+    /// Bounded descriptor replay is only one part of retirement admission. The
+    /// ambient snapshot and compiler fence still need equivalent binding, so
+    /// this path remains closed until those proofs are supplied.
+    #[cfg(target_os = "linux")]
+    pub(super) fn validate_current_budgeted(
+        &self,
+        budget: &backend_version::retirement_budget::RetirementBudget,
+    ) -> Result<(), &'static str> {
+        self.revalidate_bounded_inventory(budget)?;
+        self.validate_empty_native_host_inputs()?;
+        Err("bounded compiler fence binding unavailable")
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn revalidate_bounded_inventory(
+        &self,
+        budget: &backend_version::retirement_budget::RetirementBudget,
+    ) -> Result<(), &'static str> {
+        if !self.ambient.startup_policy_bound { return Err("startup discovery policy is not bound"); }
+        let root = bounded_empty_inventory::open_root(&self.fence.requested_root, &self.root)?;
+        let hash_ambient = if self.require_absent_ambient {
+            bounded_ambient::hash_absent_startup_policy_paths
+        } else {
+            bounded_ambient::hash_startup_policy_paths
+        };
+        let before = hash_ambient(&self.root, &self.ambient.directories, budget, 64, &self.cancellation)?;
+        if before != self.ambient.digest { return Err("bounded ambient witness changed"); }
+        bounded_empty_inventory::validate(&root, &self.entries, budget, 64, &self.cancellation)?;
+        let after = hash_ambient(&self.root, &self.ambient.directories, budget, 64, &self.cancellation)?;
+        if after != self.ambient.digest { return Err("bounded ambient witness changed"); }
+        Ok(())
     }
     /// Replays the unfiltered bounded inventory and original policy/fence.
     /// The caller must also bind the compiler closure and selected after-image.
@@ -662,16 +812,102 @@ fn strict_empty_typescript_inventory(
 }
 
 impl IndexSnapshot {
+    /// Prepare a prospectively metered candidate from preexisting immutable
+    /// scan state. The descriptor replay must account for every filesystem
+    /// entry; omitted filtered entries make this narrow candidate fail. This
+    /// is not compiler authority and does not admit a retirement by itself.
+    #[cfg(target_os = "linux")]
+    pub(super) fn prepare_bounded_empty_native_typescript_walk(
+        &self,
+        budget: &backend_version::retirement_budget::RetirementBudget,
+    ) -> Result<Option<backend_version::retirement_budget::Metered<EmptyNativeTsWalk>>, &'static str> {
+        let Some(capture) = &self.native_typescript_capture else { return Ok(None) };
+        if !capture.sources.is_empty() || !capture.fixed_discovery_policy
+            || capture.scan_structural_empty != Some(true) || !self.files.is_empty() {
+            return Ok(None);
+        }
+        let Some(ambient) = capture.ambient_ignore.as_ref() else { return Ok(None) };
+        if !ambient.startup_policy_bound { return Ok(None); }
+        let Some(cancellation) = capture.cancellation.as_ref() else { return Ok(None) };
+        let Some(source_version) = capture.project_source_version else { return Ok(None) };
+        if source_version != self.source_version { return Err("empty scan source version changed"); }
+        let fence = &capture.revision_fence;
+        let count = fence.directories.len().checked_add(fence.files.len()).ok_or("inventory count overflow")?;
+        // The fence helper charges its own allocation headers; add this
+        // admission's per-allocation bookkeeping allowance for both root paths,
+        // the three vectors, and each directory/file path clone.
+        let fence_bookkeeping = count.checked_add(5).and_then(|n| n.checked_mul(64))
+            .ok_or("scan fence bookkeeping overflow")?;
+        let mut charge = std::mem::size_of::<EmptyNativeTsWalk>()
+            .checked_add(fence.checked_retained_bytes().ok_or("unsupported scan fence")?)
+            .and_then(|n| n.checked_add(fence_bookkeeping))
+            // Retaining the cancellation Arc can extend the lifetime of its
+            // shared allocation beyond that of the borrowed scan state.
+            .and_then(|n| n.checked_add(std::mem::size_of::<AtomicBool>() + 2 * std::mem::size_of::<usize>() + 64))
+            .and_then(|n| n.checked_add(capture.canonical_root.capacity()))
+            .and_then(|n| n.checked_add(64))
+            .and_then(|n| n.checked_add(ambient.directories.len().checked_mul(std::mem::size_of::<PathBuf>())?))
+            .and_then(|n| n.checked_add(64))
+            .and_then(|n| n.checked_add(count.checked_mul(std::mem::size_of::<CompilerWorkspaceEntry>())?))
+            .and_then(|n| n.checked_add(64))
+            .ok_or("empty scan allocation overflow")?;
+        for path in &ambient.directories {
+            charge = charge.checked_add(path.capacity()).and_then(|n| n.checked_add(64))
+                .ok_or("ambient path allocation overflow")?;
+        }
+        for path in fence.directories.iter().map(|(path, _)| path)
+            .chain(fence.files.iter().map(|entry| &entry.relative_path)) {
+            charge = charge.checked_add(path.as_os_str().as_encoded_bytes().len())
+                .and_then(|n| n.checked_add(64)).ok_or("inventory path allocation overflow")?;
+        }
+        let reservation = budget.reserve(charge).map_err(|_| "empty scan allocation budget")?;
+        let mut entries = Vec::with_capacity(count);
+        fn entry(path: &Path, revision: Option<FileSystemRevision>, kind: CompilerWorkspaceEntryKind)
+            -> Result<CompilerWorkspaceEntry, &'static str> {
+            if path.is_absolute() || path.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+                return Err("unsupported inventory path");
+            }
+            let path = path.to_str().ok_or("non-UTF-8 inventory path")?.to_owned();
+            let revision = revision.ok_or("missing inventory revision")?;
+            let byte_length = if kind == CompilerWorkspaceEntryKind::File { Some(revision.length) } else { None };
+            Ok(CompilerWorkspaceEntry { path, kind, byte_length, revision })
+        }
+        for (path, revision) in &fence.directories {
+            entries.push(entry(path, *revision, CompilerWorkspaceEntryKind::Directory)?);
+        }
+        for file in &fence.files {
+            entries.push(entry(&file.relative_path, file.metadata, CompilerWorkspaceEntryKind::File)?);
+        }
+        entries.sort_unstable_by(|a, b| a.path.cmp(&b.path));
+        let proof = EmptyNativeTsWalk {
+            project: capture.project,
+            root: capture.canonical_root.clone(),
+            project_source_version: source_version,
+            fence: fence.clone(),
+            ambient: ambient.clone(),
+            require_absent_ambient: false,
+            entries,
+            cancellation: Arc::clone(cancellation),
+        };
+        let proof = reservation.meter(proof);
+        proof.get().revalidate_bounded_inventory(budget)?;
+        Ok(Some(proof))
+    }
+
     /// Constructs a separate negative witness only for a fully replayable empty walk.
     pub(super) fn empty_native_typescript_witness(&self) -> Result<Option<EmptyNativeTsWalk>, String> {
         let Some(capture) = &self.native_typescript_capture else { return Ok(None) };
-        if !capture.sources.is_empty() || !capture.fixed_discovery_policy { return Ok(None); }
+        // The first retirement carrier admits only an empty structural
+        // frontier. Bind that fact to this exact IndexSnapshot, not merely to
+        // the independently stored Project source-version field.
+        if !capture.sources.is_empty() || !capture.fixed_discovery_policy || capture.scan_structural_empty != Some(true) || !self.files.is_empty() { return Ok(None); }
         let Some(ambient) = capture.ambient_ignore.clone() else { return Ok(None) };
         let Some(cancellation) = capture.cancellation.as_ref().cloned() else { return Ok(None) };
         let Some(project_source_version) = capture.project_source_version else { return Ok(None) };
+        if project_source_version != self.source_version { return Err("empty native scan source version differs from snapshot".into()); }
         let mut proof = EmptyNativeTsWalk {
             project: capture.project, root: capture.canonical_root.clone(), project_source_version,
-            fence: capture.revision_fence.clone(), ambient, entries: Vec::new(), cancellation,
+            fence: capture.revision_fence.clone(), ambient, require_absent_ambient: false, entries: Vec::new(), cancellation,
         };
         let cancel = Some(proof.cancellation.as_ref());
         if !compiler_revision_is_current_with_cancellation(&proof.fence, cancel)? {
@@ -1012,6 +1248,7 @@ fn capture_native_typescript_sources(
         fixed_discovery_policy: false,
         source_policy: policy,
         project_source_version: None,
+        scan_structural_empty: None,
         cancellation: None,
         ambient_ignore: None,
     })
@@ -3426,6 +3663,13 @@ pub(super) fn scan_project_for_unproven_authorities_cancellable_with_interpreter
     )
 }
 
+fn source_policy_for_discovery(discovery: &DiscoveryPolicy) -> Result<SourceAdmissionPolicy, String> {
+    if discovery.uses_startup_global_excludes() {
+        if let Some(policy) = SourceAdmissionPolicy::startup() { return Ok(policy); }
+    }
+    SourceAdmissionPolicy::from_environment()
+}
+
 pub(super) fn scan_project_for_unproven_authorities_cancellable_with_observation(
     coordinate: &str,
     project: [u8; 32],
@@ -3434,13 +3678,14 @@ pub(super) fn scan_project_for_unproven_authorities_cancellable_with_observation
     interpreter: Option<&backend_engine::application::PythonInterpreterHostAdmission>,
     observation: Option<&crate::builtin::index_work_observation::IndexWorkObservation>,
 ) -> Result<IndexSnapshot, String> {
-    let source_policy = SourceAdmissionPolicy::from_environment()?;
+    let discovery = source_selection_policy();
+    let source_policy = source_policy_for_discovery(&discovery)?;
     check_scan_cancellation(Some(cancellation))?;
     scan_project_with_configuration_policy_attempt(
         coordinate,
         project,
         reusable,
-        source_selection_policy(),
+        discovery,
         true,
         true,
         Some(cancellation),
@@ -3476,9 +3721,10 @@ pub(super) fn scan_project_with_native_typescript_auto(
     interpreter: Option<&backend_engine::application::PythonInterpreterHostAdmission>,
     observation: Option<&crate::builtin::index_work_observation::IndexWorkObservation>,
 ) -> Result<IndexSnapshot, String> {
-    let policy = SourceAdmissionPolicy::from_environment()?;
+    let discovery = source_selection_policy();
+    let policy = source_policy_for_discovery(&discovery)?;
     let mut snapshot = scan_project_with_configuration_policy_attempt(
-        coordinate, project, reusable, source_selection_policy(), true, true,
+        coordinate, project, reusable, discovery, true, true,
         Some(cancellation.as_ref()), policy, interpreter, None, observation,
         if force_native { NativeTsScanMode::Retained } else { NativeTsScanMode::Auto },
     )?;
@@ -3496,9 +3742,10 @@ pub(super) fn scan_native_typescript_only(
     project: [u8; 32],
     cancellation: Arc<AtomicBool>,
 ) -> Result<IndexSnapshot, String> {
-    let source_policy = SourceAdmissionPolicy::from_environment()?;
+    let discovery = source_selection_policy();
+    let source_policy = source_policy_for_discovery(&discovery)?;
     let mut snapshot = scan_project_with_configuration_policy_attempt(
-        coordinate, project, &BTreeMap::new(), source_selection_policy(), true, false,
+        coordinate, project, &BTreeMap::new(), discovery, true, false,
         Some(cancellation.as_ref()), source_policy, None, None, None, NativeTsScanMode::Native,
     )?;
     check_scan_cancellation(Some(cancellation.as_ref()))?;
@@ -3529,7 +3776,7 @@ fn scan_project_with_configuration_policy(
     discovery: DiscoveryPolicy,
     capture_configuration_contents: bool,
 ) -> Result<IndexSnapshot, String> {
-    let source_policy = SourceAdmissionPolicy::from_environment()?;
+    let source_policy = source_policy_for_discovery(&discovery)?;
     scan_project_with_configuration_policy_attempt(
         coordinate,
         project,
@@ -4207,6 +4454,7 @@ fn scan_project_with_configuration_policy_attempt(
     let source_version = *source.finalize().as_bytes();
     if let Some(capture) = &mut native_typescript_capture {
         capture.project_source_version = Some(source_version);
+        capture.scan_structural_empty = Some(files.is_empty());
     }
     let snapshot = IndexSnapshot {
         vue_scan_identity: std::sync::Arc::new(()),

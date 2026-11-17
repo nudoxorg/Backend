@@ -1169,6 +1169,123 @@ impl ArtifactSink {
         }))
     }
 
+    /// Read one non-relation staged object under the shared retirement
+    /// ledger. This checks schema and payload length before any payload
+    /// allocation or typed relation admission. Closure membership must be
+    /// proven separately against the selected closure and retained GC pin.
+    pub fn read_retirement_object(
+        &self,
+        object_id: UntrustedObjectId,
+        schema: SchemaIdentity,
+        maximum_payload_bytes: usize,
+        budget: &backend_version::retirement_budget::RetirementBudget,
+        bookkeeping: usize,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<backend_version::retirement_budget::Metered<Vec<u8>>, StoreError> {
+        let limits = self.budget.validate()?;
+        if u64::try_from(maximum_payload_bytes).map_err(|_| StoreError::Bounds)? > limits.max_payload_bytes {
+            return Err(StoreError::Bounds);
+        }
+        if cfg!(not(unix)) || self.store.relation_registry.contains_schema(schema) {
+            return Err(StoreError::Bounds);
+        }
+        // Locator stack, fixed verification buffer, object-magic allocation,
+        // and its explicit allocator bookkeeping. No relation payload is
+        // admitted through this path.
+        let scratch = 4096usize.checked_add(80).and_then(|n| n.checked_add(VERIFY_BUFFER_BYTES))
+            .and_then(|n| n.checked_add(super::OBJECT_MAGIC.len()))
+            .and_then(|n| n.checked_add(std::mem::size_of::<ObjectVersionHasher>()))
+            .and_then(|n| n.checked_add(std::mem::size_of::<blake3::Hasher>()))
+            .and_then(|n| n.checked_add(std::mem::size_of::<VerifiedObject>()))
+            .and_then(|n| n.checked_add(std::mem::size_of::<ArtifactObjectReader>()))
+            .and_then(|n| n.checked_add(bookkeeping)).ok_or(StoreError::Bounds)?;
+        let _scratch = budget.reserve(scratch).map_err(|_| StoreError::Bounds)?;
+        let payload = budget.reserve(maximum_payload_bytes.checked_add(bookkeeping).ok_or(StoreError::Bounds)?)
+            .map_err(|_| StoreError::Bounds)?;
+        // Permit at most one I/O attempt per possible byte in each pass,
+        // plus a fixed allowance for open, seek, and interrupted operations.
+        let mut work = maximum_payload_bytes.checked_mul(2)
+            .and_then(|n| n.checked_add(object_header_bytes()))
+            .and_then(|n| n.checked_add(4096)).ok_or(StoreError::Bounds)?;
+        let mut checkpoint = || {
+            if cancelled() { return Err(StoreError::Bounds); }
+            work = work.checked_sub(1).ok_or(StoreError::Bounds)?;
+            Ok(())
+        };
+        checkpoint()?;
+        #[cfg(unix)]
+        let file = {
+            let dirs = artifact_fs::BoundedReadDirectories::open(&self.store, &mut checkpoint)?;
+            dirs.object(ObjectId::from_bytes(*object_id.as_bytes()), &mut checkpoint)?
+        };
+        #[cfg(not(unix))]
+        let file = return Err(StoreError::Bounds);
+        let (verified, file) = verify_object_reader_limited_with_payload(
+            &self.store, object_id, None, Some(u64::try_from(maximum_payload_bytes).map_err(|_| StoreError::Bounds)?),
+            Some(schema), false, &mut |_| Ok(()), &mut checkpoint, file,
+        )?;
+        checkpoint()?;
+        let length = usize::try_from(verified.payload_bytes).map_err(|_| StoreError::Bounds)?;
+        let mut file = file;
+        let mut bytes = vec![0; length];
+        checkpoint()?;
+        file.seek(SeekFrom::Start(u64::try_from(object_header_bytes()).map_err(|_| StoreError::Bounds)?))
+            .map_err(|error| io_error(&error))?;
+        read_exact_checkpointed(&mut file, &mut bytes, &mut checkpoint)?;
+        checkpoint()?;
+        Ok(payload.meter(bytes))
+    }
+
+    /// Authenticate the physical CAS identity and its schema without retaining
+    /// object bytes. Relation objects are not typed-admitted by this method;
+    /// callers must separately perform the appropriate relation admission.
+    /// The returned schema is suitable for classifying the exact physical ID.
+    pub fn read_retirement_identity(
+        &self,
+        object_id: UntrustedObjectId,
+        maximum_payload_bytes: usize,
+        budget: &backend_version::retirement_budget::RetirementBudget,
+        bookkeeping: usize,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<(ObjectId, SchemaIdentity), StoreError> {
+        let limits = self.budget.validate()?;
+        if cfg!(not(unix)) || u64::try_from(maximum_payload_bytes).map_err(|_| StoreError::Bounds)? > limits.max_payload_bytes {
+            return Err(StoreError::Bounds);
+        }
+        let scratch = 4096usize.checked_add(80).and_then(|n| n.checked_add(VERIFY_BUFFER_BYTES))
+            .and_then(|n| n.checked_add(super::OBJECT_MAGIC.len()))
+            .and_then(|n| n.checked_add(std::mem::size_of::<ObjectVersionHasher>()))
+            .and_then(|n| n.checked_add(std::mem::size_of::<blake3::Hasher>()))
+            .and_then(|n| n.checked_add(std::mem::size_of::<VerifiedObject>()))
+            .and_then(|n| n.checked_add(bookkeeping)).ok_or(StoreError::Bounds)?;
+        let _scratch = budget.reserve(scratch).map_err(|_| StoreError::Bounds)?;
+        // Permit at most one I/O attempt per possible byte in each pass,
+        // plus a fixed allowance for open, seek, and interrupted operations.
+        let mut work = maximum_payload_bytes.checked_mul(2)
+            .and_then(|n| n.checked_add(object_header_bytes()))
+            .and_then(|n| n.checked_add(4096)).ok_or(StoreError::Bounds)?;
+        let mut checkpoint = || {
+            if cancelled() { return Err(StoreError::Bounds); }
+            work = work.checked_sub(1).ok_or(StoreError::Bounds)?;
+            Ok(())
+        };
+        checkpoint()?;
+        #[cfg(unix)]
+        let file = {
+            let dirs = artifact_fs::BoundedReadDirectories::open(&self.store, &mut checkpoint)?;
+            dirs.object(ObjectId::from_bytes(*object_id.as_bytes()), &mut checkpoint)?
+        };
+        #[cfg(not(unix))]
+        let file = return Err(StoreError::Bounds);
+        let (verified, _file) = verify_object_reader_limited_with_payload(
+            &self.store, object_id, None,
+            Some(u64::try_from(maximum_payload_bytes).map_err(|_| StoreError::Bounds)?),
+            None, true, &mut |_| Ok(()), &mut checkpoint, file,
+        )?;
+        checkpoint()?;
+        Ok((verified.id, verified.schema))
+    }
+
     /// Starts the affine receive session. The session is the only value that
     /// can accept frames or finish the declared closure.
     pub fn begin(self, plan: ArtifactPlan) -> Result<ArtifactSession, StoreError> {
@@ -1901,7 +2018,10 @@ fn verify_object_file_reader_limited_with_payload(
         claim,
         expected,
         maximum_payload_bytes,
+        None,
+        false,
         consume_chunk,
+        &mut || Ok(()),
         file,
     )
     .map(Some)
@@ -1921,7 +2041,10 @@ pub(super) fn verify_object_file_handle(
         UntrustedObjectId::from_bytes(*id.as_bytes()),
         None,
         None,
+        None,
+        false,
         &mut |_| Ok(()),
+        &mut || Ok(()),
         file,
     )
     .map(|_| ())
@@ -1952,10 +2075,32 @@ pub(super) fn verify_object_file_handle_for_claim(
         UntrustedObjectId::from_bytes(*id.as_bytes()),
         Some(expected),
         None,
+        None,
+        false,
         &mut |_| Ok(()),
+        &mut || Ok(()),
         file,
     )
     .map(|_| ())
+}
+
+// Preserve the normal reader's interrupted-read behavior while allowing the
+// retirement path to debit every short or interrupted read before retrying.
+fn read_exact_checkpointed(
+    file: &mut File,
+    mut output: &mut [u8],
+    checkpoint: &mut impl FnMut() -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    while !output.is_empty() {
+        checkpoint()?;
+        match file.read(output) {
+            Ok(0) => return Err(io_error(&std::io::Error::from(std::io::ErrorKind::UnexpectedEof))),
+            Ok(count) => { output = &mut output[count..]; }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(io_error(&error)),
+        }
+    }
+    Ok(())
 }
 
 fn verify_object_reader_limited_with_payload(
@@ -1963,9 +2108,13 @@ fn verify_object_reader_limited_with_payload(
     claim: UntrustedObjectId,
     expected: Option<ArtifactObjectClaim>,
     maximum_payload_bytes: Option<u64>,
+    required_schema: Option<SchemaIdentity>,
+    physical_identity_only: bool,
     consume_chunk: &mut impl FnMut(&[u8]) -> Result<(), StoreError>,
+    checkpoint: &mut impl FnMut() -> Result<(), StoreError>,
     mut file: File,
 ) -> Result<(VerifiedObject, File), StoreError> {
+    checkpoint()?;
     let metadata = file.metadata().map_err(|error| io_error(&error))?;
     let encoded_len = usize::try_from(metadata.len()).map_err(|_| StoreError::Bounds)?;
     if encoded_len > store.object_envelope_limit()? || encoded_len < object_header_bytes() {
@@ -1973,28 +2122,32 @@ fn verify_object_reader_limited_with_payload(
     }
 
     let mut magic = vec![0_u8; super::OBJECT_MAGIC.len()];
-    file.read_exact(&mut magic)
-        .map_err(|error| io_error(&error))?;
+    read_exact_checkpointed(&mut file, &mut magic, checkpoint)?;
     if magic.as_slice() != super::OBJECT_MAGIC {
         return Err(StoreError::Corrupt);
     }
     let mut id_bytes = [0_u8; 32];
-    file.read_exact(&mut id_bytes)
-        .map_err(|error| io_error(&error))?;
+    read_exact_checkpointed(&mut file, &mut id_bytes, checkpoint)?;
     if id_bytes != *claim.as_bytes() {
         return Err(StoreError::Corrupt);
     }
     let mut schema_prefix = [0_u8; 4];
-    file.read_exact(&mut schema_prefix)
-        .map_err(|error| io_error(&error))?;
+    read_exact_checkpointed(&mut file, &mut schema_prefix, checkpoint)?;
     let schema = SchemaIdentity::new(
         schema_prefix[0],
         u16::from_le_bytes([schema_prefix[1], schema_prefix[2]]),
         schema_prefix[3],
     );
-    let key = read_fixed_hash(&mut file)?;
-    let version = read_fixed_hash(&mut file)?;
-    let length = read_u64_le(&mut file)?;
+    if required_schema.is_some_and(|required| required != schema) {
+        return Err(StoreError::Corrupt);
+    }
+    let mut key = [0_u8; 32];
+    let mut version = [0_u8; 32];
+    let mut length_bytes = [0_u8; 8];
+    read_exact_checkpointed(&mut file, &mut key, checkpoint)?;
+    read_exact_checkpointed(&mut file, &mut version, checkpoint)?;
+    read_exact_checkpointed(&mut file, &mut length_bytes, checkpoint)?;
+    let length = u64::from_le_bytes(length_bytes);
     if maximum_payload_bytes.is_some_and(|maximum| length > maximum) {
         return Err(StoreError::Bounds);
     }
@@ -2035,7 +2188,7 @@ fn verify_object_reader_limited_with_payload(
     object_hasher.update(&version);
     object_hasher.update(&length.to_le_bytes());
 
-    let mut relation_bytes = if store.relation_registry.contains_schema(schema) {
+    let mut relation_bytes = if !physical_identity_only && store.relation_registry.contains_schema(schema) {
         if expected_encoded > super::relation_object_limit()? {
             return Err(StoreError::Bounds);
         }
@@ -2053,7 +2206,7 @@ fn verify_object_reader_limited_with_payload(
         let take = usize::try_from(remaining.min(VERIFY_BUFFER_BYTES as u64))
             .map_err(|_| StoreError::Bounds)?;
         let chunk = &mut buffer[..take];
-        file.read_exact(chunk).map_err(|error| io_error(&error))?;
+        read_exact_checkpointed(&mut file, chunk, checkpoint)?;
         if let Some(version_hasher) = &mut version_hasher {
             version_hasher
                 .update(chunk)
@@ -2098,8 +2251,10 @@ fn verify_object_reader_limited_with_payload(
         payload_bytes: length,
         relation_references,
     };
+    checkpoint()?;
     file.seek(SeekFrom::Start(0))
         .map_err(|error| io_error(&error))?;
+    checkpoint()?;
     Ok((verified, file))
 }
 

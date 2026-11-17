@@ -1,14 +1,29 @@
 //! Constructors for accepted logical product values.
 
 use super::schema::{
-    ActorKey, BranchKey, IntentId, LogKey, PackageKey, SemanticObject, SymbolKey, SymbolSchema,
-    ViewRecipeId, ViewVersion,
+    ActorKey, BranchKey, IntentId, LogKey, PackageKey, PackageSchema, SemanticObject, SymbolKey,
+    SymbolSchema, ViewRecipeId, ViewVersion,
 };
 
 /// Constructs a package key from its canonical logical coordinate.
 #[must_use]
 pub fn package_key(coordinate: &str) -> PackageKey {
     PackageKey::from_value(coordinate)
+}
+
+/// Derives the package key while streaming its borrowed canonical spelling.
+pub fn package_key_borrowed(
+    coordinate: &str,
+) -> Result<PackageKey, backend_version::RuntimeIdentityError> {
+    use backend_version::{ObjectKeyHasher, Schema, SchemaIdentity};
+    let schema = SchemaIdentity::new(
+        PackageSchema::DOMAIN,
+        PackageSchema::TYPE,
+        PackageSchema::VERSION,
+    );
+    let mut hasher = ObjectKeyHasher::new(schema, coordinate.len())?;
+    hasher.update(coordinate.as_bytes())?;
+    hasher.finish_key::<PackageSchema>()
 }
 
 /// Constructs a declaration key from its canonical logical address.

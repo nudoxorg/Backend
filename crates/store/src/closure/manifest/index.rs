@@ -33,6 +33,24 @@ pub(super) struct ManifestLookup {
 }
 
 impl ManifestLookup {
+    pub(super) fn visit_objects_borrowed<E>(&self, visit: &mut impl FnMut(&TypedObject) -> Result<(), E>) -> Result<(), E> {
+        fn walk<E>(node: Option<&LookupNode>, visit: &mut impl FnMut(&TypedObject) -> Result<(), E>) -> Result<(), E> {
+            let Some(node) = node else { return Ok(()); };
+            match node {
+                LookupNode::Branch(children) => {
+                    for child in children.iter().flatten() { walk(Some(child), visit)?; }
+                }
+                LookupNode::Leaf(entries) => {
+                    for entry in entries.iter() {
+                        for object in entry.objects.iter() { visit(object)?; }
+                    }
+                }
+            }
+            Ok(())
+        }
+        walk(self.root.as_deref(), visit)
+    }
+
     pub(super) fn root(records: &BTreeMap<ObjectId, Arc<TypedObject>>) -> Arc<Self> {
         let mut root = None;
         for object in records.values() {

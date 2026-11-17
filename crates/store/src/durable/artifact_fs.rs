@@ -367,6 +367,48 @@ mod imp {
     }
 
     impl BoundedReadDirectories {
+        pub(in crate::durable) fn open_control_root(store: &FileStore, checkpoint: &mut dyn FnMut() -> Result<(), StoreError>) -> Result<File, StoreError> {
+            use std::os::unix::ffi::OsStrExt;
+            let root = store.root.as_os_str().as_bytes();
+            let mut bytes = [0u8; 4096];
+            if root.len() >= bytes.len() || root.contains(&0) { return Err(StoreError::Bounds); }
+            bytes[..root.len()].copy_from_slice(root);
+            let path = std::ffi::CStr::from_bytes_with_nul(&bytes[..=root.len()]).map_err(|_| StoreError::Corrupt)?;
+            checkpoint()?;
+            let file = File::from(open(path, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map_err(path_error)?);
+            if !store.root_directory.matches_open_directory(&file).map_err(|e| io_error(&e))? { return Err(StoreError::UnsafePath); }
+            Ok(file)
+        }
+
+        pub(in crate::durable) fn open_control_file(root: &File, name: &'static std::ffi::CStr, writable: bool, checkpoint: &mut dyn FnMut() -> Result<(), StoreError>) -> Result<File, StoreError> {
+            checkpoint()?;
+            let access = if writable { OFlags::RDWR } else { OFlags::RDONLY };
+            let file = File::from(openat(root, name, access | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map_err(path_error)?);
+            let metadata = file.metadata().map_err(|e| io_error(&e))?;
+            if !metadata.is_file() || metadata.nlink() != 1 { return Err(StoreError::UnsafePath); }
+            Ok(file)
+        }
+
+        pub(in crate::durable) fn open_pack(
+            store: &FileStore,
+            id: super::super::PackId,
+            checkpoint: &mut dyn FnMut() -> Result<(), StoreError>,
+        ) -> Result<File, StoreError> {
+            use std::os::unix::ffi::OsStrExt;
+            let root = store.root.as_os_str().as_bytes();
+            let mut root_buf = [0u8; 4096];
+            if root.len() >= root_buf.len() || root.contains(&0) { return Err(StoreError::Bounds); }
+            root_buf[..root.len()].copy_from_slice(root);
+            let path = std::ffi::CStr::from_bytes_with_nul(&root_buf[..=root.len()]).map_err(|_| StoreError::Corrupt)?;
+            checkpoint()?;
+            let root = File::from(open(path, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map_err(path_error)?);
+            if !store.root_directory.matches_open_directory(&root).map_err(|e| io_error(&e))? { return Err(StoreError::UnsafePath); }
+            checkpoint()?;
+            let packs = File::from(openat(&root, rustix::cstr!("packs"), OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map_err(path_error)?);
+            let mut name = [0u8; 80];
+            Self::open_named(&packs, Self::hash_name(id.as_bytes(), b".pack", &mut name)?, checkpoint)
+        }
+
         pub(in crate::durable) fn open(store: &FileStore, checkpoint: &mut dyn FnMut() -> Result<(), StoreError>) -> Result<Self, StoreError> {
             use std::os::unix::ffi::OsStrExt;
             let root = store.root.as_os_str().as_bytes();

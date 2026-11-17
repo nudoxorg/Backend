@@ -7,6 +7,7 @@ use crate::workspace::{
 };
 use backend_store::StoreError;
 use backend_version::{CanonicalNodeView, Schema, SchemaIdentity};
+use crate::workspace::retirement_budget::{Metered, RetirementBudget, RetirementReservation};
 
 use super::semantic_capture_relation::{
     ProductSemanticCaptureRecord, ProductSemanticCaptureRelation, ProductSemanticCaptureRootSchema,
@@ -18,8 +19,11 @@ use super::semantic_relation::{
 };
 
 const KEY_FIXED_BYTES: usize = 4 + 4 + 2 + 1;
-const MAX_REFERENCE_BYTES: usize = backend_library::MAX_PRODUCT_TEXT_BYTES
-    .max(backend_semantic::vocabulary::MAX_PACKAGE_URL_BYTES);
+const MAX_REFERENCE_BYTES: usize = if backend_library::MAX_PRODUCT_TEXT_BYTES > backend_semantic::vocabulary::MAX_PACKAGE_URL_BYTES {
+    backend_library::MAX_PRODUCT_TEXT_BYTES
+} else {
+    backend_semantic::vocabulary::MAX_PACKAGE_URL_BYTES
+};
 const MAX_COORDINATE_BYTES: usize = backend_semantic::vocabulary::MAX_PACKAGE_URL_BYTES;
 const MAX_SEMANTIC_KEY_BYTES: usize =
     KEY_FIXED_BYTES + MAX_REFERENCE_BYTES + MAX_COORDINATE_BYTES + backend_version::ID_BYTES;
@@ -41,6 +45,75 @@ const MAX_CAPTURE_DECODE_ALLOCATIONS: usize = MAX_CAPTURE_JSON_BYTES + 128;
 // and retained failure bytes. The scope vector allowance above is separate.
 const MAX_DECODE_ALLOCATIONS: usize = 128;
 const MAX_DECODE_OVERHEAD: usize = 64 * 1024;
+const MAX_RETIREMENT_NODE_LOADS: usize = 4096;
+
+/// Node reservations kept alive until the preflighted operation has dropped
+/// all decoded nodes. Its bounded lease table is itself charged first.
+pub struct SemanticRetirementReservations {
+    leases: Vec<RetirementReservation>,
+    _table: RetirementReservation,
+    gate: SemanticRelationDecodeReservations,
+}
+
+impl SemanticRetirementReservations {
+    pub fn publication(budget: &RetirementBudget, bookkeeping: usize) -> Result<Self, StoreError> {
+        Self::new(budget, bookkeeping, Kind::Publication)
+    }
+
+    pub fn capture(budget: &RetirementBudget, bookkeeping: usize) -> Result<Self, StoreError> {
+        Self::new(budget, bookkeeping, Kind::Capture)
+    }
+
+    fn new(budget: &RetirementBudget, bookkeeping: usize, kind: Kind) -> Result<Self, StoreError> {
+        let bytes = MAX_RETIREMENT_NODE_LOADS
+            .checked_mul(std::mem::size_of::<RetirementReservation>())
+            .and_then(|n| n.checked_add(bookkeeping))
+            .ok_or(StoreError::Bounds)?;
+        let table = budget.reserve(bytes).map_err(|_| StoreError::Bounds)?;
+        let leases = Vec::with_capacity(MAX_RETIREMENT_NODE_LOADS);
+        Ok(Self { leases, _table: table, gate: SemanticRelationDecodeReservations::new(bookkeeping, kind) })
+    }
+
+    pub fn preflight(&mut self, node: &CanonicalNodeView<'_>, budget: &RetirementBudget) -> Result<(), StoreError> {
+        self.reserve_node(node, budget, false)
+    }
+
+    pub fn preflight_update_node(&mut self, node: &CanonicalNodeView<'_>, budget: &RetirementBudget) -> Result<(), StoreError> {
+        self.reserve_node(node, budget, true)
+    }
+
+    fn reserve_node(&mut self, node: &CanonicalNodeView<'_>, budget: &RetirementBudget, whole_leaf: bool) -> Result<(), StoreError> {
+        if self.leases.len() == MAX_RETIREMENT_NODE_LOADS { return Err(StoreError::Bounds); }
+        let charge = self.gate.node_charge(node, whole_leaf)?;
+        let lease = budget.reserve(charge).map_err(|_| StoreError::Bounds)?;
+        self.leases.push(lease);
+        Ok(())
+    }
+}
+
+pub fn semantic_visit_retirement<V>(
+    relation: &WorkspacePreflightRelationHandle<ProductSemanticPublicationRelation>,
+    after: Option<&ProductSemanticPublicationKey>, limit: usize,
+    budget: &RetirementBudget, bookkeeping: usize, visit: &mut V,
+) -> Result<Metered<Option<ProductSemanticPublicationKey>>, WorkspaceRelationError>
+where V: FnMut(&ProductSemanticPublicationKey, ProductSemanticPublicationRecord, &RetirementBudget) -> Result<(), StoreError>,
+{
+    let mut gate = SemanticRetirementReservations::publication(budget, bookkeeping).map_err(WorkspaceRelationError::Store)?;
+    let cursor_bytes = semantic_cursor_reservation_bytes(bookkeeping).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
+    relation.visit_retirement(after, limit, 32, budget, cursor_bytes, &mut |node, budget| gate.preflight(node, budget), visit)
+}
+
+pub fn capture_visit_retirement<V>(
+    relation: &WorkspacePreflightRelationHandle<ProductSemanticCaptureRelation>,
+    after: Option<&ProductSemanticPublicationKey>, limit: usize,
+    budget: &RetirementBudget, bookkeeping: usize, visit: &mut V,
+) -> Result<Metered<Option<ProductSemanticPublicationKey>>, WorkspaceRelationError>
+where V: FnMut(&ProductSemanticPublicationKey, ProductSemanticCaptureRecord, &RetirementBudget) -> Result<(), StoreError>,
+{
+    let mut gate = SemanticRetirementReservations::capture(budget, bookkeeping).map_err(WorkspaceRelationError::Store)?;
+    let cursor_bytes = semantic_cursor_reservation_bytes(bookkeeping).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
+    relation.visit_retirement(after, limit, 32, budget, cursor_bytes, &mut |node, budget| gate.preflight(node, budget), visit)
+}
 
 /// Selects the primary semantic publication root without decoding any node.
 pub fn semantic_publication_preflight_relation(
@@ -271,6 +344,15 @@ impl SemanticRelationDecodeReservations {
         budget: &mut usize,
         whole_leaf: bool,
     ) -> Result<(), StoreError> {
+        let charge = self.node_charge(node, whole_leaf)?;
+        let held = self.held.checked_add(charge).ok_or(StoreError::Bounds)?;
+        let remaining = budget.checked_sub(charge).ok_or(StoreError::Bounds)?;
+        self.held = held;
+        *budget = remaining;
+        Ok(())
+    }
+
+    fn node_charge(&self, node: &CanonicalNodeView<'_>, whole_leaf: bool) -> Result<usize, StoreError> {
         let mut row_charge = 0usize;
         if node.is_leaf() {
             for field in node.leaf_field_iter().map_err(|_| StoreError::Corrupt)? {
@@ -297,7 +379,8 @@ impl SemanticRelationDecodeReservations {
                 };
                 let key_bound = key.len().checked_mul(4).ok_or(StoreError::Bounds)?;
                 let payload = key_bound
-                    .max(decode_bound)
+                    .checked_add(decode_bound)
+                    .ok_or(StoreError::Bounds)?
                     .checked_add(MAX_DECODE_OVERHEAD)
                     .ok_or(StoreError::Bounds)?;
                 let allocation_count = match self.kind {
@@ -325,6 +408,19 @@ impl SemanticRelationDecodeReservations {
             for child in node.branch_children().map_err(|_| StoreError::Corrupt)? {
                 let child = child.map_err(|_| StoreError::Corrupt)?;
                 check_key(child.first_key)?;
+                // Admission retains first and previous keys while decoding
+                // another and re-encoding it; streaming can also retain a
+                // chosen and next child. Account that peak even when a
+                // branch has only one large key.
+                let key_peak = child.first_key.len().checked_mul(4)
+                    .and_then(|n| n.checked_add(MAX_DECODE_OVERHEAD))
+                    .and_then(|n| MAX_DECODE_ALLOCATIONS.checked_mul(self.bookkeeping).and_then(|h| n.checked_add(h)))
+                    .ok_or(StoreError::Bounds)?;
+                row_charge = if whole_leaf {
+                    row_charge.checked_add(key_peak).ok_or(StoreError::Bounds)?
+                } else {
+                    row_charge.max(key_peak)
+                };
             }
         }
         let node_copies = node
@@ -336,14 +432,7 @@ impl SemanticRelationDecodeReservations {
                     .and_then(|h| n.checked_add(h))
             })
             .ok_or(StoreError::Bounds)?;
-        let charge = row_charge
-            .checked_add(node_copies)
-            .ok_or(StoreError::Bounds)?;
-        let held = self.held.checked_add(charge).ok_or(StoreError::Bounds)?;
-        let remaining = budget.checked_sub(charge).ok_or(StoreError::Bounds)?;
-        self.held = held;
-        *budget = remaining;
-        Ok(())
+        row_charge.checked_add(node_copies).ok_or(StoreError::Bounds)
     }
 
     /// Refunds temporary decode reservations after the guarded operation ends.

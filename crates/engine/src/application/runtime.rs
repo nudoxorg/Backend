@@ -3815,11 +3815,19 @@ impl LocalCompilerClient {
     /// Inferred roots are empty; the caller must separately prove complete discovery.
     /// This witness does not grant source retirement and must be revalidated at grant.
     pub fn capture_empty_native_typescript_program(
-        &self, root: &Path, cancelled: Arc<AtomicBool>,
-    ) -> Result<super::typescript_empty::EmptyNativeTypeScriptProgram, String> {
+        &self,
+        root: &Path,
+        cancelled: Arc<AtomicBool>,
+        budget: &crate::workspace::retirement_budget::RetirementBudget,
+    ) -> Result<
+        crate::workspace::retirement_budget::Metered<
+            super::typescript_empty::EmptyNativeTypeScriptProgram,
+        >,
+        String,
+    > {
         if !self.is_ready() { return Err("compiler runtime is unavailable".into()); }
         let host = self.shared.typescript_empty_host.as_ref().ok_or("native TypeScript host unavailable")?;
-        super::typescript_empty::EmptyNativeTypeScriptProgram::capture(host, root, cancelled)
+        super::typescript_empty::EmptyNativeTypeScriptProgram::capture(host, root, cancelled, budget)
     }
 
     /// Clone the independent frozen policy; resolving it is confined to a

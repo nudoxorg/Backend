@@ -14,7 +14,8 @@ pub use backend_discovery::{
     DEFAULT_IGNORED_DIRECTORIES, DiscoveredEntry, DiscoveryError as FilesystemDiscoveryError,
     DiscoveryPolicy, EntryKind, HARD_IGNORED_DIRECTORIES, PythonSourceContext,
     SourceSelectionScope, is_hard_ignored_directory, is_hard_ignored_path,
-    is_ignored_source_file_path, is_python_context_document,
+    is_ignored_source_file_path, is_python_context_document, install_startup_absent_global_excludes,
+    visit_startup_bound_source_policy_identity,
 };
 
 mod arrangement;
@@ -139,7 +140,7 @@ pub use canonical::{
     admit_delta_transition, admit_intent_value, admit_key_against, admit_key_value,
     admit_root_against, admit_root_bytes, admit_version_against, admit_version_value, branch_key,
     decode_id, empty_view_relation_preimage, encode_id, intent_id, log_key, object_version,
-    package_key, relation_row_key, symbol_key, symbol_key_borrowed, view_identity_bytes, view_key, view_state_root,
+    package_key, package_key_borrowed, relation_row_key, symbol_key, symbol_key_borrowed, view_identity_bytes, view_key, view_state_root,
     view_version, view_version_preimage, wire_delta, wire_intent, wire_key, wire_root,
     wire_version,
 };

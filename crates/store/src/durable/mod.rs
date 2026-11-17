@@ -39,7 +39,7 @@ mod objects;
 mod publication;
 mod publication_api;
 mod recovery;
-pub use recovery::WorkspaceHistoryError;
+pub use recovery::{RetirementSelectedHead, WorkspaceHistoryError};
 mod store_api;
 mod streaming_closure;
 
@@ -55,7 +55,7 @@ pub use closure_composer::{
 };
 pub use gc::{GcLimits, GcReport, GcRoot, GcRootResolver, GcRoots};
 pub use layout::{
-    FileStore, GcPinGuard, PublicationAuthorityError, PublicationBase, PublicationDescriptor,
+    FileStore, GcPinGuard, RetirementGcPin, PublicationAuthorityError, PublicationBase, PublicationDescriptor,
     SelectedHead, StorePublicationAuthority, WeakPublicationAuthority, TransactionId,
 };
 pub(crate) use membership_lease::ClosureMembershipLease;

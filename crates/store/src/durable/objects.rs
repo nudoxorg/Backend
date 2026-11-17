@@ -581,6 +581,105 @@ pub fn untrusted_object_id_for_encoded_parts_checkpointed<E>(
 }
 
 impl FileStore {
+    /// Read the one-record workspace pack without materializing a generic
+    /// map or location directory. The selected descriptor supplies the pack
+    /// and layout identities; the caller must separately bind its target and
+    /// closure fields to the selected owner publication.
+    pub fn read_single_entry_pack_retirement(
+        &self,
+        pin: &GcPinGuard,
+        pack: super::PackId,
+        layout: LayoutId,
+        key: &[u8],
+        value_len: usize,
+        budget: &backend_version::retirement_budget::RetirementBudget,
+        bookkeeping: usize,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<backend_version::retirement_budget::Metered<Vec<u8>>, StoreError> {
+        const FRAME: usize = 8192;
+        if cfg!(not(unix)) || !pin.covers_identity(self.gc_identity) { return Err(StoreError::Bounds); }
+        let payload_len = 4usize.checked_add(key.len()).and_then(|n| n.checked_add(1 + 4))
+            .and_then(|n| n.checked_add(value_len)).and_then(|n| n.checked_add(4)).ok_or(StoreError::Bounds)?;
+        let file_len = PACK_MAGIC.len().checked_add(32 + 32 + 8).and_then(|n| n.checked_add(payload_len))
+            .and_then(|n| n.checked_add(8 + 4)).and_then(|n| n.checked_add(key.len()))
+            .and_then(|n| n.checked_add(4 + 4)).ok_or(StoreError::Bounds)?;
+        if file_len > FRAME || payload_len > self.max_pack_bytes { return Err(StoreError::Bounds); }
+        let scratch_bytes = FRAME.checked_add(4096 + 80).and_then(|n| n.checked_add(std::mem::size_of::<blake3::Hasher>()))
+            .ok_or(StoreError::Bounds)?;
+        let _scratch = budget.reserve(scratch_bytes).map_err(|_| StoreError::Bounds)?;
+        let output = budget.reserve(value_len.checked_add(bookkeeping).ok_or(StoreError::Bounds)?)
+            .map_err(|_| StoreError::Bounds)?;
+        let mut work = file_len.checked_add(256).ok_or(StoreError::Bounds)?;
+        let mut checkpoint = || {
+            if cancelled() { return Err(StoreError::Bounds); }
+            work = work.checked_sub(1).ok_or(StoreError::Bounds)?;
+            Ok(())
+        };
+        checkpoint()?;
+        #[cfg(unix)]
+        let mut file = super::artifact_fs::BoundedReadDirectories::open_pack(self, pack, &mut checkpoint)?;
+        #[cfg(not(unix))]
+        let mut file: File = return Err(StoreError::Bounds);
+        if usize::try_from(file.metadata().map_err(|e| io_error(&e))?.len()).map_err(|_| StoreError::Bounds)? != file_len {
+            return Err(StoreError::Corrupt);
+        }
+        let mut frame = [0u8; FRAME];
+        let mut read = 0usize;
+        while read < file_len {
+            checkpoint()?;
+            match file.read(&mut frame[read..file_len]) {
+                Ok(0) => return Err(StoreError::Corrupt),
+                Ok(n) => read = read.checked_add(n).ok_or(StoreError::Bounds)?,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(io_error(&error)),
+            }
+        }
+        let mut trailing = [0u8; 1];
+        loop {
+            checkpoint()?;
+            match file.read(&mut trailing) {
+                Ok(0) => break,
+                Ok(_) => return Err(StoreError::Corrupt),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(io_error(&error)),
+            }
+        }
+        checkpoint()?;
+        let bytes = &frame[..file_len];
+        let mut at = PACK_MAGIC.len();
+        if !bytes.starts_with(PACK_MAGIC) || read_hash(bytes, &mut at)? != *pack.as_bytes()
+            || read_hash(bytes, &mut at)? != *layout.as_bytes()
+            || usize::try_from(read_u64(bytes, &mut at)?).map_err(|_| StoreError::Bounds)? != payload_len {
+            return Err(StoreError::Corrupt);
+        }
+        let payload_start = at;
+        let payload_end = at.checked_add(payload_len).ok_or(StoreError::Bounds)?;
+        let payload = bytes.get(payload_start..payload_end).ok_or(StoreError::Corrupt)?;
+        if crate::digest(b"pack", payload) != *pack.as_bytes() { return Err(StoreError::Corrupt); }
+        let mut cursor = 0usize;
+        if usize::try_from(read_u32(payload, &mut cursor)?).map_err(|_| StoreError::Bounds)? != key.len()
+            || payload.get(cursor..cursor.checked_add(key.len()).ok_or(StoreError::Bounds)?) != Some(key) {
+            return Err(StoreError::Corrupt);
+        }
+        cursor = cursor.checked_add(key.len()).ok_or(StoreError::Bounds)?;
+        if read_byte(payload, &mut cursor)? != 1
+            || usize::try_from(read_u32(payload, &mut cursor)?).map_err(|_| StoreError::Bounds)? != value_len {
+            return Err(StoreError::Corrupt);
+        }
+        let value_end = cursor.checked_add(value_len).ok_or(StoreError::Bounds)?;
+        let value = payload.get(cursor..value_end).ok_or(StoreError::Corrupt)?;
+        cursor = value_end;
+        if read_u32(payload, &mut cursor)? != 0 || cursor != payload_len { return Err(StoreError::Corrupt); }
+        at = payload_end;
+        if read_u64(bytes, &mut at)? != 1 || usize::try_from(read_u32(bytes, &mut at)?).map_err(|_| StoreError::Bounds)? != key.len()
+            || bytes.get(at..at.checked_add(key.len()).ok_or(StoreError::Bounds)?) != Some(key) {
+            return Err(StoreError::Corrupt);
+        }
+        at = at.checked_add(key.len()).ok_or(StoreError::Bounds)?;
+        if read_u32(bytes, &mut at)? != 0 || usize::try_from(read_u32(bytes, &mut at)?).map_err(|_| StoreError::Bounds)? != payload_len
+            || at != file_len || cancelled() { return Err(StoreError::Corrupt); }
+        Ok(output.meter(value.to_vec()))
+    }
     /// Reads and authenticates an immutable object, lending its payload only
     /// for the duration of `visit`.
     ///

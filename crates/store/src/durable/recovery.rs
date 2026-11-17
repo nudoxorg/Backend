@@ -84,6 +84,29 @@ pub(super) struct JournalState {
     pub(super) selected: Option<SelectedHead>,
 }
 
+/// Selected publication checked under a live owner lease, store process lock,
+/// GC pin, and bounded journal replay. Its fields cannot be caller-forged.
+pub struct RetirementSelectedHead<'a> {
+    store: &'a FileStore,
+    _authority: &'a super::StorePublicationAuthority,
+    _pin: &'a super::RetirementGcPin,
+    process_lock: File,
+    selected: SelectedHead,
+}
+
+impl RetirementSelectedHead<'_> {
+    /// The exact store paired with this capability.
+    pub fn store(&self) -> &FileStore { self.store }
+    /// The GC pin retained for this same store.
+    pub fn pin(&self) -> &super::GcPinGuard { self._pin.pin() }
+    /// Descriptor admitted from the selected HEAD and journal.
+    pub fn selected(&self) -> SelectedHead { self.selected }
+}
+
+impl Drop for RetirementSelectedHead<'_> {
+    fn drop(&mut self) { let _ = self.process_lock.unlock(); }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RecoveredHead {
     Empty,
@@ -146,6 +169,150 @@ impl std::fmt::Display for WorkspaceHistoryError {
 impl std::error::Error for WorkspaceHistoryError {}
 
 impl FileStore {
+    /// Admit the current selected head with fixed-frame I/O under the live
+    /// publication authority and process lock. No caller-selected head is
+    /// trusted. The returned capability retains the lock, authority borrow,
+    /// GC pin and its shared-ledger reservation through the consumer's work.
+    #[cfg(unix)]
+    pub fn retirement_selected_head<'a>(
+        &'a self,
+        authority: &'a super::StorePublicationAuthority,
+        pin: &'a super::RetirementGcPin,
+        budget: &backend_version::retirement_budget::RetirementBudget,
+        bookkeeping: usize,
+        max_frames: u64,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<backend_version::retirement_budget::Metered<RetirementSelectedHead<'a>>, StoreError> {
+        use std::io::Read;
+        if max_frames == 0 || max_frames > 2_000_000 || !pin.belongs_to(budget)
+            || !pin.pin().covers_identity(self.gc_identity) { return Err(StoreError::Bounds); }
+        let scratch_bytes = 4096usize.checked_add(2 * (HEAD_BYTES + 1))
+            .and_then(|n| n.checked_add(2 * JOURNAL_RECORD_BYTES))
+            .and_then(|n| n.checked_add(3 * std::mem::size_of::<JournalRecord>()))
+            .and_then(|n| n.checked_add(2 * std::mem::size_of::<blake3::Hasher>()))
+            .and_then(|n| n.checked_add(3 * std::mem::size_of::<JournalCheckpoint>()))
+            .and_then(|n| n.checked_add(3 * std::mem::size_of::<SelectedHead>()))
+            .and_then(|n| n.checked_add(4 * std::mem::size_of::<backend_platform::FileIdentity>()))
+            .and_then(|n| n.checked_add(6 * std::mem::size_of::<File>()))
+            .and_then(|n| n.checked_add(4 * std::mem::size_of::<std::fs::Metadata>()))
+            .and_then(|n| n.checked_add(bookkeeping))
+            .ok_or(StoreError::Bounds)?;
+        let _scratch = budget.reserve(scratch_bytes).map_err(|_| StoreError::Bounds)?;
+        if !authority.permits_borrowed(&self.root) { return Err(StoreError::Bounds); }
+        let retained = std::mem::size_of::<RetirementSelectedHead<'a>>().checked_add(bookkeeping).ok_or(StoreError::Bounds)?;
+        let owner = budget.reserve(retained).map_err(|_| StoreError::Bounds)?;
+        let per_frame = u64::try_from(JOURNAL_RECORD_BYTES).map_err(|_| StoreError::Bounds)?
+            .checked_mul(2).and_then(|n| n.checked_add(8)).ok_or(StoreError::Bounds)?;
+        let mut work = max_frames.checked_mul(per_frame)
+            .and_then(|n| n.checked_add(2 * (HEAD_BYTES as u64 + 1)))
+            .and_then(|n| n.checked_add(4096)).ok_or(StoreError::Bounds)?;
+        let mut checkpoint = || {
+            if cancelled() { return Err(StoreError::Bounds); }
+            work = work.checked_sub(1).ok_or(StoreError::Bounds)?;
+            Ok(())
+        };
+        let root = super::artifact_fs::BoundedReadDirectories::open_control_root(self, &mut checkpoint)?;
+        let lock = super::artifact_fs::BoundedReadDirectories::open_control_file(&root, rustix::cstr!("LOCK"), true, &mut checkpoint)?;
+        let mut locked = false;
+        for _ in 0..1024 {
+            checkpoint()?;
+            match lock.try_lock() {
+                Ok(()) => { locked = true; break; }
+                Err(std::fs::TryLockError::WouldBlock) => std::thread::yield_now(),
+                Err(std::fs::TryLockError::Error(error)) => return Err(io_error(&error)),
+            }
+        }
+        if !locked { return Err(StoreError::Bounds); }
+        let lock_identity = backend_platform::FileIdentity::of_file(&lock).map_err(|e| io_error(&e))?;
+        fn read_checked(file: &mut File, output: &mut [u8], checkpoint: &mut dyn FnMut() -> Result<(), StoreError>) -> Result<(), StoreError> {
+            let mut at = 0usize;
+            while at < output.len() {
+                checkpoint()?;
+                match file.read(&mut output[at..]) {
+                    Ok(0) => return Err(StoreError::Corrupt),
+                    Ok(n) => at = at.checked_add(n).ok_or(StoreError::Bounds)?,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) => return Err(io_error(&error)),
+                }
+            }
+            Ok(())
+        }
+        fn read_head(root: &File, checkpoint: &mut dyn FnMut() -> Result<(), StoreError>) -> Result<(JournalCheckpoint, backend_platform::FileIdentity), StoreError> {
+            let mut file = super::artifact_fs::BoundedReadDirectories::open_control_file(root, rustix::cstr!("HEAD"), false, checkpoint)?;
+            let identity = backend_platform::FileIdentity::of_file(&file).map_err(|e| io_error(&e))?;
+            if usize::try_from(file.metadata().map_err(|e| io_error(&e))?.len()).map_err(|_| StoreError::Bounds)? != HEAD_BYTES { return Err(StoreError::Corrupt); }
+            let mut bytes = [0u8; HEAD_BYTES + 1];
+            read_checked(&mut file, &mut bytes[..HEAD_BYTES], checkpoint)?;
+            loop {
+                checkpoint()?;
+                match file.read(&mut bytes[HEAD_BYTES..]) {
+                    Ok(0) => break,
+                    Ok(_) => return Err(StoreError::Corrupt),
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) => return Err(io_error(&error)),
+                }
+            }
+            if !bytes[..HEAD_BYTES].starts_with(HEAD_MAGIC) { return Err(StoreError::Corrupt); }
+            checkpoint()?;
+            Ok((head::decode_head(&bytes[..HEAD_BYTES])?, identity))
+        }
+        let (first, head_identity) = read_head(&root, &mut checkpoint)?;
+        let mut journal_file = super::artifact_fs::BoundedReadDirectories::open_control_file(&root, rustix::cstr!("journal"), false, &mut checkpoint)?;
+        let journal_identity = backend_platform::FileIdentity::of_file(&journal_file).map_err(|e| io_error(&e))?;
+        let length = journal_file.metadata().map_err(|e| io_error(&e))?.len();
+        let frame_bytes = u64::try_from(JOURNAL_RECORD_BYTES).map_err(|_| StoreError::Bounds)?;
+        if length % frame_bytes != 0 { return Err(StoreError::Corrupt); }
+        let frames = length / frame_bytes;
+        if frames > max_frames { return Err(StoreError::Bounds); }
+        if first.head.journal_sequence == 0 || first.head.journal_sequence > first.tail.sequence
+            || first.tail.sequence > frames { return Err(StoreError::Corrupt); }
+        let mut prior = [0u8; 32];
+        let mut selected: Option<SelectedHead> = None;
+        let mut previous_frame: Option<JournalRecord> = None;
+        let mut frame_buf = [0u8; JOURNAL_RECORD_BYTES];
+        for sequence in 1..=frames {
+            checkpoint()?;
+            read_checked(&mut journal_file, &mut frame_buf, &mut checkpoint)?;
+            let frame = journal::decode_record(&frame_buf)?;
+            if frame.sequence != sequence || frame.previous != prior { return Err(StoreError::Corrupt); }
+            if sequence == first.tail.sequence && (frame.checksum != first.tail.checksum || first.tail.offset != sequence.checked_mul(frame_bytes).ok_or(StoreError::Bounds)?) {
+                return Err(StoreError::Corrupt);
+            }
+            if frame.tag == PUBLISHED_TAG {
+                // This narrow path admits adjacent prepare/publish pairs so
+                // the prepared record is exactly the chain-checked one, not
+                // a later reread of a mutable journal inode.
+                if frame.paired_sequence.checked_add(1) != Some(sequence) { return Err(StoreError::Bounds); }
+                let prepared = previous_frame.ok_or(StoreError::Corrupt)?;
+                if prepared.tag != PREPARED_TAG || prepared.sequence != frame.paired_sequence
+                    || prepared.paired_sequence != 0 || prepared.payload != frame.payload { return Err(StoreError::Corrupt); }
+                let generation = selected.map_or(0, |head| head.generation());
+                if frame.payload.base_generation != generation
+                    || frame.payload.target_generation != generation.checked_add(1).ok_or(StoreError::Bounds)?
+                    || frame.payload.base != selected.map(|head| head.descriptor.target) { return Err(StoreError::Corrupt); }
+                selected = Some(SelectedHead { journal_sequence: frame.sequence, descriptor: frame.payload });
+            } else if frame.tag != PREPARED_TAG {
+                return Err(StoreError::Corrupt);
+            }
+            prior = frame.checksum;
+            previous_frame = Some(frame);
+        }
+        if selected != Some(first.head) || journal_file.metadata().map_err(|e| io_error(&e))?.len() != length { return Err(StoreError::Corrupt); }
+        let binding = first.head.descriptor.workspace().ok_or(StoreError::Corrupt)?;
+        if binding.root() != &first.head.descriptor.target || binding.closure() != first.head.descriptor.closure {
+            return Err(StoreError::Corrupt);
+        }
+        let named_journal = super::artifact_fs::BoundedReadDirectories::open_control_file(&root, rustix::cstr!("journal"), false, &mut checkpoint)?;
+        if backend_platform::FileIdentity::of_file(&named_journal).map_err(|e| io_error(&e))? != journal_identity { return Err(StoreError::WrongBase); }
+        let (last, last_head_identity) = read_head(&root, &mut checkpoint)?;
+        if last != first || last_head_identity != head_identity { return Err(StoreError::WrongBase); }
+        if !authority.permits_borrowed(&self.root) { return Err(StoreError::WrongBase); }
+        let named_lock = super::artifact_fs::BoundedReadDirectories::open_control_file(&root, rustix::cstr!("LOCK"), true, &mut checkpoint)?;
+        if backend_platform::FileIdentity::of_file(&named_lock).map_err(|e| io_error(&e))? != lock_identity { return Err(StoreError::WrongBase); }
+        checkpoint()?;
+        Ok(owner.meter(RetirementSelectedHead { store: self, _authority: authority, _pin: pin, process_lock: lock, selected: first.head }))
+    }
+
     /// Resolves a workspace publication in the authenticated history of the
     /// exact currently selected head. The caller supplies a journal byte
     /// budget; a longer journal is refused rather than scanned under the

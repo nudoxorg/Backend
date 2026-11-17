@@ -10,12 +10,14 @@
 pub mod catalog;
 pub mod head;
 pub mod lazy;
+pub use backend_version::retirement_budget;
 pub mod model;
 pub mod owner;
 pub mod pack;
 pub mod publication;
 pub mod record;
 pub mod recovery;
+pub mod retirement_controls;
 pub mod transition;
 
 pub use catalog::{DerivedOutputEntry, DerivedOutputPublication};

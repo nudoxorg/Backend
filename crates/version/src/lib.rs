@@ -23,6 +23,8 @@ pub mod object;
 /// Allocation-free, caller-owned observability probes.
 pub mod observe;
 mod persistent;
+/// Prospective shared allocation accounting for guarded retirement admission.
+pub mod retirement_budget;
 /// Canonical value/batch schema and complete encoding contracts.
 #[allow(
     unsafe_code,

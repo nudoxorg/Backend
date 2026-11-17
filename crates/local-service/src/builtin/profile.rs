@@ -448,6 +448,95 @@ fn prepare_semantic_update(
         .map_err(|error| BuiltinModelError(format!("prepare semantic publication delta: {error}")))
 }
 
+fn validate_empty_ts_target(target_project: Option<&BuiltinPackageRecord>) -> Result<(), BuiltinModelError> {
+    use backend_engine::builtin::ProductProjectMembership;
+    // Only the scanner's native-only Project shape is supported. In
+    // particular this avoids passing Cargo/legacy arbitrary vectors to a
+    // typed decoder or serializer before their allocation is bounded.
+    if let Some(target) = target_project {
+        let BuiltinPackageRecord::Project { label, files: ProductProjectMembership::Inline(files), cargo_aliases: None, source_selection, .. } = target else {
+            return Err(BuiltinModelError("empty TypeScript target source shape unsupported".into()));
+        };
+        if label.is_empty() || label.len() > BuiltinIntent::MAX_LABEL_BYTES || !files.is_empty() {
+            return Err(BuiltinModelError("empty TypeScript target source shape unsupported".into()));
+        }
+        if let Some(selection) = source_selection {
+            let extensions = &selection.unsupported_extensions;
+            if selection.observed_projects != 1 || selection.unknown_projects != 0 || extensions.len() != 3
+                || extensions[0].extension != "css" || extensions[1].extension != "sql" || extensions[2].extension != "vue" {
+                return Err(BuiltinModelError("empty TypeScript selection shape unsupported".into()));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A native-only retirement is deliberately narrower than a general source
+/// update: neither the predecessor nor target may retain owner file/page rows.
+pub(super) fn validate_empty_ts_structural_relation(
+    relation: &backend_engine::workspace::WorkspacePreflightRelationHandle<BuiltinWorkspaceRelation>,
+    project: [u8; 32],
+    target_project: Option<&BuiltinPackageRecord>,
+    budget: &mut usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<(), BuiltinModelError> {
+    use backend_engine::builtin::source_visit_preflighted;
+    use backend_store::StoreError;
+    validate_empty_ts_target(target_project)?;
+    let mut after = None; let mut count = 0usize;
+    loop {
+        if cancelled() { return Err(BuiltinModelError("empty TypeScript source scan cancelled".into())); }
+        let next = source_visit_preflighted(relation, after.as_ref(), 1, budget, 64, cancelled, &mut |key, row, _remaining| {
+            if cancelled() { return Err(StoreError::Bounds); }
+            count = count.checked_add(1).ok_or(StoreError::Bounds)?;
+            if count > backend_engine::application::MAX_MANIFEST_ENTRIES / 2 { return Err(StoreError::Bounds); }
+            if row.file_fields().is_some_and(|file| file.project == project)
+                || row.membership_page_fields().is_some_and(|page| page.project == project) { return Err(StoreError::NeedsScopedRebuild); }
+            // The source gate itself rejects every file/page row, including
+            // unrelated ones, so this first slice admits project-only roots.
+            let _ = key;
+            Ok(())
+        }).map_err(|e| BuiltinModelError(format!("scan empty TypeScript source relation: {e}")))?;
+        if cancelled() { return Err(BuiltinModelError("empty TypeScript source scan cancelled".into())); }
+        match next { Some(next) => after = Some(next), None => break }
+    }
+    Ok(())
+}
+
+/// Shared-ledger form used by retirement planning and recovery once the
+/// caller owns the complete admission budget. The returned cursor stays
+/// metered until it is replaced or dropped.
+pub(super) fn validate_empty_ts_structural_relation_retirement(
+    relation: &backend_engine::workspace::WorkspacePreflightRelationHandle<BuiltinWorkspaceRelation>,
+    project: [u8; 32],
+    target_project: Option<&BuiltinPackageRecord>,
+    budget: &backend_engine::workspace::retirement_budget::RetirementBudget,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<(), BuiltinModelError> {
+    use backend_engine::builtin::source_visit_retirement;
+    use backend_store::StoreError;
+    validate_empty_ts_target(target_project)?;
+    let mut after: Option<backend_engine::workspace::retirement_budget::Metered<Option<[u8; 32]>>> = None;
+    let mut count = 0usize;
+    loop {
+        if cancelled() { return Err(BuiltinModelError("empty TypeScript source scan cancelled".into())); }
+        let next = source_visit_retirement(relation, after.as_ref().and_then(|cursor| cursor.get().as_ref()), 1, budget, 64, cancelled, &mut |_key, row, _budget| {
+            if cancelled() { return Err(StoreError::Bounds); }
+            count = count.checked_add(1).ok_or(StoreError::Bounds)?;
+            if count > backend_engine::application::MAX_MANIFEST_ENTRIES / 2 { return Err(StoreError::Bounds); }
+            if row.file_fields().is_some_and(|file| file.project == project)
+                || row.membership_page_fields().is_some_and(|page| page.project == project) {
+                return Err(StoreError::NeedsScopedRebuild);
+            }
+            Ok(())
+        }).map_err(|e| BuiltinModelError(format!("scan empty TypeScript source relation: {e}")))?;
+        if cancelled() { return Err(BuiltinModelError("empty TypeScript source scan cancelled".into())); }
+        if next.get().is_none() { break; }
+        after = Some(next);
+    }
+    Ok(())
+}
+
 /// One authoritative package intent carried through the workspace owner.
 ///
 /// The canonical bytes are retained in the checked closure, so recovery can
@@ -470,6 +559,7 @@ pub struct BuiltinIntent {
     stylo_proof: Option<super::stylo_admission::StyloLiveProof>,
     // Transient only: canonical intent bytes cannot mint this capability.
     native_evidence_proof: Option<NativeTsLiveProof>,
+    native_retirement_proof: Option<NativeTsRetirementProof>,
     // Transient source capability; serialized SQL rows remain untrusted claims.
     sql_proof: Option<SqlLiveProofRef>,
     sql_extension: Option<super::sql_intent::SqlIntentExtension>,
@@ -482,6 +572,16 @@ pub struct BuiltinIntent {
 
 #[derive(Clone)]
 struct NativeTsLiveProof(Arc<super::native_ts_admission::RefreshedNativeTsEvidencePlan>);
+
+#[derive(Clone)]
+struct NativeTsRetirementProof(Arc<super::native_ts_admission::ValidatedEmptyNativeTsRetirement>);
+impl fmt::Debug for NativeTsRetirementProof {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.debug_struct("NativeTsRetirementProof").finish_non_exhaustive() }
+}
+impl PartialEq for NativeTsRetirementProof {
+    fn eq(&self, other: &Self) -> bool { Arc::ptr_eq(&self.0, &other.0) }
+}
+impl Eq for NativeTsRetirementProof {}
 
 #[derive(Clone)]
 struct SqlLiveProofRef(Arc<super::sql_admission::SqlLiveProof>);
@@ -517,14 +617,14 @@ pub(super) struct StyloAnalysisBasis {
 /// Authenticated predecessor for an exact native source evidence transition.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct NativeEvidenceBasis {
-    workspace_root: [u8; 32],
-    sequence: u64,
-    closure: [u8; 32],
-    evidence_root: Option<[u8; 32]>,
+    pub(super) workspace_root: [u8; 32],
+    pub(super) sequence: u64,
+    pub(super) closure: [u8; 32],
+    pub(super) evidence_root: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct NativeEvidenceChange {
+pub(super) struct NativeEvidenceChange {
     key: [u8; 32],
     expected: Option<backend_engine::builtin::NativeSourceEvidence>,
     after: Option<backend_engine::builtin::NativeSourceEvidence>,
@@ -696,6 +796,7 @@ impl BuiltinIntent {
     const NATIVE_EVIDENCE_VERSION: u8 = 13;
     const SQL_VERSION: u8 = super::sql_intent::SQL_INTENT_VERSION;
     const CSHARP_VERSION: u8 = super::csharp_intent::CSHARP_INTENT_VERSION;
+    const EMPTY_NATIVE_TS_VERSION: u8 = 17;
     const MAX_NATIVE_EVIDENCE_CHANGES: usize = 2 * backend_engine::builtin::MAX_NATIVE_EVIDENCE_ROWS;
     const MAX_NATIVE_EVIDENCE_DELTA_BYTES: usize = 2 * backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES + Self::MAX_NATIVE_EVIDENCE_CHANGES * 42;
     // New v13 policy ceiling for inherited sections, not a claim that all
@@ -1065,6 +1166,7 @@ impl BuiltinIntent {
                 | Self::NATIVE_EVIDENCE_VERSION
                 | Self::SQL_VERSION
                 | Self::CSHARP_VERSION
+                | Self::EMPTY_NATIVE_TS_VERSION
         ) || (encoding_version < Self::VERSION
             && (matches!(operation, BuiltinIntentOperation::SelectSemanticGeneration)
                 || semantic_selection.is_some()))
@@ -1081,6 +1183,7 @@ impl BuiltinIntent {
                 && encoding_version != Self::NATIVE_EVIDENCE_VERSION
                 && encoding_version != Self::SQL_VERSION
                 && encoding_version != Self::CSHARP_VERSION
+                && encoding_version != Self::EMPTY_NATIVE_TS_VERSION
                 && operation_key.is_some())
             || (encoding_version == Self::CAPTURE_BASIS_VERSION
                 && (capture_changes.is_empty() || capture_basis.is_none()))
@@ -1292,6 +1395,7 @@ impl BuiltinIntent {
             stylo_basis: None,
             stylo_proof: None,
             native_evidence_proof: None,
+            native_retirement_proof: None,
             sql_proof: None,
             sql_extension: None,
             csharp_extension: None,
@@ -1443,6 +1547,7 @@ impl BuiltinIntent {
             Self::NATIVE_EVIDENCE_VERSION => b"BPID",
             Self::SQL_VERSION => super::sql_intent::SQL_INTENT_MAGIC,
             Self::CSHARP_VERSION => super::csharp_intent::CSHARP_INTENT_MAGIC,
+            Self::EMPTY_NATIVE_TS_VERSION => b"BPIH",
             _ => b"BPI9",
         });
         bytes.push(self.encoding_version);
@@ -1590,7 +1695,7 @@ impl BuiltinIntent {
             if self.encoding_version == Self::STYLO_ANALYSIS_VERSION
                 || (self.encoding_version >= Self::NATIVE_EVIDENCE_VERSION && self.stylo_basis.is_some())
             {
-                let length_position = if matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION) {
+                let length_position = if matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION | Self::EMPTY_NATIVE_TS_VERSION) {
                     let position = bytes.len(); bytes.extend_from_slice(&[0; 4]); Some(position)
                 } else { None };
                 let basis = self
@@ -1617,12 +1722,12 @@ impl BuiltinIntent {
                     bytes[position..position+4].copy_from_slice(&length.to_be_bytes());
                 }
             }
-            if matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION) {
+            if matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION | Self::EMPTY_NATIVE_TS_VERSION) {
                 bytes.push(u8::from(self.native_evidence_basis.is_some()));
             }
             if self.encoding_version == Self::NATIVE_EVIDENCE_VERSION
-                || (matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION) && self.native_evidence_basis.is_some()) {
-                let length_position = if matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION) {
+                || (matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION | Self::EMPTY_NATIVE_TS_VERSION) && self.native_evidence_basis.is_some()) {
+                let length_position = if matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION | Self::EMPTY_NATIVE_TS_VERSION) {
                     let position = bytes.len(); bytes.extend_from_slice(&[0; 4]); Some(position)
                 } else { None };
                 let basis = self.native_evidence_basis.expect("native evidence basis validated");
@@ -1644,7 +1749,7 @@ impl BuiltinIntent {
                     bytes[position..position+4].copy_from_slice(&length.to_be_bytes());
                 }
             }
-            if matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION) {
+            if matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION | Self::EMPTY_NATIVE_TS_VERSION) {
                 match &self.sql_extension {
                     None => bytes.push(0),
                     Some(extension) => {
@@ -1951,7 +2056,7 @@ impl BuiltinIntent {
         changes: Vec<NativeEvidenceChange>,
     ) -> Result<(), BuiltinModelError> {
         if self.native_evidence_basis.is_some()
-            || !matches!(self.encoding_version, Self::NATIVE_EVIDENCE_VERSION | Self::SQL_VERSION | Self::CSHARP_VERSION)
+            || !matches!(self.encoding_version, Self::NATIVE_EVIDENCE_VERSION | Self::SQL_VERSION | Self::CSHARP_VERSION | Self::EMPTY_NATIVE_TS_VERSION)
             || basis.workspace_root == [0; 32]
             || basis.closure == [0; 32]
             || basis.sequence == u64::MAX
@@ -1964,7 +2069,11 @@ impl BuiltinIntent {
                 "invalid native evidence basis or ordering".into(),
             ));
         }
-        self.validate_native_evidence_first_slice(&changes)?;
+        if self.encoding_version == Self::EMPTY_NATIVE_TS_VERSION {
+            self.validate_empty_native_ts_shape(&changes)?;
+        } else {
+            self.validate_native_evidence_first_slice(&changes)?;
+        }
         let mut encoded_bytes = changes
             .len()
             .checked_mul(34)
@@ -2005,6 +2114,34 @@ impl BuiltinIntent {
         self.native_evidence_basis = Some(basis);
         self.native_evidence_changes = changes.into_boxed_slice();
         Ok(())
+    }
+
+    /// Attach a complete empty-program retirement to the exact source update.
+    pub(super) fn with_native_ts_retirement(
+        mut self,
+        base: &WorkspaceSnapshot,
+        witness: Arc<super::native_ts_admission::EmptyNativeTsRetirementWitness>,
+    ) -> Result<Self, BuiltinModelError> {
+        if self.native_retirement_proof.is_some() || self.native_evidence_basis.is_some()
+            || self.native_evidence_proof.is_some() || !self.semantic_changes.is_empty()
+        { return Err(BuiltinModelError("duplicate or mixed empty TypeScript retirement".into())); }
+        let target = self.changes.iter().find(|change| change.key == self.package.to_bytes())
+            .and_then(|change| change.after.as_ref())
+            .ok_or_else(|| BuiltinModelError("empty TypeScript retirement has no target Project".into()))?;
+        let (proof, retirements, semantic) = super::native_ts_admission::plan_empty_native_ts_retirement(base, witness, target)?;
+        if proof.receipt_inputs()?.project != self.package.to_bytes() {
+            return Err(BuiltinModelError("empty TypeScript retirement owner differs".into()));
+        }
+        self.semantic_changes = semantic.into_boxed_slice();
+        self.encoding_version = Self::EMPTY_NATIVE_TS_VERSION;
+        let changes = retirements.into_iter().map(|r| {
+            let (key, expected) = r.into_parts();
+            NativeEvidenceChange { key, expected: Some(expected), after: None }
+        }).collect();
+        self.set_native_evidence_changes(native_evidence_basis_for_snapshot(base)?, changes)?;
+        self.native_retirement_proof = Some(NativeTsRetirementProof(proof));
+        revalidate_native_ts_intent(base, &self)?;
+        Ok(self)
     }
 
     /// Attach only the worker-refreshed private capability, after all legacy
@@ -2113,7 +2250,7 @@ impl BuiltinIntent {
     /// Native evidence staging and hydration belong on the publication worker.
     pub(super) fn has_native_ts_evidence(&self) -> bool {
         self.encoding_version == Self::NATIVE_EVIDENCE_VERSION
-            || (matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION) && self.native_evidence_basis.is_some())
+            || (matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION | Self::EMPTY_NATIVE_TS_VERSION) && self.native_evidence_basis.is_some())
     }
     /// Whether this is an SQL-analysis intent, as opposed to another v14
     /// carrier. Only these can take the owner's receipt authority to commit.
@@ -2122,7 +2259,7 @@ impl BuiltinIntent {
     }
     /// Whether the intent carries SQL claims or the live proof they were built from.
     pub(super) fn has_sql_evidence(&self) -> bool {
-        matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION) && (self.sql_proof.is_some() || self.sql_extension.is_some())
+        matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION | Self::EMPTY_NATIVE_TS_VERSION) && (self.sql_proof.is_some() || self.sql_extension.is_some())
     }
     /// Whether the full live intent actually replaces one project's SQL rows.
     /// A proof-bound no-op must retain its existing receipt.
@@ -2137,7 +2274,7 @@ impl BuiltinIntent {
     /// the publication worker only as an SQL intent with the owner's receipt
     /// authority, or as a bare SQL retirement.
     pub(super) fn requires_v14_worker(&self) -> bool {
-        matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION)
+        matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_VERSION | Self::EMPTY_NATIVE_TS_VERSION)
     }
 
     /// A bare v14 carrier of the given kind, for exercising the commit routes.
@@ -2155,7 +2292,11 @@ impl BuiltinIntent {
         &self,
         cancellation: &Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<(), BuiltinModelError> {
-        if self.has_native_ts_evidence()
+        if self.encoding_version == Self::EMPTY_NATIVE_TS_VERSION {
+            if !self.native_retirement_proof.as_ref().is_some_and(|p| p.0.matches_cancellation(cancellation)) {
+                return Err(BuiltinModelError("empty TypeScript retirement cancellation differs".into()));
+            }
+        } else if self.has_native_ts_evidence()
             && !self.native_evidence_proof.as_ref()
                 .is_some_and(|proof| proof.0.matches_cancellation(cancellation))
         {
@@ -2164,6 +2305,23 @@ impl BuiltinIntent {
         if self.has_sql_evidence() && !self.sql_proof.as_ref().is_some_and(|proof| Arc::ptr_eq(&proof.0.cancellation, cancellation)) {
             return Err(BuiltinModelError("SQL staging cancellation differs from capture".into()));
         }
+        Ok(())
+    }
+
+    fn validate_empty_native_ts_shape(&self, changes: &[NativeEvidenceChange]) -> Result<(), BuiltinModelError> {
+        use backend_semantic::vocabulary::LanguageProfile;
+        if self.operation != BuiltinIntentOperation::Index || self.changes.len() != 1
+            || self.changes[0].key != self.package.to_bytes()
+            || self.changes[0].after.as_ref().and_then(|row| row.project_fields()).is_none()
+            || self.semantic_changes.len() > 2 || !self.capture_changes.is_empty() || self.capture_basis.is_some()
+            || !self.source_facts_changes.is_empty() || !self.native_frontier_changes.is_empty()
+            || self.semantic_selection.is_some() || self.stylo_basis.is_some()
+            || self.stylo_proof.is_some() || !self.stylo_changes.is_empty()
+            || self.sql_extension.is_some() || self.csharp_extension.is_some()
+            || changes.is_empty()
+            || changes.iter().any(|c| c.after.is_some() || c.expected.as_ref().is_none_or(|r| r.project != self.package.to_bytes() || !matches!(r.profile, LanguageProfile::TypeScript(_))))
+            || self.semantic_changes.iter().any(|c| !c.key.is_selected() || !matches!(c.key.profile(), LanguageProfile::TypeScript(_)) || c.after != Some(ProductSemanticPublicationRecord::Unavailable(backend_engine::builtin::SemanticUnavailableReason::ProjectAuthority)))
+        { return Err(BuiltinModelError("invalid empty TypeScript retirement shape".into())); }
         Ok(())
     }
 
@@ -2253,6 +2411,10 @@ impl BuiltinIntent {
                     | backend_engine::builtin::CSharpReceiptRecord::Member { project, .. } => *project != package.to_bytes(),
                 }
             }) { return Err(BuiltinModelError("C# intent has a different project owner".into())); }
+        }
+        if encoding_version == Self::EMPTY_NATIVE_TS_VERSION
+            && (native_evidence_basis.is_none() || stylo_basis.is_some() || sql_extension.is_some() || csharp_extension.is_some()) {
+            return Err(BuiltinModelError("empty TypeScript retirement has invalid sections".into()));
         }
         if encoding_version == Self::SQL_VERSION && stylo_basis.is_none()
             && native_evidence_basis.is_none() && sql_extension.is_none() {
@@ -2697,7 +2859,8 @@ impl backend_engine::queue::QueueSized for BuiltinIntent {
             Some(proof) => proof.0.checked_retained_bytes().ok_or(backend_engine::QueueError::Accounting)?,
             None => 0,
         };
-        encoded.checked_add(proof).and_then(|bytes| bytes.checked_add(sql_proof)).ok_or(backend_engine::QueueError::Accounting)
+        let retirement = match &self.native_retirement_proof { Some(proof) => proof.0.checked_retained_bytes().ok_or(backend_engine::QueueError::Accounting)?, None => 0 };
+        encoded.checked_add(proof).and_then(|bytes| bytes.checked_add(sql_proof)).and_then(|bytes| bytes.checked_add(retirement)).ok_or(backend_engine::QueueError::Accounting)
     }
 }
 
@@ -2721,6 +2884,8 @@ impl<'a> IntentDecoder<'a> {
                 && bytes.len() > BuiltinIntent::MAX_NATIVE_EVIDENCE_INTENT_BYTES + 64 * 1024 * 1024)
             || (version == BuiltinIntent::CSHARP_VERSION
                 && bytes.len() > BuiltinIntent::MAX_NATIVE_EVIDENCE_INTENT_BYTES + 128 * 1024 * 1024)
+            || (version == BuiltinIntent::EMPTY_NATIVE_TS_VERSION
+                && bytes.len() > BuiltinIntent::MAX_NATIVE_EVIDENCE_INTENT_BYTES)
             || !matches!(
                 (bytes.get(..4), version),
                 (Some(b"BPI3"), 3)
@@ -2736,6 +2901,7 @@ impl<'a> IntentDecoder<'a> {
                     | (Some(b"BPID"), 13)
                     | (Some(b"BPIE"), 14)
                     | (Some(b"BPIG"), 16)
+                    | (Some(b"BPIH"), 17)
             )
         {
             return Err(BuiltinModelError(
@@ -2751,10 +2917,10 @@ impl<'a> IntentDecoder<'a> {
 
     fn operation(&mut self) -> Result<BuiltinIntentOperation, BuiltinModelError> {
         match self.take(1)?.first().copied() {
-            Some(BuiltinIntent::ADD) if self.version != BuiltinIntent::NATIVE_EVIDENCE_VERSION => Ok(BuiltinIntentOperation::Add),
-            Some(BuiltinIntent::REMOVE) if self.version != BuiltinIntent::NATIVE_EVIDENCE_VERSION => Ok(BuiltinIntentOperation::Remove),
+            Some(BuiltinIntent::ADD) if !matches!(self.version, BuiltinIntent::NATIVE_EVIDENCE_VERSION | BuiltinIntent::EMPTY_NATIVE_TS_VERSION) => Ok(BuiltinIntentOperation::Add),
+            Some(BuiltinIntent::REMOVE) if !matches!(self.version, BuiltinIntent::NATIVE_EVIDENCE_VERSION | BuiltinIntent::EMPTY_NATIVE_TS_VERSION) => Ok(BuiltinIntentOperation::Remove),
             Some(BuiltinIntent::INDEX) => Ok(BuiltinIntentOperation::Index),
-            Some(BuiltinIntent::SELECT_SEMANTIC_GENERATION) if self.version >= 4 && self.version != BuiltinIntent::NATIVE_EVIDENCE_VERSION => {
+            Some(BuiltinIntent::SELECT_SEMANTIC_GENERATION) if self.version >= 4 && !matches!(self.version, BuiltinIntent::NATIVE_EVIDENCE_VERSION | BuiltinIntent::EMPTY_NATIVE_TS_VERSION) => {
                 Ok(BuiltinIntentOperation::SelectSemanticGeneration)
             }
             _ => Err(BuiltinModelError(
@@ -2791,7 +2957,8 @@ impl<'a> IntentDecoder<'a> {
             .saturating_mul(2)
             .saturating_add(BuiltinPackageRecord::MAX_PROJECT_MEMBERSHIP_PAGES.saturating_mul(2))
             .saturating_add(1);
-        if count > maximum_source_changes || (self.version == BuiltinIntent::NATIVE_EVIDENCE_VERSION && count != 0) {
+        if count > maximum_source_changes || (self.version == BuiltinIntent::NATIVE_EVIDENCE_VERSION && count != 0)
+            || (self.version == BuiltinIntent::EMPTY_NATIVE_TS_VERSION && count != 1) {
             return Err(BuiltinModelError(
                 "malformed product source change count".to_owned(),
             ));
@@ -2805,11 +2972,19 @@ impl<'a> IntentDecoder<'a> {
             .try_into()
             .map_err(|_| BuiltinModelError("malformed product source key".to_owned()))?;
         let after = match self.take(1)?.first().copied() {
-            Some(0) => None,
+            Some(0) if self.version != BuiltinIntent::EMPTY_NATIVE_TS_VERSION => None,
             Some(1) => {
                 let length = self.read_u32()? as usize;
+                if self.version == BuiltinIntent::EMPTY_NATIVE_TS_VERSION && length > BuiltinPackageRecord::ROW_VALUE_CAPACITY {
+                    return Err(BuiltinModelError("empty TypeScript source row exceeds bound".into()));
+                }
+                let value = self.take(length)?;
+                if self.version == BuiltinIntent::EMPTY_NATIVE_TS_VERSION
+                    && !backend_engine::builtin::empty_source_project_wire_admitted(value) {
+                    return Err(BuiltinModelError("unsupported empty TypeScript source wire shape".into()));
+                }
                 Some(
-                    <ProductRelation as CanonicalRelation>::decode_value(self.take(length)?)
+                    <ProductRelation as CanonicalRelation>::decode_value(value)
                         .map_err(|_| {
                             BuiltinModelError("malformed product source record".to_owned())
                         })?,
@@ -2826,7 +3001,7 @@ impl<'a> IntentDecoder<'a> {
 
     fn semantic_changes(&mut self) -> Result<Vec<BuiltinSemanticChange>, BuiltinModelError> {
         let count = self.read_u32()? as usize;
-        if count > backend_engine::application::MAX_MANIFEST_ENTRIES || (self.version == BuiltinIntent::NATIVE_EVIDENCE_VERSION && count > 4) {
+        if count > backend_engine::application::MAX_MANIFEST_ENTRIES || (self.version == BuiltinIntent::NATIVE_EVIDENCE_VERSION && count > 4) || (self.version == BuiltinIntent::EMPTY_NATIVE_TS_VERSION && count > 2) {
             return Err(BuiltinModelError(
                 "malformed semantic publication change count".to_owned(),
             ));
@@ -2836,23 +3011,30 @@ impl<'a> IntentDecoder<'a> {
 
     fn semantic_change(&mut self) -> Result<BuiltinSemanticChange, BuiltinModelError> {
         let key_length = self.read_u32()? as usize;
-        if self.version == BuiltinIntent::NATIVE_EVIDENCE_VERSION && key_length > 2 * BuiltinIntent::MAX_LABEL_BYTES + 64 {
+        if matches!(self.version, BuiltinIntent::NATIVE_EVIDENCE_VERSION | BuiltinIntent::EMPTY_NATIVE_TS_VERSION) && key_length > 2 * BuiltinIntent::MAX_LABEL_BYTES + 64 {
             return Err(BuiltinModelError("native semantic key exceeds bound".into()));
         }
         let key = ProductSemanticPublicationRelation::decode_key(self.take(key_length)?)
             .map_err(|_| BuiltinModelError("malformed semantic publication key".to_owned()))?;
+        if self.version == BuiltinIntent::EMPTY_NATIVE_TS_VERSION
+            && (!key.is_selected() || !matches!(key.profile(), backend_semantic::vocabulary::LanguageProfile::TypeScript(_))) {
+            return Err(BuiltinModelError("invalid empty TypeScript semantic key".into()));
+        }
         let after = match self.take(1)?.first().copied() {
-            Some(0) if self.version != BuiltinIntent::NATIVE_EVIDENCE_VERSION => None,
+            Some(0) if !matches!(self.version, BuiltinIntent::NATIVE_EVIDENCE_VERSION | BuiltinIntent::EMPTY_NATIVE_TS_VERSION) => None,
             Some(1) => {
                 let length = self.read_u32()? as usize;
-                if self.version == BuiltinIntent::NATIVE_EVIDENCE_VERSION && length > 512 {
+                if matches!(self.version, BuiltinIntent::NATIVE_EVIDENCE_VERSION | BuiltinIntent::EMPTY_NATIVE_TS_VERSION) && length > 512 {
                     return Err(BuiltinModelError("native semantic record exceeds bound".into()));
                 }
-                Some(
-                    ProductSemanticPublicationRelation::decode_value(self.take(length)?).map_err(
-                        |_| BuiltinModelError("malformed semantic publication record".to_owned()),
-                    )?,
-                )
+                let value = ProductSemanticPublicationRelation::decode_value(self.take(length)?).map_err(
+                    |_| BuiltinModelError("malformed semantic publication record".to_owned()),
+                )?;
+                if self.version == BuiltinIntent::EMPTY_NATIVE_TS_VERSION
+                    && value != ProductSemanticPublicationRecord::Unavailable(backend_engine::builtin::SemanticUnavailableReason::ProjectAuthority) {
+                    return Err(BuiltinModelError("invalid empty TypeScript semantic after-image".into()));
+                }
+                Some(value)
             }
             _ => {
                 return Err(BuiltinModelError(
@@ -2871,7 +3053,7 @@ impl<'a> IntentDecoder<'a> {
         }
         match self.take(1)?.first().copied() {
             Some(0) => Ok(None),
-            Some(1) if self.version != BuiltinIntent::NATIVE_EVIDENCE_VERSION => {
+            Some(1) if !matches!(self.version, BuiltinIntent::NATIVE_EVIDENCE_VERSION | BuiltinIntent::EMPTY_NATIVE_TS_VERSION) => {
                 let selected = self.semantic_key()?;
                 let generation = self.semantic_key()?;
                 let before = self.optional_semantic_record()?;
@@ -2921,6 +3103,7 @@ impl<'a> IntentDecoder<'a> {
         if (count == 0 && self.version == BuiltinIntent::CAPTURE_VERSION)
             || count > backend_engine::application::MAX_MANIFEST_ENTRIES
             || (self.version == BuiltinIntent::NATIVE_EVIDENCE_VERSION && count > 2)
+            || (self.version == BuiltinIntent::EMPTY_NATIVE_TS_VERSION && count != 0)
         {
             return Err(BuiltinModelError(
                 "malformed semantic capture change count".to_owned(),
@@ -2936,7 +3119,7 @@ impl<'a> IntentDecoder<'a> {
         if self.version >= BuiltinIntent::NATIVE_FRONTIER_VERSION {
             match self.take(1)?.first().copied() {
                 Some(0) => return Ok(None),
-                Some(1) => {}
+                Some(1) if self.version != BuiltinIntent::EMPTY_NATIVE_TS_VERSION => {}
                 _ => {
                     return Err(BuiltinModelError(
                         "malformed capture basis presence marker".to_owned(),
@@ -2984,7 +3167,7 @@ impl<'a> IntentDecoder<'a> {
         let minimum_bytes_per_change = 34usize;
         if (count == 0 && self.version == BuiltinIntent::FACTS_VERSION)
             || count > maximum
-            || (self.version == BuiltinIntent::NATIVE_EVIDENCE_VERSION && count != 0)
+            || (matches!(self.version, BuiltinIntent::NATIVE_EVIDENCE_VERSION | BuiltinIntent::EMPTY_NATIVE_TS_VERSION) && count != 0)
             || count > self.bytes.len().saturating_sub(self.at) / minimum_bytes_per_change
         {
             return Err(BuiltinModelError(
@@ -3009,7 +3192,7 @@ impl<'a> IntentDecoder<'a> {
         if self.version >= BuiltinIntent::NATIVE_EVIDENCE_VERSION {
             match self.take(1)?[0] {
                 0 => return Ok((None, Vec::new())),
-                1 if self.version == BuiltinIntent::NATIVE_EVIDENCE_VERSION => return Err(BuiltinModelError("native evidence first slice forbids Stylo section".into())),
+                1 if matches!(self.version, BuiltinIntent::NATIVE_EVIDENCE_VERSION | BuiltinIntent::EMPTY_NATIVE_TS_VERSION) => return Err(BuiltinModelError("native evidence first slice forbids Stylo section".into())),
                 1 => {
                     let length = self.read_u32()? as usize;
                     if length > BuiltinIntent::MAX_STYLO_DELTA_BYTES { return Err(BuiltinModelError("Stylo section byte limit".into())); }
@@ -3105,10 +3288,17 @@ impl<'a> IntentDecoder<'a> {
     fn native_evidence_changes(
         &mut self,
     ) -> Result<(Option<NativeEvidenceBasis>, Vec<NativeEvidenceChange>), BuiltinModelError> {
+        self.native_evidence_changes_inner(false)
+    }
+
+    fn native_evidence_changes_inner(
+        &mut self,
+        retirement: bool,
+    ) -> Result<(Option<NativeEvidenceBasis>, Vec<NativeEvidenceChange>), BuiltinModelError> {
         if self.version < BuiltinIntent::NATIVE_EVIDENCE_VERSION {
             return Ok((None, Vec::new()));
         }
-        if matches!(self.version, BuiltinIntent::SQL_VERSION | BuiltinIntent::CSHARP_VERSION) {
+        if matches!(self.version, BuiltinIntent::SQL_VERSION | BuiltinIntent::CSHARP_VERSION | BuiltinIntent::EMPTY_NATIVE_TS_VERSION) {
             match self.take(1)?[0] {
                 0 => return Ok((None, Vec::new())),
                 1 => {
@@ -3116,7 +3306,7 @@ impl<'a> IntentDecoder<'a> {
                     if length > BuiltinIntent::MAX_NATIVE_EVIDENCE_DELTA_BYTES { return Err(BuiltinModelError("native evidence section byte limit".into())); }
                     let bytes = self.take(length)?;
                     let mut nested = IntentDecoder { bytes, at: 0, version: BuiltinIntent::NATIVE_EVIDENCE_VERSION };
-                    let value = nested.native_evidence_changes()?;
+                    let value = nested.native_evidence_changes_inner(self.version == BuiltinIntent::EMPTY_NATIVE_TS_VERSION)?;
                     nested.finish()?;
                     return Ok(value);
                 },
@@ -3143,7 +3333,8 @@ impl<'a> IntentDecoder<'a> {
         };
         let count = self.read_u32()? as usize;
         let remaining = self.bytes.len().saturating_sub(self.at);
-        if count > BuiltinIntent::MAX_NATIVE_EVIDENCE_CHANGES
+        if (retirement && count == 0)
+            || count > BuiltinIntent::MAX_NATIVE_EVIDENCE_CHANGES
             || count > remaining / 34
             || (self.version == BuiltinIntent::NATIVE_EVIDENCE_VERSION && remaining > BuiltinIntent::MAX_NATIVE_EVIDENCE_DELTA_BYTES)
         {
@@ -3166,8 +3357,18 @@ impl<'a> IntentDecoder<'a> {
                 .take(32)?
                 .try_into()
                 .map_err(|_| BuiltinModelError("invalid evidence key".into()))?;
-            let expected = self.optional_native_evidence(&mut resident)?;
-            let after = self.optional_native_evidence(&mut resident)?;
+            let expected = self.optional_native_evidence(&mut resident, retirement)?;
+            if retirement && expected.is_none() {
+                return Err(BuiltinModelError("empty TypeScript retirement requires predecessor evidence".into()));
+            }
+            let after = if retirement {
+                if self.take(1)?[0] != 0 {
+                    return Err(BuiltinModelError("empty TypeScript retirement cannot add native evidence".into()));
+                }
+                None
+            } else {
+                self.optional_native_evidence(&mut resident, false)?
+            };
             changes.push(NativeEvidenceChange {
                 key,
                 expected,
@@ -3189,13 +3390,14 @@ impl<'a> IntentDecoder<'a> {
     }
 
     fn optional_native_evidence(
-        &mut self, resident: &mut usize,
+        &mut self, resident: &mut usize, stored_only: bool,
     ) -> Result<Option<backend_engine::builtin::NativeSourceEvidence>, BuiltinModelError> {
         match self.take(1)?[0] {
             0 => Ok(None),
             1 => {
                 let length = self.read_u32()? as usize;
-                if length > backend_engine::builtin::MAX_NATIVE_EVIDENCE_VALUE {
+                if length > backend_engine::builtin::MAX_NATIVE_EVIDENCE_VALUE
+                    || (stored_only && length > backend_engine::builtin::MAX_NATIVE_EVIDENCE_STORED_VALUE) {
                     return Err(BuiltinModelError("native evidence row too large".into()));
                 }
                 *resident = resident.checked_add(length).and_then(|n| n.checked_add(128))
@@ -3226,7 +3428,7 @@ impl<'a> IntentDecoder<'a> {
         let minimum_bytes_per_change = 34usize;
         if (count == 0 && self.version < BuiltinIntent::STYLO_ANALYSIS_VERSION)
             || count > maximum
-            || (self.version == BuiltinIntent::NATIVE_EVIDENCE_VERSION && count != 0)
+            || (matches!(self.version, BuiltinIntent::NATIVE_EVIDENCE_VERSION | BuiltinIntent::EMPTY_NATIVE_TS_VERSION) && count != 0)
             || count > self.bytes.len().saturating_sub(self.at) / minimum_bytes_per_change
         {
             return Err(BuiltinModelError(
@@ -3570,7 +3772,7 @@ impl<'a> IntentDecoder<'a> {
         if self.version < BuiltinIntent::SQL_VERSION { return Ok(None); }
         match self.take(1)?[0] {
             0 => Ok(None),
-            1 => {
+            1 if self.version != BuiltinIntent::EMPTY_NATIVE_TS_VERSION => {
                 let length = self.read_u32()? as usize;
                 if length > 64 * 1024 * 1024 { return Err(BuiltinModelError("SQL extension exceeds byte budget".into())); }
                 super::sql_intent::SqlIntentExtension::decode(self.take(length)?)
@@ -3655,6 +3857,11 @@ impl WorkspaceModel for BuiltinModel {
         intent: &Self::Intent,
         transaction: TransactionId,
     ) -> Result<PreparedTransition, Self::Error> {
+        // V17 must never reach generic root decoding or update construction
+        // until its shared preflight ledger covers the complete preparation.
+        if intent.encoding_version == BuiltinIntent::EMPTY_NATIVE_TS_VERSION {
+            return Err(BuiltinModelError("empty TypeScript retirement preparation is not fully budgeted".into()));
+        }
         let hydrated;
         let intent = if let Some(staged) = intent.staged() {
             precheck_native_ts_intent(base, intent)?;
@@ -3662,12 +3869,18 @@ impl WorkspaceModel for BuiltinModel {
             decoded.set_staged(Arc::clone(staged), false);
             decoded.stylo_proof = intent.stylo_proof.clone();
             decoded.native_evidence_proof = intent.native_evidence_proof.clone();
+            decoded.native_retirement_proof = intent.native_retirement_proof.clone();
             decoded.sql_proof = intent.sql_proof.clone();
             hydrated = decoded;
             &hydrated
         } else {
             intent
         };
+        // A staged carrier is not itself authority for its hydrated version.
+        // Keep the same barrier after hydration as well as before it.
+        if intent.encoding_version == BuiltinIntent::EMPTY_NATIVE_TS_VERSION {
+            return Err(BuiltinModelError("empty TypeScript retirement preparation is not fully budgeted".into()));
+        }
         let relation = base
             .relation::<BuiltinWorkspaceRelation>()
             .map_err(|error| BuiltinModelError(format!("open product source: {error}")))?;
@@ -3689,7 +3902,7 @@ impl WorkspaceModel for BuiltinModel {
         persisted: &backend_engine::PersistedTransition,
         store: &backend_engine::FileStore,
     ) -> Result<PreparedTransition, Self::Error> {
-        admit_persisted_transition(persisted, store, self.shutdown.as_ref())
+        admit_persisted_transition(persisted, store, self.shutdown.as_ref(), self.receipt_context.as_deref())
             .map_err(|error| BuiltinModelError(format!("builtin persisted transition: {error}")))
     }
 }
@@ -3982,6 +4195,14 @@ fn precheck_native_ts_intent(
     if !intent.has_native_ts_evidence() {
         return Ok(());
     }
+    if intent.encoding_version == BuiltinIntent::EMPTY_NATIVE_TS_VERSION {
+        let proof = intent.native_retirement_proof.as_ref().ok_or_else(|| BuiltinModelError("empty TypeScript retirement lacks live proof".into()))?;
+        proof.0.validate_base(base)?;
+        if intent.native_evidence_basis != Some(native_evidence_basis_for_snapshot(base)?) {
+            return Err(BuiltinModelError("empty TypeScript predecessor changed".into()));
+        }
+        return Ok(());
+    }
     let proof = intent.native_evidence_proof.as_ref()
         .ok_or_else(|| BuiltinModelError("native evidence has no live source proof".into()))?;
     proof.0.validate_base_before_commit(base)?;
@@ -4010,11 +4231,23 @@ pub(super) fn revalidate_native_ts_intent(
         let staged = intent.staged().ok_or_else(|| BuiltinModelError("native evidence stage missing".into()))?;
         let mut decoded = staged.hydrate(Some(base))?;
         decoded.native_evidence_proof = intent.native_evidence_proof.clone();
+        decoded.native_retirement_proof = intent.native_retirement_proof.clone();
         hydrated = decoded;
         &hydrated
     } else {
         intent
     };
+    if intent.encoding_version == BuiltinIntent::EMPTY_NATIVE_TS_VERSION {
+        let proof = &intent.native_retirement_proof.as_ref().ok_or_else(|| BuiltinModelError("empty TypeScript retirement lacks live proof".into()))?.0;
+        let target = intent.changes.iter().find(|change| change.key == intent.package.to_bytes())
+            .and_then(|change| change.after.as_ref()).ok_or_else(|| BuiltinModelError("empty TypeScript target Project missing".into()))?;
+        let (fresh, rows, semantic) = proof.replan(base, target)?;
+        if fresh.receipt_inputs()? != proof.receipt_inputs()? || semantic.as_slice() != intent.semantic_changes.as_ref()
+            || rows.len() != intent.native_evidence_changes.len()
+            || rows.iter().zip(intent.native_evidence_changes.iter()).any(|(row, change)| row.key() != change.key || Some(row.expected()) != change.expected.as_ref() || change.after.is_some())
+        { return Err(BuiltinModelError("empty TypeScript retirement differs from complete live plan".into())); }
+        return Ok(());
+    }
     let proof = intent.native_evidence_proof.as_ref()
         .ok_or_else(|| BuiltinModelError("native evidence has no live source proof".into()))?;
     proof.0.validate_base_before_commit(base)?;
@@ -4250,6 +4483,56 @@ fn validate_live_stylo_target(
     Ok(())
 }
 
+/// Target facts derived only from the actual owner-prepared relation updates.
+/// The receipt issuer accepts this capability instead of raw target claims.
+pub(super) struct EmptyNativeTsPreparedTarget {
+    transaction: TransactionId,
+    workspace_root: [u8; 32],
+    generation: u64,
+    evidence_root: [u8; 32],
+    operation_key: Option<[u8; 32]>,
+    request_identity: [u8; 32],
+    retired_profiles: Vec<[u8; 2]>,
+}
+impl EmptyNativeTsPreparedTarget {
+    fn from_updates(
+        base: &WorkspaceSnapshot,
+        validated: &super::native_ts_admission::ValidatedEmptyNativeTsRetirement,
+        intent: &BuiltinIntent,
+        transaction: TransactionId,
+        source: &LazyPreparedUpdate<BuiltinWorkspaceRelation>,
+        semantic: &LazyPreparedUpdate<BuiltinSemanticRelation>,
+        evidence: &PreparedNativeEvidenceRelationUpdate,
+    ) -> Result<Self, BuiltinModelError> {
+        validated.validate_base(base)?;
+        let source_base = base.relation::<BuiltinWorkspaceRelation>().map_err(|e| BuiltinModelError(format!("open prepared source base: {e}")))?;
+        let semantic_base = base.relation::<BuiltinSemanticRelation>().map_err(|e| BuiltinModelError(format!("open prepared semantic base: {e}")))?;
+        if source.base() != source_base.root() || semantic.base() != semantic_base.root() {
+            return Err(BuiltinModelError("empty TypeScript prepared update has foreign base".into()));
+        }
+        let root = workspace_manifest_from_root(&source.target_root(), &semantic.target_root())?.root();
+        let pointer = evidence.pointer.as_ref().ok_or_else(|| BuiltinModelError("empty TypeScript retirement target evidence pointer missing".into()))?;
+        let evidence_root: [u8; 32] = pointer.bytes().try_into().map_err(|_| BuiltinModelError("invalid native evidence target root".into()))?;
+        if !evidence.node_objects.iter().any(|object| pointer.bytes() == object.version()) {
+            return Err(BuiltinModelError("empty TypeScript target evidence root object missing".into()));
+        }
+        let generation = base.sequence().checked_add(1).ok_or_else(|| BuiltinModelError("empty TypeScript generation overflow".into()))?;
+        let mut retired_profiles = intent.native_evidence_changes.iter().filter_map(|change| change.expected.as_ref()).map(|row| <[u8; 2]>::from(row.profile)).collect::<Vec<_>>();
+        retired_profiles.extend(intent.semantic_changes.iter().map(|change| <[u8; 2]>::from(change.key.profile())));
+        retired_profiles.extend(validated.capture_keys(base)?.iter().map(|key| <[u8; 2]>::from(key.profile())));
+        retired_profiles.sort_unstable(); retired_profiles.dedup();
+        if retired_profiles.is_empty() || retired_profiles.len() > 2 { return Err(BuiltinModelError("empty TypeScript retirement profile set invalid".into())); }
+        Ok(Self { transaction, workspace_root: *root.as_bytes(), generation, evidence_root, operation_key: intent.operation_key, request_identity: BuiltinModel.request_id(intent), retired_profiles })
+    }
+    pub(super) fn transaction(&self) -> TransactionId { self.transaction }
+    pub(super) fn workspace_root(&self) -> [u8; 32] { self.workspace_root }
+    pub(super) fn generation(&self) -> u64 { self.generation }
+    pub(super) fn evidence_root(&self) -> [u8; 32] { self.evidence_root }
+    pub(super) fn operation_key(&self) -> Option<[u8; 32]> { self.operation_key }
+    pub(super) fn request_identity(&self) -> [u8; 32] { self.request_identity }
+    pub(super) fn retired_profiles(&self) -> &[[u8; 2]] { &self.retired_profiles }
+}
+
 /// Builds the ordinary checked transition from an already admitted source
 /// update. The historical fixture writer uses this same durable wire path.
 pub(super) fn prepare_transition_with_source_update(
@@ -4270,6 +4553,9 @@ fn prepare_transition_with_owner_context(
     update: LazyPreparedUpdate<BuiltinWorkspaceRelation>,
     owner_context: Option<&super::owner_receipt_context::OwnerReceiptContext>,
 ) -> Result<PreparedTransition, BuiltinModelError> {
+    if intent.encoding_version == BuiltinIntent::EMPTY_NATIVE_TS_VERSION {
+        return Err(BuiltinModelError("empty TypeScript retirement replay admission is not wired".into()));
+    }
     if intent.encoding_version == BuiltinIntent::CSHARP_VERSION {
         return Err(BuiltinModelError("C# unit publication requires an owner-selected live capability".into()));
     }
@@ -4329,6 +4615,14 @@ fn prepare_transition_with_owner_context(
     } else {
         (super::sql_admission::PreparedSqlRelationUpdate { node_objects: Vec::new(), pointer: None }, None)
     };
+    let native_retirement_issued = if intent.encoding_version == BuiltinIntent::EMPTY_NATIVE_TS_VERSION {
+        let owner = owner_context.ok_or_else(|| BuiltinModelError("empty TypeScript retirement owner context missing".into()))?;
+        let proof = Arc::clone(&intent.native_retirement_proof.as_ref().ok_or_else(|| BuiltinModelError("empty TypeScript retirement proof missing".into()))?.0);
+        revalidate_native_ts_intent(base, intent)?;
+        let target = EmptyNativeTsPreparedTarget::from_updates(base, &proof, intent, transaction, &update, &semantic_update, &native_evidence_update)?;
+        Some(super::native_ts_retirement_receipt::NativeTsRetirementReceipt::issue(owner, proof, &target)?)
+    } else { None };
+    let native_retirement_object = native_retirement_issued.as_ref().map(|issued| issued.object()).transpose()?;
     let source_change_count = update.delta().changes().count();
     let semantic_change_count = semantic_update.delta().changes().count();
     let source_changed = source_change_count != 0;
@@ -4417,6 +4711,7 @@ fn prepare_transition_with_owner_context(
             sql_receipt_index_objects: receipt_update.as_ref().map_or(&[], |update| update.node_objects.as_slice()),
             sql_receipt_index_pointer: receipt_update.as_ref().map(|update| &update.pointer),
             sql_receipt: receipt_update.as_ref().and_then(|update| update.receipt.as_ref()),
+            native_ts_retirement_receipt: native_retirement_object.as_ref(),
         },
     )?;
     if let Some(pointer) = stylo_update.pointer.as_ref() {
@@ -4461,6 +4756,11 @@ fn prepare_transition_with_owner_context(
             if !closure.contains(object.id()).map_err(|error| BuiltinModelError(format!("prove SQL receipt selection: {error:?}")))? {
                 return Err(BuiltinModelError("SQL receipt target outside closure".into()));
             }
+        }
+    }
+    if let Some(receipt) = &native_retirement_object {
+        if !closure.contains(receipt.id()).map_err(|e| BuiltinModelError(format!("prove native retirement receipt selection: {e:?}")))? {
+            return Err(BuiltinModelError("native retirement receipt outside closure".into()));
         }
     }
     let registry = super::product_relation_registry()?;
@@ -4583,6 +4883,10 @@ fn prepare_transition_with_owner_context(
             .replace_object_family([root], &registry)
             .map_err(|error| BuiltinModelError(format!("select SQL receipt index root: {error}")))?
     } else { transition };
+    let transition = if let Some(receipt) = native_retirement_object {
+        transition.replace_object_family([receipt], &registry)
+            .map_err(|e| BuiltinModelError(format!("select native retirement receipt: {e}")))?
+    } else { transition };
     let transition = transition
         .replace_object_family([intent_object], &registry)
         .map_err(|error| BuiltinModelError(format!("retain current intent: {error}")))?;
@@ -4602,6 +4906,7 @@ fn prepare_transition_with_owner_context(
     } else {
         transition
     };
+    if let Some(issued) = native_retirement_issued { issued.check_cancelled()?; revalidate_native_ts_intent(base, intent)?; }
     Ok(transition.with_work(work))
 }
 
@@ -5227,6 +5532,18 @@ fn prepare_capture_relation_update(
     source_commit: [u8; 32],
     semantic: &WorkspaceRelationHandle<BuiltinSemanticRelation>,
 ) -> Result<PreparedCaptureRelationUpdate, BuiltinModelError> {
+    if intent.encoding_version == BuiltinIntent::EMPTY_NATIVE_TS_VERSION {
+        let proof = &intent.native_retirement_proof.as_ref().ok_or_else(|| BuiltinModelError("empty TypeScript retirement proof missing".into()))?.0;
+        let keys = proof.capture_keys(base)?;
+        if keys.is_empty() { return Ok(PreparedCaptureRelationUpdate { node_objects: Vec::new(), pointer: None }); }
+        let relation = semantic_capture_relation(base).map_err(|e| BuiltinModelError(format!("open retired captures: {e}")))?
+            .ok_or_else(|| BuiltinModelError("retired capture relation missing".into()))?;
+        let changes = keys.into_iter().map(|key| TreeChange { key, after: None }).collect::<Vec<_>>();
+        let update = relation.prepare_update(&changes).map_err(|e| BuiltinModelError(format!("retire selected TypeScript captures: {e}")))?;
+        let node_objects = update.changed_nodes().iter().map(|node| TypedObject::from_state_root(node.commitment(), node)
+            .map_err(|e| BuiltinModelError(format!("retain retired capture node: {e:?}")))).collect::<Result<Vec<_>, _>>()?;
+        return Ok(PreparedCaptureRelationUpdate { node_objects, pointer: Some(semantic_capture_root_object(update.target().root())) });
+    }
     if intent.capture_changes().is_empty() {
         return Ok(PreparedCaptureRelationUpdate {
             node_objects: Vec::new(),
@@ -5701,18 +6018,59 @@ impl WorkspaceModel for RetiredSourceProbe {
         store: &backend_engine::FileStore,
     ) -> Result<PreparedTransition, Self::Error> {
         let transition =
-            admit_persisted_transition_with_layout(persisted, store, SourceFileKeyLayout::Retired, self.shutdown.as_ref())?;
+            admit_persisted_transition_with_layout(persisted, store, SourceFileKeyLayout::Retired, self.shutdown.as_ref(), None)?;
         self.admit_unmodified_diagnostics()?;
         Ok(transition)
     }
+}
+
+/// Reopen and independently re-admit the selected retirement transition before
+/// projecting an operation receipt. Decoding the retained receipt alone is not
+/// authority. A snapshot for a different request/project is an absent match.
+pub(super) fn verified_native_retirement_for_snapshot(
+    snapshot: &WorkspaceSnapshot,
+    owner: &super::owner_receipt_context::OwnerReceiptContext,
+    operation_key: [u8; 32],
+    request_identity: [u8; 32],
+    project: [u8; 32],
+    cancellation: &crate::listener::ListenerShutdown,
+) -> Result<Option<([u8; 32], super::native_ts_retirement_receipt::NativeTsRetirementReceiptStatement)>, BuiltinModelError> {
+    use backend_engine::builtin::NativeTsRetirementReceiptSchema;
+    snapshot.with_retained_transition(|persisted, store| {
+        if persisted.request() != request_identity { return Ok(None); }
+        let intent = admit_persisted_intent_with_store(persisted, store)?;
+        if intent.encoding_version != BuiltinIntent::EMPTY_NATIVE_TS_VERSION || intent.package.to_bytes() != project
+            || intent.operation_key != Some(operation_key) { return Ok(None); }
+        // This reopens the authenticated predecessor and selected target and
+        // checks the receipt seal and exact relation transformations.
+        if cancellation.is_requested() { return Err(BuiltinModelError("retirement receipt verification cancelled".into())); }
+        let checked = admit_persisted_transition(persisted, store, Some(cancellation), Some(owner))?;
+        if cancellation.is_requested() { return Err(BuiltinModelError("retirement receipt verification cancelled".into())); }
+        if checked.manifest().root() != snapshot.root() { return Err(BuiltinModelError("retirement receipt snapshot changed".into())); }
+        let schema = backend_version::SchemaIdentity::new(NativeTsRetirementReceiptSchema::DOMAIN, NativeTsRetirementReceiptSchema::TYPE, NativeTsRetirementReceiptSchema::VERSION);
+        let mut receipts = snapshot.closure().control_manifest().objects().iter().filter(|object| object.schema() == schema);
+        let object = receipts.next().ok_or_else(|| BuiltinModelError("selected retirement receipt missing".into()))?;
+        if receipts.next().is_some() || object.key() != ObjectKey::<NativeTsRetirementReceiptSchema>::from_value(&project).as_bytes()
+            || !snapshot.closure().contains(object.id()).map_err(|e| BuiltinModelError(format!("prove selected retirement receipt: {e:?}")))? {
+            return Err(BuiltinModelError("selected retirement receipt custody invalid".into()));
+        }
+        let receipt = super::native_ts_retirement_receipt::NativeTsRetirementReceipt::decode(object.bytes())?;
+        let statement = receipt.statement();
+        if statement.project != project || statement.operation_key != Some(operation_key) || statement.request_identity != request_identity
+            || statement.issuing_workspace_root != *snapshot.root().as_bytes() || statement.issuing_generation != snapshot.sequence() {
+            return Err(BuiltinModelError("selected retirement receipt identity mismatch".into()));
+        }
+        Ok(Some((*object.id().as_bytes(), statement.clone())))
+    }).map_err(|e| BuiltinModelError(format!("reopen retirement transition: {e}")))?
 }
 
 fn admit_persisted_transition(
     persisted: &backend_engine::PersistedTransition,
     store: &backend_engine::FileStore,
     shutdown: Option<&crate::listener::ListenerShutdown>,
+    owner_context: Option<&super::owner_receipt_context::OwnerReceiptContext>,
 ) -> Result<PreparedTransition, BuiltinModelError> {
-    admit_persisted_transition_with_layout(persisted, store, SourceFileKeyLayout::Current, shutdown)
+    admit_persisted_transition_with_layout(persisted, store, SourceFileKeyLayout::Current, shutdown, owner_context)
 }
 
 fn admit_persisted_transition_with_layout(
@@ -5720,8 +6078,14 @@ fn admit_persisted_transition_with_layout(
     store: &backend_engine::FileStore,
     layout: SourceFileKeyLayout,
     shutdown: Option<&crate::listener::ListenerShutdown>,
+    owner_context: Option<&super::owner_receipt_context::OwnerReceiptContext>,
 ) -> Result<PreparedTransition, BuiltinModelError> {
     let persisted_intent = admit_persisted_intent_with_store(persisted, store)?;
+    // Decode of relation nodes on the generic recovery path is not yet
+    // covered by V17's shared preflight budget. Refuse before opening roots.
+    if persisted_intent.encoding_version == BuiltinIntent::EMPTY_NATIVE_TS_VERSION {
+        return Err(BuiltinModelError("empty TypeScript retirement recovery is not fully budgeted".into()));
+    }
     if layout == SourceFileKeyLayout::Retired
         && BuiltinModel.request_id(&persisted_intent) != persisted.request()
     {
@@ -5741,6 +6105,7 @@ fn admit_persisted_transition_with_layout(
         untrusted_manifest,
         layout,
         shutdown,
+        owner_context,
     )
 }
 
@@ -5876,6 +6241,7 @@ fn admit_persisted_relations(
     untrusted_manifest: backend_version::UntrustedWorkspaceManifest,
     layout: SourceFileKeyLayout,
     shutdown: Option<&crate::listener::ListenerShutdown>,
+    owner_context: Option<&super::owner_receipt_context::OwnerReceiptContext>,
 ) -> Result<PreparedTransition, BuiltinModelError> {
     let target_root = untrusted_manifest
         .relations()
@@ -6229,6 +6595,10 @@ fn admit_persisted_relations(
         closure_id,
         persisted_objects.objects(),
         shutdown,
+        owner_context,
+        &base_semantic,
+        &target_semantic,
+        &base_tree,
     )?;
     validate_persisted_sql(
         persisted, store, &persisted_intent, &base_manifest, &manifest,
@@ -6689,6 +7059,10 @@ fn validate_persisted_native_evidence(
     target_closure: backend_store::ClosureId,
     target_objects: &[TypedObject],
     shutdown: Option<&crate::listener::ListenerShutdown>,
+    owner_context: Option<&super::owner_receipt_context::OwnerReceiptContext>,
+    base_semantic: &WorkspaceRelationHandle<BuiltinSemanticRelation>,
+    target_semantic: &WorkspaceRelationHandle<BuiltinSemanticRelation>,
+    base_source: &WorkspaceRelationHandle<BuiltinWorkspaceRelation>,
 ) -> Result<(), BuiltinModelError> {
     use backend_engine::builtin::{NativeSourceEvidenceRelation, NativeSourceEvidenceRootSchema};
     let target_root = selected_native_evidence_root_from_objects(target_objects)?;
@@ -6935,7 +7309,8 @@ fn validate_persisted_native_evidence(
                     "native evidence before/after row mismatch".into(),
                 ));
             }
-            if let Some(row) = change.after.as_ref().or(change.expected.as_ref()) {
+            if let Some(row) = change.after.as_ref().or(change.expected.as_ref())
+                && intent.encoding_version != BuiltinIntent::EMPTY_NATIVE_TS_VERSION {
                 let mut captures = intent.capture_changes().iter().filter(|capture| {
                     capture.key.package_key().to_bytes() == row.project
                         && capture.key.profile() == row.profile
@@ -6965,9 +7340,11 @@ fn validate_persisted_native_evidence(
     let mut after = None;
     let mut encoded_work = 0usize;
     loop {
-        let page = target
-            .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
-            .map_err(|error| BuiltinModelError(format!("scan native evidence target: {error}")))?;
+        let page = if intent.encoding_version == BuiltinIntent::EMPTY_NATIVE_TS_VERSION {
+            backend_engine::builtin::native_source_evidence_page_budgeted(&target, after.as_ref(), &mut read_budget)
+        } else {
+            target.page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+        }.map_err(|error| BuiltinModelError(format!("scan native evidence target: {error}")))?;
         for (key, row) in page.entries() {
             if rows.len() >= backend_engine::builtin::MAX_NATIVE_EVIDENCE_ROWS {
                 return Err(BuiltinModelError("native evidence target row limit".into()));
@@ -6977,16 +7354,32 @@ fn validate_persisted_native_evidence(
                     "invalid native evidence target key".into(),
                 ));
             }
+            const ROW_ENCODE_SCRATCH: usize = 2 * 64 * 1024 + 1024;
+            if intent.encoding_version == BuiltinIntent::EMPTY_NATIVE_TS_VERSION {
+                read_budget = read_budget.checked_sub(ROW_ENCODE_SCRATCH).ok_or_else(|| BuiltinModelError("native replay row encoding budget exceeded".into()))?;
+            }
             let mut value = Vec::new();
             NativeSourceEvidenceRelation::encode_value(row, &mut value);
             encoded_work = encoded_work
                 .checked_add(40)
                 .and_then(|work| work.checked_add(value.len()))
                 .ok_or_else(|| BuiltinModelError("native evidence target work overflow".into()))?;
+            drop(value);
+            if intent.encoding_version == BuiltinIntent::EMPTY_NATIVE_TS_VERSION {
+                read_budget = read_budget.checked_add(ROW_ENCODE_SCRATCH).ok_or_else(|| BuiltinModelError("native replay encoding budget overflow".into()))?;
+                let retained = row.checked_heap_bytes().and_then(|n| n.checked_add(2 * std::mem::size_of::<([u8; 32], backend_engine::builtin::NativeSourceEvidence)>() + 128))
+                    .ok_or_else(|| BuiltinModelError("native replay row budget overflow".into()))?;
+                read_budget = read_budget.checked_sub(retained).ok_or_else(|| BuiltinModelError("native replay retained rows exceed budget".into()))?;
+            }
             if encoded_work > backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES {
                 return Err(BuiltinModelError(
                     "native evidence target byte limit".into(),
                 ));
+            }
+            if intent.encoding_version == BuiltinIntent::EMPTY_NATIVE_TS_VERSION
+                && row.project == intent.package.to_bytes()
+                && matches!(row.profile, backend_semantic::vocabulary::LanguageProfile::TypeScript(_)) {
+                return Err(BuiltinModelError("empty TypeScript retirement left native owner evidence".into()));
             }
             let project = target_source.lookup(&row.project).map_err(|error| {
                 BuiltinModelError(format!("read native evidence owner: {error}"))
@@ -7009,6 +7402,88 @@ fn validate_persisted_native_evidence(
     }
     backend_engine::builtin::validate_native_source_evidence_rows(&rows)
         .map_err(|error| BuiltinModelError(format!("invalid native evidence target: {error}")))?;
+    if intent.encoding_version == BuiltinIntent::EMPTY_NATIVE_TS_VERSION {
+        use backend_engine::builtin::{NativeTsRetirementReceiptSchema, ProductSemanticCaptureRelation};
+        use super::native_ts_retirement_receipt::{NativeTsRetirementReceipt, NativeTsRetirementReceiptStatement, replay_empty_native_ts_frontiers};
+        let owner = owner_context.ok_or_else(|| BuiltinModelError("empty TypeScript replay requires owner receipt context".into()))?;
+        let base_source_preflight = persisted.relation_preflight::<BuiltinWorkspaceRelation>(store, *base_source.root().as_bytes()).map_err(|e| BuiltinModelError(format!("open retirement base source preflight: {e}")))?;
+        let target_source_preflight = persisted.relation_preflight::<BuiltinWorkspaceRelation>(store, *target_source.root().as_bytes()).map_err(|e| BuiltinModelError(format!("open retirement target source preflight: {e}")))?;
+        let cancelled = || shutdown.is_some_and(|s| s.is_requested());
+        validate_empty_ts_structural_relation(&base_source_preflight, intent.package.to_bytes(), None, &mut read_budget, &cancelled)?;
+        validate_empty_ts_structural_relation(&target_source_preflight, intent.package.to_bytes(), None, &mut read_budget, &cancelled)?;
+        let base_capture_root = selected_capture_root_from_objects(base_objects.objects())?;
+        let target_capture_root = selected_capture_root_from_objects(target_objects)?;
+        let base_capture = base_capture_root.map(|r| persisted.relation::<ProductSemanticCaptureRelation>(store, r)).transpose()
+            .map_err(|e| BuiltinModelError(format!("open retirement base captures: {e}")))?;
+        let target_capture = target_capture_root.map(|r| persisted.relation::<ProductSemanticCaptureRelation>(store, r)).transpose()
+            .map_err(|e| BuiltinModelError(format!("open retirement target captures: {e}")))?;
+        for (objects, membership, relation) in [
+            (base_objects.objects(), &base_membership, base_capture.as_ref()),
+            (target_objects, &target_membership, target_capture.as_ref()),
+        ] {
+            if let Some(relation) = relation {
+                let key = semantic_capture_root_pointer_key();
+                let pointer = objects.iter().find(|object| object.key() == key.as_bytes() && object.schema() == backend_version::SchemaIdentity::new(ProductSemanticCaptureRootSchema::DOMAIN, ProductSemanticCaptureRootSchema::TYPE, ProductSemanticCaptureRootSchema::VERSION))
+                    .ok_or_else(|| BuiltinModelError("retirement capture pointer missing".into()))?;
+                let root_object = relation.root_object().map_err(|e| BuiltinModelError(format!("retirement capture root: {e}")))?;
+                if !membership.contains_object_id(pointer.id()).map_err(|e| BuiltinModelError(format!("retirement capture pointer custody: {e:?}")))?
+                    || !membership.contains_object_id(root_object.id()).map_err(|e| BuiltinModelError(format!("retirement capture root custody: {e:?}")))? {
+                    return Err(BuiltinModelError("retirement capture relation outside selected closure".into()));
+                }
+            }
+        }
+        let base_semantic_preflight = persisted.relation_preflight::<BuiltinSemanticRelation>(store, *base_semantic.root().as_bytes()).map_err(|e| BuiltinModelError(format!("open retirement base semantic preflight: {e}")))?;
+        let target_semantic_preflight = persisted.relation_preflight::<BuiltinSemanticRelation>(store, *target_semantic.root().as_bytes()).map_err(|e| BuiltinModelError(format!("open retirement target semantic preflight: {e}")))?;
+        let base_capture_preflight = base_capture_root.map(|root| persisted.relation_preflight::<ProductSemanticCaptureRelation>(store, root)).transpose().map_err(|e| BuiltinModelError(format!("open retirement base capture preflight: {e}")))?;
+        let target_capture_preflight = target_capture_root.map(|root| persisted.relation_preflight::<ProductSemanticCaptureRelation>(store, root)).transpose().map_err(|e| BuiltinModelError(format!("open retirement target capture preflight: {e}")))?;
+        let frontier = replay_empty_native_ts_frontiers(intent.package.to_bytes(), &base_semantic_preflight, &target_semantic_preflight, base_capture_preflight.as_ref(), target_capture_preflight.as_ref(), &mut read_budget, shutdown)?;
+        if frontier.capture_keys.is_empty() {
+            if base_capture_root != target_capture_root { return Err(BuiltinModelError("empty TypeScript capture root changed without deletion".into())); }
+        } else {
+            let tree = base_capture.as_ref().ok_or_else(|| BuiltinModelError("empty TypeScript base capture missing".into()))?;
+            let changes = frontier.capture_keys.iter().cloned().map(|key| TreeChange { key, after: None }).collect::<Vec<_>>();
+            let computed = tree.prepare_update(&changes).map_err(|e| BuiltinModelError(format!("recompute retired captures: {e}")))?;
+            if Some(*computed.target().root().as_bytes()) != target_capture_root {
+                return Err(BuiltinModelError("retired captures differ from exact delta".into()));
+            }
+        }
+        let target_project = target_source.lookup(&intent.package.to_bytes()).map_err(|e| BuiltinModelError(format!("read retirement target Project: {e}")))?
+            .ok_or_else(|| BuiltinModelError("retirement target Project missing".into()))?;
+        let fields = target_project.project_fields().ok_or_else(|| BuiltinModelError("retirement target is not a Project".into()))?;
+        if fields.files.file_count() != 0 || !fields.files.page_keys().is_empty() {
+            return Err(BuiltinModelError("retirement target structural frontier is not empty".into()));
+        }
+        let retirements = intent.native_evidence_changes.iter().map(|change| {
+            let row = change.expected.clone().ok_or_else(|| BuiltinModelError("retirement before row missing".into()))?;
+            if change.after.is_some() { return Err(BuiltinModelError("retirement has positive evidence".into())); }
+            super::native_ts_admission::NativeTsEvidenceRetirement::from_checked(change.key, row)
+        }).collect::<Result<Vec<_>, _>>()?;
+        let native_delta = super::native_ts_admission::empty_native_ts_delta_commitment(intent.package.to_bytes(), &retirements)?;
+        let mut retired_profiles = intent.native_evidence_changes.iter().filter_map(|change| change.expected.as_ref()).map(|row| <[u8; 2]>::from(row.profile)).collect::<Vec<_>>();
+        retired_profiles.extend(intent.semantic_changes.iter().map(|change| <[u8; 2]>::from(change.key.profile())));
+        retired_profiles.extend(frontier.capture_keys.iter().map(|key| <[u8; 2]>::from(key.profile())));
+        retired_profiles.sort_unstable(); retired_profiles.dedup();
+        let workspace = owner.with_bound(|_, workspace| Ok(workspace))?;
+        let expected = NativeTsRetirementReceiptStatement {
+            workspace, project: intent.package.to_bytes(), predecessor_root: *base_manifest.root().as_bytes(),
+            predecessor_closure: base_closure, predecessor_sequence: sequence, predecessor_evidence_root: base_root,
+            issuing_workspace_root: *target_manifest.root().as_bytes(), issuing_generation: target_sequence,
+            target_evidence_root: target_root, project_after_image: super::native_ts_admission::project_commitment(&target_project)?,
+            source_version: fields.source_version, selected_before: frontier.selected_before, selected_after: frontier.selected_after,
+            captures_before: frontier.captures_before, captures_after: frontier.captures_after, native_delta,
+            operation_key: intent.operation_key, request_identity: persisted.request(), retired_profiles,
+            transaction: persisted.transaction().as_bytes(),
+        };
+        let receipt_schema = backend_version::SchemaIdentity::new(NativeTsRetirementReceiptSchema::DOMAIN, NativeTsRetirementReceiptSchema::TYPE, NativeTsRetirementReceiptSchema::VERSION);
+        let mut receipts = target_objects.iter().filter(|object| object.schema() == receipt_schema);
+        let object = receipts.next().ok_or_else(|| BuiltinModelError("selected native TS retirement receipt missing".into()))?;
+        if receipts.next().is_some() || object.key() != ObjectKey::<NativeTsRetirementReceiptSchema>::from_value(&intent.package.to_bytes()).as_bytes()
+            || !target_membership.contains_object_id(object.id()).map_err(|e| BuiltinModelError(format!("retirement receipt custody: {e:?}")))? {
+            return Err(BuiltinModelError("invalid selected native TS retirement receipt".into()));
+        }
+        NativeTsRetirementReceipt::decode(object.bytes())?.verify(owner, &expected)?;
+        return Ok(());
+    }
     if intent.has_native_ts_evidence() {
         // A new selected Program must also witness unchanged rows retained for
         // that same project/profile. Pending and failed captures are not a new

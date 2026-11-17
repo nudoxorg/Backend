@@ -39,7 +39,7 @@ impl NativeTsBase {
     }
 }
 
-fn project_commitment(project: &ProductSourceRecord) -> Result<[u8; 32], BuiltinModelError> {
+pub(super) fn project_commitment(project: &ProductSourceRecord) -> Result<[u8; 32], BuiltinModelError> {
     let mut encoded = Vec::new();
     backend_engine::builtin::ProductSourceRelation::encode_value(project, &mut encoded);
     if encoded.len() > ProductSourceRecord::ROW_VALUE_CAPACITY {
@@ -115,6 +115,11 @@ pub(super) struct NativeTsEvidenceRetirement {
     expected: backend_engine::builtin::NativeSourceEvidence,
 }
 impl NativeTsEvidenceRetirement {
+    pub(super) fn from_checked(key: [u8; 32], expected: backend_engine::builtin::NativeSourceEvidence) -> Result<Self, BuiltinModelError> {
+        if expected.key().ok() != Some(key) { return Err(BuiltinModelError("retired evidence key mismatch".into())); }
+        Ok(Self { key, expected })
+    }
+    pub(super) fn into_parts(self) -> ([u8; 32], backend_engine::builtin::NativeSourceEvidence) { (self.key, self.expected) }
     pub(super) fn key(&self) -> [u8; 32] { self.key }
     pub(super) fn expected(&self) -> &backend_engine::builtin::NativeSourceEvidence { &self.expected }
 }
@@ -1109,4 +1114,375 @@ pub(super) fn test_plan_line_map_charge(plan: &NativeTsEvidencePlan) -> Option<(
         charge_row_path(&mut bytes, &retirement.expected)?;
     }
     Some((maps, bytes))
+}
+
+/// Live, bounded absence inputs. Neither witness authorizes a transition by
+/// itself: the owner must bind them to the selected predecessor and target
+/// Project, recompute the complete TS frontier, and revalidate at grant.
+pub(super) struct EmptyNativeTsRetirementWitness {
+    #[cfg(target_os = "linux")]
+    scan: backend_engine::workspace::retirement_budget::Metered<ingest::BoundedEmptyNativeScan>,
+    #[cfg(not(target_os = "linux"))]
+    walk: ingest::EmptyNativeTsWalk,
+    program: backend_engine::workspace::retirement_budget::Metered<backend_engine::application::EmptyNativeTypeScriptProgram>,
+    budget: backend_engine::workspace::retirement_budget::RetirementBudget,
+    cancellation: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl EmptyNativeTsRetirementWitness {
+    /// Permanently charge the Arc allocation before transferring this proof
+    /// to shared owner/queue custody. The charge outlives its final header.
+    fn into_shared(self) -> Result<Arc<Self>, BuiltinModelError> {
+        let bytes = std::mem::size_of::<Self>()
+            .checked_add(2 * std::mem::size_of::<usize>())
+            .and_then(|n| n.checked_add(64))
+            .ok_or_else(|| BuiltinModelError("empty TypeScript Arc charge overflow".into()))?;
+        self.budget.charge_permanent(bytes)
+            .map_err(|_| BuiltinModelError("empty TypeScript Arc exceeds budget".into()))?;
+        Ok(Arc::new(self))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn new(
+        scan: backend_engine::workspace::retirement_budget::Metered<ingest::BoundedEmptyNativeScan>,
+        program: backend_engine::workspace::retirement_budget::Metered<backend_engine::application::EmptyNativeTypeScriptProgram>,
+        budget: backend_engine::workspace::retirement_budget::RetirementBudget,
+        cancellation: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<Arc<Self>, BuiltinModelError> {
+        let walk = scan.get().walk().get();
+        if !budget.owns(&scan) || !budget.owns(scan.get().walk()) || !budget.owns(&program)
+            || !walk.matches_cancellation(&cancellation)
+            || !program.get().matches_cancellation(&cancellation)
+            || walk.canonical_root() != program.get().root()
+            || scan.get().source_version() != walk.project_source_version()
+        {
+            return Err(BuiltinModelError("empty TypeScript witnesses have different roots or cancellation".into()));
+        }
+        let result = Self { scan, program, budget, cancellation };
+        if result.checked_retained_bytes().is_none_or(|bytes| bytes > backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES) {
+            return Err(BuiltinModelError("empty TypeScript witness exceeds its retained bound".into()));
+        }
+        result.validate_current()?;
+        result.into_shared()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(super) fn new(
+        _walk: ingest::EmptyNativeTsWalk,
+        _program: backend_engine::workspace::retirement_budget::Metered<backend_engine::application::EmptyNativeTypeScriptProgram>,
+        _budget: backend_engine::workspace::retirement_budget::RetirementBudget,
+        _cancellation: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<Arc<Self>, BuiltinModelError> {
+        Err(BuiltinModelError("bounded empty TypeScript scan is unavailable on this platform".into()))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn walk(&self) -> &ingest::EmptyNativeTsWalk { self.scan.get().walk().get() }
+    #[cfg(not(target_os = "linux"))]
+    fn walk(&self) -> &ingest::EmptyNativeTsWalk { &self.walk }
+
+    pub(super) fn cancelled(&self) -> bool { self.cancellation.load(std::sync::atomic::Ordering::Acquire) }
+    pub(super) fn project(&self) -> [u8; 32] { self.walk().project() }
+    pub(super) fn canonical_root(&self) -> &std::path::Path { self.walk().canonical_root() }
+    pub(super) fn source_version(&self) -> [u8; 32] { self.walk().project_source_version() }
+    pub(super) fn matches_cancellation(&self, cancellation: &Arc<std::sync::atomic::AtomicBool>) -> bool {
+        Arc::ptr_eq(&self.cancellation, cancellation)
+    }
+    pub(super) fn checked_retained_bytes(&self) -> Option<usize> {
+        let bytes = self.walk().checked_retained_bytes()?
+            .checked_add(self.program.get().retained_bytes())?
+            .checked_add(std::mem::size_of::<Self>())?
+            .checked_add(2 * std::mem::size_of::<usize>())?;
+        #[cfg(target_os = "linux")]
+        let bytes = bytes.checked_add(std::mem::size_of::<ingest::BoundedEmptyNativeScan>())?;
+        Some(bytes)
+    }
+    pub(super) fn validate_current(&self) -> Result<(), BuiltinModelError> {
+        if self.cancellation.load(std::sync::atomic::Ordering::Acquire)
+            || !self.walk().matches_cancellation(&self.cancellation)
+            || !self.program.get().matches_cancellation(&self.cancellation)
+            || self.walk().canonical_root() != self.program.get().root()
+        {
+            return Err(BuiltinModelError("empty TypeScript witness no longer bound".into()));
+        }
+        #[cfg(target_os = "linux")]
+        self.walk().revalidate_bounded_inventory(&self.budget).map_err(|e| BuiltinModelError(e.into()))?;
+        #[cfg(not(target_os = "linux"))]
+        return Err(BuiltinModelError("bounded empty TypeScript scan is unavailable on this platform".into()));
+        self.program.get().validate_current_budgeted(&self.budget).map_err(BuiltinModelError)?;
+        #[cfg(target_os = "linux")]
+        self.walk().revalidate_bounded_inventory(&self.budget).map_err(|e| BuiltinModelError(e.into()))?;
+        Err(BuiltinModelError("empty TypeScript compiler and scan pairing is not proven".into()))
+    }
+}
+
+/// Private live capability for a fully planned retirement. The owner is
+/// responsible for comparing the planned frontiers with the selected base and
+/// target immediately before grant. A decoded receipt cannot create this.
+pub(super) struct ValidatedEmptyNativeTsRetirement {
+    witness: Arc<EmptyNativeTsRetirementWitness>,
+    base: NativeTsBase,
+    inputs: super::native_ts_retirement_receipt::NativeTsRetirementReceiptInputs,
+}
+
+impl ValidatedEmptyNativeTsRetirement {
+    fn new(
+        witness: Arc<EmptyNativeTsRetirementWitness>,
+        base: &WorkspaceSnapshot,
+        inputs: super::native_ts_retirement_receipt::NativeTsRetirementReceiptInputs,
+    ) -> Result<Self, BuiltinModelError> {
+        if witness.project() != inputs.project || witness.source_version() != inputs.source_version {
+            return Err(BuiltinModelError("empty TypeScript retirement witness does not match target".into()));
+        }
+        let result = Self { witness, base: NativeTsBase::from_snapshot(base)?, inputs };
+        result.revalidate()?;
+        Ok(result)
+    }
+    pub(super) fn cancelled(&self) -> bool { self.witness.cancelled() }
+    pub(super) fn revalidate(&self) -> Result<(), BuiltinModelError> {
+        self.witness.validate_current()
+    }
+    pub(super) fn capture_keys(&self, base: &WorkspaceSnapshot) -> Result<Vec<backend_engine::builtin::ProductSemanticPublicationKey>, BuiltinModelError> {
+        self.validate_base(base)?;
+        let mut budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES.checked_sub(self.checked_retained_bytes().ok_or_else(|| BuiltinModelError("retirement proof budget overflow".into()))?).ok_or_else(|| BuiltinModelError("retirement proof exceeds budget".into()))?;
+        Ok(plan_empty_native_ts_frontiers(base, &self.witness, &mut budget)?.capture_keys)
+    }
+    pub(super) fn replan(&self, base: &WorkspaceSnapshot, target: &ProductSourceRecord) -> Result<(Arc<ValidatedEmptyNativeTsRetirement>, Vec<NativeTsEvidenceRetirement>, Vec<super::profile::BuiltinSemanticChange>), BuiltinModelError> {
+        self.validate_base(base)?;
+        plan_empty_native_ts_retirement(base, Arc::clone(&self.witness), target)
+    }
+    pub(super) fn validate_base(&self, base: &WorkspaceSnapshot) -> Result<(), BuiltinModelError> {
+        if !self.base.matches(base)? {
+            return Err(BuiltinModelError("empty TypeScript retirement predecessor changed".into()));
+        }
+        self.revalidate()
+    }
+    pub(super) fn receipt_inputs(&self) -> Result<super::native_ts_retirement_receipt::NativeTsRetirementReceiptInputs, BuiltinModelError> {
+        self.revalidate()?;
+        Ok(self.inputs.clone())
+    }
+    pub(super) fn matches_cancellation(&self, cancellation: &Arc<std::sync::atomic::AtomicBool>) -> bool {
+        self.witness.matches_cancellation(cancellation)
+    }
+    pub(super) fn checked_retained_bytes(&self) -> Option<usize> {
+        self.witness.checked_retained_bytes()?.checked_add(std::mem::size_of::<Self>())?.checked_add(2 * std::mem::size_of::<usize>())
+    }
+}
+
+/// Enumerate all selected TypeScript evidence belonging to the owner. A
+/// retirement must remove this entire set, never a caller-supplied subset.
+pub(super) fn plan_empty_native_ts_retirements(
+    base: &WorkspaceSnapshot,
+    witness: &EmptyNativeTsRetirementWitness,
+    budget: &mut usize,
+) -> Result<Vec<NativeTsEvidenceRetirement>, BuiltinModelError> {
+    use backend_engine::builtin::{
+        NativeSourceEvidenceRelation, MAX_NATIVE_EVIDENCE_BYTES,
+        MAX_NATIVE_EVIDENCE_PROJECT_ROWS, MAX_NATIVE_EVIDENCE_ROWS,
+        native_source_evidence_relation_budgeted, native_source_evidence_page_budgeted,
+    };
+    witness.validate_current()?;
+    let Some(relation) = native_source_evidence_relation_budgeted(base, budget)
+        .map_err(|e| BuiltinModelError(format!("open empty TypeScript evidence: {e}")))? else {
+        return Ok(Vec::new());
+    };
+    let mut result = Vec::new();
+    let mut count = 0usize;
+    let mut scanned = 0usize;
+    let mut after = None;
+    let mut previous = None;
+    loop {
+        if witness.cancellation.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(BuiltinModelError("empty TypeScript evidence scan cancelled".into()));
+        }
+        let page = native_source_evidence_page_budgeted(&relation, after.as_ref(), budget)
+            .map_err(|e| BuiltinModelError(format!("scan empty TypeScript evidence: {e}")))?;
+        for (key, row) in page.entries() {
+            if row.key().ok() != Some(*key) || previous.is_some_and(|prior| prior >= *key) {
+                return Err(BuiltinModelError("noncanonical selected TypeScript evidence".into()));
+            }
+            previous = Some(*key);
+            count = count.checked_add(1).ok_or_else(|| BuiltinModelError("evidence count overflow".into()))?;
+            const ROW_ENCODE_SCRATCH: usize = 2 * 64 * 1024 + 1024;
+            *budget = budget.checked_sub(ROW_ENCODE_SCRATCH).ok_or_else(|| BuiltinModelError("evidence encoding budget exceeded".into()))?;
+            let mut encoded = Vec::new();
+            NativeSourceEvidenceRelation::encode_value(row, &mut encoded);
+            scanned = scanned.checked_add(encoded.len()).and_then(|v| v.checked_add(40))
+                .ok_or_else(|| BuiltinModelError("evidence scan overflow".into()))?;
+            drop(encoded);
+            *budget = budget.checked_add(ROW_ENCODE_SCRATCH).ok_or_else(|| BuiltinModelError("evidence encoding budget overflow".into()))?;
+            if count > MAX_NATIVE_EVIDENCE_ROWS || scanned > MAX_NATIVE_EVIDENCE_BYTES {
+                return Err(BuiltinModelError("selected evidence scan exceeds bound".into()));
+            }
+            if row.project == witness.project() && matches!(row.profile, LanguageProfile::TypeScript(_)) {
+                if result.len() >= MAX_NATIVE_EVIDENCE_PROJECT_ROWS {
+                    return Err(BuiltinModelError("TypeScript retirement exceeds owner row bound".into()));
+                }
+                let charge = row.checked_heap_bytes().and_then(|v| v.checked_add(std::mem::size_of::<NativeTsEvidenceRetirement>() + 128))
+                    .ok_or_else(|| BuiltinModelError("TypeScript retirement accounting overflow".into()))?;
+                *budget = budget.checked_sub(charge).ok_or_else(|| BuiltinModelError("TypeScript retirement exceeds memory bound".into()))?;
+                result.push(NativeTsEvidenceRetirement { key: *key, expected: row.clone() });
+            }
+        }
+        match page.next().copied() { Some(next) => after = Some(next), None => break }
+    }
+    witness.validate_current()?;
+    Ok(result)
+}
+
+/// Complete selected TS/TSX semantic and capture maps for one owner. The
+/// hashes are domain-separated and include the owner and final entry count,
+/// so an empty map is an explicit absence commitment.
+pub(super) struct EmptyNativeTsFrontiers {
+    pub(super) semantic_changes: Vec<super::profile::BuiltinSemanticChange>,
+    pub(super) capture_keys: Vec<backend_engine::builtin::ProductSemanticPublicationKey>,
+    pub(super) selected_before: [u8; 32],
+    pub(super) selected_after: [u8; 32],
+    pub(super) captures_before: [u8; 32],
+    pub(super) captures_after: [u8; 32],
+}
+
+pub(super) fn plan_empty_native_ts_frontiers(
+    base: &WorkspaceSnapshot,
+    witness: &EmptyNativeTsRetirementWitness,
+    budget: &mut usize,
+) -> Result<EmptyNativeTsFrontiers, BuiltinModelError> {
+    use backend_engine::builtin::{ProductSemanticPublicationRecord, ProductSemanticPublicationRelation, ProductSemanticCaptureRelation, SemanticUnavailableReason, semantic_publication_preflight_relation, semantic_capture_preflight_relation, semantic_visit_preflighted, capture_visit_preflighted, release_semantic_cursor};
+    use backend_store::StoreError;
+    let owner = witness.project();
+    const ENCODE_SCRATCH: usize = 64 * 1024;
+    let mut selected_before = blake3::Hasher::new(); let mut selected_after = blake3::Hasher::new(); let mut captures = blake3::Hasher::new();
+    for h in [&mut selected_before, &mut selected_after] { h.update(b"nudox.empty-ts.selected-frontier.v1\0"); h.update(&owner); }
+    captures.update(b"nudox.empty-ts.capture-frontier.v1\0"); captures.update(&owner);
+    let mut total = 0usize; let mut work = 0usize; let mut selected_count = 0u64; let mut capture_count = 0u64;
+    let mut changes = Vec::new(); let mut capture_keys = Vec::new();
+    let semantic = semantic_publication_preflight_relation(base).map_err(|e| BuiltinModelError(format!("open empty TypeScript semantic frontier: {e}")))?;
+    let mut after = None;
+    loop {
+        if witness.cancelled() { return Err(BuiltinModelError("empty TypeScript frontier cancelled".into())); }
+        let next = semantic_visit_preflighted(&semantic, after.as_ref(), 1, budget, 64, &mut |key, row, remaining| {
+            if witness.cancelled() { return Err(StoreError::Bounds); }
+            *remaining = remaining.checked_sub(ENCODE_SCRATCH).ok_or(StoreError::Bounds)?;
+            let mut k = Vec::new(); let mut v = Vec::new();
+            ProductSemanticPublicationRelation::encode_key(key, &mut k); ProductSemanticPublicationRelation::encode_value(&row, &mut v);
+            total = total.checked_add(1).ok_or(StoreError::Bounds)?;
+            work = work.checked_add(k.capacity()).and_then(|n| n.checked_add(v.capacity())).and_then(|n| n.checked_add(512)).ok_or(StoreError::Bounds)?;
+            if total > backend_engine::application::MAX_MANIFEST_ENTRIES / 2 || work > backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES / 2 { return Err(StoreError::Bounds); }
+            if key.is_selected() && key.package_key().to_bytes() == owner && matches!(key.profile(), LanguageProfile::TypeScript(_)) {
+                selected_count = selected_count.checked_add(1).ok_or(StoreError::Bounds)?;
+                if selected_count > 2 || key.package().as_str().len() > 4096 || key.coordinate().as_str().len() > 4096 || k.len() > super::native_ts_retirement_receipt::MAX_RETIREMENT_KEY_BYTES { return Err(StoreError::Bounds); }
+                let unavailable = ProductSemanticPublicationRecord::Unavailable(SemanticUnavailableReason::ProjectAuthority);
+                let mut target = Vec::new(); ProductSemanticPublicationRelation::encode_value(&unavailable, &mut target);
+                for (h, value) in [(&mut selected_before, &v), (&mut selected_after, &target)] {
+                    h.update(&(k.len() as u64).to_be_bytes()); h.update(&k); h.update(&(value.len() as u64).to_be_bytes()); h.update(value);
+                }
+                if row != unavailable {
+                    let retained = k.len().checked_mul(2).and_then(|n| n.checked_add(1024)).ok_or(StoreError::Bounds)?;
+                    *remaining = remaining.checked_sub(retained).ok_or(StoreError::Bounds)?;
+                    changes.push(super::profile::BuiltinSemanticChange { key: key.clone(), after: Some(unavailable) });
+                }
+            }
+            drop((k, v));
+            *remaining = remaining.checked_add(ENCODE_SCRATCH).ok_or(StoreError::Bounds)?;
+            Ok(())
+        }).map_err(|e| BuiltinModelError(format!("scan empty TypeScript semantic frontier: {e}")))?;
+        if let Some(previous) = after.take() { release_semantic_cursor(previous, budget, 64).map_err(|e| BuiltinModelError(format!("release semantic cursor: {e:?}")))?; }
+        match next { Some(next) => after = Some(next), None => break }
+    }
+    let capture = semantic_capture_preflight_relation(base).map_err(|e| BuiltinModelError(format!("open empty TypeScript capture frontier: {e}")))?;
+    if let Some(relation) = capture {
+        let mut after = None;
+        loop {
+            if witness.cancelled() { return Err(BuiltinModelError("empty TypeScript frontier cancelled".into())); }
+            let next = capture_visit_preflighted(&relation, after.as_ref(), 1, budget, 64, &mut |key, row, remaining| {
+                if witness.cancelled() { return Err(StoreError::Bounds); }
+                *remaining = remaining.checked_sub(ENCODE_SCRATCH).ok_or(StoreError::Bounds)?;
+                let mut k = Vec::new(); let mut v = Vec::new(); ProductSemanticCaptureRelation::encode_key(key, &mut k); ProductSemanticCaptureRelation::encode_value(&row, &mut v);
+                total = total.checked_add(1).ok_or(StoreError::Bounds)?;
+                work = work.checked_add(k.capacity()).and_then(|n| n.checked_add(v.capacity())).and_then(|n| n.checked_add(512)).ok_or(StoreError::Bounds)?;
+                if total > backend_engine::application::MAX_MANIFEST_ENTRIES / 2 || work > backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES / 2 { return Err(StoreError::Bounds); }
+                if key.is_selected() && key.package_key().to_bytes() == owner && matches!(key.profile(), LanguageProfile::TypeScript(_)) {
+                    if matches!(row.outcome(), ProductSemanticCaptureOutcome::Pending { .. }) { return Err(StoreError::Bounds); }
+                    capture_count = capture_count.checked_add(1).ok_or(StoreError::Bounds)?;
+                    if capture_count > 2 || key.package().as_str().len() > 4096 || key.coordinate().as_str().len() > 4096 || k.len() > super::native_ts_retirement_receipt::MAX_RETIREMENT_KEY_BYTES { return Err(StoreError::Bounds); }
+                    let retained = k.len().checked_mul(2).and_then(|n| n.checked_add(1024)).ok_or(StoreError::Bounds)?;
+                    *remaining = remaining.checked_sub(retained).ok_or(StoreError::Bounds)?; capture_keys.push(key.clone());
+                    captures.update(&(k.len() as u64).to_be_bytes()); captures.update(&k); captures.update(&(v.len() as u64).to_be_bytes()); captures.update(&v);
+                }
+                drop((k, v));
+                *remaining = remaining.checked_add(ENCODE_SCRATCH).ok_or(StoreError::Bounds)?;
+                Ok(())
+            }).map_err(|e| BuiltinModelError(format!("scan empty TypeScript capture frontier: {e}")))?;
+            if let Some(previous) = after.take() { release_semantic_cursor(previous, budget, 64).map_err(|e| BuiltinModelError(format!("release capture cursor: {e:?}")))?; }
+            match next { Some(next) => after = Some(next), None => break }
+        }
+    }
+    selected_before.update(&selected_count.to_be_bytes()); selected_after.update(&selected_count.to_be_bytes()); captures.update(&capture_count.to_be_bytes());
+    witness.validate_current()?;
+    let captures = *captures.finalize().as_bytes(); let mut empty_captures = blake3::Hasher::new();
+    empty_captures.update(b"nudox.empty-ts.capture-frontier.v1\0"); empty_captures.update(&owner); empty_captures.update(&0u64.to_be_bytes());
+    Ok(EmptyNativeTsFrontiers { semantic_changes: changes, capture_keys, selected_before: *selected_before.finalize().as_bytes(), selected_after: *selected_after.finalize().as_bytes(), captures_before: captures, captures_after: *empty_captures.finalize().as_bytes() })
+}
+
+pub(super) fn empty_native_ts_delta_commitment(owner: [u8; 32], rows: &[NativeTsEvidenceRetirement]) -> Result<[u8; 32], BuiltinModelError> {
+    use backend_engine::builtin::NativeSourceEvidenceRelation;
+    if rows.windows(2).any(|pair| pair[0].key >= pair[1].key) {
+        return Err(BuiltinModelError("empty TypeScript retirement delta is unordered".into()));
+    }
+    let mut h = blake3::Hasher::new();
+    h.update(b"nudox.empty-ts.native-retirements.v1\0"); h.update(&owner);
+    for row in rows {
+        if row.expected.project != owner || row.expected.key().ok() != Some(row.key)
+            || !matches!(row.expected.profile, LanguageProfile::TypeScript(_)) {
+            return Err(BuiltinModelError("empty TypeScript retirement delta owner mismatch".into()));
+        }
+        let mut value = Vec::new(); NativeSourceEvidenceRelation::encode_value(&row.expected, &mut value);
+        h.update(&row.key); h.update(&(value.len() as u64).to_be_bytes()); h.update(&value);
+    }
+    h.update(&(rows.len() as u64).to_be_bytes());
+    Ok(*h.finalize().as_bytes())
+}
+
+/// Construct the capability only by enumerating the complete selected
+/// predecessor and hashing the exact target Project, never from receipt claims.
+pub(super) fn plan_empty_native_ts_retirement(
+    base: &WorkspaceSnapshot,
+    witness: Arc<EmptyNativeTsRetirementWitness>,
+    target_project: &ProductSourceRecord,
+) -> Result<(Arc<ValidatedEmptyNativeTsRetirement>, Vec<NativeTsEvidenceRetirement>, Vec<super::profile::BuiltinSemanticChange>), BuiltinModelError> {
+    let fields = target_project.project_fields().ok_or_else(|| BuiltinModelError("empty TypeScript target is not a Project".into()))?;
+    if fields.source_version != witness.source_version() || witness.canonical_root().to_str() != Some(fields.label)
+        || fields.files.file_count() != 0 || !fields.files.page_keys().is_empty() {
+        return Err(BuiltinModelError("empty TypeScript scan differs from empty target structural frontier".into()));
+    }
+    let mut budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES.checked_sub(witness.checked_retained_bytes().ok_or_else(|| BuiltinModelError("empty witness accounting overflow".into()))?).ok_or_else(|| BuiltinModelError("empty witness exceeds budget".into()))?;
+    let source = base.relation_preflight::<BuiltinWorkspaceRelation>().map_err(|e| BuiltinModelError(format!("open empty TypeScript source preflight: {e}")))?;
+    super::profile::validate_empty_ts_structural_relation_retirement(&source, witness.project(), Some(target_project), &witness.budget, &|| witness.cancelled())?;
+    let basis = super::profile::native_evidence_basis_for_snapshot_budgeted(base, &mut budget)?;
+    let retirements = plan_empty_native_ts_retirements(base, &witness, &mut budget)?;
+    if retirements.is_empty() { return Err(BuiltinModelError("empty TypeScript retirement has no selected evidence".into())); }
+    let frontiers = plan_empty_native_ts_frontiers(base, &witness, &mut budget)?;
+    // Bound sequential canonical Project and native-row digest encodings;
+    // the target Project is limited to one canonical row and each native row
+    // to MAX_NATIVE_EVIDENCE_STORED_VALUE.
+    const DIGEST_SCRATCH: usize = 4 * 64 * 1024 + 4096;
+    budget = budget.checked_sub(DIGEST_SCRATCH).ok_or_else(|| BuiltinModelError("empty TypeScript digest budget exceeded".into()))?;
+    let inputs = super::native_ts_retirement_receipt::NativeTsRetirementReceiptInputs {
+        project: witness.project(),
+        predecessor_root: basis.workspace_root,
+        predecessor_closure: basis.closure,
+        predecessor_sequence: basis.sequence,
+        predecessor_evidence_root: basis.evidence_root,
+        project_after_image: project_commitment(target_project)?,
+        source_version: fields.source_version,
+        selected_before: frontiers.selected_before,
+        selected_after: frontiers.selected_after,
+        captures_before: frontiers.captures_before,
+        captures_after: frontiers.captures_after,
+        native_delta: empty_native_ts_delta_commitment(witness.project(), &retirements)?,
+    };
+    budget = budget.checked_add(DIGEST_SCRATCH).ok_or_else(|| BuiltinModelError("empty TypeScript digest budget overflow".into()))?;
+    let _remaining_after_planning = budget;
+    let validated = Arc::new(ValidatedEmptyNativeTsRetirement::new(witness, base, inputs)?);
+    Ok((validated, retirements, frontiers.semantic_changes))
 }

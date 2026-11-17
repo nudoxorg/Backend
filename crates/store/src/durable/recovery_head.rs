@@ -128,7 +128,7 @@ fn is_head_temp_name(name: &OsStr) -> bool {
     )
 }
 
-fn decode_head(bytes: &[u8]) -> Result<JournalCheckpoint, StoreError> {
+pub(super) fn decode_head(bytes: &[u8]) -> Result<JournalCheckpoint, StoreError> {
     let record_end = HEAD_MAGIC
         .len()
         .checked_add(JOURNAL_RECORD_BYTES)

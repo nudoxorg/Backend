@@ -145,6 +145,29 @@ impl StorePublicationAuthority {
     pub(super) fn permits(&self, store_root: &Path) -> bool {
         self.inner.lock_path == publication_lock_path(store_root)
     }
+
+    pub(super) fn permits_borrowed(&self, store_root: &Path) -> bool {
+        let parent = if store_root.file_name().is_some_and(|name| name == "objects") {
+            store_root.parent().unwrap_or(store_root)
+        } else { store_root };
+        if self.inner.lock_path.parent() != Some(parent)
+            || !self.inner.lock_path.file_name().is_some_and(|name| name == "OWNER.lock") {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            match self.inner.lock_file.metadata() {
+                Ok(metadata) if metadata.is_file() && metadata.nlink() == 1 => {},
+                _ => return false,
+            }
+        }
+        match (backend_platform::FileIdentity::of_file(&self.inner.lock_file),
+               backend_platform::FileIdentity::of_path_nofollow(&self.inner.lock_path)) {
+            (Ok(held), Ok(named)) => held == named,
+            _ => false,
+        }
+    }
 }
 
 impl Drop for PublicationAuthorityInner {
@@ -256,6 +279,21 @@ pub struct GcPinGuard {
     _lease: GcPinLease,
     root_identity: Hash,
     acquired_at: Instant,
+}
+
+/// A GC pin whose private constructor reserves before acquisition.
+pub struct RetirementGcPin {
+    pin: GcPinGuard,
+    reservation: backend_version::retirement_budget::RetirementReservation,
+}
+
+impl RetirementGcPin {
+    /// Borrow the underlying pin without transferring its ownership.
+    pub fn pin(&self) -> &GcPinGuard { &self.pin }
+    /// Verify that the original acquisition reservation remains in this ledger.
+    pub fn belongs_to(&self, budget: &backend_version::retirement_budget::RetirementBudget) -> bool {
+        budget.owns_reservation_and_covers(&self.reservation, std::mem::size_of::<GcPinGuard>())
+    }
 }
 
 impl GcPinGuard {
@@ -531,6 +569,15 @@ pub struct FileStore {
 }
 
 impl FileStore {
+    /// Requested heap bytes for cloning this store into a new Arc, including
+    /// its two owned path copies and caller-supplied allocator bookkeeping.
+    pub fn retirement_arc_clone_bytes(&self, bookkeeping: usize) -> Option<usize> {
+        std::mem::size_of::<Self>()
+            .checked_add(2 * std::mem::size_of::<usize>())?
+            .checked_add(self.root.as_os_str().len())?
+            .checked_add(self.root_directory.path().as_os_str().len())?
+            .checked_add(bookkeeping.checked_mul(3)?)
+    }
     pub(super) fn acquire_process_lock(&self) -> Result<Arc<ProcessLock>, super::StoreError> {
         ProcessLock::acquire(&self.root.join("LOCK"))
     }
@@ -591,6 +638,26 @@ impl FileStore {
             Ok(GcPinGuard { _lease: GcPinLease { file }, root_identity: self.gc_identity, acquired_at: Instant::now() })
         }
         #[cfg(not(unix))] { let _ = checkpoint; Err(super::StoreError::Bounds) }
+    }
+
+    /// Acquire a bounded pin whose lifetime is tied to the retirement ledger.
+    pub fn pin_garbage_collection_retirement(
+        &self,
+        budget: &backend_version::retirement_budget::RetirementBudget,
+        bookkeeping: usize,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<RetirementGcPin, super::StoreError> {
+        let _scratch = budget.reserve(4096).map_err(|_| super::StoreError::Bounds)?;
+        let retained = std::mem::size_of::<GcPinGuard>().checked_add(bookkeeping).ok_or(super::StoreError::Bounds)?;
+        let pin = budget.reserve(retained).map_err(|_| super::StoreError::Bounds)?;
+        let mut local = 4096;
+        let mut attempts = 1024usize;
+        let value = self.pin_garbage_collection_bounded(&mut local, |_| {
+            if cancelled() { return Err(super::StoreError::Bounds); }
+            attempts = attempts.checked_sub(1).ok_or(super::StoreError::Bounds)?;
+            Ok(())
+        })?;
+        Ok(RetirementGcPin { pin: value, reservation: pin })
     }
 
     /// Runs a product metadata operation while holding the exclusive garbage

@@ -1,6 +1,6 @@
 //! Checked workspace transition and persisted publication envelope.
 
-use super::lazy::{WorkspaceRelationError, WorkspaceRelationHandle};
+use super::lazy::{WorkspacePreflightRelationHandle, WorkspaceRelationError, WorkspaceRelationHandle};
 use super::owner::WorkspaceError;
 use backend_store::{
     ClosureManifest, FileStore, ManifestChange, ObjectId, RelationAdmissionRegistry, TypedObject,
@@ -1013,6 +1013,35 @@ impl PersistedTransition {
         root: [u8; 32],
     ) -> Result<WorkspaceRelationHandle<R>, WorkspaceRelationError> {
         WorkspaceRelationHandle::open(Arc::new(store.clone()), root)
+    }
+
+    /// Opens a root claim for caller-preflighted reads without decoding the
+    /// root. The caller must separately prove that `root` is selected by the
+    /// authenticated predecessor or target closure.
+    pub fn relation_preflight<R: backend_version::CanonicalRelation>(
+        &self,
+        store: &FileStore,
+        root: [u8; 32],
+    ) -> Result<WorkspacePreflightRelationHandle<R>, WorkspaceRelationError> {
+        WorkspacePreflightRelationHandle::new(Arc::new(store.clone()), root)
+    }
+
+    /// A persisted-root preflight handle whose cloned store remains charged
+    /// to the same retirement admission through the handle's full lifetime.
+    /// Root selection and closure custody are separate caller obligations.
+    pub fn relation_preflight_retirement<R: backend_version::CanonicalRelation>(
+        &self,
+        store: &FileStore,
+        root: [u8; 32],
+        budget: &backend_version::retirement_budget::RetirementBudget,
+        bookkeeping: usize,
+    ) -> Result<backend_version::retirement_budget::Metered<WorkspacePreflightRelationHandle<R>>, WorkspaceRelationError> {
+        let bytes = store.retirement_arc_clone_bytes(bookkeeping)
+            .ok_or(WorkspaceRelationError::Store(backend_store::StoreError::Bounds))?;
+        let reservation = budget.reserve(bytes)
+            .map_err(|_| WorkspaceRelationError::Store(backend_store::StoreError::Bounds))?;
+        let handle = WorkspacePreflightRelationHandle::new(Arc::new(store.clone()), root)?;
+        Ok(reservation.meter(handle))
     }
 
     pub(super) fn closure_bytes(&self) -> &[u8] {

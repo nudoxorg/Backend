@@ -434,6 +434,47 @@ pub fn native_source_evidence_page_budgeted(
     Ok(page)
 }
 
+/// Select the evidence root without decoding it. The selected closure is
+/// still the caller's authority for the returned root.
+pub fn native_source_evidence_preflight_relation(
+    snapshot: &WorkspaceSnapshot,
+) -> Result<Option<crate::workspace::WorkspacePreflightRelationHandle<NativeSourceEvidenceRelation>>, WorkspaceRelationError> {
+    snapshot.auxiliary_relation_preflight::<NativeSourceEvidenceRelation>(
+        SchemaIdentity::new(NativeSourceEvidenceRootSchema::DOMAIN, NativeSourceEvidenceRootSchema::TYPE, NativeSourceEvidenceRootSchema::VERSION),
+        native_source_evidence_root_pointer_key(),
+    )
+}
+
+/// Stream one selected row after prospectively reserving each native node's
+/// declared decoder bound. Node leases stay alive through the whole read;
+/// returned cursor ownership remains charged by the returned wrapper.
+pub fn native_source_evidence_visit_retirement<V>(
+    relation: &crate::workspace::WorkspacePreflightRelationHandle<NativeSourceEvidenceRelation>,
+    after: Option<&[u8; 32]>,
+    budget: &crate::workspace::retirement_budget::RetirementBudget,
+    bookkeeping: usize,
+    visitor: &mut V,
+) -> Result<crate::workspace::retirement_budget::Metered<Option<[u8; 32]>>, WorkspaceRelationError>
+where
+    V: FnMut(&[u8; 32], NativeSourceEvidence, &crate::workspace::retirement_budget::RetirementBudget) -> Result<(), backend_store::StoreError>,
+{
+    use backend_version::BoundedCanonicalRelation;
+    use crate::workspace::retirement_budget::RetirementReservation;
+    const MAX_NODE_LOADS: usize = 64;
+    let table_bytes = MAX_NODE_LOADS.checked_mul(std::mem::size_of::<RetirementReservation>())
+        .and_then(|n| n.checked_add(bookkeeping))
+        .ok_or(WorkspaceRelationError::Store(backend_store::StoreError::Bounds))?;
+    let _table = budget.reserve(table_bytes).map_err(|_| WorkspaceRelationError::Store(backend_store::StoreError::Bounds))?;
+    let mut leases = Vec::with_capacity(MAX_NODE_LOADS);
+    relation.visit_retirement(after, 1, NATIVE_EVIDENCE_READ_DEPTH, budget, 0,
+        &mut |_, budget| {
+            if leases.len() == MAX_NODE_LOADS { return Err(backend_store::StoreError::Bounds); }
+            let bytes = NativeSourceEvidenceRelation::NODE_DECODE_SCRATCH;
+            leases.push(budget.reserve(bytes).map_err(|_| backend_store::StoreError::Bounds)?);
+            Ok(())
+        }, visitor)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

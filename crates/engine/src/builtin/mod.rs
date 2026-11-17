@@ -5,6 +5,9 @@
 //! object, and its result.  The facade below keeps those values owned by the
 //! engine while each capability boundary has a focused implementation module.
 
+mod source_relation_preflight;
+pub use source_relation_preflight::{EmptySourceNodeReservations, source_visit_preflighted, EmptySourceRetirementReservations, source_visit_retirement, clone_empty_source_project_retirement, empty_source_project_wire_admitted, empty_source_project_decode_charge};
+
 mod authority;
 mod native_ts_retirement_receipt;
 pub use native_ts_retirement_receipt::NativeTsRetirementReceiptSchema;
@@ -63,6 +66,7 @@ pub use native_source_evidence::{
     native_source_evidence_key, native_source_evidence_relation, native_source_evidence_relation_budgeted,
     native_source_evidence_lookup_budgeted, native_source_evidence_page_budgeted, NATIVE_EVIDENCE_READ_SCRATCH, native_source_evidence_root_object, native_source_evidence_root_object_budgeted,
     native_source_evidence_root_pointer_key, validate_native_source_evidence_rows,
+    native_source_evidence_preflight_relation, native_source_evidence_visit_retirement,
 };
 pub use native_frontier_relation::{
     CheckedNativeFrontier, MAX_NATIVE_SOURCE_BYTES, NATIVE_SOURCE_CHUNK_BYTES,
@@ -107,7 +111,8 @@ pub use semantic_capture_relation::{
 pub use semantic_preflight::{
     capture_visit_preflighted, release_semantic_cursor, semantic_capture_preflight_relation,
     semantic_cursor_reservation_bytes, semantic_publication_preflight_relation,
-    semantic_visit_preflighted, SemanticRelationDecodeReservations,
+    semantic_visit_preflighted, SemanticRelationDecodeReservations, SemanticRetirementReservations,
+    semantic_visit_retirement, capture_visit_retirement,
 };
 pub use semantic_relation::{
     ActivatedSemanticPublication, CheckpointedSemanticTargetError, PartialSemanticCoverage, ProductSemanticPublicationKey,
