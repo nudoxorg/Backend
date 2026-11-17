@@ -24,8 +24,9 @@ let
       ${lib.escapeShellArg (toString inventory)} ${lib.escapeShellArg "${driver}/bin/backend-keel-harness"} \
       /var/lib/keel-results/evidence ${lib.escapeShellArg "${sourceTree}/.config/ci/t1_artifacts.py"}
   '';
-  test = pkgs.nixosTest {
+  test = pkgs.testers.runNixOSTest {
     name = "keel-artifact-inventory";
+    qemu.forceAccel = true;
     nodes.machine = {
       imports = [ ./keel-vm-guest.nix ];
       _module.args.keelGuestCommand = guestCommand;
@@ -57,6 +58,6 @@ let
   };
 in assert lib.all (name: builtins.elem name allowedCompilerKeys) (builtins.attrNames compilerEnvironment);
 assert lib.all (name: builtins.hasAttr name safeEnvironment) [ "NUDOX_CARGO" "NUDOX_RUSTC" "NUDOX_PYTHON" ];
-test.overrideAttrs (old: {
+test.overrideTestDerivation (old: {
   requiredSystemFeatures = (old.requiredSystemFeatures or []) ++ [ "kvm" "nixos-test" ];
 })
