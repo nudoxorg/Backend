@@ -84,6 +84,9 @@ fn real_owner_http_metrics_and_shutdown() {
     );
     wait_for(|| TcpStream::connect(&addr).is_ok());
     assert!(get(&addr, "/health").starts_with("HTTP/1.1 503"));
+    let unavailable = get(&addr, "/metrics");
+    assert!(unavailable.contains("backend_dependency_snapshot_available 0\n"));
+    assert!(!unavailable.contains("store_requests_total{"));
     let owner_started = Instant::now();
     let mut owner = Process(
         Command::new(locald)
@@ -116,6 +119,42 @@ fn real_owner_http_metrics_and_shutdown() {
     );
     let before = get(&addr, "/metrics");
     assert!(before.contains("# TYPE http_request_duration_seconds histogram\n"));
+    assert!(before.contains("backend_dependency_snapshot_available 1\n"));
+    assert!(
+        value(
+            &before,
+            "store_requests_total{backend=\"view_journal\",op=\"recover\",outcome=\"success\"} "
+        ) >= 1.0
+    );
+    for op in ["recover", "append", "replace"] {
+        for outcome in ["success", "error"] {
+            let labels = format!("backend=\"view_journal\",op=\"{op}\",outcome=\"{outcome}\"");
+            let count = value(
+                &before,
+                &format!("store_request_duration_seconds_count{{{labels}}} "),
+            );
+            assert_eq!(
+                value(&before, &format!("store_requests_total{{{labels}}} ")),
+                count
+            );
+            assert_eq!(
+                value(
+                    &before,
+                    &format!("store_request_duration_seconds_bucket{{{labels},le=\"+Inf\"}} ")
+                ),
+                count
+            );
+            let mut prior = 0.0;
+            for bound in ["0.001", "0.005", "0.01", "0.05", "0.1", "0.5", "1"] {
+                let bucket = value(
+                    &before,
+                    &format!("store_request_duration_seconds_bucket{{{labels},le=\"{bound}\"}} "),
+                );
+                assert!(bucket >= prior && bucket <= count);
+                prior = bucket;
+            }
+        }
+    }
     assert!(value(&before, "http_requests_total{status=\"503\"} ") >= 1.0);
     assert!(before.contains("http_requests_total{status=\"404\"} 0\n"));
     assert!(get(&addr, "/secret?token=abc").starts_with("HTTP/1.1 404"));
@@ -190,6 +229,9 @@ fn real_owner_http_metrics_and_shutdown() {
     owner.0.kill().unwrap();
     owner.0.wait().unwrap();
     wait_for(|| get(&addr, "/health").starts_with("HTTP/1.1 503"));
+    let unavailable = get(&addr, "/metrics");
+    assert!(unavailable.contains("backend_dependency_snapshot_available 0\n"));
+    assert!(!unavailable.contains("store_requests_total{"));
     assert!(
         !Command::new(env!("CARGO_BIN_EXE_backend-metrics"))
             .args([
@@ -211,4 +253,58 @@ fn real_owner_http_metrics_and_shutdown() {
     );
     wait_for(|| metrics.0.try_wait().unwrap().is_some());
     assert!(metrics.0.wait().unwrap().success());
+}
+
+#[test]
+fn dependency_snapshot_trickle_is_bounded_and_omitted() {
+    use std::os::unix::net::UnixListener;
+    let dir = tempfile::Builder::new()
+        .prefix("bm-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = dir.path().join("owner.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let peer = thread::spawn(move || {
+        let (mut connection, _) = listener.accept().unwrap();
+        let mut request = [0; 9];
+        connection.read_exact(&mut request).unwrap();
+        assert_eq!(&request, b"\0\0\0\x05LDM1\x01");
+        // A malicious peer drips a declared response without ever completing it.
+        for byte in [0, 0, 0, 8, b'n', b'u', b'l', b'l'] {
+            if connection.write_all(&[byte]).is_err() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(250));
+        }
+    });
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = reserve.local_addr().unwrap().to_string();
+    drop(reserve);
+    let mut metrics = Process(
+        Command::new(env!("CARGO_BIN_EXE_backend-metrics"))
+            .args(["--endpoint", socket.to_str().unwrap(), "--bind", &addr])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait_for(|| TcpStream::connect(&addr).is_ok());
+    let start = Instant::now();
+    let body = get(&addr, "/metrics");
+    assert!(start.elapsed() < Duration::from_secs(2));
+    assert!(body.starts_with("HTTP/1.1 200"));
+    assert!(body.contains("backend_dependency_snapshot_available 0\n"));
+    assert!(!body.contains("store_requests_total{"));
+    assert!(
+        Command::new("kill")
+            .args(["-TERM", &metrics.0.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    wait_for(|| metrics.0.try_wait().unwrap().is_some());
+    assert!(metrics.0.wait().unwrap().success());
+    peer.join().unwrap();
 }

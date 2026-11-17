@@ -38,3 +38,13 @@ cargo test -p backend-metrics --test process
 The test finds `backend-locald` beside the test profile's binaries; set
 `BACKEND_LOCALD_BIN` to override that path. It creates a private temporary
 workspace, runs a real owner and HTTP service, and cleans up both processes.
+
+When a fresh authenticated snapshot is returned by an initialized owner,
+`store_requests_total` and `store_request_duration_seconds` describe that
+owner's view journal recovery, append and replacement calls. They distinguish
+success and error and do not imply observations of other storage dependencies.
+Each `/metrics` request obtains a new bounded snapshot; it does not cache the
+previous one. `backend_dependency_snapshot_available` is 1 when that scrape
+obtained an initialized snapshot and 0 otherwise. When it is 0, all store
+series are omitted rather than reported as zero. Owner health and HTTP surface
+availability remain independent checks.

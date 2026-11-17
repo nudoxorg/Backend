@@ -46,7 +46,7 @@ impl Metrics {
             }
         }
     }
-    fn render(&self) -> String {
+    fn render(&self, snapshot: Option<&backend_client::dependency_metrics::Snapshot>) -> String {
         let mut out = String::from(
             "# HELP http_requests_total HTTP requests handled by the metrics service.\n# TYPE http_requests_total counter\n",
         );
@@ -64,17 +64,78 @@ impl Metrics {
             ));
         }
         out.push_str(&format!("http_request_duration_seconds_bucket{{le=\"+Inf\"}} {}\nhttp_request_duration_seconds_sum {}\nhttp_request_duration_seconds_count {}\n", self.count, self.sum, self.count));
+        out.push_str("# HELP backend_dependency_snapshot_available Whether the owner returned an initialized dependency snapshot on this scrape.\n# TYPE backend_dependency_snapshot_available gauge\n");
+        out.push_str(&format!(
+            "backend_dependency_snapshot_available {}\n",
+            u8::from(snapshot.is_some())
+        ));
+        if let Some(snapshot) = snapshot {
+            render_dependencies(&mut out, snapshot);
+        }
         out
     }
 }
 
-async fn owner_healthy(endpoint: PathBuf) -> bool {
+fn render_dependencies(out: &mut String, snapshot: &backend_client::dependency_metrics::Snapshot) {
+    use backend_client::dependency_metrics::BOUNDS_SECONDS;
+    out.push_str("# HELP store_requests_total Completed observed view journal operations.\n# TYPE store_requests_total counter\n");
+    for (op, operation) in [
+        ("recover", &snapshot.recover),
+        ("append", &snapshot.append),
+        ("replace", &snapshot.replace),
+    ] {
+        for (outcome, data) in [("success", &operation.success), ("error", &operation.error)] {
+            out.push_str(&format!("store_requests_total{{backend=\"view_journal\",op=\"{op}\",outcome=\"{outcome}\"}} {}\n", data.count));
+        }
+    }
+    out.push_str("# HELP store_request_duration_seconds Duration of observed view journal operations in seconds.\n# TYPE store_request_duration_seconds histogram\n");
+    for (op, operation) in [
+        ("recover", &snapshot.recover),
+        ("append", &snapshot.append),
+        ("replace", &snapshot.replace),
+    ] {
+        for (outcome, data) in [("success", &operation.success), ("error", &operation.error)] {
+            let labels = format!("backend=\"view_journal\",op=\"{op}\",outcome=\"{outcome}\"");
+            for (index, bound) in BOUNDS_SECONDS.iter().enumerate() {
+                out.push_str(&format!(
+                    "store_request_duration_seconds_bucket{{{labels},le=\"{bound}\"}} {}\n",
+                    data.buckets[index]
+                ));
+            }
+            out.push_str(&format!("store_request_duration_seconds_bucket{{{labels},le=\"+Inf\"}} {}\nstore_request_duration_seconds_sum{{{labels}}} {}\nstore_request_duration_seconds_count{{{labels}}} {}\n", data.buckets[7], data.duration_nanos as f64 / 1_000_000_000.0, data.count));
+        }
+    }
+}
+
+async fn owner_snapshot(
+    endpoint: PathBuf,
+    slots: Arc<Semaphore>,
+) -> Option<backend_client::dependency_metrics::Snapshot> {
+    let permit = slots.try_acquire_owned().ok()?;
+    let task = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        backend_client::dependency_metrics::read(endpoint, OWNER_DEADLINE)
+            .ok()
+            .flatten()
+    });
+    tokio::time::timeout(OWNER_DEADLINE + Duration::from_millis(100), task)
+        .await
+        .ok()?
+        .ok()
+        .flatten()
+}
+
+async fn owner_healthy(endpoint: PathBuf, slots: Arc<Semaphore>) -> bool {
+    let Ok(permit) = slots.try_acquire_owned() else {
+        return false;
+    };
     let context = backend_client::RequestContext::new();
     if context.read_deadline(OWNER_DEADLINE).is_err() {
         return false;
     }
     let worker_context = context.clone();
     let task = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
         backend_client::Session::connect_with_context(endpoint, worker_context)
             .and_then(|mut session| session.health())
             .is_ok()
@@ -88,10 +149,16 @@ async fn owner_healthy(endpoint: PathBuf) -> bool {
     }
 }
 
-async fn handle(stream: TcpStream, endpoint: PathBuf, metrics: Arc<Mutex<Metrics>>) {
+async fn handle(
+    stream: TcpStream,
+    endpoint: PathBuf,
+    metrics: Arc<Mutex<Metrics>>,
+    slots: Arc<Semaphore>,
+) {
     let service = service_fn(move |request: Request<Incoming>| {
         let endpoint = endpoint.clone();
         let metrics = metrics.clone();
+        let slots = slots.clone();
         async move {
             let started = Instant::now();
             let headers = request.headers();
@@ -113,12 +180,18 @@ async fn handle(stream: TcpStream, endpoint: PathBuf, metrics: Arc<Mutex<Metrics
                 )
             } else {
                 match request.uri().path_and_query().map(|v| v.as_str()) {
-                    Some("/metrics") => (
-                        StatusCode::OK,
-                        metrics.lock().unwrap_or_else(|e| e.into_inner()).render(),
-                        "text/plain; version=0.0.4; charset=utf-8",
-                    ),
-                    Some("/health") if owner_healthy(endpoint).await => (
+                    Some("/metrics") => {
+                        let snapshot = owner_snapshot(endpoint, slots).await;
+                        (
+                            StatusCode::OK,
+                            metrics
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .render(snapshot.as_ref()),
+                            "text/plain; version=0.0.4; charset=utf-8",
+                        )
+                    }
+                    Some("/health") if owner_healthy(endpoint, slots).await => (
                         StatusCode::OK,
                         "owner responsive\n".to_owned(),
                         "text/plain",
@@ -187,6 +260,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("backend-metrics listening on {}", listener.local_addr()?);
     let metrics = Arc::new(Mutex::new(Metrics::default()));
     let permits = Arc::new(Semaphore::new(32));
+    let slots = Arc::new(Semaphore::new(4));
     let mut tasks = JoinSet::new();
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
@@ -196,8 +270,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             result = listener.accept() => {
                 let (stream, _) = result?;
                 if let Ok(permit) = permits.clone().try_acquire_owned() {
-                    let endpoint = endpoint.clone(); let metrics = metrics.clone();
-                    tasks.spawn(async move { let _permit = permit; handle(stream, endpoint, metrics).await; });
+                    let endpoint = endpoint.clone(); let metrics = metrics.clone(); let slots = slots.clone();
+                    tasks.spawn(async move { let _permit = permit; handle(stream, endpoint, metrics, slots).await; });
                 }
             }
             Some(_) = tasks.join_next(), if !tasks.is_empty() => {}
