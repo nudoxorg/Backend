@@ -72,8 +72,16 @@ def load_identities(path):
     return identities
 
 
+class RegistryError(Exception):
+    """Operator registry is unavailable or malformed; fail closed as 503."""
+
+
 def active_grants(path, now):
-    return [(tenant, node, digest, start) for tenant, node, digest, start, end, revoked in load_identities(path) if not revoked and start <= now < end]
+    try:
+        grants = load_identities(path)
+    except (OSError, ValueError, UnicodeError, RecursionError) as error:
+        raise RegistryError from error
+    return [(tenant, node, digest, start) for tenant, node, digest, start, end, revoked in grants if not revoked and start <= now < end]
 
 
 class Relay(socketserver.ThreadingMixIn, HTTPServer):
@@ -224,7 +232,7 @@ class Handler(BaseHTTPRequestHandler):
                     out += ["# TYPE relay_rejected_total counter", f"relay_rejected_total {counters.get('rejected',0)}", "# TYPE relay_node_reported_dropped_total counter", f"relay_node_reported_dropped_total {counters.get('reported_dropped',0)}"]
                     status, body = 200, ("\n".join(out)+"\n").encode()
             return self.reply(status, body)
-        except (sqlite3.Error, OSError, ValueError, UnicodeError, RuntimeError, RecursionError):
+        except (sqlite3.Error, OSError, ValueError, UnicodeError, RuntimeError, RecursionError, RegistryError):
             with self.server.db_lock:
                 self.server.db.rollback()
             return self.reply(503)
@@ -305,7 +313,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.server.db.rollback()
             self.server.reject()
             return self.reply(400)
-        except (sqlite3.Error, OSError, RuntimeError):
+        except (sqlite3.Error, OSError, RuntimeError, RegistryError):
             with self.server.db_lock:
                 self.server.db.rollback()
             return self.reply(503)

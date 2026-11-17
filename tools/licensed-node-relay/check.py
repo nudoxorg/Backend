@@ -166,6 +166,11 @@ def main():
             write_grant({**grant, "not_before": int(time.time()) + 60})
             assert request("/v1/records", exact)[0] == 401
             write_grant(grant)
+            before = counter(metrics(), "relay_rejected_total")
+            registry.write_text("{", encoding="utf-8")
+            assert request("/v1/records", exact)[0] == 503
+            write_grant(grant)
+            assert counter(metrics(), "relay_rejected_total") == before
             relay.terminate()
             relay.wait(timeout=5)
             relay = start_relay()
@@ -250,6 +255,8 @@ def isolation():
             except urllib.error.HTTPError as error:
                 error.read()
                 return error.code
+        def counter(body, name):
+            return int(next(line.split()[-1] for line in body.splitlines() if line.startswith(name + " ")))
         def heartbeat(body, node):
             marker = f'nudox_node_heartbeat_seconds{{tenant="test",node="{node}"}} '
             return float(next(line[len(marker):] for line in body.splitlines() if line.startswith(marker)))
@@ -295,6 +302,7 @@ def isolation():
                 for _ in range(45):
                     results.append(post(token))
                     time.sleep(0.06)
+            rejected_before = counter(get("/metrics"), "relay_rejected_total")
             statuses = []
             invalid_flood = threading.Thread(target=flood, args=("invalid", statuses), daemon=True)
             invalid_flood.start()
@@ -312,6 +320,7 @@ def isolation():
             assert grant_flood.is_alive()
             grant_flood.join(timeout=10)
             assert not grant_flood.is_alive() and 429 in statuses and all(code in (400,429) for code in statuses)
+            assert counter(get("/metrics"), "relay_rejected_total") >= rejected_before + 90
             for thread in tricklers:
                 thread.join(timeout=6)
                 assert not thread.is_alive()
@@ -328,7 +337,28 @@ def isolation():
                         break
                     received.extend(chunk)
                     assert len(received) <= 4096
-            print("two-grant quota isolation, expected-since and slow-client deadline: passed")
+            # Saturate the complete bounded worker pool with slow connections.
+            # Shedding is permitted, but all slots must recover and both real
+            # senders must resume once the absolute deadline expires.
+            for sock in slow:
+                sock.close()
+            slow.clear()
+            previous = (heartbeat(get("/metrics"), "one"), heartbeat(get("/metrics"), "two"))
+            for _ in range(16):
+                sock = socket.create_connection(("127.0.0.1", port), timeout=1)
+                sock.sendall(b"GET /health HTTP/1.1\r\nHost: local\r\nX-Slow:")
+                slow.append(sock)
+            time.sleep(3.5)
+            for sock in slow:
+                sock.settimeout(5)
+                try:
+                    assert sock.recv(1024) == b""
+                except ConnectionResetError:
+                    pass
+            wait_for(lambda: get("/ready"), seconds=8)
+            wait_for(lambda: heartbeat(get("/metrics"), "one") > previous[0], seconds=8)
+            wait_for(lambda: heartbeat(get("/metrics"), "two") > previous[1], seconds=8)
+            print("two-grant quota isolation, expected-since, slow-client deadline and pool recovery: passed")
         finally:
             for sock in slow:
                 sock.close()

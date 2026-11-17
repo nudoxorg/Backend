@@ -16,7 +16,8 @@ of at most 128 objects with exactly these fields:
 The example is a shape, not a usable grant. `not_before` is also the
 operator's expected-since baseline for per-grant missing-heartbeat alerts;
 it is not emitted as a heartbeat. Set it to the time the operator expects the
-node to start sending. Tenant and node are fixed
+node to start sending. Advance it when reactivating a retired node, so an
+older goodbye cannot suppress the new activation. Tenant and node are fixed
 operator-provisioned label values, unique in the registry, with 1–48 ASCII
 letters, numbers, hyphens, or underscores. Tokens must be unique random secrets;
 the sender accepts 32–256 ASCII alphanumeric characters. The timestamps are
