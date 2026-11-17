@@ -90,7 +90,7 @@ before `stage`/`submit`:
 It waives only the named contexts, and only contexts this platform checks (macOS:
 `concourse/backend-fast`; Linux/Windows add their `backend-<lane>`). Any other red context
 still refuses. It binds to the exact source revision, so a different candidate needs its own.
-Native QA, signing and notarization are never waived. The waiver is uploaded beside the archive
+Native QA and each platform’s stated signing and notarization requirements are never waived. Windows is distributed unsigned by explicit product decision. The waiver is uploaded beside the archive
 as `ci-waiver-<platform>.json` on both the candidate and the stable release, and the tool prints
 and returns which contexts were not green, so a waived release is visible as one.
 
@@ -104,7 +104,7 @@ ad-hoc signed previews, a green build without native QA, and old archive relabel
 | macos | aarch64-apple-darwin | nudox-macos-arm64.zip | Developer ID + Apple notarization |
 | linux-x64 | x86_64-unknown-linux-gnu | nudox-linux-x64.tar.gz | Checksummed archive + native QA |
 | linux-arm64 | aarch64-unknown-linux-gnu | nudox-linux-arm64.tar.gz | Checksummed archive + native QA |
-| windows | x86_64-pc-windows-gnu or x86_64-pc-windows-msvc | nudox-windows-x64.zip | Authenticode + native QA |
+| windows | x86_64-pc-windows-gnu or x86_64-pc-windows-msvc | nudox-windows-x64.zip | Unsigned + native QA |
 
 Each candidate directory contains the archive, `<archive>.sha256`, `release-manifest.json`,
 and `native-qa.json`. The schema-1 manifest uses the same fields as the existing Mac
@@ -115,7 +115,7 @@ profiles and required QA cases are in `tools/package/release_platforms.py`.
 Mac contains `Nudox.app`, its four matched binaries, `Nudox` GUI launcher, and `nudox-cli`,
 `nudox-mcp`, `nudox-locald` command launchers. Linux/Windows payloads use `Nudox/bin/` for
 `backend-desktop`, `backend-cli`, `backend-mcp`, `backend-locald` (with `.exe` on Windows),
-and `Nudox/resources/build-manifest.json`. Embedded build evidence includes
+and `Nudox/resources/build-manifest.json`. Windows also requires `backend-metrics.exe`, `backend-stylo-worker.exe`, `backend-sqlite-worker.exe`, and `Nudox/install-windows.ps1`; invoke it with the archive path and a SHA-256 from a separately verified release manifest. It installs under the current user's Programs directory and has an explicit uninstall mode. Embedded build evidence includes
 `source.git_revision`, `source.git_tree`, and `source.cargo_lock_sha256`. Include every
 required helper/runtime; a portable archive cannot depend on the developer's Nix store.
 Linux staging must dereference links: release archives reject links/special files.
@@ -153,6 +153,8 @@ and only by a release PR, so `main` is always the last released source.
    would refuse it.
 5. `build-linux-x64` starts on its own, then `validate-linux-x64` follows. Publish with
    `nu .config/scripts/release.nu publish linux-x64`.
+
+Windows archives are unsigned. Windows may show publisher or trust warnings when they are downloaded or run; users should verify the published SHA-256 before installation. The release manifest must report `signed: false`. Native Windows QA, including clean installation, launch, CLI/MCP and uninstall, remains required.
 
 linux-arm64 and Windows build tooling is not supplied by this pipeline. Their developers must
 provide portable payloads and genuine native/signing evidence meeting this contract. Intel Mac and ARM

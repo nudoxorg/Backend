@@ -474,6 +474,10 @@ let
         # raw-dylib imports (windows-sys) need MinGW's dlltool. It goes after
         # the shell's own tools so the llvm windres wrapper above still wins.
         shellHook = crossAttrs.shellHook + ''
+          # GNU links need COFF resources; llvm-rc emits .res data for
+          # embed-resource, which the MinGW linker cannot consume. Let the
+          # target's windres wrapper produce a linkable resource object.
+          unset RC_x86_64_pc_windows_gnu RC
           export PATH="$PATH:${mingw.stdenv.cc.bintools}/bin"
           export WINEPREFIX="$PWD/.local/wine-prefix"
         '';

@@ -8,7 +8,6 @@
   "host_os": "Windows",
   "target": "x86_64-pc-windows-gnu",
   "cases": {
-    "authenticode": false,
     "browser_download_launch": false,
     "bundled_helpers": false,
     "clean_environment": false,

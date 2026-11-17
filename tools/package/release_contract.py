@@ -218,6 +218,9 @@ def archive_evidence(archive, profile):
         for executable in profile["executables"]:
             if executable not in names or not regular(executable):
                 raise ValueError("archive omits a required product executable")
+        for support in profile.get("support_files", []):
+            if support not in names or not regular(support):
+                raise ValueError("archive omits a required installer")
         build_bytes = read(profile["build"], 16 * 1024 * 1024)
         info = None
         if profile["host"] == "Darwin":
@@ -335,7 +338,7 @@ def validate(directory, source=None, platform=None, require_qa=True):
     if manifest["target"] not in profile["targets"] or manifest["asset"] != profile["asset"]:
         raise ValueError("candidate target/asset differs from platform contract")
     if manifest["signed"] is not profile["signed"] or manifest["notarized"] is not profile["notarized"]:
-        raise ValueError("candidate is missing platform signing/notarization evidence")
+        raise ValueError("candidate signing/notarization status differs from platform contract")
     if not isinstance(manifest["minimum_os"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._+-]{0,63}", manifest["minimum_os"]):
         raise ValueError("candidate requires a supported minimum OS")
     if selected == "macos" and not re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?", manifest["minimum_os"]):

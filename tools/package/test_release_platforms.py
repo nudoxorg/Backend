@@ -17,6 +17,7 @@ def native_candidate(directory, platform):
     profile = release.PLATFORMS[platform]
     build = json.dumps({"source": {"git_revision": "a" * 40, "git_tree": "b" * 40, "cargo_lock_sha256": "c" * 64}}).encode()
     files = {name: b"native executable fixture" for name in profile["executables"]}
+    files.update({name: b"native installer fixture" for name in profile.get("support_files", [])})
     files[profile["build"]] = build
     archive = root / profile["asset"]
     if platform == "windows":
@@ -150,7 +151,7 @@ class PlatformReleaseTests(unittest.TestCase):
                     release.validate(root)
                 native_candidate(root, platform)
                 if platform == "windows":
-                    manifest["signed"] = False
+                    manifest["signed"] = True
                     (root / "release-manifest.json").write_text(json.dumps(manifest))
                     with self.assertRaisesRegex(ValueError, "signing/notarization"):
                         release.validate(root)
