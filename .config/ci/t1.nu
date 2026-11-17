@@ -30,6 +30,12 @@ const SURFACES = [
 
 def main []: nothing -> nothing {
     let started = (date now)
+    # Record the actual commands supplied by the smoke shell and fail before
+    # building when native staging or closure export cannot run.
+    let tools = ci-step "t1" "native tool preflight" {||
+        run-bounded 10sec "sh" "-c" 'for tool in patchelf readelf nix-store; do path=$(command -v "$tool") || exit 1; printf "CI-T1-TOOL %s %s\n" "$tool" "$path"; done'
+    }
+    if not $tools { finish-lane "t1" [$tools]; return }
     let cache = $env.CI_T1_CACHE_ROOT? | default ""
     let target_dir = if ($cache | is-not-empty) {
         $cache | path join "t1-target"
