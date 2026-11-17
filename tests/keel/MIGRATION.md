@@ -61,11 +61,12 @@ runtime filters, test execution, and fuzz campaign coverage were not evaluated.
 The ledger labels a child-process API as `process_child`; that alone does not
 mean the test launches a product CLI or MCP binary.
 
-The case-definition comparison hashes strict evaluated case JSON with sorted
-keys and compact separators. The serializer matches independently recorded
-`inventory.definition_sha256` values on exact report matches. Each receipt is
-marked `true`, `false`, or `"unknown"` so a reused case ID cannot stand in for
-the current definition.
+The case-definition comparison hashes strict evaluated case JSON serialized
+with sorted keys, compact separators, UTF-8 encoding, and non-ASCII characters
+left unescaped (`ensure_ascii=False`). This matches the report's
+`inventory.definition_sha256` serializer. Each receipt is marked `true`,
+`false`, or `"unknown"` so a reused case ID cannot stand in for the current
+definition.
 
 ## Excluded upstream test suites
 
@@ -96,12 +97,12 @@ Tests are not classified as integration tests just because they live beneath
 
 - `tests/keel/default.nix` evaluates to 33 reviewed, registered cases: 20 CLI
   protocol rows and one MCP stdio framing row among the larger language and
-  owner histories. Passing reports include 58 case/report rows: 29 match the
-  current exact definition hash, 27 pass by ID with a different definition
+  owner histories. Passing reports include 58 case/report rows: 53 match the
+  current exact definition hash, three pass by ID with a different definition
   hash, and two worker reports have no per-case hash. Across the 33 current
-  case IDs, 19 have an exact-definition pass, 11 have only ID-level historical
-  passes, and three have no passing receipt. The ledger keeps these categories
-  separate.
+  case IDs, 28 have an exact-definition pass, two have only ID-level
+  historical passes, and three have no passing receipt. The ledger keeps these
+  categories separate.
 - `apps/cli/tests/passive_health.rs` and
   `apps/cli/tests/saved_index_wait.rs` invoke `CARGO_BIN_EXE_backend-cli`.
 - `tests/journeys/tests/css_impact_journey.rs` documents and launches the
@@ -123,15 +124,14 @@ to process-case IDs, plus one test rewritten in place. A
 separate TypeScript owner test was added and retired between the two baseline
 commits, so it is included as a historical row even though it is absent from
 the endpoint-only diff. Together these are the 16 known retirements. The case
-definition hashes show that five replacement mappings have a passing current-
-definition receipt; eleven have only historical same-ID passes and need a
-fresh exact-definition receipt before being treated as current replacements.
+definition hashes show that all 16 replacement mappings have a passing
+current-definition receipt under the canonical UTF-8 serializer.
 
 | Retired source obligation | Public process row and source-bound evidence | Current-definition check |
 |---|---|---|
-| CLI `an_unknown_command_names_the_nearest_one_it_knows`, `an_unknown_option_names_the_options_the_command_takes`, `a_missing_operand_prints_the_exact_usage_line`, `a_missing_operand_through_a_cli_alias_uses_the_entered_installed_command`, `a_page_bound_outside_its_range_is_refused_with_the_value` | `cli-nearest-command`, `cli-unknown-option`, `cli-missing-command-operand`, `cli-document-alias-missing-operand`, `cli-invalid-page-bound`; [`product-linux-189f-20261116.json`](evidence/product-linux-189f-20261116.json), official source `189fca6cbbdcf9eb1406dfc0c5ca744b35c43da3` | All five passed by ID in 189f and the later protocol report. Only the document alias has a matching current definition hash; the other four are ID-only historical passes. |
+| CLI `an_unknown_command_names_the_nearest_one_it_knows`, `an_unknown_option_names_the_options_the_command_takes`, `a_missing_operand_prints_the_exact_usage_line`, `a_missing_operand_through_a_cli_alias_uses_the_entered_installed_command`, `a_page_bound_outside_its_range_is_refused_with_the_value` | `cli-nearest-command`, `cli-unknown-option`, `cli-missing-command-operand`, `cli-document-alias-missing-operand`, `cli-invalid-page-bound`; [`product-linux-189f-20261116.json`](evidence/product-linux-189f-20261116.json), official source `189fca6cbbdcf9eb1406dfc0c5ca744b35c43da3` | All five have current-definition passes in 189f and the later protocol report. |
 | CLI `help_is_grouped_by_domain_and_names_every_domain`, `passive_connection_mode_is_limited_to_health_and_status`, `add_defaults_to_interactive_and_advertises_the_background_option` | `cli-root-help`, both passive connect-only cases, `cli-add-help` plus the default interactive receipt in `rust-call-history`; [`protocol-rust-linux-55551-f3e-20261116.json`](evidence/protocol-rust-linux-55551-f3e-20261116.json), official source `55551f420a870ddf55e93ed0117bbabc815ec612` | All three have a passing report for the current exact definition. The protocol report selected 20 CLI cases plus Rust history (21 total); MCP framing is a separate case. |
-| Stylo `native_media_selectors_declarations_and_dependencies`, `observer_proves_root_class_and_duplicate_custom_property_sites`, `class_name_site_excludes_skipped_comments_and_decodes_escapes`, `observer_discards_rejected_rules_and_uses_inserted_rule_ordinals`, `utf8_bom_is_removed_before_stylo_parsing`, `native_location_reports_utf16_column_without_byte_guessing`, `imports_are_recorded_with_their_qualifiers_and_never_loaded` | Corresponding independently authored steps in `css-source-observer`; [`native-linux-20261116.json`](evidence/native-linux-20261116.json), source worker build `c5f063` | All 17 worker steps passed by ID, but none has a matching current definition hash. The original worker report lacks definition inventory; later report IDs have changed definitions. |
+| Stylo `native_media_selectors_declarations_and_dependencies`, `observer_proves_root_class_and_duplicate_custom_property_sites`, `class_name_site_excludes_skipped_comments_and_decodes_escapes`, `observer_discards_rejected_rules_and_uses_inserted_rule_ordinals`, `utf8_bom_is_removed_before_stylo_parsing`, `native_location_reports_utf16_column_without_byte_guessing`, `imports_are_recorded_with_their_qualifiers_and_never_loaded` | Corresponding independently authored steps in `css-source-observer`; [`native-owner-package-account-11bcc-eb9360-20261116.json`](evidence/native-owner-package-account-11bcc-eb9360-20261116.json) and [`native-linux-20261116.json`](evidence/native-linux-20261116.json) | Each has an exact current-definition pass in the later hashed reports. The original worker report itself has no per-case definition hash. |
 | Historical TypeScript owner `native_ts_external_target_does_not_claim_source_observed_at_capture` | `typescript-external-source-policy`; [`product-linux-189f-20261116.json`](evidence/product-linux-189f-20261116.json), official source `189fca6cbbdcf9eb1406dfc0c5ca744b35c43da3` | Exact current definition match in both 189f and later 55551 reports. |
 
 `crates/present/tests.rs::mcp_all_record_details_use_selectable_bounded_text_without_signature_bodies`

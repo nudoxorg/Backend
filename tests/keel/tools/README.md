@@ -47,6 +47,8 @@ Nushell assertion blocks, fuzz targets and corpus inputs, CSS/SQL fixtures,
 registered Keel cases, retirement mappings, and report receipts. Reconcile
 those fields when updating the ledger. A Keel receipt is a current-definition
 replacement only when its passing report's `inventory.definition_sha256`
-matches the hash of that case in the strict evaluated manifest; same-ID
-historical passes and reports without per-case hashes remain separately
-qualified as the ledger records them.
+matches the hash of that case in the strict evaluated manifest. Use SHA-256 of
+`json.dumps(case, sort_keys=True, separators=(',', ':'), ensure_ascii=False)`
+encoded as UTF-8; Rust's report serializer leaves non-ASCII characters
+unescaped. Same-ID historical passes and reports without per-case hashes
+remain separately qualified as the ledger records them.

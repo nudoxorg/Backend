@@ -12795,8 +12795,8 @@
       "replacement_definition_evidence": [
         {
           "case_id": "cli-missing-command-operand",
-          "current_definition_sha256": "cf875206174f446ec19b4af52381aa94a0949260dff6229a919a4f353d9ccd17",
-          "exact_definition_match": false,
+          "current_definition_sha256": "b2102cc367427f13611a43242a1ee604079f600bc6d8423f02c023362f7333cf",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/product-linux-189f-20261116.json",
           "reported_definition_sha256": "b2102cc367427f13611a43242a1ee604079f600bc6d8423f02c023362f7333cf",
           "source_revision": "189fca6cbbdcf9eb1406dfc0c5ca744b35c43da3",
@@ -12804,8 +12804,8 @@
         },
         {
           "case_id": "cli-missing-command-operand",
-          "current_definition_sha256": "cf875206174f446ec19b4af52381aa94a0949260dff6229a919a4f353d9ccd17",
-          "exact_definition_match": false,
+          "current_definition_sha256": "b2102cc367427f13611a43242a1ee604079f600bc6d8423f02c023362f7333cf",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/protocol-rust-linux-55551-f3e-20261116.json",
           "reported_definition_sha256": "b2102cc367427f13611a43242a1ee604079f600bc6d8423f02c023362f7333cf",
           "source_revision": "55551f420a870ddf55e93ed0117bbabc815ec612",
@@ -12891,8 +12891,8 @@
       "replacement_definition_evidence": [
         {
           "case_id": "cli-invalid-page-bound",
-          "current_definition_sha256": "f300b78c5314ccfa958bdf3dc3e86281ce5521a92b8f2a63ad3ab493c724f6ee",
-          "exact_definition_match": false,
+          "current_definition_sha256": "4b70dc36bbe922cbed976caaebcd6976ae305237d988c1275ea1405beb0a20e2",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/product-linux-189f-20261116.json",
           "reported_definition_sha256": "4b70dc36bbe922cbed976caaebcd6976ae305237d988c1275ea1405beb0a20e2",
           "source_revision": "189fca6cbbdcf9eb1406dfc0c5ca744b35c43da3",
@@ -12900,8 +12900,8 @@
         },
         {
           "case_id": "cli-invalid-page-bound",
-          "current_definition_sha256": "f300b78c5314ccfa958bdf3dc3e86281ce5521a92b8f2a63ad3ab493c724f6ee",
-          "exact_definition_match": false,
+          "current_definition_sha256": "4b70dc36bbe922cbed976caaebcd6976ae305237d988c1275ea1405beb0a20e2",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/protocol-rust-linux-55551-f3e-20261116.json",
           "reported_definition_sha256": "4b70dc36bbe922cbed976caaebcd6976ae305237d988c1275ea1405beb0a20e2",
           "source_revision": "55551f420a870ddf55e93ed0117bbabc815ec612",
@@ -13096,8 +13096,8 @@
       "replacement_definition_evidence": [
         {
           "case_id": "cli-nearest-command",
-          "current_definition_sha256": "f6701dcef134e5159774932da399c27a291066e9c36ea6d2bc2fa9b8882b27e6",
-          "exact_definition_match": false,
+          "current_definition_sha256": "65d187ce4967210b281551d0c7df0d584d68ab40e1ae082715828af05c924f93",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/product-linux-189f-20261116.json",
           "reported_definition_sha256": "65d187ce4967210b281551d0c7df0d584d68ab40e1ae082715828af05c924f93",
           "source_revision": "189fca6cbbdcf9eb1406dfc0c5ca744b35c43da3",
@@ -13105,8 +13105,8 @@
         },
         {
           "case_id": "cli-nearest-command",
-          "current_definition_sha256": "f6701dcef134e5159774932da399c27a291066e9c36ea6d2bc2fa9b8882b27e6",
-          "exact_definition_match": false,
+          "current_definition_sha256": "65d187ce4967210b281551d0c7df0d584d68ab40e1ae082715828af05c924f93",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/protocol-rust-linux-55551-f3e-20261116.json",
           "reported_definition_sha256": "65d187ce4967210b281551d0c7df0d584d68ab40e1ae082715828af05c924f93",
           "source_revision": "55551f420a870ddf55e93ed0117bbabc815ec612",
@@ -13144,8 +13144,8 @@
       "replacement_definition_evidence": [
         {
           "case_id": "cli-unknown-option",
-          "current_definition_sha256": "286cb390c1a9b8c5bf612bc46cf9932638f298775ee9875247d722a607cc67cd",
-          "exact_definition_match": false,
+          "current_definition_sha256": "5309401250621a81689299aea6f44fc3903822bffb8711f32116cf7657f1f3d5",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/product-linux-189f-20261116.json",
           "reported_definition_sha256": "5309401250621a81689299aea6f44fc3903822bffb8711f32116cf7657f1f3d5",
           "source_revision": "189fca6cbbdcf9eb1406dfc0c5ca744b35c43da3",
@@ -13153,8 +13153,8 @@
         },
         {
           "case_id": "cli-unknown-option",
-          "current_definition_sha256": "286cb390c1a9b8c5bf612bc46cf9932638f298775ee9875247d722a607cc67cd",
-          "exact_definition_match": false,
+          "current_definition_sha256": "5309401250621a81689299aea6f44fc3903822bffb8711f32116cf7657f1f3d5",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/protocol-rust-linux-55551-f3e-20261116.json",
           "reported_definition_sha256": "5309401250621a81689299aea6f44fc3903822bffb8711f32116cf7657f1f3d5",
           "source_revision": "55551f420a870ddf55e93ed0117bbabc815ec612",
@@ -232104,8 +232104,8 @@
       "replacement_definition_evidence": [
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-owner-package-account-11bcc-eb9360-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "11bccf0ab56e08f3daaf49d3928b296c8a00012b",
@@ -232113,8 +232113,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-owner-linux-631a-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "see evidence README",
@@ -232122,8 +232122,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-preview-account-refusal-11bcc-f3e-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "11bccf0ab56e08f3daaf49d3928b296c8a00012b",
@@ -232131,8 +232131,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/product-linux-189f-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "189fca6cbbdcf9eb1406dfc0c5ca744b35c43da3",
@@ -232140,7 +232140,7 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "exact_definition_match": "unknown",
           "report_path": "tests/keel/evidence/native-linux-20261116.json",
           "reported_definition_sha256": null,
@@ -232149,8 +232149,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-owner-mixed-11bcc-555-f3e-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "11bccf0ab56e08f3daaf49d3928b296c8a00012b",
@@ -232208,8 +232208,8 @@
       "replacement_definition_evidence": [
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-owner-package-account-11bcc-eb9360-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "11bccf0ab56e08f3daaf49d3928b296c8a00012b",
@@ -232217,8 +232217,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-owner-linux-631a-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "see evidence README",
@@ -232226,8 +232226,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-preview-account-refusal-11bcc-f3e-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "11bccf0ab56e08f3daaf49d3928b296c8a00012b",
@@ -232235,8 +232235,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/product-linux-189f-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "189fca6cbbdcf9eb1406dfc0c5ca744b35c43da3",
@@ -232244,7 +232244,7 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "exact_definition_match": "unknown",
           "report_path": "tests/keel/evidence/native-linux-20261116.json",
           "reported_definition_sha256": null,
@@ -232253,8 +232253,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-owner-mixed-11bcc-555-f3e-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "11bccf0ab56e08f3daaf49d3928b296c8a00012b",
@@ -232292,8 +232292,8 @@
       "replacement_definition_evidence": [
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-owner-package-account-11bcc-eb9360-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "11bccf0ab56e08f3daaf49d3928b296c8a00012b",
@@ -232301,8 +232301,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-owner-linux-631a-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "see evidence README",
@@ -232310,8 +232310,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-preview-account-refusal-11bcc-f3e-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "11bccf0ab56e08f3daaf49d3928b296c8a00012b",
@@ -232319,8 +232319,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/product-linux-189f-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "189fca6cbbdcf9eb1406dfc0c5ca744b35c43da3",
@@ -232328,7 +232328,7 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "exact_definition_match": "unknown",
           "report_path": "tests/keel/evidence/native-linux-20261116.json",
           "reported_definition_sha256": null,
@@ -232337,8 +232337,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-owner-mixed-11bcc-555-f3e-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "11bccf0ab56e08f3daaf49d3928b296c8a00012b",
@@ -232376,8 +232376,8 @@
       "replacement_definition_evidence": [
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-owner-package-account-11bcc-eb9360-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "11bccf0ab56e08f3daaf49d3928b296c8a00012b",
@@ -232385,8 +232385,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-owner-linux-631a-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "see evidence README",
@@ -232394,8 +232394,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-preview-account-refusal-11bcc-f3e-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "11bccf0ab56e08f3daaf49d3928b296c8a00012b",
@@ -232403,8 +232403,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/product-linux-189f-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "189fca6cbbdcf9eb1406dfc0c5ca744b35c43da3",
@@ -232412,7 +232412,7 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "exact_definition_match": "unknown",
           "report_path": "tests/keel/evidence/native-linux-20261116.json",
           "reported_definition_sha256": null,
@@ -232421,8 +232421,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-owner-mixed-11bcc-555-f3e-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "11bccf0ab56e08f3daaf49d3928b296c8a00012b",
@@ -232460,8 +232460,8 @@
       "replacement_definition_evidence": [
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-owner-package-account-11bcc-eb9360-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "11bccf0ab56e08f3daaf49d3928b296c8a00012b",
@@ -232469,8 +232469,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-owner-linux-631a-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "see evidence README",
@@ -232478,8 +232478,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-preview-account-refusal-11bcc-f3e-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "11bccf0ab56e08f3daaf49d3928b296c8a00012b",
@@ -232487,8 +232487,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/product-linux-189f-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "189fca6cbbdcf9eb1406dfc0c5ca744b35c43da3",
@@ -232496,7 +232496,7 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "exact_definition_match": "unknown",
           "report_path": "tests/keel/evidence/native-linux-20261116.json",
           "reported_definition_sha256": null,
@@ -232505,8 +232505,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-owner-mixed-11bcc-555-f3e-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "11bccf0ab56e08f3daaf49d3928b296c8a00012b",
@@ -232544,8 +232544,8 @@
       "replacement_definition_evidence": [
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-owner-package-account-11bcc-eb9360-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "11bccf0ab56e08f3daaf49d3928b296c8a00012b",
@@ -232553,8 +232553,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-owner-linux-631a-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "see evidence README",
@@ -232562,8 +232562,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-preview-account-refusal-11bcc-f3e-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "11bccf0ab56e08f3daaf49d3928b296c8a00012b",
@@ -232571,8 +232571,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/product-linux-189f-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "189fca6cbbdcf9eb1406dfc0c5ca744b35c43da3",
@@ -232580,7 +232580,7 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "exact_definition_match": "unknown",
           "report_path": "tests/keel/evidence/native-linux-20261116.json",
           "reported_definition_sha256": null,
@@ -232589,8 +232589,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-owner-mixed-11bcc-555-f3e-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "11bccf0ab56e08f3daaf49d3928b296c8a00012b",
@@ -232648,8 +232648,8 @@
       "replacement_definition_evidence": [
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-owner-package-account-11bcc-eb9360-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "11bccf0ab56e08f3daaf49d3928b296c8a00012b",
@@ -232657,8 +232657,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-owner-linux-631a-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "see evidence README",
@@ -232666,8 +232666,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-preview-account-refusal-11bcc-f3e-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "11bccf0ab56e08f3daaf49d3928b296c8a00012b",
@@ -232675,8 +232675,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/product-linux-189f-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "189fca6cbbdcf9eb1406dfc0c5ca744b35c43da3",
@@ -232684,7 +232684,7 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "exact_definition_match": "unknown",
           "report_path": "tests/keel/evidence/native-linux-20261116.json",
           "reported_definition_sha256": null,
@@ -232693,8 +232693,8 @@
         },
         {
           "case_id": "css-source-observer",
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
-          "exact_definition_match": false,
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+          "exact_definition_match": true,
           "report_path": "tests/keel/evidence/native-owner-mixed-11bcc-555-f3e-20261116.json",
           "reported_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "source_revision": "11bccf0ab56e08f3daaf49d3928b296c8a00012b",
@@ -241697,7 +241697,7 @@
       "revision_status": "active_manifest_case",
       "scope": "required_manifest_case_not_execution_verified",
       "source_bound_execution_receipts": [],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
       "source_sha256": "61e35da01381b20be3076a0747ab2bf60c54544bb3174aba30b5165195958acf",
       "step_kinds": [
         "cli",
@@ -241707,7 +241707,7 @@
         "restart"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
       "current_definition_pass": "exact_definition_pass",
@@ -241745,7 +241745,7 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
       "source_sha256": "0ad0d5c68bf40601e9eea08eee812d539ed0e0b5b333713cd268be05214f5ff5",
       "step_kinds": [
         "cli",
@@ -241756,7 +241756,7 @@
         "write"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
       "current_definition_pass": "no_passing_receipt",
@@ -241774,7 +241774,7 @@
       "revision_status": "active_manifest_case",
       "scope": "required_manifest_case_not_execution_verified",
       "source_bound_execution_receipts": [],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
       "source_sha256": "86a25325bdd15feb5eb4848f7fcc019004392dcbf092a8d47260879859e06d47",
       "step_kinds": [
         "cli",
@@ -241784,7 +241784,7 @@
         "write"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
       "current_definition_pass": "no_passing_receipt",
@@ -241802,7 +241802,7 @@
       "revision_status": "active_manifest_case",
       "scope": "required_manifest_case_not_execution_verified",
       "source_bound_execution_receipts": [],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
       "source_sha256": "1aa16e536bb262d8715afbb54a578eba08d437baab4a406dd3d02566e0d8ba28",
       "step_kinds": [
         "cli",
@@ -241812,11 +241812,11 @@
         "write"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
-      "current_definition_pass": "id_only_historical_pass",
-      "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
+      "current_definition_pass": "exact_definition_pass",
+      "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
       "end_line": 35,
       "family": "Keel Nix process case",
       "id": "keel:css-source-observer",
@@ -241880,9 +241880,9 @@
       "scope": "required_manifest_case_not_execution_verified",
       "source_bound_execution_receipts": [
         {
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
-          "exact_definition_match": false,
+          "exact_definition_match": true,
           "path": "tests/keel/evidence/native-owner-package-account-11bcc-eb9360-20261116.json",
           "report_manifest_sha256": "89dfa9408fc728b9549196252f23be097166e4f0cd057098ad69321ab80e2295",
           "report_sha256": "c45a19999e9ee75b45d1c2f4073b433e975779f1b30ffbc76c905dc45bd40aa5",
@@ -241890,9 +241890,9 @@
           "status": "pass"
         },
         {
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
-          "exact_definition_match": false,
+          "exact_definition_match": true,
           "path": "tests/keel/evidence/native-owner-linux-631a-20261116.json",
           "report_manifest_sha256": "3aa01a97a0c3de6a9cfee33bf7219f423558ba2b9a7468c93e4b9746e1602aef",
           "report_sha256": "4fe768005019acb24da83365ffcdb87a7df8689604b1374aee4e0dd3bd2e30a2",
@@ -241900,9 +241900,9 @@
           "status": "pass"
         },
         {
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
-          "exact_definition_match": false,
+          "exact_definition_match": true,
           "path": "tests/keel/evidence/native-preview-account-refusal-11bcc-f3e-20261116.json",
           "report_manifest_sha256": "89dfa9408fc728b9549196252f23be097166e4f0cd057098ad69321ab80e2295",
           "report_sha256": "8887b2dae4cf6b1e823f285ee24f7310d2830130f43b23725455b0f0eb5a84f4",
@@ -241910,9 +241910,9 @@
           "status": "pass"
         },
         {
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
-          "exact_definition_match": false,
+          "exact_definition_match": true,
           "path": "tests/keel/evidence/product-linux-189f-20261116.json",
           "report_manifest_sha256": "2e28e09136b3530635e00892490a47372011abe173f3c26eb870a1bb20a8c022",
           "report_sha256": "0b79fbf2d8434a609c583f5552b0dc9e3142a5dd4d68bdd90c6b5c3524a58133",
@@ -241920,7 +241920,7 @@
           "status": "pass"
         },
         {
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "definition_sha256": null,
           "exact_definition_match": "unknown",
           "path": "tests/keel/evidence/native-linux-20261116.json",
@@ -241930,9 +241930,9 @@
           "status": "pass"
         },
         {
-          "current_definition_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
+          "current_definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
           "definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
-          "exact_definition_match": false,
+          "exact_definition_match": true,
           "path": "tests/keel/evidence/native-owner-mixed-11bcc-555-f3e-20261116.json",
           "report_manifest_sha256": "89dfa9408fc728b9549196252f23be097166e4f0cd057098ad69321ab80e2295",
           "report_sha256": "e26463c2bb9dc3559b1dd884711d424cc9481eab194e38d0a2ebe450f32202e8",
@@ -241940,17 +241940,17 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
-      "source_sha256": "bde8436bd97ec8c18bad528fd83b9ae2abfe5ce7023bf31bf9aad9ec788a830f",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
+      "source_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
       "step_kinds": [
         "process"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
-      "current_definition_pass": "id_only_historical_pass",
-      "current_definition_sha256": "d2c1c8a06697713773172e5464dc4bbc17a22080ef2d6dec617fc5df53a19b3e",
+      "current_definition_pass": "exact_definition_pass",
+      "current_definition_sha256": "b08502ca4c4f58afbab9dce0ed4c9b3a358e96908388114f7c20d91e5edc0d46",
       "end_line": 165,
       "family": "Keel Nix process case",
       "id": "keel:sqlite-syntactic-outline",
@@ -242014,9 +242014,9 @@
       "scope": "required_manifest_case_not_execution_verified",
       "source_bound_execution_receipts": [
         {
-          "current_definition_sha256": "d2c1c8a06697713773172e5464dc4bbc17a22080ef2d6dec617fc5df53a19b3e",
+          "current_definition_sha256": "b08502ca4c4f58afbab9dce0ed4c9b3a358e96908388114f7c20d91e5edc0d46",
           "definition_sha256": "b08502ca4c4f58afbab9dce0ed4c9b3a358e96908388114f7c20d91e5edc0d46",
-          "exact_definition_match": false,
+          "exact_definition_match": true,
           "path": "tests/keel/evidence/native-owner-package-account-11bcc-eb9360-20261116.json",
           "report_manifest_sha256": "89dfa9408fc728b9549196252f23be097166e4f0cd057098ad69321ab80e2295",
           "report_sha256": "c45a19999e9ee75b45d1c2f4073b433e975779f1b30ffbc76c905dc45bd40aa5",
@@ -242024,9 +242024,9 @@
           "status": "pass"
         },
         {
-          "current_definition_sha256": "d2c1c8a06697713773172e5464dc4bbc17a22080ef2d6dec617fc5df53a19b3e",
+          "current_definition_sha256": "b08502ca4c4f58afbab9dce0ed4c9b3a358e96908388114f7c20d91e5edc0d46",
           "definition_sha256": "b08502ca4c4f58afbab9dce0ed4c9b3a358e96908388114f7c20d91e5edc0d46",
-          "exact_definition_match": false,
+          "exact_definition_match": true,
           "path": "tests/keel/evidence/native-owner-linux-631a-20261116.json",
           "report_manifest_sha256": "3aa01a97a0c3de6a9cfee33bf7219f423558ba2b9a7468c93e4b9746e1602aef",
           "report_sha256": "4fe768005019acb24da83365ffcdb87a7df8689604b1374aee4e0dd3bd2e30a2",
@@ -242034,9 +242034,9 @@
           "status": "pass"
         },
         {
-          "current_definition_sha256": "d2c1c8a06697713773172e5464dc4bbc17a22080ef2d6dec617fc5df53a19b3e",
+          "current_definition_sha256": "b08502ca4c4f58afbab9dce0ed4c9b3a358e96908388114f7c20d91e5edc0d46",
           "definition_sha256": "b08502ca4c4f58afbab9dce0ed4c9b3a358e96908388114f7c20d91e5edc0d46",
-          "exact_definition_match": false,
+          "exact_definition_match": true,
           "path": "tests/keel/evidence/native-preview-account-refusal-11bcc-f3e-20261116.json",
           "report_manifest_sha256": "89dfa9408fc728b9549196252f23be097166e4f0cd057098ad69321ab80e2295",
           "report_sha256": "8887b2dae4cf6b1e823f285ee24f7310d2830130f43b23725455b0f0eb5a84f4",
@@ -242044,9 +242044,9 @@
           "status": "pass"
         },
         {
-          "current_definition_sha256": "d2c1c8a06697713773172e5464dc4bbc17a22080ef2d6dec617fc5df53a19b3e",
+          "current_definition_sha256": "b08502ca4c4f58afbab9dce0ed4c9b3a358e96908388114f7c20d91e5edc0d46",
           "definition_sha256": "b08502ca4c4f58afbab9dce0ed4c9b3a358e96908388114f7c20d91e5edc0d46",
-          "exact_definition_match": false,
+          "exact_definition_match": true,
           "path": "tests/keel/evidence/product-linux-189f-20261116.json",
           "report_manifest_sha256": "2e28e09136b3530635e00892490a47372011abe173f3c26eb870a1bb20a8c022",
           "report_sha256": "0b79fbf2d8434a609c583f5552b0dc9e3142a5dd4d68bdd90c6b5c3524a58133",
@@ -242054,7 +242054,7 @@
           "status": "pass"
         },
         {
-          "current_definition_sha256": "d2c1c8a06697713773172e5464dc4bbc17a22080ef2d6dec617fc5df53a19b3e",
+          "current_definition_sha256": "b08502ca4c4f58afbab9dce0ed4c9b3a358e96908388114f7c20d91e5edc0d46",
           "definition_sha256": null,
           "exact_definition_match": "unknown",
           "path": "tests/keel/evidence/native-linux-20261116.json",
@@ -242064,9 +242064,9 @@
           "status": "pass"
         },
         {
-          "current_definition_sha256": "d2c1c8a06697713773172e5464dc4bbc17a22080ef2d6dec617fc5df53a19b3e",
+          "current_definition_sha256": "b08502ca4c4f58afbab9dce0ed4c9b3a358e96908388114f7c20d91e5edc0d46",
           "definition_sha256": "b08502ca4c4f58afbab9dce0ed4c9b3a358e96908388114f7c20d91e5edc0d46",
-          "exact_definition_match": false,
+          "exact_definition_match": true,
           "path": "tests/keel/evidence/native-owner-mixed-11bcc-555-f3e-20261116.json",
           "report_manifest_sha256": "89dfa9408fc728b9549196252f23be097166e4f0cd057098ad69321ab80e2295",
           "report_sha256": "e26463c2bb9dc3559b1dd884711d424cc9481eab194e38d0a2ebe450f32202e8",
@@ -242074,13 +242074,13 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
-      "source_sha256": "d2c1c8a06697713773172e5464dc4bbc17a22080ef2d6dec617fc5df53a19b3e",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
+      "source_sha256": "b08502ca4c4f58afbab9dce0ed4c9b3a358e96908388114f7c20d91e5edc0d46",
       "step_kinds": [
         "process"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
       "current_definition_pass": "exact_definition_pass",
@@ -242136,13 +242136,13 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
       "source_sha256": "727554d11e35020391a04d7a22772de6052e53fc96975a4f0b3fb276b400d666",
       "step_kinds": [
         "process"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
       "current_definition_pass": "exact_definition_pass",
@@ -242198,13 +242198,13 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
       "source_sha256": "84a2d731c69eeac5dac5d39080e93ea1bc3cef791b9aaa929dc5df39507baeb3",
       "step_kinds": [
         "process"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
       "current_definition_pass": "exact_definition_pass",
@@ -242242,13 +242242,13 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
       "source_sha256": "1346afcec77a3bd472d2a4e655ee9eb224017e558de38e5fc5e798fea62ce679",
       "step_kinds": [
         "process"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
       "current_definition_pass": "exact_definition_pass",
@@ -242304,17 +242304,17 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
       "source_sha256": "966ebd9694fa4c7a682e9ef91800b2f4dae4302c6ec8fec1f43f7ca8fe91d2b6",
       "step_kinds": [
         "process"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
-      "current_definition_pass": "id_only_historical_pass",
-      "current_definition_sha256": "3e3aeb192f2b4537d942ffb24d494063577a730ed5611f57b7976241f550e0f2",
+      "current_definition_pass": "exact_definition_pass",
+      "current_definition_sha256": "d69594795d770deecbe156aa6e1b603c52f7e47ce3f7bb5c283f58f54f4f55d1",
       "end_line": 70,
       "family": "Keel Nix process case",
       "id": "keel:cli-unknown-command",
@@ -242346,9 +242346,9 @@
       "scope": "required_manifest_case_not_execution_verified",
       "source_bound_execution_receipts": [
         {
-          "current_definition_sha256": "3e3aeb192f2b4537d942ffb24d494063577a730ed5611f57b7976241f550e0f2",
+          "current_definition_sha256": "d69594795d770deecbe156aa6e1b603c52f7e47ce3f7bb5c283f58f54f4f55d1",
           "definition_sha256": "d69594795d770deecbe156aa6e1b603c52f7e47ce3f7bb5c283f58f54f4f55d1",
-          "exact_definition_match": false,
+          "exact_definition_match": true,
           "path": "tests/keel/evidence/product-linux-189f-20261116.json",
           "report_manifest_sha256": "2e28e09136b3530635e00892490a47372011abe173f3c26eb870a1bb20a8c022",
           "report_sha256": "0b79fbf2d8434a609c583f5552b0dc9e3142a5dd4d68bdd90c6b5c3524a58133",
@@ -242356,9 +242356,9 @@
           "status": "pass"
         },
         {
-          "current_definition_sha256": "3e3aeb192f2b4537d942ffb24d494063577a730ed5611f57b7976241f550e0f2",
+          "current_definition_sha256": "d69594795d770deecbe156aa6e1b603c52f7e47ce3f7bb5c283f58f54f4f55d1",
           "definition_sha256": "d69594795d770deecbe156aa6e1b603c52f7e47ce3f7bb5c283f58f54f4f55d1",
-          "exact_definition_match": false,
+          "exact_definition_match": true,
           "path": "tests/keel/evidence/protocol-rust-linux-55551-f3e-20261116.json",
           "report_manifest_sha256": "89dfa9408fc728b9549196252f23be097166e4f0cd057098ad69321ab80e2295",
           "report_sha256": "0c82c1db4ad50723df01256d05b0157e85a6b2587401e1df1b3ef86a40ee2af8",
@@ -242366,17 +242366,17 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
-      "source_sha256": "3e3aeb192f2b4537d942ffb24d494063577a730ed5611f57b7976241f550e0f2",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
+      "source_sha256": "d69594795d770deecbe156aa6e1b603c52f7e47ce3f7bb5c283f58f54f4f55d1",
       "step_kinds": [
         "process"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
-      "current_definition_pass": "id_only_historical_pass",
-      "current_definition_sha256": "f6701dcef134e5159774932da399c27a291066e9c36ea6d2bc2fa9b8882b27e6",
+      "current_definition_pass": "exact_definition_pass",
+      "current_definition_sha256": "65d187ce4967210b281551d0c7df0d584d68ab40e1ae082715828af05c924f93",
       "end_line": 72,
       "family": "Keel Nix process case",
       "id": "keel:cli-nearest-command",
@@ -242408,9 +242408,9 @@
       "scope": "required_manifest_case_not_execution_verified",
       "source_bound_execution_receipts": [
         {
-          "current_definition_sha256": "f6701dcef134e5159774932da399c27a291066e9c36ea6d2bc2fa9b8882b27e6",
+          "current_definition_sha256": "65d187ce4967210b281551d0c7df0d584d68ab40e1ae082715828af05c924f93",
           "definition_sha256": "65d187ce4967210b281551d0c7df0d584d68ab40e1ae082715828af05c924f93",
-          "exact_definition_match": false,
+          "exact_definition_match": true,
           "path": "tests/keel/evidence/product-linux-189f-20261116.json",
           "report_manifest_sha256": "2e28e09136b3530635e00892490a47372011abe173f3c26eb870a1bb20a8c022",
           "report_sha256": "0b79fbf2d8434a609c583f5552b0dc9e3142a5dd4d68bdd90c6b5c3524a58133",
@@ -242418,9 +242418,9 @@
           "status": "pass"
         },
         {
-          "current_definition_sha256": "f6701dcef134e5159774932da399c27a291066e9c36ea6d2bc2fa9b8882b27e6",
+          "current_definition_sha256": "65d187ce4967210b281551d0c7df0d584d68ab40e1ae082715828af05c924f93",
           "definition_sha256": "65d187ce4967210b281551d0c7df0d584d68ab40e1ae082715828af05c924f93",
-          "exact_definition_match": false,
+          "exact_definition_match": true,
           "path": "tests/keel/evidence/protocol-rust-linux-55551-f3e-20261116.json",
           "report_manifest_sha256": "89dfa9408fc728b9549196252f23be097166e4f0cd057098ad69321ab80e2295",
           "report_sha256": "0c82c1db4ad50723df01256d05b0157e85a6b2587401e1df1b3ef86a40ee2af8",
@@ -242428,13 +242428,13 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
-      "source_sha256": "f6701dcef134e5159774932da399c27a291066e9c36ea6d2bc2fa9b8882b27e6",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
+      "source_sha256": "65d187ce4967210b281551d0c7df0d584d68ab40e1ae082715828af05c924f93",
       "step_kinds": [
         "process"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
       "current_definition_pass": "exact_definition_pass",
@@ -242490,13 +242490,13 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
       "source_sha256": "22c9573108d4057963a92320a7431e276673817fddb4b1551442d8d6aef1f96c",
       "step_kinds": [
         "process"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
       "current_definition_pass": "exact_definition_pass",
@@ -242552,13 +242552,13 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
       "source_sha256": "63a7091174e2ad7446d47f5fe3a831c0d3199db23ea6fcfaf065b564ff556624",
       "step_kinds": [
         "process"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
       "current_definition_pass": "exact_definition_pass",
@@ -242596,13 +242596,13 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
       "source_sha256": "a2a23bac7b45cf2508213e88b94847a6be5b89703d97e56d79b023a6848e02b4",
       "step_kinds": [
         "process"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
       "current_definition_pass": "exact_definition_pass",
@@ -242640,13 +242640,13 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
       "source_sha256": "c5c89ddb3517286ca17979c2eee4cdc8550e748713e737855268d00408cdf7d5",
       "step_kinds": [
         "process"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
       "current_definition_pass": "exact_definition_pass",
@@ -242702,13 +242702,13 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
       "source_sha256": "c7f13fe99bdde1b73277c24b461132d3959e9905075626154c906bf641d09a1d",
       "step_kinds": [
         "process"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
       "current_definition_pass": "exact_definition_pass",
@@ -242764,13 +242764,13 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
       "source_sha256": "1d635c84327d89679d83620323ff82636bf24b39eb8658509b9be7c167221d58",
       "step_kinds": [
         "process"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
       "current_definition_pass": "exact_definition_pass",
@@ -242826,17 +242826,17 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
       "source_sha256": "4d33b6339c94728eba1469c7ab970a40609446738aeedd0af963c674e5defd2c",
       "step_kinds": [
         "process"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
-      "current_definition_pass": "id_only_historical_pass",
-      "current_definition_sha256": "286cb390c1a9b8c5bf612bc46cf9932638f298775ee9875247d722a607cc67cd",
+      "current_definition_pass": "exact_definition_pass",
+      "current_definition_sha256": "5309401250621a81689299aea6f44fc3903822bffb8711f32116cf7657f1f3d5",
       "end_line": 100,
       "family": "Keel Nix process case",
       "id": "keel:cli-unknown-option",
@@ -242868,9 +242868,9 @@
       "scope": "required_manifest_case_not_execution_verified",
       "source_bound_execution_receipts": [
         {
-          "current_definition_sha256": "286cb390c1a9b8c5bf612bc46cf9932638f298775ee9875247d722a607cc67cd",
+          "current_definition_sha256": "5309401250621a81689299aea6f44fc3903822bffb8711f32116cf7657f1f3d5",
           "definition_sha256": "5309401250621a81689299aea6f44fc3903822bffb8711f32116cf7657f1f3d5",
-          "exact_definition_match": false,
+          "exact_definition_match": true,
           "path": "tests/keel/evidence/product-linux-189f-20261116.json",
           "report_manifest_sha256": "2e28e09136b3530635e00892490a47372011abe173f3c26eb870a1bb20a8c022",
           "report_sha256": "0b79fbf2d8434a609c583f5552b0dc9e3142a5dd4d68bdd90c6b5c3524a58133",
@@ -242878,9 +242878,9 @@
           "status": "pass"
         },
         {
-          "current_definition_sha256": "286cb390c1a9b8c5bf612bc46cf9932638f298775ee9875247d722a607cc67cd",
+          "current_definition_sha256": "5309401250621a81689299aea6f44fc3903822bffb8711f32116cf7657f1f3d5",
           "definition_sha256": "5309401250621a81689299aea6f44fc3903822bffb8711f32116cf7657f1f3d5",
-          "exact_definition_match": false,
+          "exact_definition_match": true,
           "path": "tests/keel/evidence/protocol-rust-linux-55551-f3e-20261116.json",
           "report_manifest_sha256": "89dfa9408fc728b9549196252f23be097166e4f0cd057098ad69321ab80e2295",
           "report_sha256": "0c82c1db4ad50723df01256d05b0157e85a6b2587401e1df1b3ef86a40ee2af8",
@@ -242888,17 +242888,17 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
-      "source_sha256": "286cb390c1a9b8c5bf612bc46cf9932638f298775ee9875247d722a607cc67cd",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
+      "source_sha256": "5309401250621a81689299aea6f44fc3903822bffb8711f32116cf7657f1f3d5",
       "step_kinds": [
         "process"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
-      "current_definition_pass": "id_only_historical_pass",
-      "current_definition_sha256": "29331f0287a5334d0fdc55688dde4c0a0cecb6e1f78d849a2323326ffd8bc533",
+      "current_definition_pass": "exact_definition_pass",
+      "current_definition_sha256": "5e9623e04f0988bd9cca6deb89e8a07316adc220c887290e2fa4d67ef88f26e9",
       "end_line": 102,
       "family": "Keel Nix process case",
       "id": "keel:cli-missing-global-option-value",
@@ -242930,9 +242930,9 @@
       "scope": "required_manifest_case_not_execution_verified",
       "source_bound_execution_receipts": [
         {
-          "current_definition_sha256": "29331f0287a5334d0fdc55688dde4c0a0cecb6e1f78d849a2323326ffd8bc533",
+          "current_definition_sha256": "5e9623e04f0988bd9cca6deb89e8a07316adc220c887290e2fa4d67ef88f26e9",
           "definition_sha256": "5e9623e04f0988bd9cca6deb89e8a07316adc220c887290e2fa4d67ef88f26e9",
-          "exact_definition_match": false,
+          "exact_definition_match": true,
           "path": "tests/keel/evidence/product-linux-189f-20261116.json",
           "report_manifest_sha256": "2e28e09136b3530635e00892490a47372011abe173f3c26eb870a1bb20a8c022",
           "report_sha256": "0b79fbf2d8434a609c583f5552b0dc9e3142a5dd4d68bdd90c6b5c3524a58133",
@@ -242940,9 +242940,9 @@
           "status": "pass"
         },
         {
-          "current_definition_sha256": "29331f0287a5334d0fdc55688dde4c0a0cecb6e1f78d849a2323326ffd8bc533",
+          "current_definition_sha256": "5e9623e04f0988bd9cca6deb89e8a07316adc220c887290e2fa4d67ef88f26e9",
           "definition_sha256": "5e9623e04f0988bd9cca6deb89e8a07316adc220c887290e2fa4d67ef88f26e9",
-          "exact_definition_match": false,
+          "exact_definition_match": true,
           "path": "tests/keel/evidence/protocol-rust-linux-55551-f3e-20261116.json",
           "report_manifest_sha256": "89dfa9408fc728b9549196252f23be097166e4f0cd057098ad69321ab80e2295",
           "report_sha256": "0c82c1db4ad50723df01256d05b0157e85a6b2587401e1df1b3ef86a40ee2af8",
@@ -242950,17 +242950,17 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
-      "source_sha256": "29331f0287a5334d0fdc55688dde4c0a0cecb6e1f78d849a2323326ffd8bc533",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
+      "source_sha256": "5e9623e04f0988bd9cca6deb89e8a07316adc220c887290e2fa4d67ef88f26e9",
       "step_kinds": [
         "process"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
-      "current_definition_pass": "id_only_historical_pass",
-      "current_definition_sha256": "cf875206174f446ec19b4af52381aa94a0949260dff6229a919a4f353d9ccd17",
+      "current_definition_pass": "exact_definition_pass",
+      "current_definition_sha256": "b2102cc367427f13611a43242a1ee604079f600bc6d8423f02c023362f7333cf",
       "end_line": 104,
       "family": "Keel Nix process case",
       "id": "keel:cli-missing-command-operand",
@@ -242992,9 +242992,9 @@
       "scope": "required_manifest_case_not_execution_verified",
       "source_bound_execution_receipts": [
         {
-          "current_definition_sha256": "cf875206174f446ec19b4af52381aa94a0949260dff6229a919a4f353d9ccd17",
+          "current_definition_sha256": "b2102cc367427f13611a43242a1ee604079f600bc6d8423f02c023362f7333cf",
           "definition_sha256": "b2102cc367427f13611a43242a1ee604079f600bc6d8423f02c023362f7333cf",
-          "exact_definition_match": false,
+          "exact_definition_match": true,
           "path": "tests/keel/evidence/product-linux-189f-20261116.json",
           "report_manifest_sha256": "2e28e09136b3530635e00892490a47372011abe173f3c26eb870a1bb20a8c022",
           "report_sha256": "0b79fbf2d8434a609c583f5552b0dc9e3142a5dd4d68bdd90c6b5c3524a58133",
@@ -243002,9 +243002,9 @@
           "status": "pass"
         },
         {
-          "current_definition_sha256": "cf875206174f446ec19b4af52381aa94a0949260dff6229a919a4f353d9ccd17",
+          "current_definition_sha256": "b2102cc367427f13611a43242a1ee604079f600bc6d8423f02c023362f7333cf",
           "definition_sha256": "b2102cc367427f13611a43242a1ee604079f600bc6d8423f02c023362f7333cf",
-          "exact_definition_match": false,
+          "exact_definition_match": true,
           "path": "tests/keel/evidence/protocol-rust-linux-55551-f3e-20261116.json",
           "report_manifest_sha256": "89dfa9408fc728b9549196252f23be097166e4f0cd057098ad69321ab80e2295",
           "report_sha256": "0c82c1db4ad50723df01256d05b0157e85a6b2587401e1df1b3ef86a40ee2af8",
@@ -243012,13 +243012,13 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
-      "source_sha256": "cf875206174f446ec19b4af52381aa94a0949260dff6229a919a4f353d9ccd17",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
+      "source_sha256": "b2102cc367427f13611a43242a1ee604079f600bc6d8423f02c023362f7333cf",
       "step_kinds": [
         "process"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
       "current_definition_pass": "exact_definition_pass",
@@ -243056,13 +243056,13 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
       "source_sha256": "349142bde61a49c526d4d57f44d235abb655e20a3a765d93358202c96426c5a0",
       "step_kinds": [
         "process"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
       "current_definition_pass": "exact_definition_pass",
@@ -243100,17 +243100,17 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
       "source_sha256": "7564c9784430f8c02625ac3ca65398f3f6a120d87edf73ce0e374e1975480641",
       "step_kinds": [
         "process"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
-      "current_definition_pass": "id_only_historical_pass",
-      "current_definition_sha256": "f300b78c5314ccfa958bdf3dc3e86281ce5521a92b8f2a63ad3ab493c724f6ee",
+      "current_definition_pass": "exact_definition_pass",
+      "current_definition_sha256": "4b70dc36bbe922cbed976caaebcd6976ae305237d988c1275ea1405beb0a20e2",
       "end_line": 116,
       "family": "Keel Nix process case",
       "id": "keel:cli-invalid-page-bound",
@@ -243142,9 +243142,9 @@
       "scope": "required_manifest_case_not_execution_verified",
       "source_bound_execution_receipts": [
         {
-          "current_definition_sha256": "f300b78c5314ccfa958bdf3dc3e86281ce5521a92b8f2a63ad3ab493c724f6ee",
+          "current_definition_sha256": "4b70dc36bbe922cbed976caaebcd6976ae305237d988c1275ea1405beb0a20e2",
           "definition_sha256": "4b70dc36bbe922cbed976caaebcd6976ae305237d988c1275ea1405beb0a20e2",
-          "exact_definition_match": false,
+          "exact_definition_match": true,
           "path": "tests/keel/evidence/product-linux-189f-20261116.json",
           "report_manifest_sha256": "2e28e09136b3530635e00892490a47372011abe173f3c26eb870a1bb20a8c022",
           "report_sha256": "0b79fbf2d8434a609c583f5552b0dc9e3142a5dd4d68bdd90c6b5c3524a58133",
@@ -243152,9 +243152,9 @@
           "status": "pass"
         },
         {
-          "current_definition_sha256": "f300b78c5314ccfa958bdf3dc3e86281ce5521a92b8f2a63ad3ab493c724f6ee",
+          "current_definition_sha256": "4b70dc36bbe922cbed976caaebcd6976ae305237d988c1275ea1405beb0a20e2",
           "definition_sha256": "4b70dc36bbe922cbed976caaebcd6976ae305237d988c1275ea1405beb0a20e2",
-          "exact_definition_match": false,
+          "exact_definition_match": true,
           "path": "tests/keel/evidence/protocol-rust-linux-55551-f3e-20261116.json",
           "report_manifest_sha256": "89dfa9408fc728b9549196252f23be097166e4f0cd057098ad69321ab80e2295",
           "report_sha256": "0c82c1db4ad50723df01256d05b0157e85a6b2587401e1df1b3ef86a40ee2af8",
@@ -243162,17 +243162,17 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
-      "source_sha256": "f300b78c5314ccfa958bdf3dc3e86281ce5521a92b8f2a63ad3ab493c724f6ee",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
+      "source_sha256": "4b70dc36bbe922cbed976caaebcd6976ae305237d988c1275ea1405beb0a20e2",
       "step_kinds": [
         "process"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
-      "current_definition_pass": "id_only_historical_pass",
-      "current_definition_sha256": "3059d1565fd3ea8c25a7dd98e3e2150d8ad50f62548565e1b26cc115e3ea03c9",
+      "current_definition_pass": "exact_definition_pass",
+      "current_definition_sha256": "4b6f86a2e633076cabe8d1200ce5c1eb6a4f77f9c26dd679dc60a20fa93da69b",
       "end_line": 118,
       "family": "Keel Nix process case",
       "id": "keel:cli-invalid-format",
@@ -243204,9 +243204,9 @@
       "scope": "required_manifest_case_not_execution_verified",
       "source_bound_execution_receipts": [
         {
-          "current_definition_sha256": "3059d1565fd3ea8c25a7dd98e3e2150d8ad50f62548565e1b26cc115e3ea03c9",
+          "current_definition_sha256": "4b6f86a2e633076cabe8d1200ce5c1eb6a4f77f9c26dd679dc60a20fa93da69b",
           "definition_sha256": "4b6f86a2e633076cabe8d1200ce5c1eb6a4f77f9c26dd679dc60a20fa93da69b",
-          "exact_definition_match": false,
+          "exact_definition_match": true,
           "path": "tests/keel/evidence/product-linux-189f-20261116.json",
           "report_manifest_sha256": "2e28e09136b3530635e00892490a47372011abe173f3c26eb870a1bb20a8c022",
           "report_sha256": "0b79fbf2d8434a609c583f5552b0dc9e3142a5dd4d68bdd90c6b5c3524a58133",
@@ -243214,9 +243214,9 @@
           "status": "pass"
         },
         {
-          "current_definition_sha256": "3059d1565fd3ea8c25a7dd98e3e2150d8ad50f62548565e1b26cc115e3ea03c9",
+          "current_definition_sha256": "4b6f86a2e633076cabe8d1200ce5c1eb6a4f77f9c26dd679dc60a20fa93da69b",
           "definition_sha256": "4b6f86a2e633076cabe8d1200ce5c1eb6a4f77f9c26dd679dc60a20fa93da69b",
-          "exact_definition_match": false,
+          "exact_definition_match": true,
           "path": "tests/keel/evidence/protocol-rust-linux-55551-f3e-20261116.json",
           "report_manifest_sha256": "89dfa9408fc728b9549196252f23be097166e4f0cd057098ad69321ab80e2295",
           "report_sha256": "0c82c1db4ad50723df01256d05b0157e85a6b2587401e1df1b3ef86a40ee2af8",
@@ -243224,13 +243224,13 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
-      "source_sha256": "3059d1565fd3ea8c25a7dd98e3e2150d8ad50f62548565e1b26cc115e3ea03c9",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
+      "source_sha256": "4b6f86a2e633076cabe8d1200ce5c1eb6a4f77f9c26dd679dc60a20fa93da69b",
       "step_kinds": [
         "process"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
       "current_definition_pass": "exact_definition_pass",
@@ -243268,13 +243268,13 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
       "source_sha256": "dd6fc33e74205ce3fd51c7b7f9d12aa5a5f93817d66c2ebd38cc5cce8045e53f",
       "step_kinds": [
         "process"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
       "current_definition_pass": "id_only_historical_pass",
@@ -243312,7 +243312,7 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
       "source_sha256": "d8b8fb97afcf0e1392293891c9c1b73aa3c35c2e35cdd623d62156bc0c0f985d",
       "step_kinds": [
         "index",
@@ -243320,7 +243320,7 @@
         "restart"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
       "current_definition_pass": "id_only_historical_pass",
@@ -243358,7 +243358,7 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
       "source_sha256": "adb5d6286a799dbd1fb065aa526e88826ae71a5fe6c0f4851b34c02a99d06ad4",
       "step_kinds": [
         "index",
@@ -243366,7 +243366,7 @@
         "query"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
       "current_definition_pass": "exact_definition_pass",
@@ -243440,7 +243440,7 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
       "source_sha256": "29ef866e26500210765fdd7934a6c90126cdf9cb77197ec4566a1d8d7a4cb3c5",
       "step_kinds": [
         "cli",
@@ -243450,7 +243450,7 @@
         "write"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
       "current_definition_pass": "exact_definition_pass",
@@ -243506,14 +243506,14 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
       "source_sha256": "9e163b2f8fe141783e76d1e94230782ea483e5d23ac358b074f4e8f5577cad33",
       "step_kinds": [
         "index",
         "query"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
       "current_definition_pass": "exact_definition_pass",
@@ -243551,7 +243551,7 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
       "source_sha256": "b7e48f591d191b812921fdb87665e72f6b11635728798c3ae0f9915894a44dbe",
       "step_kinds": [
         "index",
@@ -243560,7 +243560,7 @@
         "write"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
       "current_definition_pass": "exact_definition_pass",
@@ -243598,7 +243598,7 @@
           "status": "pass"
         }
       ],
-      "source_hash_kind": "SHA-256 of strict evaluated case JSON with sorted keys and compact separators; serializer matches report inventory.definition_sha256",
+      "source_hash_kind": "SHA-256 of strict evaluated case JSON sorted by key and compactly serialized as UTF-8 with non-ASCII characters unescaped; matches report inventory.definition_sha256.",
       "source_sha256": "28a195d9f9b7ebe066c512804d2da12c19ce445da4e75caf79589d59168b95a2",
       "step_kinds": [
         "index",
@@ -243608,7 +243608,7 @@
         "write"
       ],
       "test_kind": "real_product_process_case",
-      "uncertainty": "case evaluated from default.nix; digest is SHA-256 of normalized evaluated case JSON; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
+      "uncertainty": "Case evaluated from default.nix; digest uses sorted compact UTF-8 JSON with non-ASCII characters unescaped; source span points to its authored ID/call site. A passing receipt is attached only if a report records this ID as pass."
     },
     {
       "baseline_present": true,
@@ -245500,23 +245500,23 @@
     "extraction_note": "Source extractors preserve same-named functions by per-file occurrence ordinal; Rust comment/string masking and Python AST are used; feature reachability, filters, macros, runtime execution and semantic subject classification are not inferred.",
     "historical_introduced_and_retired_typescript_function": 1,
     "keel_case_id_status_counts": {
-      "exact_definition_pass": 19,
-      "id_only_historical_pass": 11,
+      "exact_definition_pass": 28,
+      "id_only_historical_pass": 2,
       "no_passing_receipt": 3
     },
     "keel_passing_case_report_definition_counts": {
-      "exact_current_definition": 29,
-      "id_only_definition_mismatch": 27,
+      "exact_current_definition": 53,
+      "id_only_definition_mismatch": 3,
       "missing_definition_hash": 2
     },
     "keel_passing_case_report_rows": 58,
     "keel_required_manifest_case_count": 33,
     "retired_source_functions_since_baseline_with_process_case_ids": 15,
-    "retired_source_functions_with_exact_current_definition_pass": 5,
-    "retired_source_functions_with_only_id_historical_pass": 11,
+    "retired_source_functions_with_exact_current_definition_pass": 16,
+    "retired_source_functions_with_only_id_historical_pass": 0,
     "retired_unit_replacement_definition_counts": {
-      "exact_current_definition_pass": 5,
-      "id_only_historical_pass": 11,
+      "exact_current_definition_pass": 16,
+      "id_only_historical_pass": 0,
       "no_passing_receipt": 0
     },
     "same_path_function_rewrite_not_retirement": 1
