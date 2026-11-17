@@ -19,6 +19,15 @@ LABEL = re.compile(r"^[a-zA-Z0-9_-]{1,48}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
 def load_identities(path):
     # Read a bounded, private operator registry afresh on each use. Atomic
     # replacement is supported; a systemd credential snapshot needs a restart.
@@ -31,7 +40,7 @@ def load_identities(path):
         raw = f.read(65537)
     if len(raw) > 65536:
         raise ValueError("grant registry too large")
-    data = json.loads(raw)
+    data = json.loads(raw, object_pairs_hook=unique_object)
     if not isinstance(data, list) or len(data) > MAX_IDENTITIES:
         raise ValueError("invalid grant count")
     identities = []
@@ -137,7 +146,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.server.db.execute("UPDATE ready_check SET n = 1 - n WHERE id = 1")
                 self.server.db.commit()
                 return self.reply(200, b"ready\n")
-            except (sqlite3.Error, OSError, ValueError, UnicodeError, RuntimeError):
+            except (sqlite3.Error, OSError, ValueError, UnicodeError, RuntimeError, RecursionError):
                 self.server.db.rollback()
                 return self.reply(503, b"not ready\n")
         if self.path != "/metrics":
@@ -156,7 +165,7 @@ class Handler(BaseHTTPRequestHandler):
                 out.append(f'relay_records_total{{kind="{kind}"}} {counters.get(kind,0)}')
             out += ["# TYPE relay_rejected_total counter", f"relay_rejected_total {counters.get('rejected',0)}", "# TYPE relay_node_reported_dropped_total counter", f"relay_node_reported_dropped_total {counters.get('reported_dropped',0)}"]
             return self.reply(200, ("\n".join(out)+"\n").encode())
-        except (sqlite3.Error, OSError, ValueError, UnicodeError, RuntimeError):
+        except (sqlite3.Error, OSError, ValueError, UnicodeError, RuntimeError, RecursionError):
             self.server.db.rollback()
             return self.reply(503)
 
@@ -174,7 +183,7 @@ class Handler(BaseHTTPRequestHandler):
             digest = hashlib.sha256(token.encode()).hexdigest()
             try:
                 grants = active_grants(self.server.registry, self.server.checked_time(commit=True))
-            except (OSError, ValueError, UnicodeError, RuntimeError):
+            except (OSError, ValueError, UnicodeError, RuntimeError, RecursionError):
                 self.server.db.rollback()
                 return self.reply(503)
             identity = next(((t,n) for t,n,h in grants if hmac.compare_digest(digest,h)), None)
@@ -192,7 +201,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(raw) != int(raw_length):
                 self.server.reject()
                 return self.reply(400)
-            record = json.loads(raw)
+            record = json.loads(raw, object_pairs_hook=unique_object)
             if not isinstance(record,dict) or record.get("kind") not in ("heartbeat","goodbye","diag") or set(record) != ({"seq","kind","created_at","dropped"} if record.get("kind") == "diag" else {"seq","kind","created_at"}) or type(record["seq"]) is not int or not 1 <= record["seq"] <= 2**63-1 or type(record["created_at"]) is not int or (record["kind"] == "diag" and (type(record["dropped"]) is not int or not 1 <= record["dropped"] <= 2**31-1)):
                 raise ValueError("schema")
             fingerprint = hashlib.sha256(raw).hexdigest()
@@ -205,7 +214,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 still_allowed = any(t == tenant and n == node and hmac.compare_digest(digest, h)
                                     for t, n, h in active_grants(self.server.registry, self.server.checked_time()))
-            except (OSError, ValueError, UnicodeError, RuntimeError):
+            except (OSError, ValueError, UnicodeError, RuntimeError, RecursionError):
                 db.rollback()
                 return self.reply(503)
             if not still_allowed:
@@ -236,7 +245,7 @@ class Handler(BaseHTTPRequestHandler):
                 db.execute("INSERT INTO counters VALUES('reported_dropped',?) ON CONFLICT(kind) DO UPDATE SET n=n+excluded.n", (record["dropped"],))
             db.commit()
             return self.reply(202, b"accepted\n")
-        except (ValueError, TypeError, KeyError, json.JSONDecodeError, UnicodeError):
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError, UnicodeError, RecursionError):
             self.server.db.rollback()
             self.server.reject()
             return self.reply(400)
