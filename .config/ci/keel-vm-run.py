@@ -74,7 +74,10 @@ def main():
             or canonical.get("manifest_sha256") != hashlib.sha256(inventory_bytes).hexdigest()
             or [case["id"] for case in canonical["cases"]] != ids):
         raise ValueError("canonical Keel inventory does not match the source manifest")
-    evidence.mkdir(parents=True, exist_ok=False)
+    if evidence.exists() or evidence.is_symlink():
+        raise ValueError("Keel evidence path already exists")
+    # The driver owns creation of its fresh evidence leaf.
+    evidence.parent.mkdir(parents=True, exist_ok=True)
     completed = subprocess.run([str(harness), "--manifest", str(manifest_path), "--bin-dir", str(bundle / "bin"), "--evidence", str(evidence)], env=env, check=False)
     verify_bundle(bundle, source_sha)
     if (sha256(harness) != driver_digest or manifest_path.read_bytes() != inventory_bytes
