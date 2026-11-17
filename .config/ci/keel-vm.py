@@ -54,7 +54,7 @@ def main():
 
 def run(args):
     source = args.source.resolve(strict=True)
-    bundle = args.bundle.resolve(strict=True)
+    bundle = args.bundle.absolute()
     verifier = args.verifier.resolve(strict=True)
     if not re.fullmatch(r"[0-9a-f]{40}", args.source_sha):
         raise ValueError("source SHA must be a full lowercase Git SHA")
