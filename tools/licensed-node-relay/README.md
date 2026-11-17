@@ -47,7 +47,9 @@ signal only the sender and need it to forward termination to the child. The
 optional `--interval-seconds` (1–60, default 60) and `--spool-capacity`
 (1–256, default 256) occur before `--`; they make bounded overflow observable
 in a short VM proof. A durable SQLite FIFO retains pending records and the
-number actually abandoned by the sender. Queue overflow, expiry, or abandoning
+number actually abandoned by the sender. It reserves one extra bounded slot
+for an orderly goodbye; replacing an older pending goodbye counts that older
+record as abandoned. Queue overflow, expiry, or abandoning
 queued heartbeats when the child exits increments that count; a subsequent
 diagnostic reports it. The relay durably counts accepted diagnostics and their
 reported dropped-record totals. An ambiguous acknowledgment may mean that a

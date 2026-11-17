@@ -80,7 +80,16 @@ def main():
 
     def enqueue(kind, dropped=None):
         with db:
-            if db.execute("SELECT COUNT(*) FROM queue").fetchone()[0] >= capacity:
+            # Reserve one bounded slot for orderly retirement. If an older
+            # unacknowledged goodbye exists, replace it with the latest real
+            # retirement and durably count the abandoned older record.
+            if kind == "goodbye":
+                for old_seq, old_body in db.execute("SELECT seq,body FROM queue").fetchall():
+                    if json.loads(old_body)["kind"] == "goodbye":
+                        db.execute("DELETE FROM queue WHERE seq=?", (old_seq,))
+                        db.execute("UPDATE meta SET lost=lost+1 WHERE id=1")
+            limit = capacity + 1 if kind == "goodbye" else capacity
+            if db.execute("SELECT COUNT(*) FROM queue").fetchone()[0] >= limit:
                 db.execute("UPDATE meta SET lost=lost+1 WHERE id=1")
                 return False
             seq = db.execute("UPDATE meta SET seq=seq+1 WHERE id=1 RETURNING seq").fetchone()[0]
