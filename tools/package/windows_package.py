@@ -22,7 +22,6 @@ from windows_build import sqlite_basis
 
 EXPECTED = {name + '.exe' for name in ('backend-cli', 'backend-mcp', 'backend-locald',
             'backend-desktop', 'backend-metrics', 'backend-stylo-worker', 'backend-sqlite-worker')}
-DLL = re.compile(r'^\s*DLL Name:\s*(\S+)\s*$', re.I | re.M)
 SAFE_DLL = re.compile(r'^[A-Za-z0-9_.+-]+\.dll$', re.I)
 # These Visual C++ redistributables can be installed on the build host but
 # are not part of a clean Windows installation. Package them explicitly.
@@ -63,6 +62,84 @@ def require_amd64_pe(path):
     if pe[:4] != b'PE\0\0' or struct.unpack_from('<H', pe, 4)[0] != 0x8664:
         raise ValueError(f'not an x64 PE image: {path}')
     return image_hash
+
+
+def pe_import_directories(path):
+    """Read PE32+ import directory presence independently of the LLVM output."""
+    with path.open('rb') as stream:
+        dos = stream.read(64)
+        if len(dos) != 64 or dos[:2] != b'MZ':
+            raise ValueError('invalid DOS header')
+        offset = struct.unpack_from('<I', dos, 0x3c)[0]
+        if offset + 24 > path.stat().st_size:
+            raise ValueError('invalid PE offset')
+        stream.seek(offset)
+        header = stream.read(24)
+        if len(header) != 24 or header[:4] != b'PE\0\0' or struct.unpack_from('<H', header, 4)[0] != 0x8664:
+            raise ValueError('invalid x64 PE header')
+        size = struct.unpack_from('<H', header, 20)[0]
+        if size < 112 or offset + 24 + size > path.stat().st_size:
+            raise ValueError('invalid PE optional header size')
+        optional = stream.read(size)
+    if len(optional) != size or struct.unpack_from('<H', optional, 0)[0] != 0x20b:
+        raise ValueError('expected PE32+ optional header')
+    count = struct.unpack_from('<I', optional, 108)[0]
+    if count < 14 or count > 128 or 112 + count * 8 > size:
+        raise ValueError('incomplete PE data directory')
+    result = []
+    for index in (1, 13):
+        address, length = struct.unpack_from('<II', optional, 112 + index * 8)
+        if bool(address) != bool(length):
+            raise ValueError('malformed PE import directory')
+        result.append(bool(address))
+    return tuple(result)
+
+
+def parse_coff_imports(text, directories):
+    """Read only complete top-level COFF import records, including delay imports."""
+    records = {'Import': [], 'DelayImport': []}
+    expected_headers = {'Format: COFF-x86-64', 'Arch: x86_64', 'AddressSize: 64bit'}
+    headers = set()
+    kind = None
+    depth = 0
+    name = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if kind is None:
+            if not stripped or stripped.startswith('File: '):
+                continue
+            if stripped in expected_headers:
+                if stripped in headers:
+                    raise ValueError('duplicate COFF reader header')
+                headers.add(stripped)
+                continue
+            if stripped in ('Import {', 'DelayImport {'):
+                kind = stripped.split()[0]
+                depth = 1
+                name = None
+                continue
+            raise ValueError('unrecognized COFF reader output')
+        if stripped.endswith('{'):
+            depth += 1
+        elif stripped == '}':
+            depth -= 1
+            if depth == 0:
+                if name is None:
+                    raise ValueError('COFF import lacks a DLL name')
+                records[kind].append(name)
+                kind = None
+        elif depth == 1 and re.match(r'^Name\b', stripped):
+            match = re.fullmatch(r'Name:\s*(\S+)', stripped)
+            if name is not None or match is None or not SAFE_DLL.fullmatch(match.group(1)):
+                raise ValueError('invalid COFF DLL import name')
+            name = match.group(1)
+    if kind is not None or depth != 0 or headers != expected_headers:
+        raise ValueError('incomplete COFF reader output')
+    if tuple(bool(records[kind]) for kind in ('Import', 'DelayImport')) != directories:
+        raise ValueError('COFF imports do not match PE directories')
+    if not records['Import'] and not records['DelayImport']:
+        raise ValueError('PE image has no reported imports')
+    return records['Import'] + records['DelayImport']
 
 
 def index_folder(folder):
@@ -127,6 +204,9 @@ def main():
         raise ValueError('build receipt differs from source checkout')
     system = index_folder(args.system_dll_dir.resolve(strict=True))
     folders = [index_folder(p.resolve(strict=True)) for p in args.dll_dir]
+    readobj = args.objdump.resolve(strict=True).with_name('llvm-readobj.exe' if os.name == 'nt' else 'llvm-readobj')
+    if readobj.is_symlink() or not readobj.is_file():
+        raise ValueError('LLVM COFF import reader is unavailable beside objdump')
     images = {}
     queue = []
     imports_by_image = {}
@@ -139,10 +219,9 @@ def main():
         queue.append((name, path))
     while queue:
         image_name, image = queue.pop()
-        text = subprocess.check_output([str(args.objdump), '-p', str(image)], text=True, errors='strict')
-        imports = DLL.findall(text)
-        if not imports:
-            raise ValueError(f'objdump did not report any PE imports: {image}')
+        directories = pe_import_directories(image)
+        text = subprocess.check_output([str(readobj), '--coff-imports', str(image)], text=True, errors='strict')
+        imports = parse_coff_imports(text, directories)
         imports_by_image[image_name] = sorted(set(imports), key=str.casefold)
         for name in imports:
             if not SAFE_DLL.fullmatch(name):
