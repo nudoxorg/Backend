@@ -310,7 +310,7 @@ fn dependency_snapshot_trickle_is_bounded_and_omitted() {
 }
 
 #[test]
-fn real_view_journal_append_success_and_permission_failure() {
+fn real_view_journal_append_success_and_path_failure() {
     let dir = tempfile::Builder::new()
         .prefix("bm-")
         .tempdir_in("/tmp")
@@ -417,7 +417,10 @@ fn real_view_journal_append_success_and_permission_failure() {
     );
     let error_before = value(&after, &counter("error"));
     let journal = workspace.join("view.journal");
-    std::fs::set_permissions(&journal, std::fs::Permissions::from_mode(0o400)).unwrap();
+    let saved_journal = workspace.join("view.journal.saved");
+    std::fs::rename(&journal, &saved_journal).unwrap();
+    let obstruction = std::os::unix::net::UnixListener::bind(&journal).unwrap();
+    assert_eq!(std::fs::metadata(&journal).unwrap().len(), 0);
     std::fs::write(project.join("src/lib.rs"), "pub fn value() -> u32 { 2 }\n").unwrap();
     let mut second = Process(start_add());
     let mut after_failure = String::new();
@@ -435,7 +438,13 @@ fn real_view_journal_append_success_and_permission_failure() {
     let errors = value(&after_failure, &counter("error"));
     let histogram = "store_request_duration_seconds_bucket{backend=\"view_journal\",op=\"append\",outcome=\"error\",le=\"+Inf\"} ";
     assert_eq!(value(&after_failure, histogram), errors);
-    std::fs::set_permissions(&journal, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        value(&after_failure, histogram) - value(&after, histogram),
+        errors - error_before
+    );
+    drop(obstruction);
+    std::fs::remove_file(&journal).unwrap();
+    std::fs::rename(&saved_journal, &journal).unwrap();
     let _ = second.0.kill();
     let _ = second.0.wait();
     assert!(

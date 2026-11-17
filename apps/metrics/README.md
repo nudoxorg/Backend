@@ -38,7 +38,7 @@ cargo test -p backend-metrics --test process
 The test finds `backend-locald` beside the test profile's binaries; set
 `BACKEND_LOCALD_BIN` and `BACKEND_CLI_BIN` to override those paths. It creates
 a private temporary workspace and project, exercises real journal appends and
-a deliberately denied write, and cleans up the processes.
+a real filesystem path obstruction, and cleans up the processes.
 
 When a fresh authenticated snapshot is returned by an initialized owner,
 `store_requests_total` and `store_request_duration_seconds` describe that
