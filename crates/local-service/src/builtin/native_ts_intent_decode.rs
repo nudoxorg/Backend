@@ -427,37 +427,8 @@ pub(super) fn decode_retirement_intent(
     if resident > backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES {
         return Err("evidence resident limit");
     }
-    let charge = bytes
-        .len()
-        .checked_add(bookkeeping)
-        .ok_or("intent allocation overflow")?;
-    let reservation = budget
-        .reserve(charge)
-        .map_err(|_| "retirement allocation budget exceeded")?;
-    let layout = std::alloc::Layout::array::<u8>(bytes.len())
-        .map_err(|_| "retirement intent allocation overflow")?;
-    // The grammar has a nonempty header. Request precisely the charged layout
-    // from the global allocator, rather than depending on RawVec growth policy.
-    // Vec takes ownership immediately so cancellation also frees the buffer.
-    let ptr = unsafe { std::alloc::alloc(layout) };
-    if ptr.is_null() {
-        return Err("retirement intent allocation failed");
-    }
-    // SAFETY: ptr is a live global allocation of exactly `bytes.len()` u8
-    // elements, with zero initialized elements and the same layout Vec uses.
-    let mut owned = unsafe { Vec::from_raw_parts(ptr, 0, bytes.len()) };
-    for chunk in bytes.chunks(64 * 1024) {
-        if cancelled() {
-            return Err("cancelled");
-        }
-        owned.extend_from_slice(chunk);
-    }
-    if cancelled() {
-        return Err("cancelled");
-    }
-    Ok(DecodedRetirementIntent {
-        charged: reservation.meter(owned),
-        owner: summary.owner,
-        operation_key: summary.operation_key,
-    })
+    // The exact-allocation producer is not available under this crate's
+    // deny(unsafe_code) policy. Refuse before reserving or allocating until a
+    // reviewed foundation API can supply an exactly charged buffer.
+    Err("retirement intent exact-allocation producer is unavailable")
 }
