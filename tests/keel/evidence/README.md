@@ -134,3 +134,31 @@ and raw replies remain at
 `/root/nudox-keel-native-owner-11bcc-mixed-555-f3e-20261116` on ilo-prod.
 This is evidence for that owner/worker package with mixed test clients, not a
 pass for the refused exact-package clients or the final release candidate.
+
+`native-owner-package-account-11bcc-eb9360-20261116.json` records the subsequent
+exact-package account-authorized run. All six runtime executables came from
+the same immutable 11bcc Nix output identified above; its source, worker
+observations and seven binary/library hashes were verified before execution.
+All 50 steps passed, including all 33 owner steps (238.679 s). This supersedes
+the account-admission blocker for this preview package while preserving the
+original refusal and mixed-client diagnostics separately.
+
+The account was used only through the reviewed private-file channel introduced
+in public Keel `eb9360d7d3eeac1ab586e8f7a5090f0636e126ea`, after its required
+GitHub CI passed all 13 driver controls and the separate cgroup holdout. The
+immutable Nix driver's executable SHA-256 is
+`5142d8b1f30a5335f32955debed1fc37be3905c60fcaa771be20d0d77662703f`.
+The report records only credential presence and source basename, and the actual
+credential never entered arguments, manifests or serialized authority inputs.
+An independent scan of all regular files under the retained run directory
+found no exact credential token. The temporary private remote credential file
+and its empty parent were then removed; the operator's original configuration
+was unchanged. Encoded or deliberately transformed credentials are outside the
+redaction contract.
+
+The manifest SHA-256 remains `89dfa940...`; report SHA-256 is
+`c45a19999e9ee75b45d1c2f4073b433e975779f1b30ffbc76c905dc45bd40aa5`.
+Raw evidence remains at
+`/root/nudox-keel-native-preview-11bcc-account-eb9360-20261116` on ilo-prod.
+This proves the identified preview package, with required cgroup isolation;
+it does not qualify later source changes or the final release inventory.
