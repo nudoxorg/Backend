@@ -8,6 +8,8 @@ complete. The machine-readable ledger is
 function/case names, line spans, source hashes, baseline/current status,
 runtime classification, static-extraction uncertainty, and receipt links for
 the individual obligations that have actually been replaced.
+The source declaration extractor and two-revision regeneration steps are in
+[`tools/README.md`](tools/README.md).
 
 ## Audit scope and counts
 
