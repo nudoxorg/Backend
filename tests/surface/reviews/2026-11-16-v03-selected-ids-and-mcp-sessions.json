@@ -1,0 +1,103 @@
+{
+  "artifact_manifest_sha256": "73c5b7b974bdef77b04c3e8f23460d7f90c82ce2fbc87c5c9f22e63c34ee58db",
+  "cases": [
+    {
+      "after_snapshot_sha256": "e0ab96989defab6fd8316fe3da834ecb5d4d9e3d87c66552b3fe3fef4f026599",
+      "before_snapshot_sha256": "fe8c7344054af1f24c09254687874e0fac41589a1ff1bc48dc8691fc571cbb40",
+      "byte_identical_selected_ids": 91,
+      "case": "python-blinker",
+      "continuation_previews": 2,
+      "observed_candidate_sha256": "384e831290ba7f7cd495d6c30cf423285e054fa6d174c82886b9184b43d121cd",
+      "performance_baseline_preserved": true,
+      "session_cursor_contracts": 3
+    },
+    {
+      "after_snapshot_sha256": "cfc993bb3dd3fe78f1c9b40df9bd7e8312f0a1d8c3b7384f3c8f839758ffae1c",
+      "before_snapshot_sha256": "a1fc52fb90ef3ee2a80b92d0969ce706f93fd17021ddf1325fb3a23c7f6a6260",
+      "byte_identical_selected_ids": 140,
+      "case": "python-cachetools",
+      "continuation_previews": 2,
+      "observed_candidate_sha256": "d3dac61ccde98a009918cc1f693e70be8f72ed45c1b0312a83ae77adac5db192",
+      "performance_baseline_preserved": true,
+      "session_cursor_contracts": 3
+    },
+    {
+      "after_snapshot_sha256": "94d076f107451630d443d01dcd66fbcf828ef358ae4473f03a6426b0424e1d46",
+      "before_snapshot_sha256": "289edbaa1a725daf57be5f5d736c14e1a23e5513e992a46f0552d57503415f1d",
+      "byte_identical_selected_ids": 111,
+      "case": "python-itsdangerous",
+      "continuation_previews": 2,
+      "observed_candidate_sha256": "d3f1c7a03a9d507cbd634e7f1b4b4327d6308b0c53cd5d241ac689b901b74b59",
+      "performance_baseline_preserved": true,
+      "session_cursor_contracts": 3
+    },
+    {
+      "after_snapshot_sha256": "cb98585448bd8d48add4d53a9f4d8e66318c9eaf412b62f48d7c9b83bd47fb55",
+      "before_snapshot_sha256": "76126bed449484484d130d515027ea95fab14c5416b70c33915792de0068eee5",
+      "byte_identical_selected_ids": 85,
+      "case": "python-tomli",
+      "continuation_previews": 0,
+      "observed_candidate_sha256": "9db12e2c75857c2523d4d1030640fedc46e33206ce99b2ea1a5cd2e1a23da81e",
+      "performance_baseline_preserved": true,
+      "session_cursor_contracts": 1
+    },
+    {
+      "after_snapshot_sha256": "0ff47e33d0c63cc31c0e9cb2c07fc405a98a5fb4e1f34962be16d370d154efbc",
+      "before_snapshot_sha256": "45d129c8ede6d244163e7f2677a11c12b7255ba7ea00e15abfc151c9e418b4c3",
+      "byte_identical_selected_ids": 123,
+      "case": "rust-itoa",
+      "continuation_previews": 1,
+      "observed_candidate_sha256": "d796620a026664358b57e8f45763b38210868097a7e884f609445bdb253011c4",
+      "performance_baseline_preserved": true,
+      "session_cursor_contracts": 2
+    },
+    {
+      "after_snapshot_sha256": "f3d5af992d139aef7e27cf37c39f29631b7eac5aa9cf925db2f676f01e149987",
+      "before_snapshot_sha256": "9850092173a2075d2c385e5b3b97fa45ec5448d4903ae9bd163ee9e99f9db91a",
+      "byte_identical_selected_ids": 142,
+      "case": "rust-percent-encoding",
+      "continuation_previews": 2,
+      "observed_candidate_sha256": "3a76ece3c27ebf7ba33c49b1e7c3f00b20212a42e87903459e3ff68508759a86",
+      "performance_baseline_preserved": true,
+      "session_cursor_contracts": 3
+    },
+    {
+      "after_snapshot_sha256": "de71b1060b56b1bdd591bb8232676fcced0b6444cda6bbeceabbff75defbe116",
+      "before_snapshot_sha256": "93617ae34fcc5c9c7dcf523446d3124afa8c0c13eedaf510425f565c3e5def3f",
+      "byte_identical_selected_ids": 134,
+      "case": "rust-ryu",
+      "continuation_previews": 2,
+      "observed_candidate_sha256": "d9e02d311192e15143aa948617abcfbc1564fa16828274268085e8aeee236a5c",
+      "performance_baseline_preserved": true,
+      "session_cursor_contracts": 3
+    }
+  ],
+  "ci_build": 1031935,
+  "excluded": [
+    "typescript-query-core: additional external rows and selected source root need separate attribution",
+    "polyglot-focused: first snapshot requires a separate authored-fixture review"
+  ],
+  "independent_review": {
+    "cursor_placements": 18,
+    "method": "Separately replayed strict transformations from original Git snapshots, read source implementation and unchanged surface wire validation",
+    "result": "pass",
+    "search_previews": 11,
+    "selected_ids": 826
+  },
+  "review": [
+    "Each selected-symbol ID retains the exact same 32 bytes, represented as 64 lowercase hexadecimal characters instead of an integer array.",
+    "MCP continuation schema mcp3 and nextCursor are real session-bound contract changes. The unchanged surface runner actually followed each cursor before emitting its live-validated placeholder.",
+    "MCP preview text matches the current explicit tool and nextCursor operand; all other text and every semantic record, query, location, coverage field and ordering remain unchanged.",
+    "Only measured byte/token counters change with the serialization and continuation fields; token arithmetic remains ceil(bytes/bytesPerToken). Raw complete-frame accounting was verified by the unchanged surface runner.",
+    "The same seven complete answers were independently identical in source55551 and sourcef54 CI runs. This is representation review, not normalization of the changed public contract."
+  ],
+  "schema": 1,
+  "scope": "Seven answer-only snapshot updates after exact-source live continuation verification; no baseline, limit, normalizer or deadline changes.",
+  "source_contract": {
+    "cursor": "apps/mcp/src/jsonrpc.rs:owner cursors above256 bytes use15-minute process-local signed mcp3 handles; shorter cursors still use mcp2",
+    "preview": "crates/present/render/mod.rs:ContinuationTarget::McpTool",
+    "selected_ids": "crates/present/dto.rs:64-hex serialization preserves32-byte identity and legacy-array admission"
+  },
+  "source_revision": "f54c6430cea702d1865795900a98091294f99509",
+  "validation": "Strict recursive comparison after only the listed transformations; original performance objects retained unchanged. Normal T2 must rerun on integrated source."
+}
