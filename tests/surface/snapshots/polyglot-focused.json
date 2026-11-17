@@ -1,0 +1,896 @@
+{
+  "answers": {
+    "cli add": {
+      "exit": 0
+    },
+    "cli outline": {
+      "exit": 0,
+      "json": {
+        "answer": "outline",
+        "budget": {
+          "bytes": 4020,
+          "bytesPerToken": 4,
+          "estimatedTokens": 1005
+        },
+        "declarations": 10,
+        "detail": "summary",
+        "extent": "complete",
+        "package": {
+          "coordinate": "/tmp/nudox-surface/polyglot-focused/project",
+          "key": "f968b28a",
+          "name": "project",
+          "project": "/tmp/nudox-surface/polyglot-focused/project",
+          "segments": [],
+          "shape": "package",
+          "trail": "project"
+        },
+        "page": {
+          "branch": "4650a5d2d38c507c621bb7adec963afac7bd740bbc85007b1cd609a67fb2482f",
+          "coverage": [
+            {
+              "lane": "exact",
+              "state": "complete"
+            },
+            {
+              "lane": "names",
+              "state": "complete"
+            },
+            {
+              "lane": "graph",
+              "state": "complete"
+            },
+            {
+              "lane": "semantic",
+              "state": "complete"
+            }
+          ],
+          "limit": 200,
+          "log": "12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760",
+          "more": false,
+          "schema": 3,
+          "sequence": 2,
+          "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
+          "source_root": "2bf7b6fb3f36fc30d956502dfff958a29caffb75fae048da73a9e714650ef6db"
+        },
+        "roots": [
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/polyglot-focused/project::semantic::e1793402e4001f78cc9f5b4f008fdfc02c109c830451f219f906b3754777ff68::language",
+                    "key": "a33fbc0d",
+                    "kind": "variable",
+                    "name": "language",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": "a33fbc0dda1fd2f42e56d834e40dba3776ac19874c4175c5c085b18be37d110a"
+                    }
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/polyglot-focused/project::semantic::f442caa3dade2275345675e41fcc264834acfa6a2bce9398b6b0f4d16d54523b::language",
+                "key": "6830d839",
+                "kind": "method",
+                "name": "language",
+                "semantic_data": {
+                  "kind": "selected-symbol-id",
+                  "value": "6830d83919a8cf6ca9be3124ed505f41c7bcd6434fc12d3f2b5e9544aeb1eaaf"
+                }
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/polyglot-focused/project::semantic::8b4b1bbd1558faba1a391b18a04bd7ba7149fbb011307c4227f9ed9e92aab987::PythonLanguageMarker",
+            "key": "09651a3c",
+            "kind": "class",
+            "name": "PythonLanguageMarker",
+            "semantic_data": {
+              "kind": "selected-symbol-id",
+              "value": "09651a3c82ea3f6e6987d60204774d0f12448733a60fa80d74ccec124d6b136c"
+            }
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/polyglot-focused/project::src/main.ts:5::language",
+                "key": "c30897bc",
+                "kind": "method",
+                "name": "language",
+                "semantic_data": {
+                  "kind": "selected-symbol-id",
+                  "value": "c30897bcbf5a43ff848b1f617a4c35117e2641aec08376c0415bea597797755d"
+                }
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/polyglot-focused/project::src/main.ts:4::TypeScriptLanguageMarker",
+            "key": "333fe424",
+            "kind": "class",
+            "name": "TypeScriptLanguageMarker",
+            "semantic_data": {
+              "kind": "selected-symbol-id",
+              "value": "333fe4245efb98352354368fd7e52b235efc77edf7fa3d0b546e50458f1b48c4"
+            }
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/polyglot-focused/project::semantic::ad3e9619dacfa682590f808548347513fa89ab1d4d68c85cae005527c783bb4c::ferris",
+                "key": "887b694b",
+                "kind": "variable",
+                "name": "ferris",
+                "semantic_data": {
+                  "kind": "selected-symbol-id",
+                  "value": "887b694bf11580df42e7d1501ae88e05e97c3b271242fbc8e4d0c58052858e3c"
+                }
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/polyglot-focused/project::semantic::86001adf146e3f3580f9662b8327740f05c9af6f8f13ef9eb04d0be5012fcabf::ferris",
+            "key": "62579708",
+            "kind": "function",
+            "name": "ferris",
+            "semantic_data": {
+              "kind": "selected-symbol-id",
+              "value": "625797080510b4dac25ea14c81e76abdeda69d04f170ff74277ecc4bb0e14f05"
+            }
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/polyglot-focused/project::semantic::0cefc299f646c032150690ab9dc92bf7ac067f0ee9079dfdc60baa58175bd961::monty",
+                "key": "8682279b",
+                "kind": "variable",
+                "name": "monty",
+                "semantic_data": {
+                  "kind": "selected-symbol-id",
+                  "value": "8682279bfb5afbe960e119a92dba17d483b38a253b84e18b667eca524434e78b"
+                }
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/polyglot-focused/project::semantic::e57320550563944b02b3933b2d978e25414a3ddb8a438bf15d225110ea63525f::monty",
+            "key": "92c48b1c",
+            "kind": "function",
+            "name": "monty",
+            "semantic_data": {
+              "kind": "selected-symbol-id",
+              "value": "92c48b1c51d20bc3f7d86b97bd024ae1f48b7e44e975452ae7c2b5ca6bb45fd7"
+            }
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/polyglot-focused/project::src/main.ts:2::turing",
+            "key": "fa4ce38f",
+            "kind": "function",
+            "name": "turing",
+            "semantic_data": {
+              "kind": "selected-symbol-id",
+              "value": "fa4ce38f498996734a81634299afaa4658abb8b8e2251de09cfd77a3a36e4b82"
+            }
+          }
+        ],
+        "unnamed": 0
+      }
+    },
+    "cli packages": {
+      "exit": 0,
+      "json": {
+        "answer": "shelf",
+        "budget": {
+          "bytes": 423,
+          "bytesPerToken": 4,
+          "estimatedTokens": 106
+        },
+        "detail": "summary",
+        "projects": [
+          {
+            "declarations": null,
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/polyglot-focused/project",
+              "key": "f968b28a",
+              "name": "t2-polyglot",
+              "project": "/tmp/nudox-surface/polyglot-focused/project",
+              "segments": [],
+              "shape": "package",
+              "trail": "project"
+            },
+            "readiness": "ready"
+          }
+        ],
+        "readiness": "ready",
+        "revision": "2bf7b6fb",
+        "rows": 12
+      }
+    },
+    "cli search ferris": {
+      "exit": 0,
+      "json": {
+        "answer": "records",
+        "budget": {
+          "bytes": 915,
+          "bytesPerToken": 4,
+          "estimatedTokens": 229
+        },
+        "coverage": [
+          {
+            "lane": "exact",
+            "state": "complete"
+          },
+          {
+            "lane": "names",
+            "state": "complete"
+          },
+          {
+            "lane": "graph",
+            "state": "complete"
+          },
+          {
+            "lane": "semantic",
+            "state": "complete"
+          }
+        ],
+        "detail": "summary",
+        "more": false,
+        "query": "ferris",
+        "readiness": "ready",
+        "records": [
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/polyglot-focused/project::semantic::86001adf146e3f3580f9662b8327740f05c9af6f8f13ef9eb04d0be5012fcabf::ferris",
+              "line": 2,
+              "name": "ferris",
+              "path": "src/lib.rs",
+              "segments": [
+                "ferris"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": "625797080510b4dac25ea14c81e76abdeda69d04f170ff74277ecc4bb0e14f05"
+              },
+              "shape": "semantic",
+              "trail": "project \u203a src/lib.rs:2 \u203a ferris"
+            },
+            "kind": "function",
+            "language": "rust",
+            "score": 4294967295,
+            "state": "ready",
+            "summary": "Returns the Rust lane marker."
+          }
+        ],
+        "semantic_search": {
+          "reason": "unconfigured",
+          "status": "unavailable"
+        }
+      }
+    },
+    "cli search monty": {
+      "exit": 0,
+      "json": {
+        "answer": "records",
+        "budget": {
+          "bytes": 916,
+          "bytesPerToken": 4,
+          "estimatedTokens": 229
+        },
+        "coverage": [
+          {
+            "lane": "exact",
+            "state": "complete"
+          },
+          {
+            "lane": "names",
+            "state": "complete"
+          },
+          {
+            "lane": "graph",
+            "state": "complete"
+          },
+          {
+            "lane": "semantic",
+            "state": "complete"
+          }
+        ],
+        "detail": "summary",
+        "more": false,
+        "query": "monty",
+        "readiness": "ready",
+        "records": [
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/polyglot-focused/project::semantic::e57320550563944b02b3933b2d978e25414a3ddb8a438bf15d225110ea63525f::monty",
+              "line": 1,
+              "name": "monty",
+              "path": "src/main.py",
+              "segments": [
+                "monty"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": "92c48b1c51d20bc3f7d86b97bd024ae1f48b7e44e975452ae7c2b5ca6bb45fd7"
+              },
+              "shape": "semantic",
+              "trail": "project \u203a src/main.py:1 \u203a monty"
+            },
+            "kind": "function",
+            "language": "python",
+            "score": 4294967295,
+            "state": "ready",
+            "summary": "Returns the Python lane marker."
+          }
+        ],
+        "semantic_search": {
+          "reason": "unconfigured",
+          "status": "unavailable"
+        }
+      }
+    },
+    "cli search turing": {
+      "exit": 0,
+      "json": {
+        "answer": "records",
+        "budget": {
+          "bytes": 871,
+          "bytesPerToken": 4,
+          "estimatedTokens": 218
+        },
+        "coverage": [
+          {
+            "lane": "exact",
+            "state": "complete"
+          },
+          {
+            "lane": "names",
+            "state": "complete"
+          },
+          {
+            "lane": "graph",
+            "state": "complete"
+          },
+          {
+            "lane": "semantic",
+            "state": "complete"
+          }
+        ],
+        "detail": "summary",
+        "more": false,
+        "query": "turing",
+        "readiness": "ready",
+        "records": [
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/polyglot-focused/project::src/main.ts:2::turing",
+              "line": 2,
+              "name": "turing",
+              "path": "src/main.ts",
+              "segments": [
+                "turing"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": "fa4ce38f498996734a81634299afaa4658abb8b8e2251de09cfd77a3a36e4b82"
+              },
+              "shape": "declaration",
+              "trail": "project \u203a src/main.ts:2 \u203a turing"
+            },
+            "kind": "function",
+            "language": "typescript",
+            "score": 4294967295,
+            "state": "ready",
+            "summary": "Returns the TypeScript lane marker."
+          }
+        ],
+        "semantic_search": {
+          "reason": "unconfigured",
+          "status": "unavailable"
+        }
+      }
+    },
+    "mcp": {
+      "calls": [
+        {
+          "call": {
+            "arguments": {
+              "query": "ferris"
+            },
+            "tool": "backend.search"
+          },
+          "reply": {
+            "_meta": {
+              "backend/wireBudget": {
+                "bytes": 1716,
+                "bytesPerToken": 4,
+                "estimatedTokens": 429,
+                "limitBytes": 49152,
+                "limitTokens": 12000,
+                "scope": "complete_jsonrpc_line",
+                "tokenPolicy": "cl100k_base/ordinary-v1",
+                "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
+                "vocabularySha256": "69111b35d5b2fed760d611fd634c3dd0f75310ccfc1938740cda69041674e992"
+              }
+            },
+            "content": [
+              {
+                "text": "~lanes exact\u27131 names\u27131 graph\u27131 semantic\u27131\n\u2022 `ferris` \u00b7 function \u00b7 rust\n  `/tmp/nudox-surface/polyglot-focused/project::semantic::86001adf146e3f3580f9662b8327740f05c9af6f8f13ef9eb04d0be5012fcabf::ferris`\n1 row(s) on this page; showing 1 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
+                "type": "text"
+              }
+            ],
+            "isError": false,
+            "structuredContent": {
+              "answer": "records",
+              "budget": {
+                "bytes": 915,
+                "bytesPerToken": 4,
+                "estimatedTokens": 229
+              },
+              "coverage": [
+                {
+                  "lane": "exact",
+                  "state": "complete"
+                },
+                {
+                  "lane": "names",
+                  "state": "complete"
+                },
+                {
+                  "lane": "graph",
+                  "state": "complete"
+                },
+                {
+                  "lane": "semantic",
+                  "state": "complete"
+                }
+              ],
+              "detail": "summary",
+              "more": false,
+              "query": "ferris",
+              "readiness": "ready",
+              "records": [
+                {
+                  "identity": {
+                    "coordinate": "/tmp/nudox-surface/polyglot-focused/project::semantic::86001adf146e3f3580f9662b8327740f05c9af6f8f13ef9eb04d0be5012fcabf::ferris",
+                    "line": 2,
+                    "name": "ferris",
+                    "path": "src/lib.rs",
+                    "segments": [
+                      "ferris"
+                    ],
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": "625797080510b4dac25ea14c81e76abdeda69d04f170ff74277ecc4bb0e14f05"
+                    },
+                    "shape": "semantic",
+                    "trail": "project \u203a src/lib.rs:2 \u203a ferris"
+                  },
+                  "kind": "function",
+                  "language": "rust",
+                  "score": 4294967295,
+                  "state": "ready",
+                  "summary": "Returns the Rust lane marker."
+                }
+              ],
+              "semantic_search": {
+                "reason": "unconfigured",
+                "status": "unavailable"
+              }
+            }
+          }
+        },
+        {
+          "call": {
+            "arguments": {
+              "query": "monty"
+            },
+            "tool": "backend.search"
+          },
+          "reply": {
+            "_meta": {
+              "backend/wireBudget": {
+                "bytes": 1717,
+                "bytesPerToken": 4,
+                "estimatedTokens": 430,
+                "limitBytes": 49152,
+                "limitTokens": 12000,
+                "scope": "complete_jsonrpc_line",
+                "tokenPolicy": "cl100k_base/ordinary-v1",
+                "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
+                "vocabularySha256": "69111b35d5b2fed760d611fd634c3dd0f75310ccfc1938740cda69041674e992"
+              }
+            },
+            "content": [
+              {
+                "text": "~lanes exact\u27131 names\u27131 graph\u27131 semantic\u27131\n\u2022 `monty` \u00b7 function \u00b7 python\n  `/tmp/nudox-surface/polyglot-focused/project::semantic::e57320550563944b02b3933b2d978e25414a3ddb8a438bf15d225110ea63525f::monty`\n1 row(s) on this page; showing 1 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
+                "type": "text"
+              }
+            ],
+            "isError": false,
+            "structuredContent": {
+              "answer": "records",
+              "budget": {
+                "bytes": 916,
+                "bytesPerToken": 4,
+                "estimatedTokens": 229
+              },
+              "coverage": [
+                {
+                  "lane": "exact",
+                  "state": "complete"
+                },
+                {
+                  "lane": "names",
+                  "state": "complete"
+                },
+                {
+                  "lane": "graph",
+                  "state": "complete"
+                },
+                {
+                  "lane": "semantic",
+                  "state": "complete"
+                }
+              ],
+              "detail": "summary",
+              "more": false,
+              "query": "monty",
+              "readiness": "ready",
+              "records": [
+                {
+                  "identity": {
+                    "coordinate": "/tmp/nudox-surface/polyglot-focused/project::semantic::e57320550563944b02b3933b2d978e25414a3ddb8a438bf15d225110ea63525f::monty",
+                    "line": 1,
+                    "name": "monty",
+                    "path": "src/main.py",
+                    "segments": [
+                      "monty"
+                    ],
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": "92c48b1c51d20bc3f7d86b97bd024ae1f48b7e44e975452ae7c2b5ca6bb45fd7"
+                    },
+                    "shape": "semantic",
+                    "trail": "project \u203a src/main.py:1 \u203a monty"
+                  },
+                  "kind": "function",
+                  "language": "python",
+                  "score": 4294967295,
+                  "state": "ready",
+                  "summary": "Returns the Python lane marker."
+                }
+              ],
+              "semantic_search": {
+                "reason": "unconfigured",
+                "status": "unavailable"
+              }
+            }
+          }
+        },
+        {
+          "call": {
+            "arguments": {
+              "query": "turing"
+            },
+            "tool": "backend.search"
+          },
+          "reply": {
+            "_meta": {
+              "backend/wireBudget": {
+                "bytes": 1617,
+                "bytesPerToken": 4,
+                "estimatedTokens": 405,
+                "limitBytes": 49152,
+                "limitTokens": 12000,
+                "scope": "complete_jsonrpc_line",
+                "tokenPolicy": "cl100k_base/ordinary-v1",
+                "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
+                "vocabularySha256": "69111b35d5b2fed760d611fd634c3dd0f75310ccfc1938740cda69041674e992"
+              }
+            },
+            "content": [
+              {
+                "text": "~lanes exact\u27131 names\u27131 graph\u27131 semantic\u27131\n\u2022 `turing` \u00b7 function \u00b7 typescript\n  `/tmp/nudox-surface/polyglot-focused/project::src/main.ts:2::turing`\n1 row(s) on this page; showing 1 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
+                "type": "text"
+              }
+            ],
+            "isError": false,
+            "structuredContent": {
+              "answer": "records",
+              "budget": {
+                "bytes": 871,
+                "bytesPerToken": 4,
+                "estimatedTokens": 218
+              },
+              "coverage": [
+                {
+                  "lane": "exact",
+                  "state": "complete"
+                },
+                {
+                  "lane": "names",
+                  "state": "complete"
+                },
+                {
+                  "lane": "graph",
+                  "state": "complete"
+                },
+                {
+                  "lane": "semantic",
+                  "state": "complete"
+                }
+              ],
+              "detail": "summary",
+              "more": false,
+              "query": "turing",
+              "readiness": "ready",
+              "records": [
+                {
+                  "identity": {
+                    "coordinate": "/tmp/nudox-surface/polyglot-focused/project::src/main.ts:2::turing",
+                    "line": 2,
+                    "name": "turing",
+                    "path": "src/main.ts",
+                    "segments": [
+                      "turing"
+                    ],
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": "fa4ce38f498996734a81634299afaa4658abb8b8e2251de09cfd77a3a36e4b82"
+                    },
+                    "shape": "declaration",
+                    "trail": "project \u203a src/main.ts:2 \u203a turing"
+                  },
+                  "kind": "function",
+                  "language": "typescript",
+                  "score": 4294967295,
+                  "state": "ready",
+                  "summary": "Returns the TypeScript lane marker."
+                }
+              ],
+              "semantic_search": {
+                "reason": "unconfigured",
+                "status": "unavailable"
+              }
+            }
+          }
+        },
+        {
+          "call": {
+            "arguments": {},
+            "tool": "backend.outline"
+          },
+          "reply": {
+            "_meta": {
+              "backend/wireBudget": {
+                "bytes": 5057,
+                "bytesPerToken": 4,
+                "estimatedTokens": 1265,
+                "limitBytes": 49152,
+                "limitTokens": 12000,
+                "scope": "complete_jsonrpc_line",
+                "tokenPolicy": "cl100k_base/ordinary-v1",
+                "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
+                "vocabularySha256": "69111b35d5b2fed760d611fd634c3dd0f75310ccfc1938740cda69041674e992"
+              }
+            },
+            "content": [
+              {
+                "text": "# project\n`/tmp/nudox-surface/polyglot-focused/project`\n\n\u25c6 PythonLanguageMarker  `src/main.py:5 \u203a PythonLanguageMarker`\n  \u0192 language  `src/main.py:6 \u203a language`\n    \u25ab language  `language`\n\u25c6 TypeScriptLanguageMarker  `src/main.ts:4 \u203a TypeScriptLanguageMarker`\n  \u0192 language  `src/main.ts:5 \u203a language`\n\u0192 ferris  `src/lib.rs:2 \u203a ferris`\n  \u25ab ferris  `ferris`\n\u0192 monty  `src/main.py:1 \u203a monty`\n  \u25ab monty  `monty`\n\u0192 turing  `src/main.ts:2 \u203a turing`\n10 declaration(s) \u00b7 complete (outline pagination only; analysis coverage is not certified)\n",
+                "type": "text"
+              }
+            ],
+            "isError": false,
+            "structuredContent": {
+              "answer": "outline",
+              "budget": {
+                "bytes": 4020,
+                "bytesPerToken": 4,
+                "estimatedTokens": 1005
+              },
+              "declarations": 10,
+              "detail": "summary",
+              "extent": "complete",
+              "package": {
+                "coordinate": "/tmp/nudox-surface/polyglot-focused/project",
+                "key": "f968b28a",
+                "name": "project",
+                "project": "/tmp/nudox-surface/polyglot-focused/project",
+                "segments": [],
+                "shape": "package",
+                "trail": "project"
+              },
+              "page": {
+                "branch": "4650a5d2d38c507c621bb7adec963afac7bd740bbc85007b1cd609a67fb2482f",
+                "coverage": [
+                  {
+                    "lane": "exact",
+                    "state": "complete"
+                  },
+                  {
+                    "lane": "names",
+                    "state": "complete"
+                  },
+                  {
+                    "lane": "graph",
+                    "state": "complete"
+                  },
+                  {
+                    "lane": "semantic",
+                    "state": "complete"
+                  }
+                ],
+                "limit": 200,
+                "log": "12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760",
+                "more": false,
+                "schema": 3,
+                "sequence": 2,
+                "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
+                "source_root": "2bf7b6fb3f36fc30d956502dfff958a29caffb75fae048da73a9e714650ef6db"
+              },
+              "roots": [
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/polyglot-focused/project::semantic::e1793402e4001f78cc9f5b4f008fdfc02c109c830451f219f906b3754777ff68::language",
+                          "key": "a33fbc0d",
+                          "kind": "variable",
+                          "name": "language",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": "a33fbc0dda1fd2f42e56d834e40dba3776ac19874c4175c5c085b18be37d110a"
+                          }
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/polyglot-focused/project::semantic::f442caa3dade2275345675e41fcc264834acfa6a2bce9398b6b0f4d16d54523b::language",
+                      "key": "6830d839",
+                      "kind": "method",
+                      "name": "language",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": "6830d83919a8cf6ca9be3124ed505f41c7bcd6434fc12d3f2b5e9544aeb1eaaf"
+                      }
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/polyglot-focused/project::semantic::8b4b1bbd1558faba1a391b18a04bd7ba7149fbb011307c4227f9ed9e92aab987::PythonLanguageMarker",
+                  "key": "09651a3c",
+                  "kind": "class",
+                  "name": "PythonLanguageMarker",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": "09651a3c82ea3f6e6987d60204774d0f12448733a60fa80d74ccec124d6b136c"
+                  }
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/polyglot-focused/project::src/main.ts:5::language",
+                      "key": "c30897bc",
+                      "kind": "method",
+                      "name": "language",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": "c30897bcbf5a43ff848b1f617a4c35117e2641aec08376c0415bea597797755d"
+                      }
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/polyglot-focused/project::src/main.ts:4::TypeScriptLanguageMarker",
+                  "key": "333fe424",
+                  "kind": "class",
+                  "name": "TypeScriptLanguageMarker",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": "333fe4245efb98352354368fd7e52b235efc77edf7fa3d0b546e50458f1b48c4"
+                  }
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/polyglot-focused/project::semantic::ad3e9619dacfa682590f808548347513fa89ab1d4d68c85cae005527c783bb4c::ferris",
+                      "key": "887b694b",
+                      "kind": "variable",
+                      "name": "ferris",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": "887b694bf11580df42e7d1501ae88e05e97c3b271242fbc8e4d0c58052858e3c"
+                      }
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/polyglot-focused/project::semantic::86001adf146e3f3580f9662b8327740f05c9af6f8f13ef9eb04d0be5012fcabf::ferris",
+                  "key": "62579708",
+                  "kind": "function",
+                  "name": "ferris",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": "625797080510b4dac25ea14c81e76abdeda69d04f170ff74277ecc4bb0e14f05"
+                  }
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/polyglot-focused/project::semantic::0cefc299f646c032150690ab9dc92bf7ac067f0ee9079dfdc60baa58175bd961::monty",
+                      "key": "8682279b",
+                      "kind": "variable",
+                      "name": "monty",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": "8682279bfb5afbe960e119a92dba17d483b38a253b84e18b667eca524434e78b"
+                      }
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/polyglot-focused/project::semantic::e57320550563944b02b3933b2d978e25414a3ddb8a438bf15d225110ea63525f::monty",
+                  "key": "92c48b1c",
+                  "kind": "function",
+                  "name": "monty",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": "92c48b1c51d20bc3f7d86b97bd024ae1f48b7e44e975452ae7c2b5ca6bb45fd7"
+                  }
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/polyglot-focused/project::src/main.ts:2::turing",
+                  "key": "fa4ce38f",
+                  "kind": "function",
+                  "name": "turing",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": "fa4ce38f498996734a81634299afaa4658abb8b8e2251de09cfd77a3a36e4b82"
+                  }
+                }
+              ],
+              "unnamed": 0
+            }
+          }
+        }
+      ],
+      "exit": 0,
+      "tools": [
+        "backend.call",
+        "backend.document",
+        "backend.graph",
+        "backend.index",
+        "backend.index_cancel",
+        "backend.index_progress",
+        "backend.index_search",
+        "backend.index_start",
+        "backend.outline",
+        "backend.package",
+        "backend.packages",
+        "backend.read",
+        "backend.references",
+        "backend.remove",
+        "backend.resolve",
+        "backend.search",
+        "backend.source",
+        "backend.sql_query",
+        "backend.status"
+      ]
+    }
+  },
+  "performance": {
+    "cpu_seconds": 17.19,
+    "peak_rss_kib": 715804,
+    "seconds": {
+      "CLI search continuation": 0.125,
+      "MCP refused CLI-only wait": 0.115,
+      "MCP refused CLI-only wait-timeout": 0.11,
+      "MCP refused CLI-only wait_timeout": 0.111,
+      "MCP search continuation": 0.195,
+      "background index zero-wait": 0.377,
+      "bounded search limit 1": 0.033,
+      "bounded search limit 3": 0.032,
+      "bounded search reference": 0.033,
+      "cli add": 19.76,
+      "cli outline": 0.08,
+      "cli packages": 0.05,
+      "cli search ferris": 0.03,
+      "cli search monty": 0.03,
+      "cli search turing": 0.03,
+      "completed CLI keyed replay": 0.027,
+      "completed CLI operation lookup": 0.023,
+      "completed MCP operation lookup": 0.116,
+      "health after cursor refusals": 0.023,
+      "index progress after caller deadline": 0.031,
+      "live health MCP status": 0.102,
+      "live health full": 0.026,
+      "live health summary": 0.025,
+      "malformed CLI cursor": 0.017,
+      "malformed MCP cursor": 0.075,
+      "mcp": 0.17,
+      "resumed index wait": 19.354
+    }
+  }
+}

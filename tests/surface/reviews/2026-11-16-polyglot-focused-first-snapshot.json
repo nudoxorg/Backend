@@ -1,0 +1,40 @@
+{
+  "artifact_manifest_sha256": "73c5b7b974bdef77b04c3e8f23460d7f90c82ce2fbc87c5c9f22e63c34ee58db",
+  "case": "polyglot-focused",
+  "comparison": {
+    "answers_equal": true,
+    "artifact_manifest_sha256": "cb87408566718b451c28d75df95bb8d91471271e1a49b04c6373def1e6b9fdff",
+    "candidate_sha256": "91024dacec3c54123a3b1cdaea1f6433271bd5838c0c5e1f28e76b778d82ff31",
+    "ci_build": 1032844,
+    "source_revision": "d62afeb984a04ff0d5b6bf10b825ac67721ad159"
+  },
+  "initial_performance": "Exact f54 captured performance retained in full; no previous baseline existed. It is one observation, not a release performance claim.",
+  "inputs": {
+    "cases_json_sha256": "c5584f433bb58b17160b01127996218f66c3066658c42cac1e1369310c771749",
+    "fixture_files_sha256": {
+      "Cargo.toml": "1e935c786e778387c5ca7c7ec62b552590564a1eb9e30d9c7e0a562a96632e94",
+      "go.mod": "8c6c7972849b1242b4f18784b6cba95a6b4f99a2c32670896696702ebf51907a",
+      "go/main.go": "8fb71359ab57260f15600bfc1f96b8f6af3ab8ff0965dbe1f7aca8b240e3eb8c",
+      "src/Duke.java": "ea5b30246e843a7480e3d29246947f7f19e781cd7496efc9331bd171a707c4eb",
+      "src/Main.cs": "1a111bcf9309031976729135711bda33a76cdb1d0b31314e480461c6dad42ee3",
+      "src/lib.rs": "1d54c7484312131ca9799fe58cfcb10d5b1166b28fd8f0df3b06df1bd0ad2426",
+      "src/main.cpp": "5ed51ca5e67b2984791079b15a025415769d0f08128236ee633a5d5d22c6f319",
+      "src/main.py": "f6b43c81f744d8c0e88e98f249ae0c0350dca07a5fba8ce95c3bc968a001e9ab",
+      "src/main.ts": "f51b5e8620f263fa00389f2d850375b222163dc129605059baf3570ff42da789"
+    },
+    "surface_py_sha256": "21aee0c823963f2b777d344b9e0e4e02bfb30160ff137c6c029a3ad4bd546821"
+  },
+  "observed_candidate_sha256": "ddaa38809eb999e39b89ec67dd0dfd4464490f72eea62f698dbfc7f6b27edb4d",
+  "review": [
+    "Search results each contain one authored function: ferris src/lib.rs:2 (Rust), monty src/main.py:1 (Python), turing src/main.ts:2 (TypeScript); exact kinds, summaries, paths, lines and languages match source.",
+    "Outline contains the five authored roots, the Python and TypeScript methods and three semantic variable carriers: 10 rows total. Python and TypeScript source locations in MCP text and TypeScript coordinates agree with the fixture. Carriers are not additional authored declarations.",
+    "Structured CLI/MCP search and outline payloads compare equal; paused Go, Java, C# and C++ authored names and paths are absent from the captured answers. This does not establish their exclusion from every possible query.",
+    "Outline extent complete means pagination complete; the MCP text explicitly says analysis coverage is not certified. Coverage refers to selected indexed source inventory, not unobserved files; semantic search is separately unavailable because its optional provider is unconfigured. Source coverage producer crates/local-service/src/builtin/coverage.rs describes these boundaries and crates/present/outline.rs binds page coverage to the selected snapshot.",
+    "The capture retains exact source/page identities, coverage, ordering, selected IDs and performance measurements. Live progress, cursor, and published-contract checks are run by the unchanged surface harness; this review does not independently certify every compiler provenance or opaque digest."
+  ],
+  "schema": 1,
+  "scope": "First snapshot of the focused repository fixture. It tests selected Rust, Python and TypeScript results, not whole-workspace or exhaustive native compiler coverage.",
+  "snapshot_sha256": "ddaa38809eb999e39b89ec67dd0dfd4464490f72eea62f698dbfc7f6b27edb4d",
+  "source_revision": "f54c6430cea702d1865795900a98091294f99509",
+  "validation": "Static authored-fixture and CLI/MCP equality checks passed. Normal T2 rerun on integrated source required; no normalizer, limits or thresholds changed."
+}
