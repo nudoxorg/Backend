@@ -1,5 +1,9 @@
 # Import from the pinned Backend source: pkgs.callPackage ./package.nix { }.
-{ runCommand, makeWrapper, python3 }:
+{
+  runCommand,
+  makeWrapper,
+  python3,
+}:
 runCommand "nudox-dogfood-telemetry-v1" { nativeBuildInputs = [ makeWrapper ]; } ''
   install -Dm444 ${./relay.py} "$out/libexec/nudox-telemetry/relay.py"
   install -Dm444 ${./sender.py} "$out/libexec/nudox-telemetry/sender.py"
