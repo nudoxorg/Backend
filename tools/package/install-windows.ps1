@@ -26,10 +26,12 @@ if ($Uninstall) {
         if ($entry -notmatch '^(bin/[A-Za-z0-9_.+\-]+|resources/build-manifest\.json|install-windows\.ps1|README\.txt)$') { throw 'Installation marker contains an unsafe path.' }
         [void]$expected.Add(($entry -replace '/', '\'))
     }
+    $prefix = [IO.Path]::GetFullPath($destination).TrimEnd([char]'\') + '\'
     $files = @(Get-ChildItem -LiteralPath $destination -File -Recurse -Force)
     foreach ($file in $files) {
         if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Installation contains a reparse point.' }
-        $relative = [IO.Path]::GetRelativePath($destination, $file.FullName)
+        if (-not $file.FullName.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Installed file is outside installation directory.' }
+        $relative = $file.FullName.Substring($prefix.Length)
         if (-not $expected.Contains($relative)) { throw "Unexpected installed file: $relative" }
     }
     $dirs = @(Get-ChildItem -LiteralPath $destination -Directory -Recurse -Force)
@@ -47,9 +49,11 @@ $inputStream = [IO.File]::Open($Archive, [IO.FileMode]::Open, [IO.FileAccess]::R
 try {
     if ($inputStream.Length -gt 2147483648) { throw 'Archive exceeds the size limit.' }
     $sha = [Security.Cryptography.SHA256]::Create()
-    try { $actual = [Convert]::ToHexString($sha.ComputeHash($inputStream)).ToLowerInvariant() } finally { $sha.Dispose() }
+    try { $actual = [BitConverter]::ToString($sha.ComputeHash($inputStream)).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() }
     if ($actual -ne $Sha256.ToLowerInvariant()) { throw 'Archive SHA-256 does not match the supplied digest.' }
     $inputStream.Position = 0
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
     $zip = [IO.Compression.ZipArchive]::new($inputStream, [IO.Compression.ZipArchiveMode]::Read, $true)
     try {
         $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
