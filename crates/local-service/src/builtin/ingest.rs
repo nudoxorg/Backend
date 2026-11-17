@@ -551,7 +551,141 @@ impl RevalidatedNativeTsCapture {
     }
 }
 
+/// A separate, replayable negative witness. It is constructed only for an
+/// empty native scan and inventories even paths omitted by normal discovery.
+/// It is not compiler authority or permission to retire selected rows.
+pub(super) struct EmptyNativeTsWalk {
+    project: [u8; 32],
+    root: PathBuf,
+    project_source_version: [u8; 32],
+    fence: CompilerRevisionFence,
+    ambient: AmbientIgnoreWitness,
+    entries: Vec<CompilerWorkspaceEntry>,
+    cancellation: Arc<AtomicBool>,
+}
+
+impl EmptyNativeTsWalk {
+    pub(super) fn project(&self) -> [u8; 32] { self.project }
+    pub(super) fn canonical_root(&self) -> &Path { &self.root }
+    pub(super) fn project_source_version(&self) -> [u8; 32] { self.project_source_version }
+    pub(super) fn matches_cancellation(&self, cancellation: &Arc<AtomicBool>) -> bool {
+        Arc::ptr_eq(&self.cancellation, cancellation)
+    }
+    pub(super) fn checked_retained_bytes(&self) -> Option<usize> {
+        let mut total = std::mem::size_of::<Self>()
+            .checked_add(self.root.capacity())?
+            .checked_add(self.fence.checked_retained_bytes()?)?
+            .checked_add(self.entries.capacity().checked_mul(std::mem::size_of::<CompilerWorkspaceEntry>())?)?
+            .checked_add(self.ambient.directories.capacity().checked_mul(std::mem::size_of::<PathBuf>())?)?;
+        for entry in &self.entries { total = total.checked_add(entry.path.capacity())?.checked_add(2 * std::mem::size_of::<usize>())?; }
+        for path in &self.ambient.directories { total = total.checked_add(path.capacity())?.checked_add(2 * std::mem::size_of::<usize>())?; }
+        total.checked_add(3 * std::mem::size_of::<usize>())
+    }
+    /// Replays the unfiltered bounded inventory and original policy/fence.
+    /// The caller must also bind the compiler closure and selected after-image.
+    pub(super) fn validate_current(&self) -> Result<(), String> {
+        let cancel = Some(self.cancellation.as_ref());
+        check_scan_cancellation(cancel)?;
+        if !compiler_revision_is_current_with_cancellation(&self.fence, cancel)? {
+            return Err("empty native TypeScript scan fence changed".into());
+        }
+        let root = self.fence.open_bound_root(&self.fence.requested_root)?;
+        let policy = source_selection_policy();
+        let ambient_before = AmbientIgnoreWitness::observe(&self.root, &policy, self.ambient.directories.clone())
+            .ok_or("empty native TypeScript ambient policy is unavailable")?;
+        if ambient_before.digest != self.ambient.digest {
+            return Err("empty native TypeScript ambient policy changed".into());
+        }
+        let entries = strict_empty_typescript_inventory(&self.root, &root, cancel)?;
+        let ambient_after = AmbientIgnoreWitness::observe(&self.root, &policy, self.ambient.directories.clone())
+            .ok_or("empty native TypeScript ambient policy became unavailable")?;
+        if entries != self.entries || ambient_after.digest != self.ambient.digest
+            || !compiler_revision_is_current_with_cancellation(&self.fence, cancel)? {
+            return Err("empty native TypeScript inventory changed".into());
+        }
+        Ok(())
+    }
+}
+
+/// Capture all project entries without ignore/generated filters. The ordinary
+/// walker can still prune owned workspaces or .NET bin directories, so compare
+/// every enumerated directory with its actual children and refuse any omission.
+fn strict_empty_typescript_inventory(
+    root: &Path,
+    capability: &ProjectRoot,
+    cancellation: Option<&AtomicBool>,
+) -> Result<Vec<CompilerWorkspaceEntry>, String> {
+    let policy = source_selection_policy().generated_defaults(false).respect_gitignore(false);
+    let entries = capture_compiler_workspace_entries(root, &policy, capability, cancellation, Some(backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES))?;
+    let mut retained = entries.capacity().checked_mul(std::mem::size_of::<CompilerWorkspaceEntry>())
+        .ok_or("empty native inventory capacity overflow")?;
+    for entry in &entries {
+        retained = retained.checked_add(entry.path.capacity()).and_then(|v| v.checked_add(2 * std::mem::size_of::<usize>()))
+            .ok_or("empty native inventory capacity overflow")?;
+        if retained > backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES {
+            return Err("empty native inventory exceeds retained byte bound".into());
+        }
+        if entry.kind == CompilerWorkspaceEntryKind::File
+            && admitted_file_profile(SourceLanguage::TypeScript, &entry.path).is_some() {
+            return Err("empty native inventory contains a TypeScript or JavaScript source".into());
+        }
+    }
+    let mut budget = DiscoveryBudget::default();
+    for entry in entries.iter().filter(|entry| entry.kind == CompilerWorkspaceEntryKind::Directory) {
+        check_scan_cancellation(cancellation)?;
+        let relative = Path::new(&entry.path);
+        let path = root.join(relative);
+        #[cfg(windows)]
+        let revision = if entry.path.is_empty() { capability.revision().ok() } else { capability.revision_relative(relative).ok() };
+        #[cfg(not(windows))]
+        let revision = file_system_revision(&path);
+        if revision != Some(entry.revision) { return Err("empty native inventory directory changed".into()); }
+        let mut width = 0usize;
+        for child in fs::read_dir(&path).map_err(|e| format!("read empty native inventory directory: {e}"))? {
+            check_scan_cancellation(cancellation)?;
+            budget.admit_entry(width)?;
+            width = width.saturating_add(1);
+            let child = child.map_err(|e| format!("read empty native inventory entry: {e}"))?;
+            let child_relative = child.path().strip_prefix(root).map_err(|_| "empty native entry escaped root")?.to_path_buf();
+            let child_name = normalized_workspace_path(&child_relative)?;
+            if entries.binary_search_by(|row| row.path.as_str().cmp(child_name.as_str())).is_err() {
+                return Err("empty native inventory omitted an entry".into());
+            }
+        }
+        #[cfg(windows)]
+        let after = if entry.path.is_empty() { capability.revision().ok() } else { capability.revision_relative(relative).ok() };
+        #[cfg(not(windows))]
+        let after = file_system_revision(&path);
+        if after != Some(entry.revision) { return Err("empty native inventory directory changed during enumeration".into()); }
+    }
+    Ok(entries)
+}
+
 impl IndexSnapshot {
+    /// Constructs a separate negative witness only for a fully replayable empty walk.
+    pub(super) fn empty_native_typescript_witness(&self) -> Result<Option<EmptyNativeTsWalk>, String> {
+        let Some(capture) = &self.native_typescript_capture else { return Ok(None) };
+        if !capture.sources.is_empty() || !capture.fixed_discovery_policy { return Ok(None); }
+        let Some(ambient) = capture.ambient_ignore.clone() else { return Ok(None) };
+        let Some(cancellation) = capture.cancellation.as_ref().cloned() else { return Ok(None) };
+        let Some(project_source_version) = capture.project_source_version else { return Ok(None) };
+        let mut proof = EmptyNativeTsWalk {
+            project: capture.project, root: capture.canonical_root.clone(), project_source_version,
+            fence: capture.revision_fence.clone(), ambient, entries: Vec::new(), cancellation,
+        };
+        let cancel = Some(proof.cancellation.as_ref());
+        if !compiler_revision_is_current_with_cancellation(&proof.fence, cancel)? {
+            return Err("empty native TypeScript scan fence changed".into());
+        }
+        let capability = proof.fence.open_bound_root(&proof.fence.requested_root)?;
+        proof.entries = strict_empty_typescript_inventory(&proof.root, &capability, cancel)?;
+        if proof.checked_retained_bytes().is_none_or(|n| n > backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES) {
+            return Err("empty native TypeScript witness exceeds retained byte bound".into());
+        }
+        proof.validate_current()?;
+        Ok(Some(proof))
+    }
+
     /// Native-only discovery never claims a complete inventory.
     pub(super) fn native_typescript_discovery_incomplete(&self) -> bool {
         self.native_typescript_capture.is_some()
@@ -1643,7 +1777,7 @@ impl CompilerWorkspaceSnapshot {
         #[cfg(not(windows))]
         let root_capability = ProjectRoot::open(&root)?;
         let entries =
-            capture_compiler_workspace_entries(&root, &policy, &root_capability, cancellation)?;
+            capture_compiler_workspace_entries(&root, &policy, &root_capability, cancellation, None)?;
         check_scan_cancellation(cancellation)?;
         if entries.first().map(|entry| entry.revision) != Some(root_capability.revision()?) {
             return Err("compiler workspace root changed during inventory capture".to_owned());
@@ -1974,6 +2108,7 @@ impl CompilerWorkspaceSnapshot {
             &self.policy,
             &self.root_capability,
             cancellation,
+            None,
         )?;
         #[cfg(windows)]
         if open_canonical_project_root(&self.root)?.1.revision()?
@@ -2069,7 +2204,9 @@ fn capture_compiler_workspace_entries(
     policy: &DiscoveryPolicy,
     _root_capability: &ProjectRoot,
     cancellation: Option<&AtomicBool>,
+    max_temporary_bytes: Option<usize>,
 ) -> Result<Vec<CompilerWorkspaceEntry>, String> {
+    let mut temporary_bytes = 0usize;
     let mut entries = Vec::new();
     #[cfg(windows)]
     let root_revision = _root_capability.revision()?;
@@ -2097,6 +2234,13 @@ fn capture_compiler_workspace_entries(
             .strip_prefix(root)
             .map_err(|_| "workspace entry escaped its root".to_owned())?;
         let relative = normalized_workspace_path(relative)?;
+        if let Some(maximum) = max_temporary_bytes {
+            // Includes the entry vector, case/canonical sets and parent-width map.
+            let charge = relative.len().checked_mul(8).and_then(|n| n.checked_add(512))
+                .ok_or("workspace inventory accounting overflow")?;
+            temporary_bytes = temporary_bytes.checked_add(charge).ok_or("workspace inventory accounting overflow")?;
+            if temporary_bytes > maximum { return Err("workspace inventory exceeds temporary byte bound".into()); }
+        }
         let parent = relative.rsplit_once('/').map_or("", |(parent, _)| parent);
         let width = directory_widths.entry(parent.to_owned()).or_default();
         budget.admit_entry(*width)?;
