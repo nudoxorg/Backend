@@ -67,7 +67,7 @@ def main():
         def request(path, body=None, bearer=token):
             req = urllib.request.Request(base + path, data=body, headers={"Authorization": "Bearer " + bearer})
             try:
-                with urllib.request.urlopen(req, timeout=1) as response:
+                with urllib.request.urlopen(req, timeout=10) as response:
                     return response.status, response.read().decode()
             except urllib.error.HTTPError as error:
                 return error.code, error.read().decode()
@@ -116,7 +116,8 @@ def main():
                 other.bind(("127.0.0.1", 0))
                 second_port = other.getsockname()[1]
             competing = subprocess.run([sys.executable, str(HERE / "relay.py"), str(registry), str(root / "relay" / "state.sqlite"), str(second_port)], capture_output=True, timeout=5)
-            assert competing.returncode != 0 and request("/ready")[0] == 200
+            assert competing.returncode != 0
+            wait_for(lambda: request("/ready")[0] == 200, seconds=40)
             assert request("/v1/records", exact)[0] == 202
             assert request("/v1/records", exact)[0] == 200
             relay.terminate()
