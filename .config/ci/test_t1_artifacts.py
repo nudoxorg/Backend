@@ -105,6 +105,22 @@ class ArtifactProcessControls(unittest.TestCase):
             path.unlink()
             path.write_bytes(original)
 
+    def test_inventory_and_import_reject_damage_before_execution(self):
+        (self.root / "runtime.nar").write_bytes(b"damaged")
+        for action in (("inventory", self.root, "--source-sha", SHA),
+                       ("verify", self.root, "--source-sha", SHA, "--import-runtime")):
+            result = self.run_cli(*action)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("artifact checksum mismatch", result.stderr)
+
+    def test_symlinked_inventory_rejected(self):
+        path = self.root / "manifest.json"
+        data = path.read_text()
+        path.unlink()
+        (self.root / "elsewhere.json").write_text(data)
+        path.symlink_to(self.root / "elsewhere.json")
+        self.assertNotEqual(self.verify().returncode, 0)
+
     def test_observation_and_owner_mismatch_rejected(self):
         path = self.root / "development-observation.json"
         original = json.loads(path.read_text())
