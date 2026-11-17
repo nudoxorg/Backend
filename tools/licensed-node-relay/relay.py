@@ -212,8 +212,9 @@ class Handler(BaseHTTPRequestHandler):
             # The grant can expire or be revoked while a request body arrives.
             # Revalidate immediately before accepting even an already-authenticated request.
             try:
+                received = self.server.checked_time()
                 still_allowed = any(t == tenant and n == node and hmac.compare_digest(digest, h)
-                                    for t, n, h in active_grants(self.server.registry, self.server.checked_time()))
+                                    for t, n, h in active_grants(self.server.registry, received))
             except (OSError, ValueError, UnicodeError, RuntimeError, RecursionError):
                 db.rollback()
                 return self.reply(503)
@@ -224,7 +225,7 @@ class Handler(BaseHTTPRequestHandler):
             if prior and record["seq"] == prior[0] and hmac.compare_digest(fingerprint, prior[1]):
                 db.rollback()
                 return self.reply(200, b"duplicate\n")
-            if (prior and record["seq"] <= prior[0]) or abs(time.time() - record["created_at"]) > MAX_SKEW:
+            if (prior and record["seq"] <= prior[0]) or abs(received - record["created_at"]) > MAX_SKEW:
                 db.rollback()
                 self.server.reject()
                 return self.reply(409)
@@ -232,7 +233,6 @@ class Handler(BaseHTTPRequestHandler):
                 db.rollback()
                 self.server.reject()
                 return self.reply(429)
-            received = time.time()
             if prior and any(value is not None and received <= value for value in prior[2:]):
                 db.rollback()
                 return self.reply(503)
