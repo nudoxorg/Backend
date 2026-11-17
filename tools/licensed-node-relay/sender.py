@@ -20,13 +20,13 @@ MAX_AGE = 110
 def main():
     args = sys.argv[1:]
     if "--" not in args:
-        sys.exit("usage: sender.py URL TOKEN_FILE STATE_DIR [--interval-seconds N] [--spool-capacity N] [--signal-mode forward|cgroup] -- COMMAND [ARGS...]")
+        sys.exit("usage: sender.py URL TOKEN_FILE STATE_DIR [--interval-seconds N] [--spool-capacity N] [--signal-mode forward|cgroup] [--drain-only true] -- [COMMAND [ARGS...]]")
     separator = args.index("--")
     options, command = args[:separator], args[separator + 1:]
-    if len(options) < 3 or not command or (len(options) - 3) % 2:
+    if len(options) < 3 or (len(options) - 3) % 2:
         sys.exit("invalid sender arguments")
     url_arg, token_path, state_path = options[:3]
-    interval, capacity, signal_mode = 60.0, CAPACITY, "forward"
+    interval, capacity, signal_mode, drain_only = 60.0, CAPACITY, "forward", False
     seen = set()
     for name, value in zip(options[3::2], options[4::2]):
         if name in seen:
@@ -36,10 +36,11 @@ def main():
             if name == "--interval-seconds": interval = float(value)
             elif name == "--spool-capacity": capacity = int(value)
             elif name == "--signal-mode": signal_mode = value
+            elif name == "--drain-only" and value == "true": drain_only = True
             else: sys.exit("unknown sender option")
         except ValueError:
             sys.exit("invalid sender option")
-    if not 1.0 <= interval <= 60.0 or not 1 <= capacity <= CAPACITY or signal_mode not in ("forward", "cgroup"):
+    if not 1.0 <= interval <= 60.0 or not 1 <= capacity <= CAPACITY or signal_mode not in ("forward", "cgroup") or (drain_only and command) or (not drain_only and not command):
         sys.exit("sender options out of bounds")
     url = urlsplit(url_arg)
     if url.scheme != "http" or url.hostname != "127.0.0.1" or not url.port or url.path not in ("", "/") or url.username or url.password or url.query or url.fragment:
@@ -67,7 +68,8 @@ def main():
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        sys.exit("sender already running")
+        # A running sender already drains the same spool.
+        return 75
     db = sqlite3.connect(state / "sender.sqlite")
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA synchronous=FULL")
@@ -129,6 +131,19 @@ def main():
                 with db: db.execute("DELETE FROM queue WHERE seq=?", (seq,))
         except (OSError, http.client.HTTPException):
             pass
+
+    if drain_only:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            pending = db.execute("SELECT 1 FROM queue LIMIT 1").fetchone()
+            lost = db.execute("SELECT lost FROM meta WHERE id=1").fetchone()[0]
+            if not pending and not lost:
+                db.close()
+                return 0
+            flush()
+            time.sleep(0.1)
+        db.close()
+        return 75  # Durable work remains for the next timer run.
 
     child = subprocess.Popen(command)
     stopping = False

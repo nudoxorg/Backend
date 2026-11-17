@@ -63,6 +63,15 @@ command-line secret values. The two state directories must be persistent and
 exclusive to their relay or node. Do not copy or reset sender sequence state
 without a matching identity/replay migration. Neither data path logs tokens.
 
+When the node is stopped, an independent systemd timer must invoke
+`sender.py URL TOKEN_FILE STATE_DIR --drain-only true --` to retry pending
+records. Drain mode does not start a child or generate heartbeats or goodbyes;
+it uses the same exclusive state lock as the live sender and exits 75 if the
+lock is busy or durable work remains after its five-second attempt. Treat 75
+as a retryable timer outcome. A goodbye that cannot reach the relay inside the
+freshness window is abandoned and counted; replaying it as current could mask
+a real later failure.
+
 The service must use a systemd control group with `KillMode=control-group` and
 stop remaining processes when the supervisor exits, so killing the supervisor
 also tears down its backend child. This required custody has not yet been

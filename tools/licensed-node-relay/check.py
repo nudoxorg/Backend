@@ -168,7 +168,31 @@ def main():
             relay.terminate()
             relay.wait(timeout=5)
             relay = start_relay()
-            print("real process overflow, diagnostic, graceful/group shutdown, crash, denial and restart/dedup: passed")
+            # After an orderly stop during an outage, a separate timer process
+            # must deliver the actual queued goodbye without starting a node.
+            relay.terminate()
+            relay.wait(timeout=5)
+            relay = None
+            token2 = os.urandom(32).hex()
+            (root / "token2").write_text(token2, encoding="ascii")
+            (root / "token2").chmod(0o600)
+            (root / "drain-state").mkdir(mode=0o700)
+            grant2 = {**grant, "node": "drain", "token_sha256": hashlib.sha256(token2.encode()).hexdigest()}
+            write_grant(grant2)
+            pid_file = root / "drain-child.pid"
+            draining_child = "import os,signal,sys,time;signal.signal(signal.SIGTERM,lambda *_:sys.exit(0));open(" + repr(str(pid_file)) + ",'w').write(str(os.getpid()));time.sleep(60)"
+            drain_base = [sys.executable, str(HERE / "sender.py"), base, str(root / "token2"), str(root / "drain-state")]
+            sender = subprocess.Popen(drain_base + ["--", sys.executable, "-c", draining_child])
+            wait_for(lambda: pid_file.exists())
+            assert subprocess.run(drain_base + ["--drain-only", "true", "--"], timeout=10).returncode == 75
+            sender.terminate()
+            assert sender.wait(timeout=10) == 0
+            relay = start_relay()
+            assert subprocess.run(drain_base + ["--drain-only", "true", "--"], timeout=10).returncode == 0
+            body = metrics()
+            assert 'nudox_node_goodbye_seconds{tenant="test",node="drain"}' in body
+            assert 'nudox_node_heartbeat_seconds{tenant="test",node="drain"}' not in body
+            print("real process overflow, diagnostic, graceful/group shutdown, crash, denial, restart/dedup and offline goodbye drain: passed")
         finally:
             if sender.poll() is None:
                 sender.send_signal(signal.SIGCONT)
