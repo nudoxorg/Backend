@@ -20,6 +20,10 @@ def output(*command, **kwargs):
     return subprocess.check_output(command, text=True, **kwargs).strip()
 
 
+def nix_string(value):
+    return json.dumps(value).replace("${", "\\${")
+
+
 def verifier_environment():
     # The source-bound verifier needs only local Nix tools and daemon access.
     # Do not expose the remote-builder credentials or ambient task environment.
@@ -77,7 +81,8 @@ def run(args):
         work = Path(work)
         inventory = work / "manifest.json"
         with inventory.open("wb") as stream:
-            subprocess.run(["nix", "eval", "--json", "--file", source_store + "/tests/keel/default.nix"], stdout=stream, check=True)
+            inventory_expr = "import ((builtins.getFlake " + nix_string(source_ref) + ").outPath + \"/tests/keel/default.nix\")"
+            subprocess.run(["nix", "eval", "--json", "--expr", inventory_expr], stdout=stream, check=True)
         inventory_store = output("nix", "store", "add-file", str(inventory))
         bundle_store = output("nix", "store", "add-path", str(bundle))
         subprocess.run([sys.executable, str(checked_verifier), "verify", bundle_store, "--source-sha", args.source_sha, "--import-runtime"], check=True, env=verifier_environment())
@@ -92,9 +97,6 @@ def run(args):
             raise ValueError("T1 runtime closure is empty")
         for start in range(0, len(closure), 100):
             subprocess.run(["nix-store", "--verify-path", *closure[start:start + 100]], check=True)
-        def nix_string(value):
-            return json.dumps(value).replace("${", "\\${")
-
         parameters = {
             "sourceRef": source_ref, "sourcePath": source_store, "bundlePath": bundle_store,
             "inventoryPath": inventory_store, "sourceSha": args.source_sha,
