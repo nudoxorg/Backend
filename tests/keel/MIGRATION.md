@@ -14,7 +14,7 @@ The source declaration extractor and two-revision regeneration steps are in
 After the source comparison below, two more CLI laws were retired behind the
 exact-definition process receipt
 [`search-page-bound-55551-eb9360-20261116.json`](evidence/search-page-bound-55551-eb9360-20261116.json),
-combined with the existing protocol/Rust receipt. The required manifest now has
+combined with the existing protocol/Rust receipt. This tranche extended the required manifest to
 35 cases. `rust-public-search-page-bound` drains seven authored Rust names
 through three pages and compares the first page with the CLI's three-row
 global bound; `cli-search-help-page-range` checks the documented search range.
@@ -24,6 +24,20 @@ The replaced functions are
 counts and source rows below remain explicitly bound to its two historical
 revisions; this later tranche brings the known retirement total to 18 without
 claiming that the full source inventory has been rerun at the new HEAD.
+
+The subsequent public Keel c1ec process tranche adds the native TypeScript
+source-byte history and seven MCP stdio histories, taking the required
+inventory to 43 cases. The source case reconstructs independently authored
+UTF-8/CRLF bytes across both transports, resumes after owner/MCP restart and
+refuses a same-size source edit. The MCP cases add ordering, negotiation,
+recovery, framing and correlation laws. The exact public-driver receipts are
+[`source-range-public-55551-c1ec-20261116.json`](evidence/source-range-public-55551-c1ec-20261116.json)
+and [`mcp-stdio-public-55551-c1ec-20261116.json`](evidence/mcp-stdio-public-55551-c1ec-20261116.json).
+Only `initialized_notification_cannot_bypass_initialize` is retired from this
+MCP tranche, bringing the known retirement total to 19. The other legacy
+functions retain their remaining owner-call, cancellation, instruction and
+frame-budget obligations. The full source inventory remains bound to the
+historical revisions below.
 
 ## Audit scope and counts
 

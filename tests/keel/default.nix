@@ -11,6 +11,8 @@ let
   cursorLifecycle = import ./cursor-lifecycle.nix;
   pageBound = import ./page-bound.nix;
   searchHelp = import ./search-help.nix;
+  sourceRange = import ./source-range.nix;
+  mcpStdio = import ./mcp-stdio.nix;
   required = import ./required-cases.nix;
   assembled =
     histories.cases
@@ -23,7 +25,9 @@ let
     ++ jsRetained.cases
     ++ cursorLifecycle.cases
     ++ pageBound.cases
-    ++ searchHelp.cases;
+    ++ searchHelp.cases
+    ++ sourceRange.cases
+    ++ mcpStdio.cases;
   cases = map (
     case:
     case

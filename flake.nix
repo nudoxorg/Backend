@@ -13,7 +13,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     keel = {
-      url = "github:nudoxorg/keel/eb9360d7d3eeac1ab586e8f7a5090f0636e126ea";
+      url = "github:nudoxorg/keel/c1ec0936f7473319992d5227c6b23d7cc836a45d";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.fenix.follows = "fenix";
     };

@@ -1,0 +1,359 @@
+{
+  "account_key": {
+    "present": false,
+    "source_basename": null
+  },
+  "authority_environment": {
+    "PATH": "/run/wrappers/bin:/root/.nix-profile/bin:/nix/profile/bin:/root/.local/state/nix/profile/bin:/etc/profiles/per-user/root/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin"
+  },
+  "authority_environment_sha256": "f4791bbf89244febb361aaa7b273d3be4dfd7737af0ea1322098f6fd7bff4283",
+  "binaries": {
+    "backend-mcp": "49a6b110352c0ccd3c44a052b3d8d48f627c6ad2205e758ac9c3d1a49a0f473d"
+  },
+  "cases": [
+    {
+      "duration_ms": 102,
+      "error": "state-transitions",
+      "evidence_dir": "/root/nudox-keel-mcp-static-laws-6764-555-v2-20261116/evidence/mcp-stdio-handshake-state-candidate",
+      "id": "mcp-stdio-handshake-state-candidate",
+      "language": "protocol",
+      "node": "",
+      "status": "fail",
+      "steps": [
+        {
+          "duration_ms": 101,
+          "error": "/5/result: reviewed expectation failed; actual={\"_meta\":{\"backend/wireBudget\":{\"bytes\":382,\"bytesPerToken\":4,\"estimatedTokens\":96,\"limitBytes\":49152,\"limitTokens\":12000,\"scope\":\"complete_jsonrpc_line\",\"tokenPolicy\":\"cl100k_base/ordinary-v1\",\"tokenScope\":\"complete_jsonrpc_json_excluding_transport_framing\",\"vocabularySha256\":\"69111b35d5b2fed760d611fd634c3dd0f75310ccfc1938740cda69041674e992\"}}}; expected={\"contains\":null,\"equals\":{},\"not_contains\":null,\"set_equals\":null}",
+          "id": "state-transitions",
+          "status": "fail"
+        }
+      ],
+      "world_isolation": null
+    },
+    {
+      "duration_ms": 101,
+      "error": "current",
+      "evidence_dir": "/root/nudox-keel-mcp-static-laws-6764-555-v2-20261116/evidence/mcp-stdio-version-negotiation-candidate",
+      "id": "mcp-stdio-version-negotiation-candidate",
+      "language": "protocol",
+      "node": "",
+      "status": "fail",
+      "steps": [
+        {
+          "duration_ms": 101,
+          "error": "/2/result: reviewed expectation failed; actual={\"_meta\":{\"backend/wireBudget\":{\"bytes\":382,\"bytesPerToken\":4,\"estimatedTokens\":96,\"limitBytes\":49152,\"limitTokens\":12000,\"scope\":\"complete_jsonrpc_line\",\"tokenPolicy\":\"cl100k_base/ordinary-v1\",\"tokenScope\":\"complete_jsonrpc_json_excluding_transport_framing\",\"vocabularySha256\":\"69111b35d5b2fed760d611fd634c3dd0f75310ccfc1938740cda69041674e992\"}}}; expected={\"contains\":null,\"equals\":{},\"not_contains\":null,\"set_equals\":null}",
+          "id": "current",
+          "status": "fail"
+        },
+        {
+          "blocked_by": "current",
+          "id": "previous",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "current",
+          "id": "newer",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "current",
+          "id": "unknown",
+          "status": "blocked"
+        }
+      ],
+      "world_isolation": null
+    },
+    {
+      "duration_ms": 102,
+      "error": "invalid-then-valid",
+      "evidence_dir": "/root/nudox-keel-mcp-static-laws-6764-555-v2-20261116/evidence/mcp-stdio-init-refusal-retry-candidate",
+      "id": "mcp-stdio-init-refusal-retry-candidate",
+      "language": "protocol",
+      "node": "",
+      "status": "fail",
+      "steps": [
+        {
+          "duration_ms": 101,
+          "error": "/5/result: reviewed expectation failed; actual={\"_meta\":{\"backend/wireBudget\":{\"bytes\":382,\"bytesPerToken\":4,\"estimatedTokens\":96,\"limitBytes\":49152,\"limitTokens\":12000,\"scope\":\"complete_jsonrpc_line\",\"tokenPolicy\":\"cl100k_base/ordinary-v1\",\"tokenScope\":\"complete_jsonrpc_json_excluding_transport_framing\",\"vocabularySha256\":\"69111b35d5b2fed760d611fd634c3dd0f75310ccfc1938740cda69041674e992\"}}}; expected={\"contains\":null,\"equals\":{},\"not_contains\":null,\"set_equals\":null}",
+          "id": "invalid-then-valid",
+          "status": "fail"
+        }
+      ],
+      "world_isolation": null
+    },
+    {
+      "duration_ms": 126,
+      "error": null,
+      "evidence_dir": "/root/nudox-keel-mcp-static-laws-6764-555-v2-20261116/evidence/mcp-stdio-discovery-envelope-candidate",
+      "id": "mcp-stdio-discovery-envelope-candidate",
+      "language": "protocol",
+      "node": "",
+      "status": "pass",
+      "steps": [
+        {
+          "detail": {
+            "duration_ms": 121,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-mcp-static-laws-6764-555-v2-20261116/keel-3041924-1794892290324849515-3"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "2733c05c1661959886e7c47c15ed36a386552614ccfdb3ebf85beb93565fcc3d"
+          },
+          "duration_ms": 125,
+          "id": "discover-and-recover",
+          "status": "pass"
+        }
+      ],
+      "world_isolation": null
+    },
+    {
+      "duration_ms": 102,
+      "error": "crlf-and-eof",
+      "evidence_dir": "/root/nudox-keel-mcp-static-laws-6764-555-v2-20261116/evidence/mcp-stdio-line-endings-notifications-candidate",
+      "id": "mcp-stdio-line-endings-notifications-candidate",
+      "language": "protocol",
+      "node": "",
+      "status": "fail",
+      "steps": [
+        {
+          "duration_ms": 101,
+          "error": "/2/result: reviewed expectation failed; actual={\"_meta\":{\"backend/wireBudget\":{\"bytes\":382,\"bytesPerToken\":4,\"estimatedTokens\":96,\"limitBytes\":49152,\"limitTokens\":12000,\"scope\":\"complete_jsonrpc_line\",\"tokenPolicy\":\"cl100k_base/ordinary-v1\",\"tokenScope\":\"complete_jsonrpc_json_excluding_transport_framing\",\"vocabularySha256\":\"69111b35d5b2fed760d611fd634c3dd0f75310ccfc1938740cda69041674e992\"}}}; expected={\"contains\":null,\"equals\":{},\"not_contains\":null,\"set_equals\":null}",
+          "id": "crlf-and-eof",
+          "status": "fail"
+        }
+      ],
+      "world_isolation": null
+    },
+    {
+      "duration_ms": 102,
+      "error": "correlate-id-types",
+      "evidence_dir": "/root/nudox-keel-mcp-static-laws-6764-555-v2-20261116/evidence/mcp-stdio-correlation-candidate",
+      "id": "mcp-stdio-correlation-candidate",
+      "language": "protocol",
+      "node": "",
+      "status": "fail",
+      "steps": [
+        {
+          "duration_ms": 101,
+          "error": "/0/result: reviewed expectation failed; actual={\"_meta\":{\"backend/wireBudget\":{\"bytes\":382,\"bytesPerToken\":4,\"estimatedTokens\":96,\"limitBytes\":49152,\"limitTokens\":12000,\"scope\":\"complete_jsonrpc_line\",\"tokenPolicy\":\"cl100k_base/ordinary-v1\",\"tokenScope\":\"complete_jsonrpc_json_excluding_transport_framing\",\"vocabularySha256\":\"69111b35d5b2fed760d611fd634c3dd0f75310ccfc1938740cda69041674e992\"}}}; expected={\"contains\":null,\"equals\":{},\"not_contains\":null,\"set_equals\":null}",
+          "id": "correlate-id-types",
+          "status": "fail"
+        }
+      ],
+      "world_isolation": null
+    },
+    {
+      "duration_ms": 101,
+      "error": "reject-nesting",
+      "evidence_dir": "/root/nudox-keel-mcp-static-laws-6764-555-v2-20261116/evidence/mcp-stdio-depth-recovery-candidate",
+      "id": "mcp-stdio-depth-recovery-candidate",
+      "language": "protocol",
+      "node": "",
+      "status": "fail",
+      "steps": [
+        {
+          "duration_ms": 101,
+          "error": "/3/result: reviewed expectation failed; actual={\"_meta\":{\"backend/wireBudget\":{\"bytes\":382,\"bytesPerToken\":4,\"estimatedTokens\":96,\"limitBytes\":49152,\"limitTokens\":12000,\"scope\":\"complete_jsonrpc_line\",\"tokenPolicy\":\"cl100k_base/ordinary-v1\",\"tokenScope\":\"complete_jsonrpc_json_excluding_transport_framing\",\"vocabularySha256\":\"69111b35d5b2fed760d611fd634c3dd0f75310ccfc1938740cda69041674e992\"}}}; expected={\"contains\":null,\"equals\":{},\"not_contains\":null,\"set_equals\":null}",
+          "id": "reject-nesting",
+          "status": "fail"
+        }
+      ],
+      "world_isolation": null
+    }
+  ],
+  "containment_policy": {
+    "required": true,
+    "root": {
+      "Unix": [
+        47,
+        115,
+        121,
+        115,
+        47,
+        102,
+        115,
+        47,
+        99,
+        103,
+        114,
+        111,
+        117,
+        112,
+        47,
+        110,
+        117,
+        100,
+        111,
+        120,
+        45,
+        107,
+        101,
+        101,
+        108,
+        45,
+        109,
+        99,
+        112,
+        45,
+        115,
+        116,
+        97,
+        116,
+        105,
+        99,
+        45,
+        108,
+        97,
+        119,
+        115,
+        45,
+        54,
+        55,
+        54,
+        52,
+        45,
+        53,
+        53,
+        53,
+        45,
+        118,
+        50,
+        45,
+        50,
+        48,
+        50,
+        54,
+        49,
+        49,
+        49,
+        54
+      ]
+    }
+  },
+  "driver_sha256": "e5219d43396081413c5815b17862b0125a37fda4dfb50bcefedc647467ffdc5d",
+  "duration_ms": 745,
+  "inventory": [
+    {
+      "definition_sha256": "777f29942900506182c4161c5bf6c787fff5badc93e964d121af29e39487d523",
+      "id": "mcp-stdio-handshake-state-candidate",
+      "inputs": {},
+      "language": "protocol",
+      "node": "",
+      "requires": [],
+      "steps": [
+        {
+          "id": "state-transitions",
+          "kind": "process"
+        }
+      ],
+      "world": "process"
+    },
+    {
+      "definition_sha256": "016061b58e1dcaa43f211c39e64414f49aab65b1ccb41f8aabb62610d3b6aba1",
+      "id": "mcp-stdio-version-negotiation-candidate",
+      "inputs": {},
+      "language": "protocol",
+      "node": "",
+      "requires": [],
+      "steps": [
+        {
+          "id": "current",
+          "kind": "process"
+        },
+        {
+          "id": "previous",
+          "kind": "process"
+        },
+        {
+          "id": "newer",
+          "kind": "process"
+        },
+        {
+          "id": "unknown",
+          "kind": "process"
+        }
+      ],
+      "world": "process"
+    },
+    {
+      "definition_sha256": "51f24f781d0666b4eaff6f87feef9233c140988f80ded9981d416d55abb2d706",
+      "id": "mcp-stdio-init-refusal-retry-candidate",
+      "inputs": {},
+      "language": "protocol",
+      "node": "",
+      "requires": [],
+      "steps": [
+        {
+          "id": "invalid-then-valid",
+          "kind": "process"
+        }
+      ],
+      "world": "process"
+    },
+    {
+      "definition_sha256": "2bc22e8f457b9a6cdad9f7b8a681f2484542b37fb1b43f168c1a489d3c7ed79c",
+      "id": "mcp-stdio-discovery-envelope-candidate",
+      "inputs": {},
+      "language": "protocol",
+      "node": "",
+      "requires": [],
+      "steps": [
+        {
+          "id": "discover-and-recover",
+          "kind": "process"
+        }
+      ],
+      "world": "process"
+    },
+    {
+      "definition_sha256": "f0bfeca29551abf412d24448b6a1563827cd3e31c79840b303eb7d4c36906ccc",
+      "id": "mcp-stdio-line-endings-notifications-candidate",
+      "inputs": {},
+      "language": "protocol",
+      "node": "",
+      "requires": [],
+      "steps": [
+        {
+          "id": "crlf-and-eof",
+          "kind": "process"
+        }
+      ],
+      "world": "process"
+    },
+    {
+      "definition_sha256": "f6c633d05cfdabed21d4ca1585fcdde7c6918823baf2e95d2015e6c125f5f562",
+      "id": "mcp-stdio-correlation-candidate",
+      "inputs": {},
+      "language": "protocol",
+      "node": "",
+      "requires": [],
+      "steps": [
+        {
+          "id": "correlate-id-types",
+          "kind": "process"
+        }
+      ],
+      "world": "process"
+    },
+    {
+      "definition_sha256": "21bc63c359b3a8bf3f9e1c4741e651636b593860b1458c74676b761ffef8b394",
+      "id": "mcp-stdio-depth-recovery-candidate",
+      "inputs": {},
+      "language": "protocol",
+      "node": "",
+      "requires": [],
+      "steps": [
+        {
+          "id": "reject-nesting",
+          "kind": "process"
+        }
+      ],
+      "world": "process"
+    }
+  ],
+  "manifest_sha256": "827036fdcc2371247bb2e14ab4e2223a1a0b88914d9be686092a7557af3504ed",
+  "order": null,
+  "schema": 1,
+  "status": "fail"
+}

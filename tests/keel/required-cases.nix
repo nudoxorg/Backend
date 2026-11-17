@@ -35,4 +35,12 @@
   "rust-mcp-cursor-lifecycle"
   "rust-public-search-page-bound"
   "cli-search-help-page-range"
+  "typescript-source-range-restart"
+  "mcp-stdio-handshake-state"
+  "mcp-stdio-version-negotiation"
+  "mcp-stdio-init-refusal-retry"
+  "mcp-stdio-discovery-envelope"
+  "mcp-stdio-line-endings-notifications"
+  "mcp-stdio-correlation"
+  "mcp-stdio-depth-recovery"
 ]
