@@ -4,7 +4,7 @@ use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     os::unix::fs::PermissionsExt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -16,6 +16,15 @@ impl Drop for Process {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
+}
+fn cli_command(path: &Path) -> Command {
+    let mut command = Command::new(path);
+    command.env_remove("NUDOX_API_KEY");
+    if let Some(key_file) = std::env::var_os("BACKEND_METRICS_TEST_API_KEY_FILE") {
+        let key = std::fs::read_to_string(key_file).expect("read private test key file");
+        command.env("NUDOX_API_KEY", key.trim_end_matches(['\r', '\n']));
+    }
+    command
 }
 fn request(addr: &str, request: &str) -> String {
     let mut stream = TcpStream::connect(addr).unwrap();
@@ -388,7 +397,7 @@ fn real_view_journal_append_success_and_path_failure() {
     };
     let initial = value(&get(&addr, "/metrics"), &counter("success"));
     let start_add = || {
-        Command::new(&cli)
+        cli_command(&cli)
             .args([
                 "--endpoint",
                 socket.to_str().unwrap(),
@@ -540,7 +549,7 @@ fn real_sparse_boundary_compaction_survives_cold_restart() {
     };
     let command = |args: &[&str]| {
         let mut child = Process(
-            Command::new(&cli)
+            cli_command(&cli)
                 .args([
                     "--endpoint",
                     socket.to_str().unwrap(),
@@ -574,7 +583,7 @@ fn real_sparse_boundary_compaction_survives_cold_restart() {
             .unwrap()
             .read_to_string(&mut stderr)
             .unwrap();
-        assert!(status.success(), "CLI failed: {stderr}");
+        assert!(status.success(), "CLI failed with {status}");
         stdout
     };
     let mut owner = start_owner();
@@ -618,9 +627,8 @@ fn real_sparse_boundary_compaction_survives_cold_restart() {
     assert!(owner.0.wait().unwrap().success());
     let mut restarted = start_owner();
     wait_owner(&mut restarted);
-    assert_eq!(
-        command(&["packages"]),
-        selected,
+    assert!(
+        command(&["packages"]) == selected,
         "cold restart changed selected package state"
     );
     assert!(
