@@ -88,7 +88,11 @@ impl RetirementPointer {
         }
         let output_charge = MAX_INTENT_BYTES.checked_add(bookkeeping).ok_or(StoreError::Bounds)?;
         let output = budget.reserve(output_charge).map_err(|_| StoreError::Bounds)?;
+        // Vec::with_capacity requests exactly MAX_INTENT_BYTES from the
+        // allocator. A larger reported capacity is outside the retained
+        // capacity charge and must not escape this admission.
         let mut bytes = Vec::with_capacity(MAX_INTENT_BYTES);
+        if bytes.capacity() > MAX_INTENT_BYTES { return Err(StoreError::Bounds); }
         // This sink is only used to open individually bounded objects; exact
         // closure membership and aggregate control union are proven separately.
         staged_intent::visit_empty_retirement_scope(
@@ -97,7 +101,14 @@ impl RetirementPointer {
                 if bytes.len().checked_add(payload.len()).is_none_or(|n| n > MAX_INTENT_BYTES) {
                     return Err(StoreError::Bounds);
                 }
-                bytes.extend_from_slice(payload);
+                // Individual pushes cannot reallocate while capacity is
+                // sufficient. Bulk insertion has no equivalent guarantee.
+                for chunk in payload.chunks(4096) {
+                    if cancelled() { return Err(StoreError::Bounds); }
+                    for byte in chunk {
+                        bytes.push(*byte);
+                    }
+                }
                 Ok(())
             },
         )?;
