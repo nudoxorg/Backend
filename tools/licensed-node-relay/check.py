@@ -289,14 +289,29 @@ def isolation():
             assert get("/health") == "ok\n"
             assert get("/ready") == "ready\n"
             assert heartbeat(get("/metrics"), "two") >= second
-            statuses = [post("invalid") for _ in range(25)]
-            assert 429 in statuses and all(code in (401,429) for code in statuses)
-            # Exhaust grant one independently; grant two's live sender must
-            # continue producing real accepted heartbeats.
-            statuses = [post(tokens[0]) for _ in range(25)]
-            assert 429 in statuses and all(code in (400,429) for code in statuses)
-            wait_for(lambda: heartbeat(get("/metrics"), "two") > second, seconds=8)
+            # Keep a bounded invalid-client flood active across multiple real
+            # heartbeat intervals, and observe both nodes advance during it.
+            def flood(token, results):
+                for _ in range(45):
+                    results.append(post(token))
+                    time.sleep(0.06)
+            statuses = []
+            invalid_flood = threading.Thread(target=flood, args=("invalid", statuses), daemon=True)
+            invalid_flood.start()
             wait_for(lambda: heartbeat(get("/metrics"), "one") > first, seconds=8)
+            wait_for(lambda: heartbeat(get("/metrics"), "two") > second, seconds=8)
+            assert invalid_flood.is_alive()
+            invalid_flood.join(timeout=10)
+            assert not invalid_flood.is_alive() and 429 in statuses and all(code in (401,429) for code in statuses)
+            # Exhaust grant one independently while grant two keeps reporting.
+            second = heartbeat(get("/metrics"), "two")
+            statuses = []
+            grant_flood = threading.Thread(target=flood, args=(tokens[0], statuses), daemon=True)
+            grant_flood.start()
+            wait_for(lambda: heartbeat(get("/metrics"), "two") > second, seconds=8)
+            assert grant_flood.is_alive()
+            grant_flood.join(timeout=10)
+            assert not grant_flood.is_alive() and 429 in statuses and all(code in (400,429) for code in statuses)
             for thread in tricklers:
                 thread.join(timeout=6)
                 assert not thread.is_alive()
