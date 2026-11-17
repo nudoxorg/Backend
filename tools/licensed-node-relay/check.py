@@ -109,6 +109,21 @@ def main():
             heartbeat = float(next(x.split()[-1] for x in text.splitlines() if x.startswith('nudox_node_heartbeat_seconds{')))
             goodbye = float(next(x.split()[-1] for x in text.splitlines() if x.startswith('nudox_node_goodbye_seconds{')))
             assert goodbye >= heartbeat
+            clean_goodbyes = counter(text, 'relay_records_total{kind="goodbye"}')
+            # A real child killed without orderly retirement must not cause a
+            # goodbye. The later heartbeat must supersede the earlier goodbye.
+            pid_file = root / "child.pid"
+            crashing_child = "import os,time;open(" + repr(str(pid_file)) + ", 'w').write(str(os.getpid()));time.sleep(60)"
+            sender = subprocess.Popen([sys.executable, str(HERE / "sender.py"), base, str(root / "token"), str(root / "sender"), "--", sys.executable, "-c", crashing_child])
+            wait_for(lambda: pid_file.exists())
+            def newer_heartbeat():
+                body = metrics()
+                value = float(next(x.split()[-1] for x in body.splitlines() if x.startswith('nudox_node_heartbeat_seconds{')))
+                return body if value > goodbye else None
+            wait_for(newer_heartbeat)
+            os.kill(int(pid_file.read_text()), signal.SIGKILL)
+            assert sender.wait(timeout=10) == 137
+            assert counter(metrics(), 'relay_records_total{kind="goodbye"}') == clean_goodbyes
             assert request("/v1/records", b"{}", bearer="invalid")[0] == 401
             assert request("/v1/records", b"{}")[0] == 400
             assert request("/v1/records", b"x" * 1025)[0] == 413
@@ -124,12 +139,16 @@ def main():
             relay.terminate()
             relay.wait(timeout=5)
             relay = start_relay()
-            print("real process overflow, diagnostic, goodbye, denial and restart/dedup: passed")
+            print("real process overflow, diagnostic, goodbye, crash, denial and restart/dedup: passed")
         finally:
             if sender.poll() is None:
                 sender.send_signal(signal.SIGCONT)
-                sender.kill()
-                sender.wait()
+                sender.terminate()
+                try:
+                    sender.wait(timeout=8)
+                except subprocess.TimeoutExpired:
+                    sender.kill()
+                    sender.wait()
             if relay is not None and relay.poll() is None:
                 relay.terminate()
                 relay.wait(timeout=5)
