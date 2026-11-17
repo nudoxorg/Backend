@@ -1,0 +1,847 @@
+{
+  "authority_environment": {
+    "NUDOX_CARGO": "/nix/store/qm5b3rg00i7filzq24dp4cl9pcjdwa59-cargo/bin/cargo",
+    "NUDOX_CARGO_HOME": "/root/.cargo",
+    "NUDOX_PYTHON": "/nix/store/jxyrvv4gbpnp3ap5iy7wxwl1sg4x2x88-python3-3.14.6/bin/python3",
+    "NUDOX_RUSTC": "/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/rustc",
+    "PATH": "/run/wrappers/bin:/root/.nix-profile/bin:/nix/profile/bin:/root/.local/state/nix/profile/bin:/etc/profiles/per-user/root/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin"
+  },
+  "authority_environment_sha256": "25b9d1a34eba8db97256abf807f2d72a1fc960c6aca3c69241051ef83e13cf8a",
+  "binaries": {
+    "backend-cli": "23e0a5b10922a280204334a1b2df13cd11770bb37ebc18713da629862cdbd60c",
+    "backend-locald": "aa4f9f9f9f9681331d303e6cf2859c4b003616a5003e6fa8675ebf5833a4b28d",
+    "backend-mcp": "49a6b110352c0ccd3c44a052b3d8d48f627c6ad2205e758ac9c3d1a49a0f473d"
+  },
+  "cases": [
+    {
+      "duration_ms": 243,
+      "error": null,
+      "evidence_dir": "/root/nudox-keel-source-55551-f3e-laws-20261116/evidence/cli-add-help",
+      "id": "cli-add-help",
+      "language": "protocol",
+      "node": "",
+      "status": "pass",
+      "steps": [
+        {
+          "detail": {
+            "duration_ms": 151,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-source-55551-f3e-laws-20261116/keel-2674216-1794879682031922620-0"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "1b438bb3ebecc1c94f5014cc6553f8e3cbc295dc1ad433842ec7b7bbc75c9830"
+          },
+          "duration_ms": 151,
+          "id": "invoke",
+          "status": "pass"
+        }
+      ],
+      "world_isolation": null
+    },
+    {
+      "duration_ms": 81,
+      "error": null,
+      "evidence_dir": "/root/nudox-keel-source-55551-f3e-laws-20261116/evidence/cli-passive-status-connect-only",
+      "id": "cli-passive-status-connect-only",
+      "language": "protocol",
+      "node": "",
+      "status": "pass",
+      "steps": [
+        {
+          "detail": {
+            "duration_ms": 80,
+            "exit": 1,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-source-55551-f3e-laws-20261116/keel-2674216-1794879682184281529-1"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "6b2a291d4d28217aeb48a0cf3f4e8168d75785bca83d9105ebbfd82e92e8a5d5"
+          },
+          "duration_ms": 81,
+          "id": "invoke",
+          "status": "pass"
+        }
+      ],
+      "world_isolation": null
+    },
+    {
+      "duration_ms": 292,
+      "error": null,
+      "evidence_dir": "/root/nudox-keel-source-55551-f3e-laws-20261116/evidence/cli-passive-health-connect-only",
+      "id": "cli-passive-health-connect-only",
+      "language": "protocol",
+      "node": "",
+      "status": "pass",
+      "steps": [
+        {
+          "detail": {
+            "duration_ms": 30,
+            "exit": 1,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-source-55551-f3e-laws-20261116/keel-2674216-1794879682527606434-2"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "0150f79ae93c3faf8cb47034389fbee7db33b4eea4fd613bb1b79619d059b2f5"
+          },
+          "duration_ms": 31,
+          "id": "invoke",
+          "status": "pass"
+        }
+      ],
+      "world_isolation": null
+    },
+    {
+      "duration_ms": 23185,
+      "error": null,
+      "evidence_dir": "/root/nudox-keel-source-55551-f3e-laws-20261116/evidence/typescript-external-source-policy",
+      "id": "typescript-external-source-policy",
+      "language": "typescript",
+      "node": "engine.lower.typescript",
+      "status": "pass",
+      "steps": [
+        {
+          "detail": {
+            "profiles": [
+              {
+                "input_digest": "38677f048fe70e3d64aac979f23d16e0cf18e312984adf2215475d0296c5d008",
+                "observation_sequence": 1,
+                "profile": [
+                  1,
+                  0
+                ],
+                "source_count": 1,
+                "source_version": "bde89c0e4c2b7fc884bb61943ff772a8a3ea33199535007066ba98e203213138",
+                "state": {
+                  "detail": {
+                    "coverage": {
+                      "coverage": "complete"
+                    },
+                    "generation": "06125d10f2857146bfac90566a9c60df793a3551c32193a6328ae85fc8993c6b"
+                  },
+                  "state": "published"
+                }
+              }
+            ],
+            "view_root": "67d8d49d787836902f8a01922d42d85722f93b2ef4940e57440173bc58574ecf"
+          },
+          "duration_ms": 18400,
+          "id": "index-typescript",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 50,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-source-55551-f3e-laws-20261116/keel-2674216-1794879704518865953-5"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "bfa0e64fcf8e4db215effc8d3bf14ad57aaf542852af21f7893760ec6aab6503"
+          },
+          "duration_ms": 305,
+          "id": "resolve-local",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 141,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-source-55551-f3e-laws-20261116/keel-2674216-1794879704824050306-8"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "5ed70692e5897d3be692ea4f17eef706c1165f7bd0e7420624bc1a8ca2d7ecd4"
+          },
+          "duration_ms": 394,
+          "id": "show-local",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 50,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-source-55551-f3e-laws-20261116/keel-2674216-1794879705219000496-11"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "5a2f8145190a59cff3f6f2124c11e525be1da6d29feda64c514242575dfe4899"
+          },
+          "duration_ms": 223,
+          "id": "resolve-external-max",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 60,
+            "exit": 2,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-source-55551-f3e-laws-20261116/keel-2674216-1794879705442633949-14"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "faba7cc30d58bdd2b9bb28a182845c989c945aa6ec5ade2f64ed29ec3e10dc15"
+          },
+          "duration_ms": 263,
+          "id": "show-external-without-source",
+          "status": "pass"
+        }
+      ],
+      "world_isolation": {
+        "mode": "cgroup-v2",
+        "path": "/sys/fs/cgroup/nudox-keel-source-55551-f3e-laws-20261116/keel-2674216-1794879682618618410-3"
+      }
+    },
+    {
+      "duration_ms": 42350,
+      "error": null,
+      "evidence_dir": "/root/nudox-keel-source-55551-f3e-laws-20261116/evidence/javascript-partial-deletion-retains-source",
+      "id": "javascript-partial-deletion-retains-source",
+      "language": "javascript",
+      "node": "engine.lower.typescript",
+      "status": "pass",
+      "steps": [
+        {
+          "detail": {
+            "profiles": [
+              {
+                "input_digest": "3e09fb508e94df84ba808078a3c689ad8d34a6c5a05097d24f5845f1f96e0afd",
+                "observation_sequence": 1,
+                "profile": [
+                  1,
+                  0
+                ],
+                "source_count": 2,
+                "source_version": "56395b30b4e286d4468e19bca274142f4d9dd04bec76a7fc34ea9b05fff5e83c",
+                "state": {
+                  "detail": {
+                    "coverage": {
+                      "coverage": "complete"
+                    },
+                    "generation": "0612142f9a0afe15240009003fae5d7e71baa5b0f0573127ac3d895e8d470ab6"
+                  },
+                  "state": "published"
+                }
+              }
+            ],
+            "view_root": "e63fc9464eb5b442568a5264cad3b0648a490389be08f849115ab70e7eee568b"
+          },
+          "duration_ms": 11729,
+          "id": "index-two-sources",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "convergence_attempts": 10,
+            "result": {
+              "duration_ms": 50,
+              "exit": 0,
+              "isolation": {
+                "mode": "cgroup-v2",
+                "path": "/sys/fs/cgroup/nudox-keel-source-55551-f3e-laws-20261116/keel-2674216-1794879724268345827-28"
+              },
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stdout_sha256": "d2a324b02d1ce13e29563531bf47f9f1d8f130b3b96547984dac3c8fd03d4ac2"
+            }
+          },
+          "duration_ms": 987,
+          "id": "find-retained",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "convergence_attempts": 1,
+            "result": {
+              "duration_ms": 50,
+              "exit": 0,
+              "isolation": {
+                "mode": "cgroup-v2",
+                "path": "/sys/fs/cgroup/nudox-keel-source-55551-f3e-laws-20261116/keel-2674216-1794879724502661339-31"
+              },
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stdout_sha256": "d8999e73ad6ba0001bb72866fd678825a1df472f8a24b84e8c76bf790c8666f1"
+            }
+          },
+          "duration_ms": 237,
+          "id": "find-before-delete",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "changed": [],
+            "removed": [
+              "src/deleted.js"
+            ]
+          },
+          "duration_ms": 0,
+          "id": "delete-one-source",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "profiles": [
+              {
+                "input_digest": "023bb467aa67918a234444305236591d9da29c1cf92c7da56da95121c97f00fa",
+                "observation_sequence": 2,
+                "profile": [
+                  1,
+                  0
+                ],
+                "source_count": 1,
+                "source_version": "83687054f4165294bed73f44bce00d6f8fc2bdd649324f560fa9118a95d4c800",
+                "state": {
+                  "detail": {
+                    "coverage": {
+                      "coverage": "complete"
+                    },
+                    "generation": "0612d09b238151c7bb465ebb9e3f4d342acece52670ec6abe423840b43c1d7e8"
+                  },
+                  "state": "published"
+                }
+              }
+            ],
+            "view_root": "734ece44fe82622dfe52099740efa0a9e17fdda8e539fc048f3de014e8ffd74f"
+          },
+          "duration_ms": 20278,
+          "id": "reindex-retained-source",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "convergence_attempts": 9,
+            "result": {
+              "duration_ms": 50,
+              "exit": 0,
+              "isolation": {
+                "mode": "cgroup-v2",
+                "path": "/sys/fs/cgroup/nudox-keel-source-55551-f3e-laws-20261116/keel-2674216-1794879745677977503-43"
+              },
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stdout_sha256": "d2a324b02d1ce13e29563531bf47f9f1d8f130b3b96547984dac3c8fd03d4ac2"
+            }
+          },
+          "duration_ms": 892,
+          "id": "retained-after-delete",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "convergence_attempts": 1,
+            "result": {
+              "duration_ms": 50,
+              "exit": 0,
+              "isolation": {
+                "mode": "cgroup-v2",
+                "path": "/sys/fs/cgroup/nudox-keel-source-55551-f3e-laws-20261116/keel-2674216-1794879745911428502-46"
+              },
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stdout_sha256": "eb1b3da42332b5be83c741416d3c9fa5d9107a0b5b4ac6707d4a832354e99f52"
+            }
+          },
+          "duration_ms": 223,
+          "id": "deleted-evidence-absent",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "generation": 2
+          },
+          "duration_ms": 1206,
+          "id": "restart-owner",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "convergence_attempts": 4,
+            "result": {
+              "duration_ms": 50,
+              "exit": 0,
+              "isolation": {
+                "mode": "cgroup-v2",
+                "path": "/sys/fs/cgroup/nudox-keel-source-55551-f3e-laws-20261116/keel-2674216-1794879747607848440-53"
+              },
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stdout_sha256": "d2a324b02d1ce13e29563531bf47f9f1d8f130b3b96547984dac3c8fd03d4ac2"
+            }
+          },
+          "duration_ms": 510,
+          "id": "retained-after-restart",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "convergence_attempts": 1,
+            "result": {
+              "duration_ms": 50,
+              "exit": 0,
+              "isolation": {
+                "mode": "cgroup-v2",
+                "path": "/sys/fs/cgroup/nudox-keel-source-55551-f3e-laws-20261116/keel-2674216-1794879747851621542-56"
+              },
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stdout_sha256": "eb1b3da42332b5be83c741416d3c9fa5d9107a0b5b4ac6707d4a832354e99f52"
+            }
+          },
+          "duration_ms": 233,
+          "id": "deleted-evidence-absent-after-restart",
+          "status": "pass"
+        }
+      ],
+      "world_isolation": {
+        "mode": "cgroup-v2",
+        "path": "/sys/fs/cgroup/nudox-keel-source-55551-f3e-laws-20261116/keel-2674216-1794879705762762801-17"
+      }
+    },
+    {
+      "duration_ms": 81466,
+      "error": null,
+      "evidence_dir": "/root/nudox-keel-source-55551-f3e-laws-20261116/evidence/rust-mcp-cursor-lifecycle",
+      "id": "rust-mcp-cursor-lifecycle",
+      "language": "rust",
+      "node": "engine.lanes",
+      "status": "pass",
+      "steps": [
+        {
+          "detail": {
+            "profiles": [
+              {
+                "input_digest": "0623a3735322cb6a82dd0a85498e530c1f17dd8f075ef45b59ee37297ceda38f",
+                "observation_sequence": 1,
+                "profile": [
+                  0,
+                  2
+                ],
+                "source_count": 0,
+                "source_version": "68bfc5124066b7d3a9c589b22f272648202aefbf09867df0c0fd2f00690f7da0",
+                "state": {
+                  "detail": {
+                    "coverage": {
+                      "coverage": "complete"
+                    },
+                    "generation": "0612b9b7444434c0b2a75b5f8c01b8ae4eec10b73ea5c35fe677b222426a0d18"
+                  },
+                  "state": "published"
+                }
+              }
+            ],
+            "view_root": "31982c5938e5a560a98f864526af58fbe7b29bf32a6470b410eabbc51f5f28f9"
+          },
+          "duration_ms": 41471,
+          "id": "index-initial",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-source-55551-f3e-laws-20261116/keel-2674216-1794879793901786974-61"
+            },
+            "pid": 2677257,
+            "session": "reader"
+          },
+          "duration_ms": 89,
+          "id": "start-mcp",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "is_error": false,
+            "pid": 2677257,
+            "request_id": 1,
+            "session": "reader"
+          },
+          "duration_ms": 39,
+          "id": "first-page",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "changed": [
+              "src/lib.rs"
+            ],
+            "removed": []
+          },
+          "duration_ms": 0,
+          "id": "edit-source",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "profiles": [
+              {
+                "input_digest": "a8f9c07942c29ab6ad2f3723d7320fb7f26b139405b85381eb6c70e95cbe6869",
+                "observation_sequence": 3,
+                "profile": [
+                  0,
+                  2
+                ],
+                "source_count": 0,
+                "source_version": "e30501f7546382bc5ba85a672397eb2169be74401a6b7ad16cacc7ea3f7f1962",
+                "state": {
+                  "detail": {
+                    "coverage": {
+                      "coverage": "complete"
+                    },
+                    "generation": "061266293b4db1add2281a73272efdc4be23c86ede2ce20149f06ee4c3617b8f"
+                  },
+                  "state": "published"
+                }
+              }
+            ],
+            "view_root": "c7154b19ab5a3b32833ea5b6e8144d2af92de1b1aff8bc390f3e9953edf09c41"
+          },
+          "duration_ms": 35290,
+          "id": "reindex-new-root",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "is_error": true,
+            "pid": 2677257,
+            "request_id": 2,
+            "session": "reader"
+          },
+          "duration_ms": 7,
+          "id": "reject-moved-root",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-source-55551-f3e-laws-20261116/keel-2674216-1794879793901786974-61"
+            },
+            "pid": 2677257,
+            "reaped": true,
+            "session": "reader"
+          },
+          "duration_ms": 10,
+          "id": "stop-mcp",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-source-55551-f3e-laws-20261116/keel-2674216-1794879829339260799-63"
+            },
+            "pid": 2677666,
+            "session": "reader"
+          },
+          "duration_ms": 83,
+          "id": "restart-mcp",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "is_error": true,
+            "pid": 2677666,
+            "request_id": 1,
+            "session": "reader"
+          },
+          "duration_ms": 2,
+          "id": "reject-lost-handle",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "is_error": false,
+            "pid": 2677666,
+            "request_id": 2,
+            "session": "reader"
+          },
+          "duration_ms": 37,
+          "id": "fresh-query-sees-edit",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-source-55551-f3e-laws-20261116/keel-2674216-1794879829339260799-63"
+            },
+            "pid": 2677666,
+            "reaped": true,
+            "session": "reader"
+          },
+          "duration_ms": 10,
+          "id": "stop-restarted-mcp",
+          "status": "pass"
+        }
+      ],
+      "world_isolation": {
+        "mode": "cgroup-v2",
+        "path": "/sys/fs/cgroup/nudox-keel-source-55551-f3e-laws-20261116/keel-2674216-1794879748113783380-59"
+      }
+    }
+  ],
+  "containment_policy": {
+    "required": true,
+    "root": {
+      "Unix": [
+        47,
+        115,
+        121,
+        115,
+        47,
+        102,
+        115,
+        47,
+        99,
+        103,
+        114,
+        111,
+        117,
+        112,
+        47,
+        110,
+        117,
+        100,
+        111,
+        120,
+        45,
+        107,
+        101,
+        101,
+        108,
+        45,
+        115,
+        111,
+        117,
+        114,
+        99,
+        101,
+        45,
+        53,
+        53,
+        53,
+        53,
+        49,
+        45,
+        102,
+        51,
+        101,
+        45,
+        108,
+        97,
+        119,
+        115,
+        45,
+        50,
+        48,
+        50,
+        54,
+        49,
+        49,
+        49,
+        54
+      ]
+    }
+  },
+  "driver_sha256": "9cfe7ba70633dc63ea182ab8679c9d4790f2b40051560ee5b8079061a4bd6c70",
+  "duration_ms": 147639,
+  "inventory": [
+    {
+      "definition_sha256": "84a2d731c69eeac5dac5d39080e93ea1bc3cef791b9aaa929dc5df39507baeb3",
+      "id": "cli-add-help",
+      "inputs": {},
+      "language": "protocol",
+      "node": "",
+      "requires": [],
+      "steps": [
+        {
+          "id": "invoke",
+          "kind": "process"
+        }
+      ],
+      "world": "process"
+    },
+    {
+      "definition_sha256": "1d635c84327d89679d83620323ff82636bf24b39eb8658509b9be7c167221d58",
+      "id": "cli-passive-status-connect-only",
+      "inputs": {},
+      "language": "protocol",
+      "node": "",
+      "requires": [],
+      "steps": [
+        {
+          "id": "invoke",
+          "kind": "process"
+        }
+      ],
+      "world": "process"
+    },
+    {
+      "definition_sha256": "4d33b6339c94728eba1469c7ab970a40609446738aeedd0af963c674e5defd2c",
+      "id": "cli-passive-health-connect-only",
+      "inputs": {},
+      "language": "protocol",
+      "node": "",
+      "requires": [],
+      "steps": [
+        {
+          "id": "invoke",
+          "kind": "process"
+        }
+      ],
+      "world": "process"
+    },
+    {
+      "definition_sha256": "9e163b2f8fe141783e76d1e94230782ea483e5d23ac358b074f4e8f5577cad33",
+      "id": "typescript-external-source-policy",
+      "inputs": {
+        "tsconfig.json": "8fa45c8ecec982445ac55a0c6088e74ff9602aa56686720dc216f73dddafb063",
+        "view.ts": "902a7809ca204b9fa8c59b56d4ca64489071dc49dfc0f10b9ddddf0e2ac3b6d2"
+      },
+      "language": "typescript",
+      "node": "engine.lower.typescript",
+      "requires": [],
+      "steps": [
+        {
+          "id": "index-typescript",
+          "kind": "index"
+        },
+        {
+          "id": "resolve-local",
+          "kind": "query"
+        },
+        {
+          "id": "show-local",
+          "kind": "query"
+        },
+        {
+          "id": "resolve-external-max",
+          "kind": "query"
+        },
+        {
+          "id": "show-external-without-source",
+          "kind": "query"
+        }
+      ],
+      "world": "owner"
+    },
+    {
+      "definition_sha256": "b7e48f591d191b812921fdb87665e72f6b11635728798c3ae0f9915894a44dbe",
+      "id": "javascript-partial-deletion-retains-source",
+      "inputs": {
+        "package.json": "f2ff88b2038be6aa03412e95b54631dc3d54424f846b2785a6fa35f62d56a637",
+        "src/deleted.js": "ab24fc2e0244efb6e647cd50de08773fdeedbb9bd71a0d4597dbc7c69d70deab",
+        "src/retained.js": "28625ad5f198155dd6a4e6ae4fc9538619e0c966f788bbe4f2c1a73a0b2e173a"
+      },
+      "language": "javascript",
+      "node": "engine.lower.typescript",
+      "requires": [],
+      "steps": [
+        {
+          "id": "index-two-sources",
+          "kind": "index"
+        },
+        {
+          "id": "find-retained",
+          "kind": "query"
+        },
+        {
+          "id": "find-before-delete",
+          "kind": "query"
+        },
+        {
+          "id": "delete-one-source",
+          "kind": "write"
+        },
+        {
+          "id": "reindex-retained-source",
+          "kind": "index"
+        },
+        {
+          "id": "retained-after-delete",
+          "kind": "query"
+        },
+        {
+          "id": "deleted-evidence-absent",
+          "kind": "query"
+        },
+        {
+          "id": "restart-owner",
+          "kind": "restart"
+        },
+        {
+          "id": "retained-after-restart",
+          "kind": "query"
+        },
+        {
+          "id": "deleted-evidence-absent-after-restart",
+          "kind": "query"
+        }
+      ],
+      "world": "owner"
+    },
+    {
+      "definition_sha256": "28a195d9f9b7ebe066c512804d2da12c19ce445da4e75caf79589d59168b95a2",
+      "id": "rust-mcp-cursor-lifecycle",
+      "inputs": {
+        "Cargo.toml": "9d6f76756167010c2991ad79b6218e083a67ec28b96c928f6dcbfbd96966daf9",
+        "src/lib.rs": "1cfa7aaa2fa74d798e2afc91bd34513412ff9fef7f3d099b9363761d240188ef"
+      },
+      "language": "rust",
+      "node": "engine.lanes",
+      "requires": [],
+      "steps": [
+        {
+          "id": "index-initial",
+          "kind": "index"
+        },
+        {
+          "id": "start-mcp",
+          "kind": "mcp-start"
+        },
+        {
+          "id": "first-page",
+          "kind": "mcp-call"
+        },
+        {
+          "id": "edit-source",
+          "kind": "write"
+        },
+        {
+          "id": "reindex-new-root",
+          "kind": "index"
+        },
+        {
+          "id": "reject-moved-root",
+          "kind": "mcp-call"
+        },
+        {
+          "id": "stop-mcp",
+          "kind": "mcp-stop"
+        },
+        {
+          "id": "restart-mcp",
+          "kind": "mcp-start"
+        },
+        {
+          "id": "reject-lost-handle",
+          "kind": "mcp-call"
+        },
+        {
+          "id": "fresh-query-sees-edit",
+          "kind": "mcp-call"
+        },
+        {
+          "id": "stop-restarted-mcp",
+          "kind": "mcp-stop"
+        }
+      ],
+      "world": "owner"
+    }
+  ],
+  "manifest_sha256": "89dfa9408fc728b9549196252f23be097166e4f0cd057098ad69321ab80e2295",
+  "order": null,
+  "schema": 1,
+  "status": "pass"
+}

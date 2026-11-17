@@ -489,24 +489,6 @@ fn every_registry_row_is_reachable_by_the_words_a_person_types() {
 }
 
 #[test]
-fn help_is_grouped_by_domain_and_names_every_domain() {
-    let help = invoke::help();
-    for domain in invoke::help_domains() {
-        assert!(
-            help.contains(backend_present::domain_name(domain)),
-            "help omits the {domain:?} domain"
-        );
-    }
-    assert!(help.contains("surface <JSON>"), "the escape hatch stays");
-    assert!(help.contains("--format human|markdown|json"));
-    assert!(help.contains("--passive"));
-    assert!(help.contains("nudox add ."));
-    assert!(help.contains("nudox search \"error handling\""));
-    assert!(help.contains("nudox mcp-config"));
-    assert!(help.contains("no config writes or service start"));
-}
-
-#[test]
 fn a_global_page_bound_is_not_silently_ignored_by_unpaged_commands() {
     for command in [
         "packages --limit 0",
@@ -529,19 +511,6 @@ fn a_global_page_bound_is_not_silently_ignored_by_unpaged_commands() {
 }
 
 #[test]
-fn passive_connection_mode_is_limited_to_health_and_status() {
-    let (options, command_words) =
-        options::split(&words("--passive status")).expect("status accepts a passive connection");
-    assert!(options.passive());
-    assert_eq!(command_words, vec!["status".to_owned()]);
-
-    let error = options::split(&words("--passive search symbols"))
-        .expect_err("passive mode must not alter ordinary commands");
-    assert_eq!(error.slug(), FaultSlug::Usage);
-    assert_eq!(error.operand().render(), "--passive");
-}
-
-#[test]
 fn package_graph_help_and_cli_lowering_share_the_engine_page_bound() {
     let help = invoke::help_for(grammar_for("package-graph").expect("package graph grammar"));
     assert!(help.contains(&format!(
@@ -560,21 +529,6 @@ fn package_graph_help_and_cli_lowering_share_the_engine_page_bound() {
         let input = invoke::parse(&command, options.limit()).expect("CLI parse");
         assert_eq!(lower(&input, "/abs/project").is_ok(), valid);
     }
-}
-
-#[test]
-fn add_defaults_to_interactive_and_advertises_the_background_option() {
-    let invocation = invoke::parse(&words("add /abs/project"), None).expect("parse Add");
-    let Request::Index(path) = lower(&invocation, "/unused").expect("lower Add") else {
-        panic!("default add lowers to the interactive index request");
-    };
-    assert_eq!(path, "/abs/project");
-
-    let help = invoke::help_for(grammar_for("add").expect("Add grammar"));
-    assert!(help.contains("use `.` for the current directory"));
-    assert!(help.contains("--execution-intent INTENT"));
-    assert!(help.contains("--cargo-target NAME"));
-    assert!(help.contains("bounded remote calibration"));
 }
 
 #[test]

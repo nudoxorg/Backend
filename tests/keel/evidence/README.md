@@ -42,8 +42,8 @@ local captured-source note, omit that note from the external row, and return
 its explicit not-captured source fault. Five CLI unit examples are also
 replaced by actual binary rows: nearest command, unknown option with executable
 alternatives, missing show operand, document alias usage, and out-of-range page
-bound. The exhaustive registry/help, passive acceptance, package-graph bounds,
-and remaining lowering laws are still pending their own process replacements.
+bound. At this receipt, exhaustive registry/help, passive acceptance, package-graph
+bounds and remaining lowering laws still awaited their own process replacements.
 
 The evaluated manifest SHA-256 is recorded in the report; the full evaluated
 input and raw replies remain at
@@ -69,3 +69,68 @@ cgroup-v2 containment. Raw evidence is retained at
 `/root/nudox-keel-anchored-owner-631a-v4-20261116` on ilo-prod. These are debug
 worker-anchor development observations, not the final 0.3 release artifacts or
 formal release attestation.
+
+`product-linux-55551-f3e-20261116.json` retains a six-case, 29-step run against
+verified official T1 Backend 0.3.0 source
+`55551f420a870ddf55e93ed0117bbabc815ec612`. Every selected case passed: precise
+Add help, passive status and health without starting an owner, the TypeScript
+external-source distinction, deletion of one JavaScript source while preserving
+another across owner restart, and an 11-step persistent MCP cursor lifecycle.
+The cursor remains in one MCP process across edit/reindex and correctly refuses
+a moved basis; a restarted MCP rejects the old server-local handle and a new
+query recovers. These selected laws do not qualify the full release inventory.
+
+The artifact manifest SHA-256 is
+`31d9f59b0b7b44a9add2171ac4b73a64db1fed80cef78db424e3478c2fedee3b`;
+the public Keel revision is `f3e0a86fd16c91dacc4559b293e58943a65794c0` and its
+executable SHA-256 is
+`9cfe7ba70633dc63ea182ab8679c9d4790f2b40051560ee5b8079061a4bd6c70`.
+The required-cgroup run's manifest SHA-256 is
+`89dfa9408fc728b9549196252f23be097166e4f0cd057098ad69321ab80e2295`;
+report SHA-256 is
+`a67a53f9de4a27158c69fb7c62ad7be91370231fa12d8defaf4728179edec716`.
+The exact manifest, raw replies and original report remain at
+`/root/nudox-keel-source-55551-f3e-laws-20261116` on ilo-prod. Later source
+changes, the empty-JavaScript retirement outcome, native release-owner account
+admission, and the complete final inventory still need their own receipts.
+
+`protocol-rust-linux-55551-f3e-20261116.json` records a separate 21-case,
+40-step run against the same verified 55551 artifact and final f3e driver. All
+20 protocol cases and the Rust edit/edge/restart history passed. This includes
+the current root help with all five domains and quick-start examples; all three
+passive-mode controls; actual default interactive and explicit background index
+receipts; and the valid 128-row package-graph bound. Report SHA-256:
+`0c82c1db4ad50723df01256d05b0157e85a6b2587401e1df1b3ef86a40ee2af8`.
+Its evaluated manifest is the same `89dfa940...` input identified above; raw
+replies remain at `/root/nudox-keel-protocol-rust-55551-f3e-20261116`.
+
+These exact process receipts replace three more CLI unit functions:
+`help_is_grouped_by_domain_and_names_every_domain`,
+`passive_connection_mode_is_limited_to_health_and_status`, and
+`add_defaults_to_interactive_and_advertises_the_background_option`.
+The exhaustive registry, valid Cargo-target selection, all paged-command
+lowering laws and complete package/search help-bound relationship remain
+unreplaced. The native-retirement outcome remains a separate blocked contract;
+a published operation without native evidence does not satisfy an index step.
+
+`native-preview-account-refusal-11bcc-f3e-20261116.json` retains the exact
+release-package attempt for Nix output
+`/nix/store/wgnk4rbrk23gv1rpkdn478r786qw7dns-nudox-backend-service-runtime-0.3.0`,
+source `11bccf0ab56e08f3daaf49d3928b296c8a00012b`. Package source and all seven
+binary/library hashes were verified first. All 17 direct native-worker steps
+passed. The first owner index was refused by the release CLI account check and
+all subsequent owner steps were blocked. No credentials or account bypass were
+used. This report does not establish exact-package CLI/MCP owner readiness.
+
+`native-owner-mixed-11bcc-555-f3e-20261116.json` records the separately labelled
+owner diagnostic: the canonical 11bcc Nix owner and its adjacent admitted
+workers, with independently identified official 55551 CLI/MCP binaries. All
+three cases and 50 steps passed, including owner edits, source reads, removed
+facts, cold restart and explicit-to-implicit SQL selection. The driver was the
+same final f3e executable with required cgroup-v2 containment. Report SHA-256:
+`e26463c2bb9dc3559b1dd884711d424cc9481eab194e38d0a2ebe450f32202e8`.
+The original manifest, source and worker observations, package verification,
+and raw replies remain at
+`/root/nudox-keel-native-owner-11bcc-mixed-555-f3e-20261116` on ilo-prod.
+This is evidence for that owner/worker package with mixed test clients, not a
+pass for the refused exact-package clients or the final release candidate.
