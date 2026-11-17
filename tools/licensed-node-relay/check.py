@@ -98,7 +98,8 @@ def main():
             # a one-record FIFO produces real, durably counted overflow.
             def overflow():
                 with sqlite3.connect(root / "sender" / "sender.sqlite") as db:
-                    return db.execute("SELECT lost FROM meta").fetchone()[0] >= 2
+                    row = db.execute("SELECT lost FROM meta").fetchone()
+                    return row is not None and row[0] >= 2
             wait_for(overflow)
             # Capture the real sender's pending heartbeat and freeze its
             # supervisor so no later sequence can race this replay check.
