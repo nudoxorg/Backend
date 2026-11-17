@@ -15,6 +15,25 @@ const PAGE_BYTES: usize = 64 * 1024;
 const PAGE_HEADER: usize = 44;
 const MAX_INTENT_BYTES: usize = 2 * PAGE_BYTES;
 
+/// Sealed stage bytes. Only the bounded pointer reader in this module can
+/// construct this owner; the buffer and its prospective lease cannot be
+/// separated or cloned into an authority capability.
+pub(super) struct RetirementWire {
+    bytes: Metered<Vec<u8>>,
+}
+
+impl RetirementWire {
+    /// Borrow untrusted bytes for narrow parsing; callers must not retain an
+    /// uncharged copy or treat these bytes as admitted authority.
+    pub(super) fn bytes(&self) -> &[u8] { self.bytes.get().as_slice() }
+
+    /// Check same-ledger ownership and the complete retained buffer charge.
+    pub(super) fn covered_by(&self, budget: &RetirementBudget, bookkeeping: usize) -> bool {
+        self.bytes.get().capacity().checked_add(bookkeeping)
+            .is_some_and(|bytes| budget.owns_and_covers(&self.bytes, bytes))
+    }
+}
+
 /// Parsed wire fields only. None is authenticated by parsing.
 pub(super) struct RetirementPointer {
     manifest: UntrustedObjectId,
@@ -56,7 +75,7 @@ impl RetirementPointer {
         budget: &RetirementBudget,
         bookkeeping: usize,
         cancelled: &dyn Fn() -> bool,
-    ) -> Result<Metered<Vec<u8>>, StoreError> {
+    ) -> Result<RetirementWire, StoreError> {
         if !controls.belongs_to(store, budget, selected) || cancelled() { return Err(StoreError::Bounds); }
         let _sink_charge = budget.reserve(store.retirement_arc_clone_bytes(bookkeeping).ok_or(StoreError::Bounds)?)
             .map_err(|_| StoreError::Bounds)?;
@@ -90,6 +109,6 @@ impl RetirementPointer {
         if hasher.finish().map_err(|_| StoreError::Corrupt)? != self.basis.source_capture || cancelled() {
             return Err(StoreError::Corrupt);
         }
-        Ok(output.meter(bytes))
+        Ok(RetirementWire { bytes: output.meter(bytes) })
     }
 }

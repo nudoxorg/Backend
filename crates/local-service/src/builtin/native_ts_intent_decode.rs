@@ -3,7 +3,8 @@
 //! The carrier is an untrusted parsed claim, not a selected-transition
 //! capability. Admission and replay must independently bind the exact
 //! workspace, closure, request, project and semantic/native frontiers.
-//! Its retained input and owned copy must use the same admission ledger.
+//! The sealed input is retained without a second allocation and must use the
+//! same admission ledger.
 
 use backend_semantic::vocabulary::LanguageProfile;
 
@@ -378,7 +379,7 @@ pub(super) fn retirement_intent_wire_summary<'a>(
 /// must operate here and separately meter any retained output.
 #[allow(dead_code)]
 pub(super) struct DecodedRetirementIntent {
-    charged: backend_version::retirement_budget::Metered<Vec<u8>>,
+    wire: super::native_ts_retirement_pointer::RetirementWire,
     owner: [u8; 32],
     operation_key: Option<[u8; 32]>,
 }
@@ -401,20 +402,15 @@ impl DecodedRetirementIntent {
 /// No caller can supply an arbitrary metered value to manufacture the carrier.
 #[allow(dead_code)]
 pub(super) fn decode_retirement_intent(
-    input: &backend_version::retirement_budget::Metered<Vec<u8>>,
+    input: super::native_ts_retirement_pointer::RetirementWire,
     budget: &backend_version::retirement_budget::RetirementBudget,
     bookkeeping: usize,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<DecodedRetirementIntent, &'static str> {
-    let input_charge = input
-        .get()
-        .capacity()
-        .checked_add(bookkeeping)
-        .ok_or("retirement intent input allocation overflow")?;
-    if !budget.owns_and_covers(input, input_charge) {
+    if !input.covered_by(budget, bookkeeping) {
         return Err("retirement intent input is not covered by this budget");
     }
-    let bytes = input.get().as_slice();
+    let bytes = input.bytes();
     let summary = retirement_intent_wire_summary(bytes, cancelled)?;
     // Mirror the generic decoder's resident ceiling so a compact carrier never
     // accepts an intent that the existing V17 grammar would reject there.
@@ -427,8 +423,14 @@ pub(super) fn decode_retirement_intent(
     if resident > backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES {
         return Err("evidence resident limit");
     }
-    // The exact-allocation producer is not available under this crate's
-    // deny(unsafe_code) policy. Refuse before reserving or allocating until a
-    // reviewed foundation API can supply an exactly charged buffer.
-    Err("retirement intent exact-allocation producer is unavailable")
+    let owner = summary.owner;
+    let operation_key = summary.operation_key;
+    if cancelled() {
+        return Err("cancelled");
+    }
+    Ok(DecodedRetirementIntent {
+        wire: input,
+        owner,
+        operation_key,
+    })
 }
