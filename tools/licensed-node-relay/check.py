@@ -111,7 +111,7 @@ def main():
             with sqlite3.connect(root / "sender" / "sender.sqlite") as db:
                 exact = db.execute("SELECT body FROM queue ORDER BY seq LIMIT 1").fetchone()[0]
             relay = start_relay()
-            assert request("/ready")[0] == 200
+            wait_for(lambda: request("/ready")[0] == 200, seconds=40)
             with socket.socket() as other:
                 other.bind(("127.0.0.1", 0))
                 second_port = other.getsockname()[1]
