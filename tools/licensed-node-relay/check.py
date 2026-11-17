@@ -9,6 +9,7 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import threading
 import tempfile
 import time
 import urllib.error
@@ -213,5 +214,119 @@ def main():
                 relay.wait(timeout=5)
 
 
+def isolation():
+    with tempfile.TemporaryDirectory(prefix="nudox-telemetry-isolation-") as tmp:
+        root = Path(tmp)
+        os.chmod(root, 0o700)
+        for name in ("relay", "one", "two"):
+            (root / name).mkdir(mode=0o700)
+        tokens = [os.urandom(32).hex(), os.urandom(32).hex()]
+        now = int(time.time())
+        grants = []
+        for i, node in enumerate(("one", "two")):
+            path = root / ("token" + str(i))
+            path.write_text(tokens[i], encoding="ascii")
+            path.chmod(0o600)
+            grants.append({"tenant": "test", "node": node, "token_sha256": hashlib.sha256(tokens[i].encode()).hexdigest(), "scope": "telemetry:write", "not_before": now - 600, "expires_at": now + 3600, "revoked": False})
+        registry = root / "registry"
+        registry.write_text(json.dumps(grants), encoding="utf-8")
+        registry.chmod(0o600)
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        base = f"http://127.0.0.1:{port}"
+        relay = subprocess.Popen([sys.executable, str(HERE / "relay.py"), str(registry), str(root / "relay" / "state"), str(port)])
+        senders = []
+        slow = []
+        child = "import signal,sys,time;signal.signal(signal.SIGTERM,lambda *_:sys.exit(0));time.sleep(60)"
+        def get(path):
+            with urllib.request.urlopen(base + path, timeout=1) as response:
+                return response.read().decode()
+        def post(token):
+            req = urllib.request.Request(base + "/v1/records", data=b"{}", headers={"Authorization": "Bearer " + token})
+            try:
+                with urllib.request.urlopen(req, timeout=2) as response:
+                    return response.status
+            except urllib.error.HTTPError as error:
+                error.read()
+                return error.code
+        def heartbeat(body, node):
+            marker = f'nudox_node_heartbeat_seconds{{tenant="test",node="{node}"}} '
+            return float(next(line[len(marker):] for line in body.splitlines() if line.startswith(marker)))
+        try:
+            wait_for(lambda: get("/ready"))
+            def start(i):
+                senders.append(subprocess.Popen([sys.executable, str(HERE / "sender.py"), base, str(root / ("token" + str(i))), str(root / ("one" if i == 0 else "two")), "--interval-seconds", "1", "--", sys.executable, "-c", child]))
+            start(0)
+            first = wait_for(lambda: heartbeat(get("/metrics"), "one"))
+            body = get("/metrics")
+            assert 'nudox_node_telemetry_grant_expected_since_seconds{tenant="test",node="two"}' in body
+            assert 'nudox_node_heartbeat_seconds{tenant="test",node="two"}' not in body
+            start(1)
+            second = wait_for(lambda: heartbeat(get("/metrics"), "two"))
+            # Hold incomplete header and incomplete authenticated body open;
+            # other requests must proceed and both sockets must be closed by an
+            # absolute deadline even if the peer never finishes its request.
+            header = socket.create_connection(("127.0.0.1", port), timeout=1)
+            header.sendall(b"GET /health HTTP/1.1\r\nHost: local\r\nX-Slow:")
+            slow.append(header)
+            partial = socket.create_connection(("127.0.0.1", port), timeout=1)
+            partial.sendall(("POST /v1/records HTTP/1.1\r\nHost: local\r\nAuthorization: Bearer " + tokens[0] + "\r\nContent-Length: 1000\r\n\r\n{").encode())
+            slow.append(partial)
+            closed_after = []
+            started = time.monotonic()
+            def trickle(sock):
+                while time.monotonic() - started < 5:
+                    try:
+                        sock.sendall(b"x")
+                    except OSError:
+                        break
+                    time.sleep(0.2)
+                closed_after.append(time.monotonic() - started)
+            tricklers = [threading.Thread(target=trickle, args=(sock,), daemon=True) for sock in slow]
+            for thread in tricklers:
+                thread.start()
+            assert get("/health") == "ok\n"
+            assert get("/ready") == "ready\n"
+            assert heartbeat(get("/metrics"), "two") >= second
+            statuses = [post("invalid") for _ in range(25)]
+            assert 429 in statuses and all(code in (401,429) for code in statuses)
+            # Exhaust grant one independently; grant two's live sender must
+            # continue producing real accepted heartbeats.
+            statuses = [post(tokens[0]) for _ in range(25)]
+            assert 429 in statuses and all(code in (400,429) for code in statuses)
+            wait_for(lambda: heartbeat(get("/metrics"), "two") > second, seconds=8)
+            wait_for(lambda: heartbeat(get("/metrics"), "one") > first, seconds=8)
+            for thread in tricklers:
+                thread.join(timeout=6)
+                assert not thread.is_alive()
+            assert len(closed_after) == 2 and all(elapsed < 5 for elapsed in closed_after)
+            for sock in slow:
+                sock.settimeout(5)
+                received = bytearray()
+                while True:
+                    try:
+                        chunk = sock.recv(1024)
+                    except ConnectionResetError:
+                        break
+                    if not chunk:
+                        break
+                    received.extend(chunk)
+                    assert len(received) <= 4096
+            print("two-grant quota isolation, expected-since and slow-client deadline: passed")
+        finally:
+            for sock in slow:
+                sock.close()
+            for sender in senders:
+                if sender.poll() is None:
+                    sender.terminate()
+            for sender in senders:
+                if sender.poll() is None:
+                    sender.wait(timeout=10)
+            relay.terminate()
+            relay.wait(timeout=5)
+
+
 if __name__ == "__main__":
     main()
+    isolation()

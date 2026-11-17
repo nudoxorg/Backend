@@ -13,7 +13,10 @@ of at most 128 objects with exactly these fields:
 {"tenant":"nudoxorg","node":"dogfood-node","token_sha256":"<lowercase SHA-256 of a random bearer token>","scope":"telemetry:write","not_before":0,"expires_at":1800000000,"revoked":false}
 ```
 
-The example is a shape, not a usable grant. Tenant and node are fixed
+The example is a shape, not a usable grant. `not_before` is also the
+operator's expected-since baseline for per-grant missing-heartbeat alerts;
+it is not emitted as a heartbeat. Set it to the time the operator expects the
+node to start sending. Tenant and node are fixed
 operator-provisioned label values, unique in the registry, with 1–48 ASCII
 letters, numbers, hyphens, or underscores. Tokens must be unique random secrets;
 the sender accepts 32–256 ASCII alphanumeric characters. The timestamps are
@@ -81,3 +84,11 @@ Backups or rollback of relay or sender state can reopen replay windows and need
 a separate recovery policy. The relay is single-process, local-only, and must
 not be exposed to a hostile network. No production credential or grant is
 included.
+
+The listener bounds its accepted worker pool to 16, queue to 32, headers to
+32 lines of at most 8192 bytes, record body to 1024 bytes, and each request to
+an absolute three-second network deadline. Connections beyond the worker pool
+are closed before HTTP admission. Active grants have independent token buckets;
+invalid credentials have their own bucket and cannot spend a grant's quota.
+Bounded connection shedding and a shared local disk still impose finite
+capacity under deliberate saturation; these are not a public-network endpoint.

@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """Loopback-only dogfood telemetry relay. See README.md for the contract."""
 import hashlib
+import collections
 import hmac
+import http.client
 import json
 import os
 import re
 import sqlite3
 import stat
+import socket
+import socketserver
+import threading
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -15,6 +20,11 @@ from pathlib import Path
 MAX_BODY = 1024
 MAX_IDENTITIES = 128
 MAX_SKEW = 120
+MAX_WORKERS = 16
+REQUEST_DEADLINE = 3.0
+# Bound stdlib header parsing before authentication, across all workers.
+http.client._MAXLINE = 8192
+http.client._MAXHEADERS = 32
 LABEL = re.compile(r"^[a-zA-Z0-9_-]{1,48}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
@@ -63,16 +73,20 @@ def load_identities(path):
 
 
 def active_grants(path, now):
-    return [(tenant, node, digest) for tenant, node, digest, start, end, revoked in load_identities(path) if not revoked and start <= now < end]
+    return [(tenant, node, digest, start) for tenant, node, digest, start, end, revoked in load_identities(path) if not revoked and start <= now < end]
 
 
-class Relay(HTTPServer):
+class Relay(socketserver.ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+    request_queue_size = 32
     def __init__(self, state, registry, port):
         self.registry = registry
-        self.tokens = 20.0
-        self.last = time.monotonic()
+        self.workers = threading.BoundedSemaphore(MAX_WORKERS)
+        self.db_lock = threading.RLock()
+        self.quota_lock = threading.Lock()
+        self.quotas = collections.OrderedDict()
         os.umask(0o077)
-        self.db = sqlite3.connect(state)
+        self.db = sqlite3.connect(state, check_same_thread=False)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.executescript("""
@@ -99,29 +113,71 @@ class Relay(HTTPServer):
         return now
 
     def reject(self):
-        self.count("rejected")
-        self.db.commit()
+        with self.db_lock:
+            self.count("rejected")
+            self.db.commit()
 
     def count(self, kind):
         self.db.execute("INSERT INTO counters VALUES(?,1) ON CONFLICT(kind) DO UPDATE SET n=n+1", (kind,))
 
-    def allow(self):
-        now = time.monotonic()
-        self.tokens = min(20.0, self.tokens + (now - self.last) * 5)
-        self.last = now
-        if self.tokens < 1:
-            return False
-        self.tokens -= 1
-        return True
+    def allow(self, identity):
+        # Invalid traffic has its own bucket; valid identities cannot consume
+        # each other's quota. Keys come from validated, bounded registry labels.
+        key = identity if identity is not None else ("", "")
+        with self.quota_lock:
+            now = time.monotonic()
+            tokens, last = self.quotas.pop(key, (20.0, now))
+            tokens = min(20.0, tokens + (now - last) * 5.0)
+            allowed = tokens >= 1
+            if allowed:
+                tokens -= 1
+            self.quotas[key] = (tokens, now)
+            while len(self.quotas) > MAX_IDENTITIES + 1:
+                self.quotas.popitem(last=False)
+            return allowed
+
+    def process_request(self, request, client_address):
+        # Connections outside this bounded pool are shed before HTTP admission.
+        if not self.workers.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.workers.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        def expire():
+            try:
+                request.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        timer = threading.Timer(REQUEST_DEADLINE, expire)
+        timer.daemon = True
+        timer.start()
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            timer.cancel()
+            self.workers.release()
+
+    def handle_error(self, request, client_address):
+        # No request or credential data enters logs on disconnect or timeout.
+        pass
 
     def get_request(self):
         conn, addr = super().get_request()
-        conn.settimeout(5)
+        conn.settimeout(REQUEST_DEADLINE)
         return conn, addr
 
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+
+    def setup(self):
+        super().setup()
+        self.deadline = time.monotonic() + REQUEST_DEADLINE
 
     def log_message(self, *args):
         pass  # Never log paths, request bodies, or credentials.
@@ -138,55 +194,55 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
             return self.reply(200, b"ok\n")
-        if self.path == "/ready":
-            try:
-                if not active_grants(self.server.registry, self.server.checked_time(commit=True)):
-                    return self.reply(503, b"not ready\n")
-                self.server.db.execute("BEGIN IMMEDIATE")
-                self.server.db.execute("UPDATE ready_check SET n = 1 - n WHERE id = 1")
-                self.server.db.commit()
-                return self.reply(200, b"ready\n")
-            except (sqlite3.Error, OSError, ValueError, UnicodeError, RuntimeError, RecursionError):
-                self.server.db.rollback()
-                return self.reply(503, b"not ready\n")
-        if self.path != "/metrics":
+        if self.path not in ("/ready", "/metrics"):
             return self.reply(404)
         try:
-            rows = {(a,b):(c,d) for a,b,c,d in self.server.db.execute("SELECT tenant,node,heartbeat,goodbye FROM node")}
-            counters = dict(self.server.db.execute("SELECT kind,n FROM counters"))
-            out = ["# TYPE nudox_node_heartbeat_seconds gauge", "# TYPE nudox_node_goodbye_seconds gauge"]
-            for tenant, node, _ in active_grants(self.server.registry, self.server.checked_time(commit=True)):
-                hb, bye = rows.get((tenant,node), (None,None))
-                labels = f'tenant="{tenant}",node="{node}"'
-                if hb is not None: out.append(f"nudox_node_heartbeat_seconds{{{labels}}} {hb!r}")
-                if bye is not None: out.append(f"nudox_node_goodbye_seconds{{{labels}}} {bye!r}")
-            out.append("# TYPE relay_records_total counter")
-            for kind in ("heartbeat", "goodbye", "diag"):
-                out.append(f'relay_records_total{{kind="{kind}"}} {counters.get(kind,0)}')
-            out += ["# TYPE relay_rejected_total counter", f"relay_rejected_total {counters.get('rejected',0)}", "# TYPE relay_node_reported_dropped_total counter", f"relay_node_reported_dropped_total {counters.get('reported_dropped',0)}"]
-            return self.reply(200, ("\n".join(out)+"\n").encode())
+            with self.server.db_lock, self.server.db:
+                now = self.server.checked_time(commit=True)
+                grants = active_grants(self.server.registry, now)
+                if self.path == "/ready":
+                    if not grants:
+                        status, body = 503, b"not ready\n"
+                    else:
+                        self.server.db.execute("BEGIN IMMEDIATE")
+                        self.server.db.execute("UPDATE ready_check SET n = 1 - n WHERE id = 1")
+                        self.server.db.commit()
+                        status, body = 200, b"ready\n"
+                else:
+                    rows = {(a,b):(c,d) for a,b,c,d in self.server.db.execute("SELECT tenant,node,heartbeat,goodbye FROM node")}
+                    counters = dict(self.server.db.execute("SELECT kind,n FROM counters"))
+                    out = ["# TYPE nudox_node_heartbeat_seconds gauge", "# TYPE nudox_node_goodbye_seconds gauge", "# TYPE nudox_node_telemetry_grant_expected_since_seconds gauge"]
+                    for tenant, node, _, start in grants:
+                        hb, bye = rows.get((tenant,node), (None,None))
+                        labels = f'tenant="{tenant}",node="{node}"'
+                        out.append(f"nudox_node_telemetry_grant_expected_since_seconds{{{labels}}} {start}")
+                        if hb is not None: out.append(f"nudox_node_heartbeat_seconds{{{labels}}} {hb!r}")
+                        if bye is not None: out.append(f"nudox_node_goodbye_seconds{{{labels}}} {bye!r}")
+                    out.append("# TYPE relay_records_total counter")
+                    for kind in ("heartbeat", "goodbye", "diag"):
+                        out.append(f'relay_records_total{{kind="{kind}"}} {counters.get(kind,0)}')
+                    out += ["# TYPE relay_rejected_total counter", f"relay_rejected_total {counters.get('rejected',0)}", "# TYPE relay_node_reported_dropped_total counter", f"relay_node_reported_dropped_total {counters.get('reported_dropped',0)}"]
+                    status, body = 200, ("\n".join(out)+"\n").encode()
+            return self.reply(status, body)
         except (sqlite3.Error, OSError, ValueError, UnicodeError, RuntimeError, RecursionError):
-            self.server.db.rollback()
+            with self.server.db_lock:
+                self.server.db.rollback()
             return self.reply(503)
 
     def do_POST(self):
-        if self.path != "/v1/records": return self.reply(404)
+        if self.path != "/v1/records":
+            return self.reply(404)
         try:
-            if not self.server.allow():
-                self.server.reject()
-                return self.reply(429)
             authorization = self.headers.get("Authorization", "")
             token = authorization.removeprefix("Bearer ") if authorization.startswith("Bearer ") else ""
-            if not token or len(token) > 256 or not token.isascii():
+            digest = hashlib.sha256(token.encode()).hexdigest() if token and len(token) <= 256 and token.isascii() else ""
+            # Initial lookup is deliberately outside the database lock so an
+            # invalid local client cannot consume any valid grant's bucket.
+            grants = active_grants(self.server.registry, time.time())
+            identity = next(((t,n) for t,n,h,_ in grants if digest and hmac.compare_digest(digest,h)), None)
+            if not self.server.allow(identity):
                 self.server.reject()
-                return self.reply(401)
-            digest = hashlib.sha256(token.encode()).hexdigest()
-            try:
-                grants = active_grants(self.server.registry, self.server.checked_time(commit=True))
-            except (OSError, ValueError, UnicodeError, RuntimeError, RecursionError):
-                self.server.db.rollback()
-                return self.reply(503)
-            identity = next(((t,n) for t,n,h in grants if hmac.compare_digest(digest,h)), None)
+                return self.reply(429)
             if identity is None:
                 self.server.reject()
                 return self.reply(401)
@@ -206,51 +262,52 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("schema")
             fingerprint = hashlib.sha256(raw).hexdigest()
             tenant,node = identity
-            db = self.server.db
-            db.execute("BEGIN IMMEDIATE")
-            prior = db.execute("SELECT seq,digest,heartbeat,goodbye FROM node WHERE tenant=? AND node=?", identity).fetchone()
-            # The grant can expire or be revoked while a request body arrives.
-            # Revalidate immediately before accepting even an already-authenticated request.
-            try:
+            with self.server.db_lock, self.server.db:
+                db = self.server.db
+                db.execute("BEGIN IMMEDIATE")
+                prior = db.execute("SELECT seq,digest,heartbeat,goodbye FROM node WHERE tenant=? AND node=?", identity).fetchone()
                 received = self.server.checked_time()
-                still_allowed = any(t == tenant and n == node and hmac.compare_digest(digest, h)
-                                    for t, n, h in active_grants(self.server.registry, received))
-            except (OSError, ValueError, UnicodeError, RuntimeError, RecursionError):
-                db.rollback()
-                return self.reply(503)
-            if not still_allowed:
-                db.rollback()
-                self.server.reject()
-                return self.reply(401)
-            if prior and record["seq"] == prior[0] and hmac.compare_digest(fingerprint, prior[1]):
-                db.rollback()
-                return self.reply(200, b"duplicate\n")
-            if (prior and record["seq"] <= prior[0]) or abs(received - record["created_at"]) > MAX_SKEW:
-                db.rollback()
-                self.server.reject()
-                return self.reply(409)
-            if not prior and db.execute("SELECT COUNT(*) FROM node").fetchone()[0] >= MAX_IDENTITIES:
-                db.rollback()
-                self.server.reject()
-                return self.reply(429)
-            if prior and any(value is not None and received <= value for value in prior[2:]):
-                db.rollback()
-                return self.reply(503)
-            db.execute("INSERT INTO node(tenant,node,seq,digest) VALUES(?,?,?,?) ON CONFLICT(tenant,node) DO UPDATE SET seq=excluded.seq,digest=excluded.digest", (tenant,node,record["seq"],fingerprint))
-            if record["kind"] in ("heartbeat", "goodbye"):
-                column = record["kind"]
-                db.execute(f"UPDATE node SET {column}=? WHERE tenant=? AND node=?", (received,tenant,node))
-            self.server.count(record["kind"])
-            if record["kind"] == "diag":
-                db.execute("INSERT INTO counters VALUES('reported_dropped',?) ON CONFLICT(kind) DO UPDATE SET n=n+excluded.n", (record["dropped"],))
-            db.commit()
-            return self.reply(202, b"accepted\n")
+                still_allowed = any(t == tenant and n == node and hmac.compare_digest(digest,h)
+                                    for t,n,h,_ in active_grants(self.server.registry, received))
+                if time.monotonic() >= self.deadline:
+                    db.rollback()
+                    status, body = 503, b""
+                elif not still_allowed:
+                    db.rollback()
+                    self.server.reject()
+                    status, body = 401, b""
+                elif prior and record["seq"] == prior[0] and hmac.compare_digest(fingerprint, prior[1]):
+                    db.rollback()
+                    status, body = 200, b"duplicate\n"
+                elif (prior and record["seq"] <= prior[0]) or abs(received - record["created_at"]) > MAX_SKEW:
+                    db.rollback()
+                    self.server.reject()
+                    status, body = 409, b""
+                elif not prior and db.execute("SELECT COUNT(*) FROM node").fetchone()[0] >= MAX_IDENTITIES:
+                    db.rollback()
+                    self.server.reject()
+                    status, body = 429, b""
+                elif prior and any(value is not None and received <= value for value in prior[2:]):
+                    db.rollback()
+                    status, body = 503, b""
+                else:
+                    db.execute("INSERT INTO node(tenant,node,seq,digest) VALUES(?,?,?,?) ON CONFLICT(tenant,node) DO UPDATE SET seq=excluded.seq,digest=excluded.digest", (tenant,node,record["seq"],fingerprint))
+                    if record["kind"] in ("heartbeat", "goodbye"):
+                        db.execute(f"UPDATE node SET {record['kind']}=? WHERE tenant=? AND node=?", (received,tenant,node))
+                    self.server.count(record["kind"])
+                    if record["kind"] == "diag":
+                        db.execute("INSERT INTO counters VALUES('reported_dropped',?) ON CONFLICT(kind) DO UPDATE SET n=n+excluded.n", (record["dropped"],))
+                    db.commit()
+                    status, body = 202, b"accepted\n"
+            return self.reply(status, body)
         except (ValueError, TypeError, KeyError, json.JSONDecodeError, UnicodeError, RecursionError):
-            self.server.db.rollback()
+            with self.server.db_lock:
+                self.server.db.rollback()
             self.server.reject()
             return self.reply(400)
-        except sqlite3.Error:
-            self.server.db.rollback()
+        except (sqlite3.Error, OSError, RuntimeError):
+            with self.server.db_lock:
+                self.server.db.rollback()
             return self.reply(503)
 
 
