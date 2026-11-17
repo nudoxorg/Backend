@@ -3,7 +3,7 @@
 # Invoked as `nu .config/ci/t1.nu` inside the lean
 # `.#smoke` dev shell; run the same command locally to get the same verdict.
 #
-# It builds the product binaries (CLI, MCP, desktop and their locald owner) for the host
+# It builds the product binaries (CLI, MCP, desktop, locald and HTTP metrics) for the host
 # target: no --all-targets, so none of the ~330 test binaries are linked, and
 # no foreign targets. Then .config/ci/smoke.py starts each one: CLI --help,
 # MCP initialize + tools/list on stdio, and the desktop drawing a first frame
@@ -24,6 +24,7 @@ const SURFACES = [
     # Not smoked here; published so T2 (.config/ci/surface.py) drives the
     # exact owner the CLI and MCP find beside them.
     {package: "backend-locald", bin: "backend-locald"}
+    {package: "backend-metrics", bin: "backend-metrics"}
 ]
 
 def main []: nothing -> nothing {
@@ -68,7 +69,7 @@ def main []: nothing -> nothing {
 
     let build_args = $SURFACES | each {|surface| ["--package" $surface.package "--bin" $surface.bin] } | flatten
     let built = if $capacity {
-        ci-step "t1" "build cli, mcp, desktop, locald" {||
+        ci-step "t1" "build cli, mcp, desktop, locald, metrics" {||
             # Fix the job count regardless of ambient shell settings. Four is
             # the managed wrapper's per-process bound; CI can lower it with
             # CI_T1_CARGO_JOBS. Two left a cold build at ~23 min on a 20-thread
@@ -90,7 +91,7 @@ def main []: nothing -> nothing {
         }
     } else { false }
     let smoke = if $built {
-        ["cli" "mcp" "gui"] | each {|surface|
+        ["cli" "mcp" "gui" "metrics"] | each {|surface|
             ci-step "t1" $"smoke ($surface)" {||
                 run-bounded 3min "python3" ($env.FILE_PWD | path join "smoke.py") $surface "--bin-dir" $bin_dir
             }

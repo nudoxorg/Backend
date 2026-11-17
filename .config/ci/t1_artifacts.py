@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import tempfile
 
-BINARIES = ("backend-cli", "backend-mcp", "backend-desktop", "backend-locald")
+BINARIES = ("backend-cli", "backend-mcp", "backend-desktop", "backend-locald", "backend-metrics")
 RUNTIME_ENV = (
     "LD_LIBRARY_PATH", "FONTCONFIG_FILE", "__EGL_VENDOR_LIBRARY_DIRS",
     "LIBGL_DRIVERS_PATH", "VK_DRIVER_FILES", "VK_ICD_FILENAMES",
@@ -183,7 +183,7 @@ def main() -> None:
         # machine path or passing its ambient environment to the product.
         with tempfile.TemporaryDirectory(prefix="nudox-artifact-smoke-", dir=Path.cwd()) as scratch:
             env = {**manifest["runtime_env"], "LANG": "C.UTF-8", "TMPDIR": scratch}
-            for surface in ("cli", "mcp", "gui"):
+            for surface in ("cli", "mcp", "gui", "metrics"):
                 subprocess.run([manifest["python"], str(args.artifact / "smoke.py"), surface,
                                 "--bin-dir", str(args.artifact / "bin")], env=env, check=True, timeout=180)
     print(f"T1 artifacts verified: {args.source_sha}")

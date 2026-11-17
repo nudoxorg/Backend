@@ -177,6 +177,7 @@ export def verify-keel-native [host: string, target: path, stage: path] {
         "backend-cli"
         "backend-mcp"
         "backend-desktop"
+        "backend-metrics"
         "backend-keel-harness"
     ]
     let outputs = ($apps | each {|name|

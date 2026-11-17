@@ -137,7 +137,7 @@ class ArtifactTests(unittest.TestCase):
         relative = os.path.relpath(self.root)
         with patch("sys.argv", ["t1_artifacts.py", "verify", relative, "--source-sha", SHA, "--smoke"]), patch.object(t1_artifacts.subprocess, "run") as run:
             t1_artifacts.main()
-        self.assertEqual(run.call_count, 4)
+        self.assertEqual(run.call_count, 5)
         for call in run.call_args_list[1:]:
             argv = call.args[0]
             self.assertTrue(Path(argv[1]).is_absolute())

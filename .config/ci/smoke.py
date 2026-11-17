@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """T1 smoke checks: does each product surface come alive?
 
-    python3 .config/ci/smoke.py cli|mcp|gui --bin-dir DIR
+    python3 .config/ci/smoke.py cli|mcp|gui|metrics --bin-dir DIR
 
 Each check starts one built binary in a throwaway HOME and proves the most
 basic thing it is for, nothing more. Correctness belongs to T2.
 
 - cli: `backend-cli --help` exits 0 and prints usage.
+- metrics: serves real metrics and reports an absent owner as unavailable.
 - mcp: `backend-mcp` on stdio answers `initialize` and `tools/list`. Both are
   local protocol operations, so no index owner is needed.
 - gui: `backend-desktop` under Xvfb with Mesa's software Vulkan draws at least
@@ -18,10 +19,12 @@ Exit 0 on success, 1 on failure, with the reason on stderr.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import math
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -104,8 +107,12 @@ def stop(process: subprocess.Popen) -> None:
 
 
 def smoke_cli(bin_dir: Path, home: Path) -> int:
+    return smoke_help(bin_dir, home, "backend-cli", "cli")
+
+
+def smoke_help(bin_dir: Path, home: Path, binary: str, surface: str) -> int:
     result = subprocess.run(
-        [bin_dir / "backend-cli", "--help"],
+        [bin_dir / binary, "--help"],
         env=isolated_env(home),
         cwd=home,
         stdin=subprocess.DEVNULL,
@@ -115,11 +122,70 @@ def smoke_cli(bin_dir: Path, home: Path) -> int:
     )
     output = result.stdout + result.stderr
     if result.returncode != 0:
-        return fail(f"backend-cli --help exited {result.returncode}:\n{output[-2000:]}")
+        return fail(f"{binary} --help exited {result.returncode}:\n{output[-2000:]}")
     if "usage" not in output.lower():
-        return fail(f"backend-cli --help printed no usage:\n{output[-2000:]}")
-    print(f"cli: --help ok ({len(output.splitlines())} lines)")
+        return fail(f"{binary} --help printed no usage:\n{output[-2000:]}")
+    print(f"{surface}: --help ok ({len(output.splitlines())} lines)")
     return 0
+
+
+def smoke_metrics(bin_dir: Path, home: Path) -> int:
+    endpoint = home / "absent-owner.sock"
+    log_path = home / "metrics.log"
+    with log_path.open("wb") as log:
+        process = subprocess.Popen(
+            [bin_dir / "backend-metrics", "--endpoint", endpoint,
+             "--bind", "127.0.0.1:0"],
+            env=isolated_env(home), cwd=home, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=log, start_new_session=True,
+        )
+        try:
+            deadline = time.monotonic() + 10
+            address = None
+            while time.monotonic() < deadline:
+                with log_path.open("rb") as stream:
+                    diagnostic = stream.read(4096).decode("utf-8", errors="replace")
+                address = re.search(r"backend-metrics listening on 127\.0\.0\.1:(\d+)", diagnostic)
+                if address or process.poll() is not None:
+                    break
+                time.sleep(0.02)
+            if address is None:
+                return fail(f"metrics did not publish its loopback listener:\n{diagnostic}")
+
+            def request(path: str) -> tuple[int, str]:
+                connection = http.client.HTTPConnection("127.0.0.1", int(address[1]), timeout=3)
+                try:
+                    connection.request("GET", path)
+                    response = connection.getresponse()
+                    body = response.read(65537)
+                    if len(body) > 65536:
+                        raise ValueError("metrics smoke response exceeded 64 KiB")
+                    return response.status, body.decode("utf-8")
+                finally:
+                    connection.close()
+
+            status, metrics = request("/metrics")
+            if status != 200 or "# TYPE http_requests_total counter" not in metrics:
+                return fail("metrics endpoint did not expose its request counter")
+            status, body = request("/health")
+            if status != 503 or body != "owner unavailable\n" or endpoint.exists():
+                return fail("metrics health did not preserve absent-owner behavior")
+            status, metrics = request("/metrics")
+            expected = (
+                'http_requests_total{status="200"} 1\n',
+                'http_requests_total{status="503"} 1\n',
+                'http_request_duration_seconds_bucket{le="+Inf"} 2\n',
+                'http_request_duration_seconds_count 2\n',
+            )
+            if status != 200 or not all(line in metrics for line in expected):
+                return fail("metrics did not count the real scrape and failed health request")
+            process.terminate()
+            if process.wait(timeout=5) != 0:
+                return fail("metrics did not shut down cleanly")
+            print("metrics: live scrape, absent-owner health, counters and shutdown ok")
+            return 0
+        finally:
+            stop(process)
 
 
 def smoke_mcp(bin_dir: Path, home: Path) -> int:
@@ -579,7 +645,7 @@ def gui_scratch_parent(mounts: Path = Path("/proc/mounts"), shm: Path = Path("/d
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("surface", choices=["cli", "mcp", "gui"])
+    parser.add_argument("surface", choices=["cli", "mcp", "gui", "metrics"])
     parser.add_argument("--bin-dir", type=Path, required=True)
     parser.add_argument("--gui-budget", type=float, default=45.0, help="seconds to wait for the first frame")
     args = parser.parse_args()
@@ -591,6 +657,8 @@ def main() -> int:
             return smoke_cli(args.bin_dir, home)
         if args.surface == "mcp":
             return smoke_mcp(args.bin_dir, home)
+        if args.surface == "metrics":
+            return smoke_metrics(args.bin_dir, home)
         return smoke_gui(args.bin_dir, home, args.gui_budget)
 
 

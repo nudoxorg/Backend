@@ -296,7 +296,7 @@ in
         echo validated > $out/share/cargo-cache-protocol
       '';
 
-  # Exercise the small bound used by the two backend buildRustPackage
+  # Exercise the small bound used by the backend buildRustPackage
   # products without evaluating or building either product derivation.
   cargo-build-job-cap =
     pkgs.runCommand "nudox-cargo-build-job-cap" { nativeBuildInputs = [ pkgs.bash ]; }

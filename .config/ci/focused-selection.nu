@@ -6,6 +6,7 @@ export def focused-packages []: nothing -> list<string> {
         "backend-cli"
         "backend-mcp"
         "backend-locald"
+        "backend-metrics"
         "backend-desktop"
         "backend-frontend-stylo"
     ]
