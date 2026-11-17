@@ -132,7 +132,17 @@ def main():
         except (OSError, http.client.HTTPException):
             pass
 
+    def abandon_heartbeats():
+        # A stopped sender cannot attest that the node remains alive. Preserve
+        # actual abandoned-record counts instead of replaying stale liveness.
+        with db:
+            for seq, body in db.execute("SELECT seq,body FROM queue").fetchall():
+                if json.loads(body)["kind"] == "heartbeat":
+                    db.execute("DELETE FROM queue WHERE seq=?", (seq,))
+                    db.execute("UPDATE meta SET lost=lost+1 WHERE id=1")
+
     if drain_only:
+        abandon_heartbeats()
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             pending = db.execute("SELECT 1 FROM queue LIMIT 1").fetchone()
@@ -170,12 +180,7 @@ def main():
     status = child.returncode
     # Once the observed process ends, queued heartbeats must never be sent as
     # evidence that it is still alive. Count the records we abandon.
-    with db:
-        queued = db.execute("SELECT seq,body FROM queue").fetchall()
-        for seq, body in queued:
-            if json.loads(body)["kind"] == "heartbeat":
-                db.execute("DELETE FROM queue WHERE seq=?", (seq,))
-                db.execute("UPDATE meta SET lost=lost+1 WHERE id=1")
+    abandon_heartbeats()
     if status == 0:
         enqueue("goodbye")
     deadline = time.monotonic() + 5

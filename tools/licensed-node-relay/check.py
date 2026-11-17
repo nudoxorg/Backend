@@ -198,7 +198,35 @@ def main():
             body = metrics()
             assert 'nudox_node_goodbye_seconds{tenant="test",node="drain"}' in body
             assert 'nudox_node_heartbeat_seconds{tenant="test",node="drain"}' not in body
-            print("real process overflow, diagnostic, graceful/group shutdown, crash, denial, restart/dedup and offline goodbye drain: passed")
+            # A hard-killed sender may leave a heartbeat queued. The timer has
+            # no live observation and must count abandonment, not replay it.
+            relay.terminate()
+            relay.wait(timeout=5)
+            relay = None
+            token3 = os.urandom(32).hex()
+            (root / "token3").write_text(token3, encoding="ascii")
+            (root / "token3").chmod(0o600)
+            (root / "killed-state").mkdir(mode=0o700)
+            write_grant({**grant, "node": "killed", "token_sha256": hashlib.sha256(token3.encode()).hexdigest()})
+            pid_file = root / "killed-child.pid"
+            killed_child = "import os,time;open(" + repr(str(pid_file)) + ",'w').write(str(os.getpid()));time.sleep(60)"
+            kill_base = [sys.executable, str(HERE / "sender.py"), base, str(root / "token3"), str(root / "killed-state")]
+            sender = subprocess.Popen(kill_base + ["--", sys.executable, "-c", killed_child])
+            wait_for(lambda: pid_file.exists())
+            def pending_heartbeat():
+                with sqlite3.connect(root / "killed-state" / "sender.sqlite") as db:
+                    return db.execute("SELECT COUNT(*) FROM queue").fetchone()[0] > 0
+            wait_for(pending_heartbeat)
+            sender.kill()
+            sender.wait(timeout=5)
+            os.kill(int(pid_file.read_text()), signal.SIGKILL)
+            relay = start_relay()
+            assert subprocess.run(kill_base + ["--drain-only", "true", "--"], timeout=10).returncode == 0
+            body = metrics()
+            assert 'nudox_node_heartbeat_seconds{tenant="test",node="killed"}' not in body
+            assert 'nudox_node_goodbye_seconds{tenant="test",node="killed"}' not in body
+            assert counter(body, "relay_node_reported_dropped_total") >= 1
+            print("real process overflow, diagnostic, graceful/group shutdown, crash, denial, restart/dedup and offline drains: passed")
         finally:
             if sender.poll() is None:
                 sender.send_signal(signal.SIGCONT)
