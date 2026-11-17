@@ -18,7 +18,10 @@ def plan(args: argparse.Namespace) -> list[str]:
     elif args.tier == "integration":
         if args.bin_dir is None:
             raise ValueError("integration requires --bin-dir: reuse the exact smoke/artifact binaries")
-        command = ["python3", str(CI / "surface.py"), "--bin-dir", str(args.bin_dir.resolve())]
+        # A deliberately filtered/snapshot-editing run is a legacy diagnostic.
+        # The ordinary integration tier includes the complete artifact VM gate.
+        entry = "surface.py" if args.case or args.update else "integration.py"
+        command = ["python3", str(CI / entry), "--bin-dir", str(args.bin_dir.resolve())]
         for case in args.case or []:
             command += ["--case", case]
         if args.jobs is not None:
@@ -30,6 +33,8 @@ def plan(args: argparse.Namespace) -> list[str]:
         if args.ci_report:
             if not args.source_sha or args.update:
                 raise ValueError("--ci-report requires --source-sha and ordinary comparison (no --update)")
+            if args.case:
+                raise ValueError("--ci-report requires the complete integration inventory (no --case)")
             command += ["--ci-report", str(args.ci_report.resolve()), "--source-sha", args.source_sha]
         elif args.source_sha:
             raise ValueError("--source-sha applies only to --ci-report")
@@ -58,7 +63,7 @@ def main() -> int:
     parser.add_argument("--head", default="HEAD", help="selection preview: source commit (default HEAD)")
     parser.add_argument("--worktree", action="store_true", help="selection preview: include local tracked/untracked changes")
     parser.add_argument("--bin-dir", type=Path)
-    parser.add_argument("--case", action="append")
+    parser.add_argument("--case", action="append", help="legacy corpus diagnostic; excludes the full gate and cannot emit --ci-report")
     parser.add_argument("--jobs", type=int, choices=range(1, 5), help="concurrent isolated integration cases (default: 2)")
     parser.add_argument("--update", action="store_true", help="explicitly rewrite selected integration snapshots for review")
     parser.add_argument("--report", type=Path)
