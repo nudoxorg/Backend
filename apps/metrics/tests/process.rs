@@ -3,6 +3,7 @@
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
+    os::unix::fs::PermissionsExt,
     path::PathBuf,
     process::{Child, Command, Stdio},
     thread,
@@ -53,6 +54,7 @@ fn real_owner_http_metrics_and_shutdown() {
         .prefix("bm-")
         .tempdir_in("/tmp")
         .unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let socket = dir.path().join("owner.sock");
     let locald = std::env::var_os("BACKEND_LOCALD_BIN")
         .map(PathBuf::from)
@@ -101,7 +103,13 @@ fn real_owner_http_metrics_and_shutdown() {
             .spawn()
             .unwrap(),
     );
-    wait_for(|| get(&addr, "/health").starts_with("HTTP/1.1 200"));
+    wait_for(|| {
+        assert!(
+            owner.0.try_wait().unwrap().is_none(),
+            "locald exited before serving health"
+        );
+        get(&addr, "/health").starts_with("HTTP/1.1 200")
+    });
     eprintln!(
         "owner health RPC admitted after {:?}",
         owner_started.elapsed()
