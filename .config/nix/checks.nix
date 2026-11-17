@@ -194,6 +194,7 @@ in
         python3 test_t1_artifacts.py
         mkdir -p .config/ci
         cp ${../ci/t1_artifacts.py} .config/ci/t1_artifacts.py
+        cp ${../ci/test_t1_artifacts.py} .config/ci/test_t1_artifacts.py
         cp ${../ci/source_identity.py} .config/ci/source_identity.py
         cp ${../ci/cpu_placement.py} .config/ci/cpu_placement.py
         cp ${../ci/test_cpu_placement.py} .config/ci/test_cpu_placement.py
@@ -205,6 +206,7 @@ in
         # environment contract. Install a writable sibling before that import
         # and do not later overwrite a store-derived read-only destination.
         install -m 0644 ${../ci/test.py} .config/ci/test.py
+        cp ${../ci/integration.py} .config/ci/integration.py
         cp ${../ci/surface.py} .config/ci/surface.py
         cp ${../ci/process_custody.py} .config/ci/process_custody.py
         cp ${../ci/test_surface.py} .config/ci/test_surface.py

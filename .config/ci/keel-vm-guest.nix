@@ -1,4 +1,9 @@
-{ lib, pkgs, keelGuestCommand, ... }:
+{
+  lib,
+  pkgs,
+  keelGuestCommand,
+  ...
+}:
 
 # This module supplies guest isolation only. The caller must supply a
 # store-backed command that verifies and runs the exact artifact inventory.
@@ -35,15 +40,19 @@ let
     rmdir "$KEEL_CGROUP_ROOT/keel-preflight" || exit 125
     ${lib.escapeShellArg (toString keelGuestCommand)}
   '';
-in {
+in
+{
   virtualisation = {
     graphics = false;
     cores = 2;
     memorySize = 4096;
     restrictNetwork = true;
   };
-  users.users.keel = { isSystemUser = true; group = "keel"; };
-  users.groups.keel = {};
+  users.users.keel = {
+    isSystemUser = true;
+    group = "keel";
+  };
+  users.groups.keel = { };
   systemd.services.keel-artifact-run = {
     description = "Run the artifact-backed Keel inventory";
     after = [ "local-fs.target" ];

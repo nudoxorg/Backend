@@ -344,7 +344,8 @@ let
         pkgs.coreutils
         pkgs.cmake
         gui.toolsBundle
-      ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+      ]
+      ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
         pkgs.binutils
         pkgs.patchelf
         pkgs.nix

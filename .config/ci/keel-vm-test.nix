@@ -1,20 +1,54 @@
-{ pkgs, bundle, sourceSha, inventory, sourceTree, driver, compilerEnvironment, compilerPath, python, runtimeRoots, runNonce }:
+{
+  pkgs,
+  bundle,
+  sourceSha,
+  inventory,
+  sourceTree,
+  driver,
+  compilerEnvironment,
+  compilerPath,
+  python,
+  runtimeRoots,
+  runNonce,
+}:
 let
   lib = pkgs.lib;
   allowedCompilerKeys = [
-    "BACKEND_LOCALD_DEFAULT_PYTHON" "COMPILER_PYTHON_COMPILER" "COMPILER_STABLE_TOOLCHAIN"
-    "COMPILER_TYPESCRIPT_COMPILER" "LIBRARY_PATH" "NIX_BINTOOLS_WRAPPER_TARGET_HOST_x86_64_unknown_linux_gnu"
-    "NIX_CC_WRAPPER_TARGET_HOST_x86_64_unknown_linux_gnu" "NIX_CFLAGS_COMPILE" "NIX_CFLAGS_COMPILE_BEFORE"
-    "NIX_CFLAGS_LINK" "NIX_CXXSTDLIB_COMPILE" "NIX_CXXSTDLIB_LINK" "NIX_ENFORCE_NO_NATIVE"
-    "NIX_HARDENING_ENABLE" "NIX_LDFLAGS" "NIX_LDFLAGS_BEFORE"
-    "NIX_PKG_CONFIG_WRAPPER_TARGET_HOST_x86_64_unknown_linux_gnu" "NUDOX_CARGO" "NUDOX_PYREFLY"
-    "NUDOX_PYREFLY_BIN" "NUDOX_PYTHON" "NUDOX_RUSTC" "NUDOX_TYPESCRIPT_CHECKER_BIN"
-    "NUDOX_TYPESCRIPT_REPORT_PROGRAM" "RUSTC"
-  ] ++ map (n: "BACKEND_LOCALD_PYTHON_CANDIDATE_${toString n}") (lib.range 1 11);
+    "BACKEND_LOCALD_DEFAULT_PYTHON"
+    "COMPILER_PYTHON_COMPILER"
+    "COMPILER_STABLE_TOOLCHAIN"
+    "COMPILER_TYPESCRIPT_COMPILER"
+    "LIBRARY_PATH"
+    "NIX_BINTOOLS_WRAPPER_TARGET_HOST_x86_64_unknown_linux_gnu"
+    "NIX_CC_WRAPPER_TARGET_HOST_x86_64_unknown_linux_gnu"
+    "NIX_CFLAGS_COMPILE"
+    "NIX_CFLAGS_COMPILE_BEFORE"
+    "NIX_CFLAGS_LINK"
+    "NIX_CXXSTDLIB_COMPILE"
+    "NIX_CXXSTDLIB_LINK"
+    "NIX_ENFORCE_NO_NATIVE"
+    "NIX_HARDENING_ENABLE"
+    "NIX_LDFLAGS"
+    "NIX_LDFLAGS_BEFORE"
+    "NIX_PKG_CONFIG_WRAPPER_TARGET_HOST_x86_64_unknown_linux_gnu"
+    "NUDOX_CARGO"
+    "NUDOX_PYREFLY"
+    "NUDOX_PYREFLY_BIN"
+    "NUDOX_PYTHON"
+    "NUDOX_RUSTC"
+    "NUDOX_TYPESCRIPT_CHECKER_BIN"
+    "NUDOX_TYPESCRIPT_REPORT_PROGRAM"
+    "RUSTC"
+  ]
+  ++ map (n: "BACKEND_LOCALD_PYTHON_CANDIDATE_${toString n}") (lib.range 1 11);
   safeEnvironment = compilerEnvironment;
   guestCommand = pkgs.writeShellScript "keel-artifact-command" ''
     set -eu
-    ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: value: "export ${name}=${lib.escapeShellArg (toString value)}") safeEnvironment)}
+    ${lib.concatStringsSep "\n" (
+      lib.mapAttrsToList (
+        name: value: "export ${name}=${lib.escapeShellArg (toString value)}"
+      ) safeEnvironment
+    )}
     export PATH=${lib.escapeShellArg "${compilerPath}/bin"}:"$PATH"
     export NUDOX_CARGO_HOME="$(${pkgs.coreutils}/bin/mktemp -d)"
     export HOME="$NUDOX_CARGO_HOME"
@@ -30,7 +64,15 @@ let
     nodes.machine = {
       imports = [ ./keel-vm-guest.nix ];
       _module.args.keelGuestCommand = guestCommand;
-      virtualisation.additionalPaths = [ bundle inventory sourceTree driver compilerPath python ] ++ runtimeRoots;
+      virtualisation.additionalPaths = [
+        bundle
+        inventory
+        sourceTree
+        driver
+        compilerPath
+        python
+      ]
+      ++ runtimeRoots;
     };
     testScript = ''
       # A fresh nonce forces execution for every CI run.
@@ -56,8 +98,18 @@ let
           Path(os.environ["out"], "guest-driver-error").write_text(failure + "\\n")
     '';
   };
-in assert lib.all (name: builtins.elem name allowedCompilerKeys) (builtins.attrNames compilerEnvironment);
-assert lib.all (name: builtins.hasAttr name safeEnvironment) [ "NUDOX_CARGO" "NUDOX_RUSTC" "NUDOX_PYTHON" ];
+in
+assert lib.all (name: builtins.elem name allowedCompilerKeys) (
+  builtins.attrNames compilerEnvironment
+);
+assert lib.all (name: builtins.hasAttr name safeEnvironment) [
+  "NUDOX_CARGO"
+  "NUDOX_RUSTC"
+  "NUDOX_PYTHON"
+];
 test.overrideTestDerivation (old: {
-  requiredSystemFeatures = (old.requiredSystemFeatures or []) ++ [ "kvm" "nixos-test" ];
+  requiredSystemFeatures = (old.requiredSystemFeatures or [ ]) ++ [
+    "kvm"
+    "nixos-test"
+  ];
 })

@@ -2433,23 +2433,13 @@ class CIEvidenceTests(unittest.TestCase):
         import sys
         import tempfile
         from unittest.mock import patch
-        import t1_artifacts
+        from test_t1_artifacts import synthetic_admission_bundle
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             artifact = root / "artifact"
-            (artifact / "bin").mkdir(parents=True)
-            payloads = [*("bin/" + name for name in t1_artifacts.BINARIES), "smoke.py", "runtime.nar"]
-            for name in payloads:
-                (artifact / name).write_bytes(b"fixture")
             sha = "a" * 40
-            store = "/nix/store/" + "b" * 32 + "-runtime"
-            manifest = {"schema": 1, "source_sha": sha, "target": t1_artifacts.TARGET,
-                        "toolchain": "fixture", "runtime_roots": [store],
-                        "python": store + "/bin/python3", "runtime_env": {"PATH": store + "/bin"},
-                        "files": [{"path": name, "bytes": 7, "sha256": hashlib.sha256(b"fixture").hexdigest()}
-                                  for name in payloads]}
-            (artifact / "manifest.json").write_text(json.dumps(manifest))
+            synthetic_admission_bundle(artifact, sha)
             if damage:
                 (artifact / "bin/backend-cli").write_bytes(b"tampered")
             corpus = root / "surface"
@@ -2471,7 +2461,8 @@ class CIEvidenceTests(unittest.TestCase):
             args = ["surface.py", "--bin-dir", str(artifact / "bin"), "--ci-report", str(evidence),
                     "--source-sha", sha, "--report", str(legacy), "--jobs", str(jobs)]
             stdout = io.StringIO()
-            with patch.object(surface, "SURFACE", corpus), patch.object(surface, "SCRATCH", root / "scratch"), patch.object(surface, "run_case", side_effect=run), patch.object(surface.subprocess, "check_output", side_effect=[head or sha, " M dirty.py" if dirty else ""]), patch.object(sys, "argv", args), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
+            # This fixture admits static bytes; it imports no Nix runtime writes.
+            with patch.object(surface, "SURFACE", corpus), patch.object(surface, "SCRATCH", root / "scratch"), patch.object(surface, "run_case", side_effect=run), patch.object(surface, "drain_task_volume"), patch.object(surface.subprocess, "check_output", side_effect=[head or sha, " M dirty.py" if dirty else ""]), patch.object(sys, "argv", args), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
                 try:
                     code = surface.main()
                 except SystemExit as error:
@@ -2805,6 +2796,8 @@ for name in cases:
 surface.SURFACE = corpus
 surface.SCRATCH = root / "scratch"
 surface.evidence_artifact = lambda _bin_dir, _sha: "b" * 64
+# No runtime was imported by this signal-only child fixture.
+surface.drain_task_volume = lambda: None
 
 def run_case(case, _bin_dir):
     name = case["name"]

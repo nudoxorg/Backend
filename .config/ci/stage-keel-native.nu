@@ -158,7 +158,12 @@ export def prepare-keel-native [
 }
 
 # The owner must bind exactly the bytes that remain beside it after the build.
-export def verify-keel-native [host: string, target: path, stage: path, --without-keel] {
+export def verify-keel-native [
+    host: string
+    target: path
+    stage: path
+    --without-keel
+] {
     let raw = $target | path join $host "debug/examples"
     let observation = open ($stage | path join "development-observation.json")
     let css = $stage | path join "bin/backend-stylo-worker"

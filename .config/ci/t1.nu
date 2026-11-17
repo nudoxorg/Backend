@@ -30,7 +30,13 @@ const SURFACES = [
 
 def main []: nothing -> nothing {
     let started = (date now)
-    let host = (^rustc -vV | lines | where {|line| $line | str starts-with "host: "} | first | str replace "host: " "")
+    let host = (
+        ^rustc -vV
+        | lines
+        | where {|line| $line | str starts-with "host: "}
+        | first
+        | str replace "host: " ""
+    )
     let native_artifact_host = $host == "x86_64-unknown-linux-gnu"
     let artifact_root = $env.CI_T1_ARTIFACT_ROOT? | default ""
     if not $native_artifact_host and ($artifact_root | is-not-empty) {
@@ -41,7 +47,10 @@ def main []: nothing -> nothing {
         let tools = ci-step "t1" "native tool preflight" {||
             run-bounded 10sec "sh" "-c" 'for tool in patchelf readelf nix-store; do path=$(command -v "$tool") || exit 1; printf "CI-T1-TOOL %s %s\n" "$tool" "$path"; done'
         }
-        if not $tools { finish-lane "t1" [$tools]; return }
+        if not $tools {
+            finish-lane "t1" [$tools]
+            return
+        }
     }
     let cache = $env.CI_T1_CACHE_ROOT? | default ""
     let target_dir = if ($cache | is-not-empty) {
@@ -74,12 +83,18 @@ def main []: nothing -> nothing {
     }
     if ($cache | is-empty) { $env.CARGO_TARGET_DIR = $target_dir }
     print $"CI-TIMING lane=t1 step=cache-preparation seconds=(((date now) - $started) / 1sec | math round)"
-    let build_bin_dir = if $native_artifact_host { $target_dir | path join $host "debug" } else { $target_dir | path join "debug" }
+    let build_bin_dir = if $native_artifact_host {
+        $target_dir | path join $host "debug"
+    } else {
+        $target_dir | path join "debug"
+    }
     let stage = if $native_artifact_host {
         mkdir .local/t1-stages
         ^mktemp -d --tmpdir=.local/t1-stages native.XXXXXX | str trim | path expand
     } else { "" }
-    let bin_dir = if $native_artifact_host { $stage | path join "bin" } else { $build_bin_dir }
+    let bin_dir = if $native_artifact_host {
+        $stage | path join "bin"
+    } else { $build_bin_dir }
     let cargo = $env.BACKEND_PARALLEL_CARGO? | default "cargo"
 
     let capacity = ci-step "t1" "disk and memory preflight" {||
@@ -106,7 +121,7 @@ def main []: nothing -> nothing {
             print $"T1 cargo jobs: ($jobs)"
             with-env {CARGO_BUILD_JOBS: $jobs, CARGO_LOG: $fingerprint_log} {
                 if $native_artifact_host {
-                    let anchors = (prepare-keel-native $host $target_dir ($jobs | into int) $stage)
+                    let anchors = prepare-keel-native $host $target_dir ($jobs | into int) $stage
                     with-env $anchors {
                         run-bounded 60min $cargo "build" "--locked" "--target" $host "--jobs" $jobs ...$build_args
                     }

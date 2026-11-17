@@ -19,38 +19,44 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def synthetic_admission_bundle(root, source_sha=SHA):
+    """Static verifier input only; these bytes do not qualify native workers."""
+    for directory in ("bin", "lib", "observers"):
+        (root / directory).mkdir(parents=True)
+    names = ([f"bin/{name}" for name in (*PRODUCTS, *WORKERS)] +
+             ["lib/libgcc_s.so.1", "observers/stylo_identity_observer",
+              "observers/installed_basis_observer", "smoke.py", "runtime.nar"])
+    for name in names:
+        (root / name).write_bytes(b"synthetic verifier fixture")
+    observation = {
+        "schema": "nudox.keel-development-native-observation.v1", "source_revision": source_sha,
+        "source_status": "", "host": TARGET,
+        "stylo_worker_sha256": digest(root / "bin/backend-stylo-worker"),
+        "sqlite_worker_sha256": digest(root / "bin/backend-sqlite-worker"),
+        "libgcc_sha256": digest(root / "lib/libgcc_s.so.1"),
+        "stylo_observer_sha256": digest(root / "observers/stylo_identity_observer"),
+        "sqlite_observer_sha256": digest(root / "observers/installed_basis_observer"),
+        "stylo": {"state": "observed-helper", "identity": "1" * 64},
+        "sqlite": {"state": "observed-build-helper", "artifact_identity": "2" * 64},
+        "product_outputs": [{"name": name, "sha256": digest(root / "bin" / name)} for name in PRODUCTS],
+    }
+    (root / "development-observation.json").write_text(json.dumps(observation))
+    names.append("development-observation.json")
+    manifest = {"schema": 2, "profile": "debug", "source_sha": source_sha, "target": TARGET,
+                "toolchain": "synthetic fixture", "runtime_roots": [STORE],
+                "python": STORE + "/bin/python3", "runtime_env": {"PATH": STORE + "/bin"},
+                "files": [{"path": name, "bytes": (root / name).stat().st_size,
+                           "sha256": digest(root / name)} for name in names]}
+    (root / "manifest.json").write_text(json.dumps(manifest))
+    return manifest
+
+
 class ArtifactProcessControls(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name) / "artifact"
-        for directory in ("bin", "lib", "observers"):
-            (self.root / directory).mkdir(parents=True)
-        names = ([f"bin/{name}" for name in (*PRODUCTS, *WORKERS)] +
-                 ["lib/libgcc_s.so.1", "observers/stylo_identity_observer",
-                  "observers/installed_basis_observer", "smoke.py", "runtime.nar"])
-        for name in names:
-            (self.root / name).write_bytes(b"synthetic verifier fixture")
-        observation = {
-            "schema": "nudox.keel-development-native-observation.v1", "source_revision": SHA,
-            "source_status": "", "host": TARGET,
-            "stylo_worker_sha256": digest(self.root / "bin/backend-stylo-worker"),
-            "sqlite_worker_sha256": digest(self.root / "bin/backend-sqlite-worker"),
-            "libgcc_sha256": digest(self.root / "lib/libgcc_s.so.1"),
-            "stylo_observer_sha256": digest(self.root / "observers/stylo_identity_observer"),
-            "sqlite_observer_sha256": digest(self.root / "observers/installed_basis_observer"),
-            "stylo": {"state": "observed-helper", "identity": "1" * 64},
-            "sqlite": {"state": "observed-build-helper", "artifact_identity": "2" * 64},
-            "product_outputs": [{"name": name, "sha256": digest(self.root / "bin" / name)} for name in PRODUCTS],
-        }
-        (self.root / "development-observation.json").write_text(json.dumps(observation))
-        names.append("development-observation.json")
-        self.manifest = {"schema": 2, "profile": "debug", "source_sha": SHA, "target": TARGET,
-                         "toolchain": "synthetic fixture", "runtime_roots": [STORE],
-                         "python": STORE + "/bin/python3", "runtime_env": {"PATH": STORE + "/bin"},
-                         "files": [{"path": name, "bytes": (self.root / name).stat().st_size,
-                                    "sha256": digest(self.root / name)} for name in names]}
-        self.save()
+        self.manifest = synthetic_admission_bundle(self.root)
 
     def save(self):
         (self.root / "manifest.json").write_text(json.dumps(self.manifest))
