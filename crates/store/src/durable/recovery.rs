@@ -212,7 +212,10 @@ impl FileStore {
             Ok(())
         };
         let root = super::artifact_fs::BoundedReadDirectories::open_control_root(self, &mut checkpoint)?;
-        let lock = super::artifact_fs::BoundedReadDirectories::open_control_file(&root, rustix::cstr!("LOCK"), true, &mut checkpoint)?;
+        let lock_name = std::ffi::CStr::from_bytes_with_nul(b"LOCK\0").map_err(|_| StoreError::Corrupt)?;
+        let head_name = std::ffi::CStr::from_bytes_with_nul(b"HEAD\0").map_err(|_| StoreError::Corrupt)?;
+        let journal_name = std::ffi::CStr::from_bytes_with_nul(b"journal\0").map_err(|_| StoreError::Corrupt)?;
+        let lock = super::artifact_fs::BoundedReadDirectories::open_control_file(&root, lock_name, true, &mut checkpoint)?;
         let mut locked = false;
         for _ in 0..1024 {
             checkpoint()?;
@@ -237,8 +240,8 @@ impl FileStore {
             }
             Ok(())
         }
-        fn read_head(root: &File, checkpoint: &mut dyn FnMut() -> Result<(), StoreError>) -> Result<(JournalCheckpoint, backend_platform::FileIdentity), StoreError> {
-            let mut file = super::artifact_fs::BoundedReadDirectories::open_control_file(root, rustix::cstr!("HEAD"), false, checkpoint)?;
+        fn read_head(root: &File, name: &'static std::ffi::CStr, checkpoint: &mut dyn FnMut() -> Result<(), StoreError>) -> Result<(JournalCheckpoint, backend_platform::FileIdentity), StoreError> {
+            let mut file = super::artifact_fs::BoundedReadDirectories::open_control_file(root, name, false, checkpoint)?;
             let identity = backend_platform::FileIdentity::of_file(&file).map_err(|e| io_error(&e))?;
             if usize::try_from(file.metadata().map_err(|e| io_error(&e))?.len()).map_err(|_| StoreError::Bounds)? != HEAD_BYTES { return Err(StoreError::Corrupt); }
             let mut bytes = [0u8; HEAD_BYTES + 1];
@@ -256,8 +259,8 @@ impl FileStore {
             checkpoint()?;
             Ok((head::decode_head(&bytes[..HEAD_BYTES])?, identity))
         }
-        let (first, head_identity) = read_head(&root, &mut checkpoint)?;
-        let mut journal_file = super::artifact_fs::BoundedReadDirectories::open_control_file(&root, rustix::cstr!("journal"), false, &mut checkpoint)?;
+        let (first, head_identity) = read_head(&root, head_name, &mut checkpoint)?;
+        let mut journal_file = super::artifact_fs::BoundedReadDirectories::open_control_file(&root, journal_name, false, &mut checkpoint)?;
         let journal_identity = backend_platform::FileIdentity::of_file(&journal_file).map_err(|e| io_error(&e))?;
         let length = journal_file.metadata().map_err(|e| io_error(&e))?.len();
         let frame_bytes = u64::try_from(JOURNAL_RECORD_BYTES).map_err(|_| StoreError::Bounds)?;
@@ -302,12 +305,12 @@ impl FileStore {
         if binding.root() != &first.head.descriptor.target || binding.closure() != first.head.descriptor.closure {
             return Err(StoreError::Corrupt);
         }
-        let named_journal = super::artifact_fs::BoundedReadDirectories::open_control_file(&root, rustix::cstr!("journal"), false, &mut checkpoint)?;
+        let named_journal = super::artifact_fs::BoundedReadDirectories::open_control_file(&root, journal_name, false, &mut checkpoint)?;
         if backend_platform::FileIdentity::of_file(&named_journal).map_err(|e| io_error(&e))? != journal_identity { return Err(StoreError::WrongBase); }
-        let (last, last_head_identity) = read_head(&root, &mut checkpoint)?;
+        let (last, last_head_identity) = read_head(&root, head_name, &mut checkpoint)?;
         if last != first || last_head_identity != head_identity { return Err(StoreError::WrongBase); }
         if !authority.permits_borrowed(&self.root) { return Err(StoreError::WrongBase); }
-        let named_lock = super::artifact_fs::BoundedReadDirectories::open_control_file(&root, rustix::cstr!("LOCK"), true, &mut checkpoint)?;
+        let named_lock = super::artifact_fs::BoundedReadDirectories::open_control_file(&root, lock_name, true, &mut checkpoint)?;
         if backend_platform::FileIdentity::of_file(&named_lock).map_err(|e| io_error(&e))? != lock_identity { return Err(StoreError::WrongBase); }
         checkpoint()?;
         Ok(owner.meter(RetirementSelectedHead { store: self, _authority: authority, _pin: pin, process_lock: lock, selected: first.head }))

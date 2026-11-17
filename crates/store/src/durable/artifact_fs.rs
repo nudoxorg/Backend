@@ -404,7 +404,8 @@ mod imp {
             let root = File::from(open(path, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map_err(path_error)?);
             if !store.root_directory.matches_open_directory(&root).map_err(|e| io_error(&e))? { return Err(StoreError::UnsafePath); }
             checkpoint()?;
-            let packs = File::from(openat(&root, rustix::cstr!("packs"), OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map_err(path_error)?);
+            let packs_name = std::ffi::CStr::from_bytes_with_nul(b"packs\0").map_err(|_| StoreError::Corrupt)?;
+            let packs = File::from(openat(&root, packs_name, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map_err(path_error)?);
             let mut name = [0u8; 80];
             Self::open_named(&packs, Self::hash_name(id.as_bytes(), b".pack", &mut name)?, checkpoint)
         }

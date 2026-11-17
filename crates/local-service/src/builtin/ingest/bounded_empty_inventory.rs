@@ -206,10 +206,7 @@ fn absent_workspace_markers(
     let directory = open_root(path, path)?.directory;
     let before =
         file_system_revision_from_metadata(&directory.metadata().map_err(|_| "stat ancestor")?);
-    for name in [
-        rustix::cstr!("package.json"),
-        rustix::cstr!("pnpm-workspace.yaml"),
-    ] {
+    for name in [c"package.json", c"pnpm-workspace.yaml"] {
         match rustix::fs::statat(&directory, name, AtFlags::SYMLINK_NOFOLLOW) {
             Err(rustix::io::Errno::NOENT) => {}
             _ => return Err("ancestor workspace marker present or inaccessible"),
@@ -307,7 +304,7 @@ pub(super) fn install_startup_proc_binding() -> Result<(), &'static str> {
     // bind-mounted fd directory from a different process.
     let proc_root = openat(
         CWD,
-        rustix::cstr!("/proc"),
+        c"/proc",
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
     )
@@ -317,7 +314,7 @@ pub(super) fn install_startup_proc_binding() -> Result<(), &'static str> {
         return Err("proc root is not procfs");
     }
     let mut pid = [0u8; 24];
-    let pid_len = rustix::fs::readlinkat_raw(&proc_root, rustix::cstr!("self"), &mut pid[..20])
+    let pid_len = rustix::fs::readlinkat_raw(&proc_root, c"self", &mut pid[..20])
         .map_err(|_| "read proc self")?;
     if pid_len == 0 || pid_len >= 20 || !pid[..pid_len].iter().all(u8::is_ascii_digit) {
         return Err("invalid proc self identity");
@@ -503,7 +500,7 @@ pub(super) fn read_root_package(
     }
     let held = openat(
         &root.directory,
-        rustix::cstr!("package.json"),
+        c"package.json",
         OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
     )
@@ -555,8 +552,7 @@ pub(super) fn open_root(
         return Err("unsupported root spelling");
     }
     let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-    let mut directory =
-        openat(CWD, rustix::cstr!("/"), flags, Mode::empty()).map_err(|_| "open root")?;
+    let mut directory = openat(CWD, c"/", flags, Mode::empty()).map_err(|_| "open root")?;
     for component in canonical.components() {
         let name = match component {
             Component::RootDir => continue,
