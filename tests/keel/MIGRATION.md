@@ -11,6 +11,20 @@ the individual obligations that have actually been replaced.
 The source declaration extractor and two-revision regeneration steps are in
 [`tools/README.md`](tools/README.md).
 
+After the source comparison below, two more CLI laws were retired behind the
+exact-definition process receipt
+[`search-page-bound-55551-eb9360-20261116.json`](evidence/search-page-bound-55551-eb9360-20261116.json),
+combined with the existing protocol/Rust receipt. The required manifest now has
+35 cases. `rust-public-search-page-bound` drains seven authored Rust names
+through three pages and compares the first page with the CLI's three-row
+global bound; `cli-search-help-page-range` checks the documented search range.
+The replaced functions are
+`a_global_page_bound_is_not_silently_ignored_by_unpaged_commands` and
+`package_graph_help_and_cli_lowering_share_the_engine_page_bound`. The audit
+counts and source rows below remain explicitly bound to its two historical
+revisions; this later tranche brings the known retirement total to 18 without
+claiming that the full source inventory has been rerun at the new HEAD.
+
 ## Audit scope and counts
 
 The comparison is `cb92bd655bfc6c6a80f11a1d80dca2d7e2fd4e15` to

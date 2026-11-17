@@ -162,3 +162,23 @@ Raw evidence remains at
 `/root/nudox-keel-native-preview-11bcc-account-eb9360-20261116` on ilo-prod.
 This proves the identified preview package, with required cgroup isolation;
 it does not qualify later source changes or the final release inventory.
+
+`search-page-bound-55551-eb9360-20261116.json` records two further process
+replacements against the same verified official 55551 T1 applications. Both
+cases passed with the published eb9360 driver and required cgroup containment.
+Seven independently named Rust declarations traverse three MCP pages at a
+three-row bound, with the first page's exact records matching the CLI's global
+`--limit 3`; the separate search help case confirms its 1–200 range and default
+25. Both case definition hashes exactly match the newly registered cases in
+the required manifest. Report SHA-256:
+`52713bfd10cd776df3c44e31b32b79489b1adbf82a147a2945b4a6de3254fcfd`.
+The frozen input and raw evidence remain at
+`/root/nudox-keel-page-bound-55551-eb9360-20261116` on ilo-prod.
+
+Together with the three real unpaged-command refusals, package-graph help,
+129-row refusal and successful 128-row request in the earlier protocol/Rust
+receipt, these replace
+`a_global_page_bound_is_not_silently_ignored_by_unpaged_commands` and
+`package_graph_help_and_cli_lowering_share_the_engine_page_bound`. They
+preserve those concrete laws through actual processes; they do not qualify
+all registry rows, all paged commands, or later release artifacts.

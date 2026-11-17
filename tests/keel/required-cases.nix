@@ -33,4 +33,6 @@
   "owner-css-sql-history"
   "typescript-external-source-policy"
   "rust-mcp-cursor-lifecycle"
+  "rust-public-search-page-bound"
+  "cli-search-help-page-range"
 ]

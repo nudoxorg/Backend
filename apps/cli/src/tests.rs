@@ -489,49 +489,6 @@ fn every_registry_row_is_reachable_by_the_words_a_person_types() {
 }
 
 #[test]
-fn a_global_page_bound_is_not_silently_ignored_by_unpaged_commands() {
-    for command in [
-        "packages --limit 0",
-        "packages --limit 20",
-        "health --limit 5",
-    ] {
-        let fault = options::split(&words(command)).expect_err("reject unused global page bound");
-        assert_eq!(fault.slug(), FaultSlug::Usage);
-        assert_eq!(fault.operand().render(), "--limit");
-        assert!(
-            fault
-                .cause()
-                .sentence()
-                .contains("does not take a page bound")
-        );
-    }
-    let (options, _) = options::split(&words("search requests --limit 3"))
-        .expect("paged commands keep their global bound");
-    assert_eq!(options.limit(), Some("3"));
-}
-
-#[test]
-fn package_graph_help_and_cli_lowering_share_the_engine_page_bound() {
-    let help = invoke::help_for(grammar_for("package-graph").expect("package graph grammar"));
-    assert!(help.contains(&format!(
-        "Range: 1 to {}; default 64.",
-        backend_library::MAX_PACKAGE_GRAPH_PAGE_ROWS
-    )));
-    assert!(
-        invoke::help_for(grammar_for("search").expect("search grammar"))
-            .contains("Range: 1 to 200; default 25.")
-    );
-    for (bound, valid) in [(128, true), (129, false)] {
-        let args = words(&format!(
-            "package-graph pkg:cargo/serde@1.0.228 dependencies --limit {bound}"
-        ));
-        let (options, command) = options::split(&args).expect("global page option");
-        let input = invoke::parse(&command, options.limit()).expect("CLI parse");
-        assert_eq!(lower(&input, "/abs/project").is_ok(), valid);
-    }
-}
-
-#[test]
 fn installed_quick_start_words_lower_to_the_same_add_and_search_requests() {
     let add = invoke::parse(&words("add ."), None).expect("parse the quick-start add");
     assert!(matches!(
