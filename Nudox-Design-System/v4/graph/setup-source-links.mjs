@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '../../..');
 const repo = path.join(here, 'repo');
-const cargoHome = process.env.CARGO_HOME || path.join(os.homedir(), '.cargo');
+const cargoHome = path.resolve(process.env.CARGO_HOME || path.join(os.homedir(), '.cargo'));
 const registryRoot = path.join(cargoHome, 'registry', 'src');
 const links = ['apps', 'crates', 'extensions', 'frontends'].map(name =>
   [path.join(repo, name), path.join(root, name)]);
