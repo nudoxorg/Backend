@@ -125,8 +125,8 @@ class Handler(BaseHTTPRequestHandler):
             for tenant, node, _ in self.server.identities:
                 hb, bye = rows.get((tenant,node), (None,None))
                 labels = f'tenant="{tenant}",node="{node}"'
-                if hb is not None: out.append(f"nudox_node_heartbeat_seconds{{{labels}}} {hb:.6f}")
-                if bye is not None: out.append(f"nudox_node_goodbye_seconds{{{labels}}} {bye:.6f}")
+                if hb is not None: out.append(f"nudox_node_heartbeat_seconds{{{labels}}} {hb!r}")
+                if bye is not None: out.append(f"nudox_node_goodbye_seconds{{{labels}}} {bye!r}")
             out.append("# TYPE relay_records_total counter")
             for kind in ("heartbeat", "goodbye", "diag"):
                 out.append(f'relay_records_total{{kind="{kind}"}} {counters.get(kind,0)}')
@@ -169,7 +169,7 @@ class Handler(BaseHTTPRequestHandler):
             tenant,node = identity
             db = self.server.db
             db.execute("BEGIN IMMEDIATE")
-            prior = db.execute("SELECT seq,digest FROM node WHERE tenant=? AND node=?", identity).fetchone()
+            prior = db.execute("SELECT seq,digest,heartbeat,goodbye FROM node WHERE tenant=? AND node=?", identity).fetchone()
             if prior and record["seq"] == prior[0] and hmac.compare_digest(fingerprint, prior[1]):
                 db.rollback()
                 return self.reply(200, b"duplicate\n")
@@ -178,6 +178,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.server.reject()
                 return self.reply(409)
             received = time.time()
+            if prior and any(value is not None and received <= value for value in prior[2:]):
+                db.rollback()
+                return self.reply(503)
             db.execute("INSERT INTO node(tenant,node,seq,digest) VALUES(?,?,?,?) ON CONFLICT(tenant,node) DO UPDATE SET seq=excluded.seq,digest=excluded.digest", (tenant,node,record["seq"],fingerprint))
             if record["kind"] in ("heartbeat", "goodbye"):
                 column = record["kind"]
