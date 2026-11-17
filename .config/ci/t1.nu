@@ -16,6 +16,7 @@
 # and selects incremental/compiler-cache defaults.
 
 use lib.nu *
+use stage-keel-native.nu [prepare-keel-native verify-keel-native]
 
 const SURFACES = [
     {package: "backend-cli", bin: "backend-cli"}
@@ -60,7 +61,11 @@ def main []: nothing -> nothing {
     }
     if ($cache | is-empty) { $env.CARGO_TARGET_DIR = $target_dir }
     print $"CI-TIMING lane=t1 step=cache-preparation seconds=(((date now) - $started) / 1sec | math round)"
-    let bin_dir = $target_dir | path join "debug"
+    let host = (^rustc -vV | lines | where {|line| $line | str starts-with "host: "} | first | str replace "host: " "")
+    let build_bin_dir = $target_dir | path join $host "debug"
+    mkdir .local/t1-stages
+    let stage = (^mktemp -d --tmpdir=.local/t1-stages native.XXXXXX | str trim | path expand)
+    let bin_dir = $stage | path join "bin"
     let cargo = $env.BACKEND_PARALLEL_CARGO? | default "cargo"
 
     let capacity = ci-step "t1" "disk and memory preflight" {||
@@ -86,7 +91,15 @@ def main []: nothing -> nothing {
             ))
             print $"T1 cargo jobs: ($jobs)"
             with-env {CARGO_BUILD_JOBS: $jobs, CARGO_LOG: $fingerprint_log} {
-                run-bounded 30min $cargo "build" "--locked" "--jobs" $jobs ...$build_args
+                let anchors = (prepare-keel-native $host $target_dir ($jobs | into int) $stage)
+                with-env $anchors {
+                    run-bounded 60min $cargo "build" "--locked" "--target" $host "--jobs" $jobs ...$build_args
+                }
+                for surface in $SURFACES {
+                    ^cp ($build_bin_dir | path join $surface.bin) ($bin_dir | path join $surface.bin)
+                    ^chmod 700 ($bin_dir | path join $surface.bin)
+                }
+                verify-keel-native $host $target_dir $stage --without-keel
             }
         }
     } else { false }
@@ -106,7 +119,7 @@ def main []: nothing -> nothing {
     let published = if $built and ($artifact_root | is-not-empty) {
         ci-step "t1" "publish exact binaries and runtime" {||
             let sha = (^git rev-parse HEAD | str trim)
-            run-bounded 10min "python3" ($env.FILE_PWD | path join "t1_artifacts.py") "publish" "--bin-dir" $bin_dir "--output" ($artifact_root | path join $sha)
+            run-bounded 10min "python3" ($env.FILE_PWD | path join "t1_artifacts.py") "publish" "--stage" $stage "--output" ($artifact_root | path join $sha)
         }
     } else { true }
     # T2 is a separate verdict. Run `test.py integration --bin-dir ...`
