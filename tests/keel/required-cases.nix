@@ -4,6 +4,7 @@
   "rust-call-history"
   "python-call-history"
   "javascript-file-history"
+  "javascript-partial-deletion-retains-source"
   "css-source-observer"
   "sqlite-syntactic-outline"
   "cli-root-help"
