@@ -1,0 +1,46 @@
+{
+  "checks": [
+    "dependency_snapshot_trickle_is_bounded_and_omitted",
+    "real_owner_http_metrics_and_shutdown",
+    "real_sparse_boundary_compaction_survives_cold_restart",
+    "real_view_journal_append_success_and_path_failure"
+  ],
+  "credential": {
+    "actual_account": true,
+    "channel": "test-only private file injected into CLI child environment only",
+    "literal_evidence_scan": "clean",
+    "temporary_file_and_parent_removed": true
+  },
+  "faults": {
+    "append": "Unix socket obstruction at view.journal, effective for UID0; original journal restored",
+    "replace": "128MiB sparse storage-boundary fixture forces actual compaction; successful replacement count/+Inf delta and exact selected package result survive cold restart"
+  },
+  "host": "ilo-prod",
+  "independent_readback": "Root read UID0, absent temporary credential directory, exact proof log hash, four passing test names and package source-revision through Rex",
+  "limitations": [
+    "This source predates final v41/retirement integration and requires final-source rerun",
+    "Sparse compaction is an explicit storage-boundary test, not a natural-workload performance claim",
+    "No full T1 bundle consumption or production deployment claimed"
+  ],
+  "package": "/nix/store/fma8bb0biny1xg2vh8kwq0g33f0jqpby-nudox-backend-service-runtime-0.3.0",
+  "package_build": 1031811,
+  "package_nar_hash": "sha256-QQn/FtlZ3N6zPjDbVohilZ15er9oThBwcm2fQLKZxUg=",
+  "package_verification": "signed cache import; source revision and all six binaries/private library matched package inventory",
+  "platform": "x86_64-linux",
+  "process_test_source_commit": "835fae64170ab9b2253710de1217283e6f89068a",
+  "process_test_source_sha256": "c998e2865095200175c9bf1f7f47c5338eb811ab9acb2ed7e56b2305233e54c4",
+  "product_source_revision": "1b8c0b2e2bfcda0ba44f6f2ab3b5ee189521657e",
+  "proof_log": "/root/nudox-metrics-process-2c6a/proof.log",
+  "proof_log_sha256": "b85b6e1e65d1404bdfa6261230f07c52f68e57ee5f4252fd8073fd2a9d808091",
+  "qualification": "dependency metrics component external-process proof; not full release qualification",
+  "result": {
+    "failed": 0,
+    "filtered": 0,
+    "ignored": 0,
+    "passed": 4,
+    "seconds": 49.35
+  },
+  "schema": 1,
+  "test_invocation": "Direct Rust external-process test driver against explicit immutable release binary paths; no product rebuild inside test",
+  "uid": 0
+}
