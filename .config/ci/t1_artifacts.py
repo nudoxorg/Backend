@@ -221,9 +221,11 @@ def main() -> None:
         observation = json.loads((args.artifact / "development-observation.json").read_text())
         for observer, worker, key in (("stylo_identity_observer", "backend-stylo-worker", "stylo"),
                                       ("installed_basis_observer", "backend-sqlite-worker", "sqlite")):
-            actual = json.loads(command(str(args.artifact / "observers" / observer),
-                                        str(args.artifact / "bin" / worker),
-                                        str(args.artifact / "lib/libgcc_s.so.1")))
+            actual = json.loads(subprocess.check_output(
+                [str(args.artifact / "observers" / observer),
+                 str(args.artifact / "bin" / worker),
+                 str(args.artifact / "lib/libgcc_s.so.1")],
+                env={**manifest["runtime_env"], "LANG": "C.UTF-8"}, text=True, timeout=120))
             if actual != observation[key]:
                 raise ValueError(f"native observer mismatch: {worker}")
     if args.smoke:
