@@ -10,7 +10,6 @@ import secrets
 import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
 
 FLAKE = "github:nudoxorg/keel/c1ec0936f7473319992d5227c6b23d7cc836a45d"
@@ -27,9 +26,20 @@ def main():
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--verifier", type=Path, required=True)
-    parser.add_argument("--nixpkgs", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.output.exists():
+        raise ValueError("output path already exists")
+    args.output.mkdir(parents=True)
+    try:
+        return run(args)
+    except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
+        (args.output / "infrastructure-error.json").write_text(json.dumps({"status": "infrastructure-error", "error": str(error)}) + "\n")
+        print(f"keel-vm: {error}", file=sys.stderr)
+        return 125
+
+
+def run(args):
     source = args.source.resolve(strict=True)
     bundle = args.bundle.resolve(strict=True)
     verifier = args.verifier.resolve(strict=True)
@@ -39,37 +49,32 @@ def main():
         raise ValueError("checkout HEAD does not match source SHA")
     if output("git", "-C", str(source), "status", "--porcelain", "--untracked-files=all"):
         raise ValueError("source checkout is not clean")
-    if args.output.exists():
-        raise ValueError("output path already exists")
-    subprocess.run([sys.executable, str(verifier), "verify", str(bundle / "manifest.json")], check=True)
+    source_ref = "git+" + source.as_uri() + "?rev=" + args.source_sha
+    source_metadata = json.loads(output("nix", "flake", "metadata", "--json", source_ref))
+    if source_metadata.get("locked", {}).get("rev") != args.source_sha:
+        raise ValueError("source flake did not resolve to the requested Git revision")
+    source_store = source_metadata["path"]
+    checked_verifier = Path(source_store, ".config/ci/t1_artifacts.py")
+    if verifier.read_bytes() != checked_verifier.read_bytes():
+        raise ValueError("published T1 verifier differs from exact-source verifier")
+    subprocess.run([sys.executable, str(checked_verifier), "verify", str(bundle), "--source-sha", args.source_sha], check=True)
     t1 = json.loads((bundle / "manifest.json").read_bytes())
-    if t1.get("source_sha") != args.source_sha:
-        raise ValueError("verified T1 bundle and source SHA differ")
     metadata = json.loads(output("nix", "flake", "metadata", "--json", FLAKE))
-    if metadata.get("locked", {}).get("narHash") != FLAKE_NAR:
+    if (metadata.get("locked", {}).get("narHash") != FLAKE_NAR
+            or metadata.get("locked", {}).get("rev") != "c1ec0936f7473319992d5227c6b23d7cc836a45d"):
         raise ValueError("public Keel flake narHash differs from the reviewed pin")
 
     with tempfile.TemporaryDirectory(prefix="keel-vm-") as work:
         work = Path(work)
-        archived = work / "source.tar"
-        with archived.open("wb") as stream:
-            subprocess.run(["git", "-C", str(source), "archive", "--format=tar", args.source_sha], stdout=stream, check=True)
-        tree = work / "source"
-        tree.mkdir()
-        with tarfile.open(archived) as archive:
-            archive.extractall(tree, filter="data")
-        source_store = output("nix", "store", "add-path", str(tree))
         inventory = work / "manifest.json"
         with inventory.open("wb") as stream:
             subprocess.run(["nix", "eval", "--json", "--file", source_store + "/tests/keel/default.nix"], stdout=stream, check=True)
         inventory_store = output("nix", "store", "add-file", str(inventory))
         bundle_store = output("nix", "store", "add-path", str(bundle))
-        subprocess.run([sys.executable, str(verifier), "verify", bundle_store + "/manifest.json"], check=True)
+        subprocess.run([sys.executable, str(checked_verifier), "verify", bundle_store, "--source-sha", args.source_sha, "--import-runtime"], check=True)
         stored_t1 = json.loads(Path(bundle_store, "manifest.json").read_bytes())
         if stored_t1 != t1:
             raise ValueError("T1 manifest changed while staging")
-        with Path(bundle_store, "runtime.nar").open("rb") as stream:
-            subprocess.run(["nix-store", "--import"], stdin=stream, check=True, stdout=subprocess.DEVNULL)
         roots = t1["runtime_roots"]
         if not roots or any(not isinstance(root, str) or not root.startswith("/nix/store/") for root in roots):
             raise ValueError("invalid T1 runtime roots")
@@ -81,16 +86,18 @@ def main():
         env = os.environ.copy()
         env.update({"KEEL_VM_SOURCE": source_store, "KEEL_VM_BUNDLE": bundle_store,
                     "KEEL_VM_INVENTORY": inventory_store, "KEEL_VM_SHA": args.source_sha,
-                    "KEEL_VM_NIXPKGS": str(args.nixpkgs.resolve(strict=True)),
+                    "KEEL_VM_FLAKE": source_ref,
                     "KEEL_VM_ROOTS": json.dumps(roots), "KEEL_VM_NONCE": secrets.token_hex(16)})
         expression = '''
           let
             source = builtins.storePath (builtins.getEnv "KEEL_VM_SOURCE");
-            flake = builtins.getFlake ("path:" + toString source);
-            runtime = flake.packages.x86_64-linux.backendServiceRuntime;
-            pkgs = import (builtins.getEnv "KEEL_VM_NIXPKGS") { system = "x86_64-linux"; };
+            flake = builtins.getFlake (builtins.getEnv "KEEL_VM_FLAKE");
+            runtime = flake.packages.x86_64-linux.backend-service-runtime;
+            pkgs = import flake.inputs.nixpkgs { system = "x86_64-linux"; };
             keel = builtins.getFlake "github:nudoxorg/keel/c1ec0936f7473319992d5227c6b23d7cc836a45d";
-          in import (source + "/.config/ci/keel-vm-test.nix") {
+          in assert flake.rev == builtins.getEnv "KEEL_VM_SHA";
+          assert toString flake.outPath == toString source;
+          import (source + "/.config/ci/keel-vm-test.nix") {
             inherit pkgs;
             bundle = builtins.storePath (builtins.getEnv "KEEL_VM_BUNDLE");
             sourceSha = builtins.getEnv "KEEL_VM_SHA";
@@ -107,13 +114,16 @@ def main():
         result = output("nix", "build", "--option", "max-jobs", "0", "--impure", "--no-link", "--print-out-paths", "--expr", expression, env=env)
         if "\n" in result or not result.startswith("/nix/store/"):
             raise ValueError("unexpected Nix test output")
-        shutil.copytree(result, args.output)
+        shutil.copytree(result, args.output, dirs_exist_ok=True)
     if output("git", "-C", str(source), "rev-parse", "HEAD") != args.source_sha or output("git", "-C", str(source), "status", "--porcelain", "--untracked-files=all"):
         raise ValueError("source checkout changed during the VM run")
     if (args.output / "guest-driver-error").exists():
-        return 1
+        return 125
     status = args.output / "keel-results" / "guest-exit-status"
-    return 0 if status.is_file() and status.read_text().strip() == "0" else 1
+    if not status.is_file():
+        return 125
+    code = status.read_text().strip()
+    return 0 if code == "0" else (1 if code == "1" else 125)
 
 
 if __name__ == "__main__":
