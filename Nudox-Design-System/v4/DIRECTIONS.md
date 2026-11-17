@@ -121,6 +121,12 @@ The jobs are: **find** a package for a need, **judge** it, **compare** alternati
 - **Cousins across ecosystems.** The same idea in npm or PyPI.
 - **Compare by capability.** Rows are what you can do (parse from text, write to text, preserve order, borrow input), columns are the candidates, and each cell holds the item that does it. Cost to your tree, license, churn and size are rows too.
 
+For local source views, run `node v4/graph/setup-source-links.mjs` from
+`Nudox-Design-System`. It creates ignored links to this checkout and, when
+available, the local Cargo registry. On Windows it creates directory junctions.
+It never replaces an existing path. Registry links remain unavailable until a
+Cargo registry source cache exists; the script does not download dependencies.
+
 Real data for prototypes:
 
 - `~/.cargo/registry/index/index.crates.io-*/.cache/**`: 1,642 crates with every version, dependencies, features, yanked flags and rust-version.
