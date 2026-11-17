@@ -41,6 +41,7 @@ in {
     cores = 2;
     memorySize = 4096;
     restrictNetwork = true;
+    qemu.forceAccel = true;
   };
   users.users.keel = { isSystemUser = true; group = "keel"; };
   users.groups.keel = {};
