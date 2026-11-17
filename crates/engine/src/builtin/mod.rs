@@ -22,6 +22,7 @@ mod profile;
 mod relation;
 mod semantic_capture_relation;
 mod semantic_relation;
+mod semantic_preflight;
 mod code_links;
 mod stylo_identity;
 mod stylo_projection;
@@ -102,6 +103,11 @@ pub use semantic_capture_relation::{
     ProductSemanticCaptureOutcome, ProductSemanticCaptureRecord, ProductSemanticCaptureRelation,
     ProductSemanticCaptureRootSchema, semantic_capture_relation, semantic_capture_root_from_object,
     semantic_capture_root_object, semantic_capture_root_pointer_key,
+};
+pub use semantic_preflight::{
+    capture_visit_preflighted, release_semantic_cursor, semantic_capture_preflight_relation,
+    semantic_cursor_reservation_bytes, semantic_publication_preflight_relation,
+    semantic_visit_preflighted, SemanticRelationDecodeReservations,
 };
 pub use semantic_relation::{
     ActivatedSemanticPublication, CheckpointedSemanticTargetError, PartialSemanticCoverage, ProductSemanticPublicationKey,
