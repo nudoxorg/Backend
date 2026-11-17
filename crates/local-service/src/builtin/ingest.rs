@@ -2236,7 +2236,8 @@ fn capture_compiler_workspace_entries(
         let relative = normalized_workspace_path(relative)?;
         if let Some(maximum) = max_temporary_bytes {
             // Includes the entry vector, case/canonical sets and parent-width map.
-            let charge = relative.len().checked_mul(8).and_then(|n| n.checked_add(512))
+            let charge = relative.len().checked_add(root.as_os_str().as_encoded_bytes().len())
+                .and_then(|n| n.checked_mul(8)).and_then(|n| n.checked_add(512))
                 .ok_or("workspace inventory accounting overflow")?;
             temporary_bytes = temporary_bytes.checked_add(charge).ok_or("workspace inventory accounting overflow")?;
             if temporary_bytes > maximum { return Err("workspace inventory exceeds temporary byte bound".into()); }
