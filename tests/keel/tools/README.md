@@ -29,8 +29,10 @@ python3 tests/keel/tools/extract_source_obligations.py \
   --output "$audit_dir/current.json"
 git worktree remove "$audit_dir/baseline"
 git worktree remove "$audit_dir/current"
-rmdir "$audit_dir"
 ```
+
+The generated JSON inventories remain in `$audit_dir` for comparison. Remove
+that directory after reviewing or retaining those outputs.
 
 Each output contains the recorded revision, source rows, path/name, source
 hash, line span, scope, runtime-kind observation, and extraction uncertainty.
