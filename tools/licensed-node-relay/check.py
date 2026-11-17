@@ -352,29 +352,37 @@ def isolation():
             assert heartbeat(get("/metrics"), "two") >= second
             # Keep a bounded invalid-client flood active across multiple real
             # heartbeat intervals, and observe both nodes advance during it.
-            def flood(token, results):
-                for _ in range(45):
+            def flood(token, results, stop):
+                while not stop.is_set():
                     results.append(post(token))
-                    time.sleep(0.06)
+                    time.sleep(0.02)
             rejected_before = counter(get("/metrics"), "relay_rejected_total")
             statuses = []
-            invalid_flood = threading.Thread(target=flood, args=("invalid", statuses), daemon=True)
+            stop = threading.Event()
+            invalid_flood = threading.Thread(target=flood, args=("invalid", statuses, stop), daemon=True)
             invalid_flood.start()
             wait_for(lambda: heartbeat(get("/metrics"), "one") > first, seconds=8)
             wait_for(lambda: heartbeat(get("/metrics"), "two") > second, seconds=8)
-            assert invalid_flood.is_alive()
-            invalid_flood.join(timeout=10)
-            assert not invalid_flood.is_alive() and 429 in statuses and all(code in (401,429,None) for code in statuses)
+            wait_for(lambda: 429 in statuses, seconds=20)
+            stop.set()
+            invalid_flood.join(timeout=5)
+            assert not invalid_flood.is_alive(), "invalid flood did not stop"
+            assert 401 in statuses and 429 in statuses, "invalid grant quota was not exercised"
+            assert all(code in (401,429,None) for code in statuses), "unexpected invalid grant response"
             responded = sum(code is not None for code in statuses)
             # Exhaust grant one independently while grant two keeps reporting.
             second = heartbeat(get("/metrics"), "two")
             statuses = []
-            grant_flood = threading.Thread(target=flood, args=(tokens[0], statuses), daemon=True)
+            stop = threading.Event()
+            grant_flood = threading.Thread(target=flood, args=(tokens[0], statuses, stop), daemon=True)
             grant_flood.start()
             wait_for(lambda: heartbeat(get("/metrics"), "two") > second, seconds=8)
-            assert grant_flood.is_alive()
-            grant_flood.join(timeout=10)
-            assert not grant_flood.is_alive() and 429 in statuses and all(code in (400,429,None) for code in statuses)
+            wait_for(lambda: 429 in statuses, seconds=20)
+            stop.set()
+            grant_flood.join(timeout=5)
+            assert not grant_flood.is_alive(), "grant flood did not stop"
+            assert 429 in statuses, "grant quota was not exercised"
+            assert all(code in (400,429,None) for code in statuses), "unexpected valid grant response"
             responded += sum(code is not None for code in statuses)
             assert counter(get("/metrics"), "relay_rejected_total") >= rejected_before + responded
             for thread in tricklers:
