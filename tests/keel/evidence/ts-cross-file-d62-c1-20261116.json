@@ -1,0 +1,378 @@
+{
+  "account_key": {
+    "present": false,
+    "source_basename": null
+  },
+  "authority_environment": {
+    "NUDOX_CARGO": "/nix/store/qm5b3rg00i7filzq24dp4cl9pcjdwa59-cargo/bin/cargo",
+    "NUDOX_CARGO_HOME": "/root/.cargo",
+    "NUDOX_PYTHON": "/nix/store/jxyrvv4gbpnp3ap5iy7wxwl1sg4x2x88-python3-3.14.6/bin/python3",
+    "NUDOX_RUSTC": "/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/rustc",
+    "PATH": "/run/wrappers/bin:/root/.nix-profile/bin:/nix/profile/bin:/root/.local/state/nix/profile/bin:/etc/profiles/per-user/root/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin"
+  },
+  "authority_environment_sha256": "25b9d1a34eba8db97256abf807f2d72a1fc960c6aca3c69241051ef83e13cf8a",
+  "binaries": {
+    "backend-cli": "b943cb57acb04c6969c5440ccf4412fec556020f16f77078b535201a8f5a3916",
+    "backend-locald": "61d6d8f339f98f0355deccc35ef33ef4233c2e55feecc78b0ffe835c6d2f628c",
+    "backend-mcp": "9f6323c189396dcfc7fe5e78ef9153b11f069a096b5df249a8facb8034d1c286"
+  },
+  "cases": [
+    {
+      "duration_ms": 33440,
+      "error": null,
+      "evidence_dir": "/root/nudox-keel-ts-cross-file-d62-c1-v1-20261116/evidence/typescript-cross-file-and-ambient-source",
+      "id": "typescript-cross-file-and-ambient-source",
+      "language": "typescript",
+      "node": "engine.lower.typescript",
+      "status": "pass",
+      "steps": [
+        {
+          "detail": {
+            "profiles": [
+              {
+                "input_digest": "723a6e31f01c8232200f75bf3a52f395d464a9ec31a36c126f8f0862ce04c66d",
+                "observation_sequence": 1,
+                "profile": [
+                  1,
+                  0
+                ],
+                "source_count": 2,
+                "source_version": "0450226a02d6cbec7914c9560c6d907111b819fe6d9c041e55208c72be387183",
+                "state": {
+                  "detail": {
+                    "coverage": {
+                      "coverage": "complete"
+                    },
+                    "generation": "0612d3b10188776eb1f7c2550cc8e8863ff25359df42c06791c3058db14aeedc"
+                  },
+                  "state": "published"
+                }
+              }
+            ],
+            "view_root": "604618ab1a47d4929365ce376549a918042370c93f464b9a1ae61f39eb2805cd"
+          },
+          "duration_ms": 16196,
+          "id": "index-cross-file-typescript",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 50,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-ts-cross-file-d62-c1-v1-20261116/keel-3092633-1794894134706908505-2"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "ac18cdbb69cabba22b72569733c66f64e7cfeb6826ed06b0b1c85b7a03378573"
+          },
+          "duration_ms": 233,
+          "id": "resolve-cross-file-helper",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "convergence_attempts": 1,
+            "result": {
+              "duration_ms": 50,
+              "exit": 0,
+              "isolation": {
+                "mode": "cgroup-v2",
+                "path": "/sys/fs/cgroup/nudox-keel-ts-cross-file-d62-c1-v1-20261116/keel-3092633-1794894134940470569-5"
+              },
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stdout_sha256": "0da9b1c9284e4c300627fe20a738924e1bf285eb2ab4f433a401262e109cdbda"
+            }
+          },
+          "duration_ms": 238,
+          "id": "search-cross-file-helper",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 161,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-ts-cross-file-d62-c1-v1-20261116/keel-3092633-1794894135178753976-8"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "9ec040f9eeff89f07bd8b7eee881ecd6e76409564a0a12e365b292e8bdff77e7"
+          },
+          "duration_ms": 515,
+          "id": "show-cross-file-helper",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 50,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-ts-cross-file-d62-c1-v1-20261116/keel-3092633-1794894135694459103-11"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "adb15268c5d075bdf034f2046627d53f7931f70871521b27d16a08d76b1e486a"
+          },
+          "duration_ms": 213,
+          "id": "resolve-ambient-max",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 60,
+            "exit": 2,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-ts-cross-file-d62-c1-v1-20261116/keel-3092633-1794894135908141429-14"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "7738e5c29088a16ba4a54a91c564ed1c86a97ba23b556eadadc85c0d3cb024f8"
+          },
+          "duration_ms": 253,
+          "id": "show-ambient-max-without-source",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 50,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-ts-cross-file-d62-c1-v1-20261116/keel-3092633-1794894136161787315-17"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "ace84e8495508618d480f28675a25f9de78989436a9b0a46b8c50d6817579192"
+          },
+          "duration_ms": 223,
+          "id": "resolve-cross-file-caller",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 70,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-ts-cross-file-d62-c1-v1-20261116/keel-3092633-1794894136385364288-20"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "4e583ddbdcbb2b63f59784a2e19922e98936ac12e1e5c3af7d2d628b5e2f92c4"
+          },
+          "duration_ms": 71,
+          "id": "one-cross-file-call-edge",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-ts-cross-file-d62-c1-v1-20261116/keel-3092633-1794894136456812272-21"
+            },
+            "pid": 3093388,
+            "reply_sha256": "7d7fbb0e2982cbc0964fca73788998b9829586130e0047266e3f5b59e0463ce9",
+            "request_sha256": "ec1af0aaef5fad258cd4c7d26e34a7cc664aa2f127f6e1f5b2633b1d6de0d07a",
+            "session": "cross-file"
+          },
+          "duration_ms": 96,
+          "id": "start-cross-file-reader",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "is_error": false,
+            "pid": 3093388,
+            "reply_sha256": "e98b38ca4d2f1aa31c06a45de1d0c5b556a242f5e41ac9d3088898dd438d7878",
+            "request_id": 1,
+            "request_sha256": "417692fec4d974c79afe0d25786d6e6fd362a929926ef6c68e9e83474100d2e9",
+            "session": "cross-file"
+          },
+          "duration_ms": 179,
+          "id": "typed-cross-file-call-target",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-ts-cross-file-d62-c1-v1-20261116/keel-3092633-1794894136456812272-21"
+            },
+            "pid": 3093388,
+            "reaped": true,
+            "session": "cross-file"
+          },
+          "duration_ms": 10,
+          "id": "stop-cross-file-reader",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "generation": 2
+          },
+          "duration_ms": 1963,
+          "id": "restart-cross-file-project",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 50,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-ts-cross-file-d62-c1-v1-20261116/keel-3092633-1794894138706698002-23"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "ac18cdbb69cabba22b72569733c66f64e7cfeb6826ed06b0b1c85b7a03378573"
+          },
+          "duration_ms": 214,
+          "id": "resolve-helper-after-restart",
+          "status": "pass"
+        }
+      ],
+      "world_isolation": {
+        "mode": "cgroup-v2",
+        "path": "/sys/fs/cgroup/nudox-keel-ts-cross-file-d62-c1-v1-20261116/keel-3092633-1794894105499884779-0"
+      }
+    }
+  ],
+  "containment_policy": {
+    "required": true,
+    "root": {
+      "Unix": [
+        47,
+        115,
+        121,
+        115,
+        47,
+        102,
+        115,
+        47,
+        99,
+        103,
+        114,
+        111,
+        117,
+        112,
+        47,
+        110,
+        117,
+        100,
+        111,
+        120,
+        45,
+        107,
+        101,
+        101,
+        108,
+        45,
+        116,
+        115,
+        45,
+        99,
+        114,
+        111,
+        115,
+        115,
+        45,
+        102,
+        105,
+        108,
+        101,
+        45,
+        100,
+        54,
+        50,
+        45,
+        99,
+        49,
+        45,
+        118,
+        49,
+        45,
+        50,
+        48,
+        50,
+        54,
+        49,
+        49,
+        49,
+        54
+      ]
+    }
+  },
+  "driver_sha256": "3ea59a7c4dcd7638f88f5ff93a622e9c65f487f3bf1eceba2071137eacd0ba1d",
+  "duration_ms": 33440,
+  "inventory": [
+    {
+      "definition_sha256": "e99e631c30c308cca40edb40e346214a3af30e0cf3b23cce85a271fe6d05af62",
+      "id": "typescript-cross-file-and-ambient-source",
+      "inputs": {
+        "helper.ts": "d3fe1e8ed243e33de87389815e22a77ddd0dc149e13834ed2aae80e38cdfb64b",
+        "tsconfig.json": "8fa45c8ecec982445ac55a0c6088e74ff9602aa56686720dc216f73dddafb063",
+        "view.ts": "e03e5a873773d6c29c5b567fdd1f349e5d239504b2a0b02c2657eb5bba9abc91"
+      },
+      "language": "typescript",
+      "node": "engine.lower.typescript",
+      "requires": [],
+      "steps": [
+        {
+          "id": "index-cross-file-typescript",
+          "kind": "index"
+        },
+        {
+          "id": "resolve-cross-file-helper",
+          "kind": "query"
+        },
+        {
+          "id": "search-cross-file-helper",
+          "kind": "query"
+        },
+        {
+          "id": "show-cross-file-helper",
+          "kind": "query"
+        },
+        {
+          "id": "resolve-ambient-max",
+          "kind": "query"
+        },
+        {
+          "id": "show-ambient-max-without-source",
+          "kind": "query"
+        },
+        {
+          "id": "resolve-cross-file-caller",
+          "kind": "query"
+        },
+        {
+          "id": "one-cross-file-call-edge",
+          "kind": "cli"
+        },
+        {
+          "id": "start-cross-file-reader",
+          "kind": "mcp-start"
+        },
+        {
+          "id": "typed-cross-file-call-target",
+          "kind": "mcp-call"
+        },
+        {
+          "id": "stop-cross-file-reader",
+          "kind": "mcp-stop"
+        },
+        {
+          "id": "restart-cross-file-project",
+          "kind": "restart"
+        },
+        {
+          "id": "resolve-helper-after-restart",
+          "kind": "query"
+        }
+      ],
+      "world": "owner"
+    }
+  ],
+  "manifest_sha256": "7ecd7d66c6da27ee8410254cea0edd42a268ffc9af6723060dc43e9bc09e8a4b",
+  "order": null,
+  "schema": 1,
+  "status": "pass"
+}

@@ -27,7 +27,10 @@ claiming that the full source inventory has been rerun at the new HEAD.
 
 The subsequent public Keel c1ec process tranche adds the native TypeScript
 source-byte history and seven MCP stdio histories, taking the required
-inventory to 43 cases. The source case reconstructs independently authored
+inventory to 43 cases. The subsequently observed TypeScript cross-file and
+ambient-target case extends it to 44, with its distinct matched diagnostic
+cohort receipt kept in
+[`ts-cross-file-d62-c1-20261116.json`](evidence/ts-cross-file-d62-c1-20261116.json). The source case reconstructs independently authored
 UTF-8/CRLF bytes across both transports, resumes after owner/MCP restart and
 refuses a same-size source edit. The MCP cases add ordering, negotiation,
 recovery, framing and correlation laws. The exact public-driver receipts are

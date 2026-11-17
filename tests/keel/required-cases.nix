@@ -43,4 +43,5 @@
   "mcp-stdio-line-endings-notifications"
   "mcp-stdio-correlation"
   "mcp-stdio-depth-recovery"
+  "typescript-cross-file-and-ambient-source"
 ]

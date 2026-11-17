@@ -13,6 +13,7 @@ let
   searchHelp = import ./search-help.nix;
   sourceRange = import ./source-range.nix;
   mcpStdio = import ./mcp-stdio.nix;
+  tsCrossFile = import ./ts-cross-file.nix;
   required = import ./required-cases.nix;
   assembled =
     histories.cases
@@ -27,7 +28,8 @@ let
     ++ pageBound.cases
     ++ searchHelp.cases
     ++ sourceRange.cases
-    ++ mcpStdio.cases;
+    ++ mcpStdio.cases
+    ++ tsCrossFile.cases;
   cases = map (
     case:
     case
@@ -45,16 +47,18 @@ let
                     # Wait for full-search preparation, while preserving honest partial
                     # semantic coverage (for example a JavaScript program without full
                     # static type evidence). Every remaining field still compares.
-                    json = step.expect.json ++ [
-                      {
-                        pointer = "/full_search";
-                        absent = true;
-                      }
-                      {
-                        pointer = "/search_scope";
-                        absent = true;
-                      }
-                    ];
+                    json =
+                      step.expect.json
+                      ++ builtins.filter (guard: !(builtins.elem guard step.expect.json)) [
+                        {
+                          pointer = "/full_search";
+                          absent = true;
+                        }
+                        {
+                          pointer = "/search_scope";
+                          absent = true;
+                        }
+                      ];
                   };
                 }
               else
