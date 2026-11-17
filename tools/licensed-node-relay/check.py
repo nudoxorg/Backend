@@ -98,10 +98,12 @@ def main():
             # The live child generates real records while its relay is absent;
             # a one-record FIFO produces real, durably counted overflow.
             def overflow():
+                if sender.poll() is not None:
+                    raise AssertionError(f"sender exited before overflow: {sender.returncode}")
                 with sqlite3.connect(root / "sender" / "sender.sqlite") as db:
                     row = db.execute("SELECT lost FROM meta").fetchone()
                     return row is not None and row[0] >= 2
-            wait_for(overflow)
+            wait_for(overflow, seconds=40)
             # Capture the real sender's pending heartbeat and freeze its
             # supervisor so no later sequence can race this replay check.
             sender.send_signal(signal.SIGSTOP)
