@@ -62,7 +62,9 @@ def run(args):
         raise ValueError("checkout HEAD does not match source SHA")
     if output("git", "-C", str(source), "status", "--porcelain", "--untracked-files=all"):
         raise ValueError("source checkout is not clean")
-    source_ref = "git+" + source.as_uri() + "?rev=" + args.source_sha
+    # CI fetches an exact commit with a shallow history. Keep the immutable
+    # revision binding while explicitly permitting that Git transport shape.
+    source_ref = "git+" + source.as_uri() + "?rev=" + args.source_sha + "&shallow=1"
     source_metadata = json.loads(output("nix", "flake", "metadata", "--json", source_ref))
     if source_metadata.get("locked", {}).get("rev") != args.source_sha:
         raise ValueError("source flake did not resolve to the requested Git revision")
@@ -70,7 +72,9 @@ def run(args):
     checked_verifier = Path(source_store, ".config/ci/t1_artifacts.py")
     if verifier.read_bytes() != checked_verifier.read_bytes():
         raise ValueError("published T1 verifier differs from exact-source verifier")
-    subprocess.run([sys.executable, str(checked_verifier), "verify", str(bundle), "--source-sha", args.source_sha], check=True, env=verifier_environment())
+    # Exercise the transferred payload, including GUI and metrics, before
+    # staging the independent VM gate. Producer smoke cannot replace this.
+    subprocess.run([sys.executable, str(checked_verifier), "verify", str(bundle), "--source-sha", args.source_sha, "--smoke"], check=True, env=verifier_environment())
     t1 = json.loads((bundle / "manifest.json").read_bytes())
     metadata = json.loads(output("nix", "flake", "metadata", "--json", FLAKE))
     if (metadata.get("locked", {}).get("narHash") != FLAKE_NAR
