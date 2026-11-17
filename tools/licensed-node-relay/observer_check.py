@@ -138,7 +138,40 @@ def main():
                     return db.execute("SELECT ended FROM observed").fetchone()[0] == 1
             wait_for(ended)
             assert counter(metrics(), 'relay_records_total{kind="goodbye"}') == clean_count
-            print("simulated manager with real children: owner independence, generation recheck, reload, clean stop and crash passed")
+            # Create a genuine queued goodbye with a real legacy-mode child,
+            # then restore the old SQLite shape to exercise the upgrade. A new
+            # generation is active before the manager-aware drain starts.
+            observer.terminate()
+            assert observer.wait(timeout=5) == 0
+            relay.terminate()
+            relay.wait(timeout=5)
+            relay = None
+            token2 = os.urandom(32).hex()
+            (root / "token2").write_text(token2, encoding="ascii")
+            (root / "token2").chmod(0o600)
+            (root / "legacy").mkdir(mode=0o700)
+            migration_grant = {**grant, "node": "migration", "token_sha256": hashlib.sha256(token2.encode()).hexdigest()}
+            (root / "registry").write_text(json.dumps([migration_grant]), encoding="utf-8")
+            legacy_base = [sys.executable, str(HERE / "sender.py"), base, str(root / "token2"), str(root / "legacy")]
+            legacy = subprocess.run(legacy_base + ["--", sys.executable, "-c", "pass"], timeout=10)
+            assert legacy.returncode == 0
+            with sqlite3.connect(root / "legacy" / "sender.sqlite") as db:
+                assert any(json.loads(row[0])["kind"] == "goodbye" for row in db.execute("SELECT body FROM queue"))
+                db.execute("ALTER TABLE queue DROP COLUMN generation")
+                db.execute("DROP TABLE observed")
+            fourth, start4 = owner()
+            write_status(fourth.pid, start4, "active")
+            relay = subprocess.Popen([sys.executable, str(HERE / "relay.py"), str(root / "registry"), str(root / "relay" / "state"), str(port)])
+            wait_for(lambda: urllib.request.urlopen(base + "/ready", timeout=1).status == 200)
+            migrated = [sys.executable, "-c", shim, str(HERE / "sender.py"), base, str(root / "token2"), str(root / "legacy"), "--drain-only", "true", "--observe-unit", "backend-owner.service", "--systemctl", str(manager), "--"]
+            assert subprocess.run(migrated, timeout=10).returncode == 0
+            with sqlite3.connect(root / "legacy" / "sender.sqlite") as db:
+                assert "generation" in {row[1] for row in db.execute("PRAGMA table_info(queue)")}
+                assert db.execute("SELECT COUNT(*) FROM queue").fetchone()[0] == 0
+            body = metrics()
+            assert 'nudox_node_heartbeat_seconds{tenant="test",node="migration"}' not in body
+            assert 'nudox_node_goodbye_seconds{tenant="test",node="migration"}' not in body
+            print("simulated manager with real children: owner independence, generation recheck, reload, clean stop, crash and legacy spool migration passed")
         finally:
             if observer is not None and observer.poll() is None:
                 observer.terminate()
