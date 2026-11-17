@@ -1,46 +1,67 @@
-# Dogfood relay prototype
+# Dogfood telemetry relay v1
 
-This is an isolated prototype, not a deployed service or an implementation of
-the unrecovered F7 wire specification. It provides telemetry authorization for
-explicitly provisioned identities; it does not determine or assert paid
-license entitlement. Production use requires a documented authoritative
-provisioning and revocation policy, review, and the VM/metrics proof.
+This is a new internal dogfood protocol. It is not a claim of compatibility
+with the unrecovered F7 wire specification or the paid-billing system. A grant
+is an operator-issued authorization to send telemetry for one tenant and node;
+it does not attest a paid billing entitlement. Deployment requires review and
+the NixOS VM, VictoriaMetrics, alert, and systemd custody proofs.
 
-The relay binds only to 127.0.0.1. Its private JSON identity file is a bounded
-array of `{ "tenant", "node", "token_sha256" }`, mapping a random, unique
-node bearer token to fixed metric labels. Provisioning and revocation are an
-operator's responsibility; changing the file requires a relay restart. The
-sender's token file contains the corresponding secret. Both identity and
-token files and each service's state directory must be owned by the service
-user and inaccessible to other users. No identity or token is supplied by the
-request body. Keep the state directories persistent and exclusive to their
-respective relay or node. Never copy them between identities.
+The relay binds only to 127.0.0.1. Its private JSON grant registry is an array
+of at most 128 objects with exactly these fields:
 
-`relay.py IDENTITIES_JSON STATE_DB PORT` exposes `/health`, `/ready`,
-`/metrics`, and authenticated `POST /v1/records`. The sender is a process
-supervisor: `sender.py http://127.0.0.1:PORT TOKEN_FILE STATE_DIR -- COMMAND
-[ARGS...]`. It emits heartbeats while its child is running and a goodbye only
-if the child exits successfully. It forwards SIGINT and SIGTERM. This is not
-integrated with the locald entrypoint; a forcibly killed supervisor may leave
-its child running, so supervision and process-custody behavior need further
-work before deployment.
+```json
+{"tenant":"nudoxorg","node":"dogfood-node","token_sha256":"<lowercase SHA-256 of a random bearer token>","scope":"telemetry:write","not_before":0,"expires_at":1800000000,"revoked":false}
+```
 
-Records have a monotonically increasing per-identity sequence, creation time,
-and kind. A diagnostic also carries a positive count of records the sender
-actually failed to retain or abandoned after exceeding the 110-second replay
-window. The sender persists a bounded FIFO and loss accounting in SQLite. The
-relay commits its receipt and metric state in SQLite before acknowledgment;
-the latest identical retry is acknowledged without changing counters or
-liveness. Old sequence numbers and records outside the 120-second window are
-rejected. This preserves ambiguous-ack retries without making stale heartbeat
-replay look live. The relay timestamps heartbeat and goodbye values at receipt;
-event creation time never supplies the metric value. Counter values include
-actual accepted records and rejections and the aggregate reported loss count.
-Neither data path logs the bearer token.
+The example is a shape, not a usable grant. Tenant and node are fixed
+operator-provisioned label values, unique in the registry, with 1–48 ASCII
+letters, numbers, hyphens, or underscores. Tokens must be unique random secrets;
+the sender accepts 32–256 ASCII alphanumeric characters. The timestamps are
+integer Unix seconds and the validity interval is `[not_before, expires_at)`.
+Expired, not-yet-valid, revoked, unknown and invalid grants cannot ingest.
+The registry is read and validated on each ingest, including retries. An
+empty registry is valid but makes ingestion not ready. An invalid or unreadable
+registry fails closed. Update a mutable registry by atomic replacement. A
+systemd `LoadCredential` snapshot requires a relay restart to apply revocation
+or rotation. Provisioning and revocation are operator responsibilities.
 
-The prototype has not been hardened for hostile network exposure, a multi-node
-or highly available relay, backup/restore of identities, clock anomalies,
-process custody after supervisor failure, or durable configuration rotation.
-It must not be exposed outside loopback. Operator-issued identity is not itself
-evidence that a node has a paid license. No production credential or real
-licensed-node identity is included.
+`relay.py GRANT_REGISTRY STATE_DB PORT` exposes `/health`, `/ready`, `/metrics`,
+and authenticated `POST /v1/records`. It retains the node's receipt sequence,
+last payload fingerprint, liveness values, and counters in durable SQLite.
+The latest identical retry is acknowledged without changing counters or
+liveness; older sequences and records outside the 120-second window are
+rejected. All heartbeat and goodbye values are relay receipt times, never the
+sender's creation time. The persisted relay clock high-water mark makes a
+backwards clock fail closed with 503 until it catches up. At most 128 distinct
+node identities may ever enter one relay state database; retire or migrate
+state only with a documented retention and replay policy.
+
+`sender.py http://127.0.0.1:PORT TOKEN_FILE STATE_DIR -- COMMAND [ARGS...]`
+supervises the actual node process, emitting a heartbeat while it is alive and
+a goodbye only for successful exit. It forwards SIGINT and SIGTERM. The
+optional `--interval-seconds` (1–60, default 60) and `--spool-capacity`
+(1–256, default 256) occur before `--`; they make bounded overflow observable
+in a short VM proof. A durable SQLite FIFO retains pending records and the
+number actually abandoned by the sender. Queue overflow, expiry, or abandoning
+queued heartbeats when the child exits increments that count; a subsequent
+diagnostic reports it. The relay durably counts accepted diagnostics and their
+reported dropped-record totals. An ambiguous acknowledgment may mean that a
+record abandoned by the sender was already received; the count describes the
+sender's abandonment, not a deduplicated end-to-end loss count.
+
+The registry and token must be regular service-owned files with no group or
+other access; state directories must be service-owned and private. Use systemd
+credentials or equivalent private files, never environment variables or
+command-line secret values. The two state directories must be persistent and
+exclusive to their relay or node. Do not copy or reset sender sequence state
+without a matching identity/replay migration. Neither data path logs tokens.
+
+The service must use a systemd control group with `KillMode=control-group` and
+stop remaining processes when the supervisor exits, so killing the supervisor
+also tears down its backend child. This required custody has not yet been
+proved in a NixOS VM. Running the wrapper outside a service manager with that
+property can leave its child alive after the wrapper is forcibly killed.
+Backups or rollback of relay or sender state can reopen replay windows and need
+a separate recovery policy. The relay is single-process, local-only, and must
+not be exposed to a hostile network. No production credential or grant is
+included.

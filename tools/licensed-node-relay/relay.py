@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sqlite3
+import stat
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -18,38 +19,47 @@ LABEL = re.compile(r"^[a-zA-Z0-9_-]{1,48}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 
-def private_file(path):
-    st = os.stat(path)
-    if st.st_uid != os.geteuid() or st.st_mode & 0o077:
-        raise ValueError("identity file must be owned by the service user and private")
-
-
 def load_identities(path):
-    private_file(path)
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
-    if not isinstance(data, list) or not 1 <= len(data) <= MAX_IDENTITIES:
-        raise ValueError("invalid identity count")
+    # Read a bounded, private operator registry afresh on each use. Atomic
+    # replacement is supported; a systemd credential snapshot needs a restart.
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, "rb") as f:
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o077:
+            raise ValueError("grant registry must be service-owned and private")
+        raw = f.read(65537)
+    if len(raw) > 65536:
+        raise ValueError("grant registry too large")
+    data = json.loads(raw)
+    if not isinstance(data, list) or len(data) > MAX_IDENTITIES:
+        raise ValueError("invalid grant count")
     identities = []
     labels = set()
     hashes = set()
     for item in data:
-        if not isinstance(item, dict) or set(item) != {"tenant", "node", "token_sha256"}:
-            raise ValueError("invalid identity")
+        if not isinstance(item, dict) or set(item) != {"tenant", "node", "token_sha256", "scope", "not_before", "expires_at", "revoked"}:
+            raise ValueError("invalid grant")
         tenant, node, digest = item["tenant"], item["node"], item["token_sha256"]
         if not all(isinstance(v, str) for v in (tenant, node, digest)) or not LABEL.fullmatch(tenant) or not LABEL.fullmatch(node) or not DIGEST.fullmatch(digest):
-            raise ValueError("invalid identity values")
+            raise ValueError("invalid grant values")
+        if item["scope"] != "telemetry:write" or type(item["not_before"]) is not int or type(item["expires_at"]) is not int or not 0 <= item["not_before"] < item["expires_at"] <= 2**63-1 or type(item["revoked"]) is not bool:
+            raise ValueError("invalid grant policy")
         if (tenant, node) in labels or digest in hashes:
-            raise ValueError("duplicate identity")
+            raise ValueError("duplicate grant")
         labels.add((tenant, node))
         hashes.add(digest)
-        identities.append((tenant, node, digest))
+        identities.append((tenant, node, digest, item["not_before"], item["expires_at"], item["revoked"]))
     return identities
 
 
+def active_grants(path, now):
+    return [(tenant, node, digest) for tenant, node, digest, start, end, revoked in load_identities(path) if not revoked and start <= now < end]
+
+
 class Relay(HTTPServer):
-    def __init__(self, state, identities, port):
-        self.identities = identities
+    def __init__(self, state, registry, port):
+        self.registry = registry
         self.tokens = 20.0
         self.last = time.monotonic()
         os.umask(0o077)
@@ -63,9 +73,21 @@ class Relay(HTTPServer):
           CREATE TABLE IF NOT EXISTS counters(kind TEXT PRIMARY KEY, n INTEGER NOT NULL);
           CREATE TABLE IF NOT EXISTS ready_check(id INTEGER PRIMARY KEY, n INTEGER NOT NULL);
           INSERT OR IGNORE INTO ready_check VALUES(1,0);
+          CREATE TABLE IF NOT EXISTS wall_clock(id INTEGER PRIMARY KEY, latest REAL NOT NULL);
+          INSERT OR IGNORE INTO wall_clock VALUES(1,0);
         """)
         self.db.commit()
         super().__init__(("127.0.0.1", port), Handler)
+
+    def checked_time(self, commit=False):
+        now = time.time()
+        latest = self.db.execute("SELECT latest FROM wall_clock WHERE id=1").fetchone()[0]
+        if now < latest:
+            raise RuntimeError("wall clock regressed")
+        self.db.execute("UPDATE wall_clock SET latest=? WHERE id=1", (now,))
+        if commit:
+            self.db.commit()
+        return now
 
     def reject(self):
         self.count("rejected")
@@ -109,11 +131,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, b"ok\n")
         if self.path == "/ready":
             try:
+                if not active_grants(self.server.registry, self.server.checked_time(commit=True)):
+                    return self.reply(503, b"not ready\n")
                 self.server.db.execute("BEGIN IMMEDIATE")
                 self.server.db.execute("UPDATE ready_check SET n = 1 - n WHERE id = 1")
                 self.server.db.commit()
                 return self.reply(200, b"ready\n")
-            except sqlite3.Error:
+            except (sqlite3.Error, OSError, ValueError, UnicodeError, RuntimeError):
                 self.server.db.rollback()
                 return self.reply(503, b"not ready\n")
         if self.path != "/metrics":
@@ -122,7 +146,7 @@ class Handler(BaseHTTPRequestHandler):
             rows = {(a,b):(c,d) for a,b,c,d in self.server.db.execute("SELECT tenant,node,heartbeat,goodbye FROM node")}
             counters = dict(self.server.db.execute("SELECT kind,n FROM counters"))
             out = ["# TYPE nudox_node_heartbeat_seconds gauge", "# TYPE nudox_node_goodbye_seconds gauge"]
-            for tenant, node, _ in self.server.identities:
+            for tenant, node, _ in active_grants(self.server.registry, self.server.checked_time(commit=True)):
                 hb, bye = rows.get((tenant,node), (None,None))
                 labels = f'tenant="{tenant}",node="{node}"'
                 if hb is not None: out.append(f"nudox_node_heartbeat_seconds{{{labels}}} {hb!r}")
@@ -132,7 +156,8 @@ class Handler(BaseHTTPRequestHandler):
                 out.append(f'relay_records_total{{kind="{kind}"}} {counters.get(kind,0)}')
             out += ["# TYPE relay_rejected_total counter", f"relay_rejected_total {counters.get('rejected',0)}", "# TYPE relay_node_reported_dropped_total counter", f"relay_node_reported_dropped_total {counters.get('reported_dropped',0)}"]
             return self.reply(200, ("\n".join(out)+"\n").encode())
-        except sqlite3.Error:
+        except (sqlite3.Error, OSError, ValueError, UnicodeError, RuntimeError):
+            self.server.db.rollback()
             return self.reply(503)
 
     def do_POST(self):
@@ -147,7 +172,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.server.reject()
                 return self.reply(401)
             digest = hashlib.sha256(token.encode()).hexdigest()
-            identity = next(((t,n) for t,n,h in self.server.identities if hmac.compare_digest(digest,h)), None)
+            try:
+                grants = active_grants(self.server.registry, self.server.checked_time(commit=True))
+            except (OSError, ValueError, UnicodeError, RuntimeError):
+                self.server.db.rollback()
+                return self.reply(503)
+            identity = next(((t,n) for t,n,h in grants if hmac.compare_digest(digest,h)), None)
             if identity is None:
                 self.server.reject()
                 return self.reply(401)
@@ -170,6 +200,18 @@ class Handler(BaseHTTPRequestHandler):
             db = self.server.db
             db.execute("BEGIN IMMEDIATE")
             prior = db.execute("SELECT seq,digest,heartbeat,goodbye FROM node WHERE tenant=? AND node=?", identity).fetchone()
+            # The grant can expire or be revoked while a request body arrives.
+            # Revalidate immediately before accepting even an already-authenticated request.
+            try:
+                still_allowed = any(t == tenant and n == node and hmac.compare_digest(digest, h)
+                                    for t, n, h in active_grants(self.server.registry, self.server.checked_time()))
+            except (OSError, ValueError, UnicodeError, RuntimeError):
+                db.rollback()
+                return self.reply(503)
+            if not still_allowed:
+                db.rollback()
+                self.server.reject()
+                return self.reply(401)
             if prior and record["seq"] == prior[0] and hmac.compare_digest(fingerprint, prior[1]):
                 db.rollback()
                 return self.reply(200, b"duplicate\n")
@@ -177,6 +219,10 @@ class Handler(BaseHTTPRequestHandler):
                 db.rollback()
                 self.server.reject()
                 return self.reply(409)
+            if not prior and db.execute("SELECT COUNT(*) FROM node").fetchone()[0] >= MAX_IDENTITIES:
+                db.rollback()
+                self.server.reject()
+                return self.reply(429)
             received = time.time()
             if prior and any(value is not None and received <= value for value in prior[2:]):
                 db.rollback()
@@ -202,11 +248,11 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     if len(sys.argv) != 4:
         sys.exit("usage: relay.py IDENTITIES_JSON STATE_DB LOOPBACK_PORT")
-    identities = load_identities(sys.argv[1])
+    load_identities(sys.argv[1])
     parent = Path(sys.argv[2]).resolve().parent
     if os.stat(parent).st_uid != os.geteuid() or os.stat(parent).st_mode & 0o077:
         sys.exit("state directory must be service-owned and private")
-    server = Relay(sys.argv[2], identities, int(sys.argv[3]))
+    server = Relay(sys.argv[2], sys.argv[1], int(sys.argv[3]))
     server.serve_forever()
 
 if __name__ == "__main__":

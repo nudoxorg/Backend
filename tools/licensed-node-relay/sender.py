@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import signal
 import sqlite3
+import stat
 import subprocess
 import sys
 import time
@@ -17,18 +18,46 @@ MAX_AGE = 110
 
 
 def main():
-    if len(sys.argv) < 6 or sys.argv[4] != "--":
-        sys.exit("usage: sender.py LOOPBACK_URL TOKEN_FILE STATE_DIR -- COMMAND [ARGS...]")
-    url = urlsplit(sys.argv[1])
+    args = sys.argv[1:]
+    if "--" not in args:
+        sys.exit("usage: sender.py URL TOKEN_FILE STATE_DIR [--interval-seconds N] [--spool-capacity N] -- COMMAND [ARGS...]")
+    separator = args.index("--")
+    options, command = args[:separator], args[separator + 1:]
+    if len(options) < 3 or not command or (len(options) - 3) % 2:
+        sys.exit("invalid sender arguments")
+    url_arg, token_path, state_path = options[:3]
+    interval, capacity = 60.0, CAPACITY
+    seen = set()
+    for name, value in zip(options[3::2], options[4::2]):
+        if name in seen:
+            sys.exit("duplicate sender option")
+        seen.add(name)
+        try:
+            if name == "--interval-seconds": interval = float(value)
+            elif name == "--spool-capacity": capacity = int(value)
+            else: sys.exit("unknown sender option")
+        except ValueError:
+            sys.exit("invalid sender option")
+    if not 1.0 <= interval <= 60.0 or not 1 <= capacity <= CAPACITY:
+        sys.exit("sender options out of bounds")
+    url = urlsplit(url_arg)
     if url.scheme != "http" or url.hostname != "127.0.0.1" or not url.port or url.path not in ("", "/") or url.username or url.password or url.query or url.fragment:
         sys.exit("relay must be an explicit loopback HTTP URL")
-    st = os.stat(sys.argv[2])
-    if st.st_uid != os.geteuid() or st.st_mode & 0o077:
-        sys.exit("token must be service-owned and private")
-    token = Path(sys.argv[2]).read_text(encoding="ascii").strip()
+    fd = os.open(token_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(fd, "rb") as f:
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o077:
+            sys.exit("token must be service-owned and private")
+        raw_token = f.read(258)
+    if len(raw_token) > 257:
+        sys.exit("invalid token format")
+    try:
+        token = raw_token.decode("ascii").strip()
+    except UnicodeError:
+        sys.exit("invalid token format")
     if not 32 <= len(token) <= 256 or not token.isascii() or not token.isalnum():
         sys.exit("invalid token format")
-    state = Path(sys.argv[3]).resolve()
+    state = Path(state_path).resolve()
     st = state.stat()
     if st.st_uid != os.geteuid() or st.st_mode & 0o077:
         sys.exit("state directory must be service-owned and private")
@@ -50,7 +79,7 @@ def main():
 
     def enqueue(kind, dropped=None):
         with db:
-            if db.execute("SELECT COUNT(*) FROM queue").fetchone()[0] >= CAPACITY:
+            if db.execute("SELECT COUNT(*) FROM queue").fetchone()[0] >= capacity:
                 db.execute("UPDATE meta SET lost=lost+1 WHERE id=1")
                 return False
             seq = db.execute("UPDATE meta SET seq=seq+1 WHERE id=1 RETURNING seq").fetchone()[0]
@@ -91,7 +120,7 @@ def main():
         except (OSError, http.client.HTTPException):
             pass
 
-    child = subprocess.Popen(sys.argv[5:])
+    child = subprocess.Popen(command)
     stopping = False
     def forward(signum, _frame):
         nonlocal stopping
@@ -103,11 +132,15 @@ def main():
     next_heartbeat = 0.0
     while child.poll() is None:
         now = time.monotonic()
+        lost = db.execute("SELECT lost FROM meta WHERE id=1").fetchone()[0]
+        queued = db.execute("SELECT COUNT(*) FROM queue").fetchone()[0]
+        if lost and queued < capacity:
+            enqueue("diag", min(lost, 2**31-1))
         if not stopping and now >= next_heartbeat:
             enqueue("heartbeat")
-            next_heartbeat = now + 60
+            next_heartbeat = now + interval
         flush()
-        time.sleep(1)
+        time.sleep(0.1)
     status = child.returncode
     # Once the observed process ends, queued heartbeats must never be sent as
     # evidence that it is still alive. Count the records we abandon.
