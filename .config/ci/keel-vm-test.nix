@@ -49,7 +49,7 @@ let
           failure = repr(exc)
       try:
           machine.execute("journalctl -u keel-artifact-run.service > /var/lib/keel-results/service.journal 2>&1")
-          machine.copy_from_vm("/var/lib/keel-results")
+          machine.copy_from_machine("/var/lib/keel-results")
       except Exception as exc:
           failure = (failure or "") + " receipt collection: " + repr(exc)
       if failure is not None:
