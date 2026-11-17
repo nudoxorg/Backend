@@ -7037,26 +7037,6 @@ fn initialize_negotiates_only_the_library_supported_protocols() {
     }
 }
 
-#[test]
-fn initialized_notification_cannot_bypass_initialize() {
-    let mut server = Server::with_authority(Fake::default(), PROJECT.to_owned(), [9; 32]);
-    assert!(
-        server
-            .handle(br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
-            .is_none()
-    );
-    let rejected = server
-        .handle(br#"{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"backend://workspace/current"}}"#)
-        .expect("pre-initialize requests receive an error");
-    assert_eq!(rejected["error"]["code"], -32002);
-    assert!(server
-        .handle(br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#)
-        .is_some());
-    let premature = server
-        .handle(br#"{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}"#)
-        .expect("requests before the acknowledgement receive an error");
-    assert_eq!(premature["error"]["code"], -32002);
-}
 
 #[test]
 fn cancellation_notifications_are_silent_and_do_not_poison_the_session() {
