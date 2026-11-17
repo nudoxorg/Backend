@@ -5,6 +5,7 @@
   pkgs,
   toolchains,
   workspaceRoot,
+  sourceRevision ? null,
   keelHarness ? null,
 }:
 let
@@ -310,6 +311,73 @@ let
       }
     else
       null;
+  # The fleet's persistent owner and operator HTTP adapter share one immutable
+  # source and lock. Keep this deployment closure independent of the desktop.
+  backendServiceRuntime =
+    if workspaceAvailable && pkgs.stdenv.hostPlatform.isLinux then
+      (import ./service-runtime.nix {
+        inherit
+          pkgs
+          workspaceRoot
+          workspaceSource
+          stableRustPlatform
+          gpuiOutputHashes
+          boundedProductCargoPreBuild
+          sourceRevision
+          ;
+      }).overrideAttrs
+        (previous: {
+          passthru = (previous.passthru or { }) // {
+            compilerEnvironment = backendServiceCompilerEnvironment;
+            compilerPath = backendServiceCompilers;
+          };
+        })
+    else
+      null;
+  # Runtime authorities for the focused headless service. Native C/C++ build
+  # infrastructure remains available; archived frontend and GUI closures do not.
+  backendServiceCompilerInputs = [
+    pkgs.stdenv.cc
+    toolchains.stable
+    pkgs.bash
+    pkgs.coreutils
+    pkgs.gnumake
+    pkgs.git
+    pkgs.gnused
+    pkgs.gnugrep
+    pkgs.findutils
+    pkgs.gawk
+  ]
+  ++ builtins.attrValues (
+    builtins.removeAttrs compilers [
+      "clang"
+      "libclang"
+      "dotnet"
+      "go"
+      "jdk"
+    ]
+  )
+  ++ nativeLibraries
+  ++ authorityHelpers;
+  backendServiceCompilers = pkgs.buildEnv {
+    name = "nudox-backend-service-compilers";
+    paths = backendServiceCompilerInputs;
+  };
+  backendServiceCompilerEnvironment =
+    builtins.removeAttrs
+      (import ./corpus-env.nix {
+        inherit pkgs toolchains;
+        tools = {
+          inherit compilers typescriptChecker;
+          nativeCompilers = backendServiceCompilerInputs;
+        };
+        corpus = null;
+        captureNativeCompilerShellEnv = true;
+      })
+      [
+        "LIBCLANG_PATH"
+        "NUDOX_TEST_COREUTILS_BIN"
+      ];
   # Optional real protocol binaries for a GUI lane. They are intentionally a
   # separate closure from `gui-tools`, so obtaining pinned display/fonts/media
   # tools never builds the workspace. When present, these are the exact
@@ -922,6 +990,7 @@ in
   inherit
     authorityHelpers
     backendControl
+    backendServiceRuntime
     coreServiceTools
     gpuiOutputHashes
     guiRuntime
