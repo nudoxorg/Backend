@@ -692,9 +692,12 @@ fn a_new_name_is_refused_only_when_the_system_routes_it_to_a_device() {
         );
     }
 
-    // On Windows 11 only bare device names are special; these are ordinary files that Win32
-    // reaches, so a source tree or workspace may hold them.
+    // Windows releases differ in which device-like names Win32 routes to a
+    // device. Exercise every name against the local kernel's admission: an
+    // admitted name must really create and read back, while a refused name
+    // must fail creation without producing a workspace entry.
     let (root, path) = private_root("ordinary-device-like");
+    let mut admitted = 0;
     for name in [
         "aux.c",
         "CON.txt",
@@ -707,15 +710,35 @@ fn a_new_name_is_refused_only_when_the_system_routes_it_to_a_device() {
         "console",
         "a.nul",
     ] {
-        assert!(NewName::parse(name).is_ok(), "{name:?} is an ordinary name");
-        put(&root, &[name], name.as_bytes());
-        assert_eq!(
-            fs::read(path.join(name)).expect("Win32 reaches the file that was created"),
-            name.as_bytes(),
-            "{name:?}"
+        match NewName::parse(name) {
+            Ok(_) => {
+                put(&root, &[name], name.as_bytes());
+                assert_eq!(
+                    fs::read(path.join(name)).expect("Win32 reaches the admitted file"),
+                    name.as_bytes(),
+                    "{name:?}"
+                );
+                admitted += 1;
+            }
+            Err(error) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{name:?}");
+                assert_eq!(
+                    root.create_file_exclusive(&[name])
+                        .expect_err("refused name cannot be created")
+                        .kind(),
+                    std::io::ErrorKind::InvalidInput,
+                    "{name:?}"
+                );
+            }
+        }
+    }
+    for name in ["com0", "com10", "console", "a.nul"] {
+        assert!(
+            NewName::parse(name).is_ok(),
+            "{name:?} must remain an ordinary name"
         );
     }
-    assert_eq!(root.read_dir_checked(&[]).expect("list").len(), 10);
+    assert_eq!(root.read_dir_checked(&[]).expect("list").len(), admitted);
 
     // Neither creation nor a rename destination may be a device name; the source stays put.
     let error = root
@@ -723,10 +746,10 @@ fn a_new_name_is_refused_only_when_the_system_routes_it_to_a_device() {
         .expect_err("a device name is never created");
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     let error = root
-        .rename_relative(&["aux.c"], &["NUL"], false)
+        .rename_relative(&["console"], &["NUL"], false)
         .expect_err("a device name is never a rename destination");
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-    assert_eq!(get(&root, &["aux.c"]), b"aux.c");
+    assert_eq!(get(&root, &["console"]), b"console");
     drop(root);
     fs::remove_dir_all(path).expect("cleanup");
 }
@@ -734,12 +757,12 @@ fn a_new_name_is_refused_only_when_the_system_routes_it_to_a_device() {
 #[test]
 fn entries_whose_names_creation_would_refuse_are_still_opened_renamed_and_removed() {
     let (root, path) = private_root("existing-device-like");
-    // Bare `aux` and `con` are ordinary files to Win32 on this system. They exist already (made
-    // here with the standard library and then protected like any workspace entry), so the
-    // workspace must treat them like any other name.
+    // The verbatim namespace can contain these ordinary on-disk names even
+    // when this Windows version routes their non-verbatim spellings to DOS devices.
+    let verbatim = path.canonicalize().expect("verbatim workspace path");
     for name in ["aux", "con"] {
-        fs::write(path.join(name), name.as_bytes()).expect("create an ordinary file");
-        crate::win32::security::restrict_to_current_user(&path.join(name))
+        fs::write(verbatim.join(name), name.as_bytes()).expect("create an ordinary file");
+        crate::win32::security::restrict_to_current_user(&verbatim.join(name))
             .expect("protect the entry");
     }
     assert_eq!(get(&root, &["aux"]), b"aux");
@@ -762,8 +785,9 @@ fn entries_whose_names_creation_would_refuse_are_still_opened_renamed_and_remove
 fn source_listing_accepts_ordinary_files_named_like_dos_devices() {
     let dir = fresh_path("source-list");
     fs::create_dir(&dir).expect("create dir");
+    let verbatim = dir.canonicalize().expect("verbatim source directory");
     for name in ["aux.c", "con.rs", "nul.txt", "com1.log", "ok.txt"] {
-        fs::write(dir.join(name), b"x").expect("std creates it as an ordinary file");
+        fs::write(verbatim.join(name), b"x").expect("create ordinary verbatim file");
     }
     let root = WorkspaceRoot::open_read_only_source(&dir).expect("open source root");
     let listing = root
@@ -777,8 +801,13 @@ fn source_listing_accepts_ordinary_files_named_like_dos_devices() {
 #[test]
 fn a_source_root_beneath_an_ancestor_named_like_a_device_opens() {
     let dir = fresh_path("source-ancestor");
-    let project = dir.join("aux").join("proj");
-    fs::create_dir_all(&project).expect("std creates a directory named aux");
+    fs::create_dir(&dir).expect("create source parent");
+    let project = dir
+        .canonicalize()
+        .expect("verbatim source parent")
+        .join("aux")
+        .join("proj");
+    fs::create_dir_all(&project).expect("create a verbatim directory named aux");
     WorkspaceRoot::open_read_only_source(&project)
         .expect("an ancestor directory named aux is an ordinary directory on this OS");
     fs::remove_dir_all(dir).expect("cleanup");
@@ -789,8 +818,13 @@ fn removing_a_tree_with_device_like_entries_does_not_stop_half_way() {
     let (root, path) = private_root("tree-device-like");
     root.create_child_dir_exclusive("tree")
         .expect("create the tree");
+    let tree = path
+        .join("tree")
+        .canonicalize()
+        .expect("verbatim tree path");
     for name in ["aux.c", "con.rs", "a", "z"] {
-        put(&root, &["tree", name], b"x");
+        fs::write(tree.join(name), b"x").expect("create existing verbatim entry");
+        crate::win32::security::restrict_to_current_user(&tree.join(name)).expect("protect entry");
     }
     root.remove_dir_tree(&["tree"])
         .expect("every entry of the tree is removed");

@@ -29,8 +29,10 @@ pub(crate) fn replace_readonly_at(
     destination_parent: &File,
     name: &str,
 ) -> io::Result<()> {
-    let name = super::workspace_fs::durability_component(name)?;
-    replace_readonly_name(source, destination_parent.as_raw_handle().cast(), &name)
+    // The Win32 wrapper rejects the non-null RootDirectory needed for a
+    // handle-relative rename. Use the NT operation already used by workspace
+    // publication and keep the same extended-only, fail-closed semantics.
+    super::workspace_fs::replace_readonly_relative(source, destination_parent, name)
 }
 
 fn replace_readonly_name(

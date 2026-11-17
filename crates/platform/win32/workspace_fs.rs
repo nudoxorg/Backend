@@ -34,7 +34,9 @@ use std::ptr;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use windows_sys::Win32::Foundation::{ERROR_NO_MORE_FILES, GENERIC_ALL, HANDLE};
+use windows_sys::Win32::Foundation::{
+    ERROR_NO_MORE_FILES, GENERIC_ALL, HANDLE, INVALID_HANDLE_VALUE,
+};
 use windows_sys::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SE_FILE_OBJECT,
 };
@@ -44,15 +46,17 @@ use windows_sys::Win32::Security::{
     PSECURITY_DESCRIPTOR, SE_DACL_PROTECTED, SECURITY_DESCRIPTOR_CONTROL,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY,
-    FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD, FILE_DISPOSITION_FLAG_DELETE,
-    FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
-    FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_GENERIC_WRITE, FILE_ID_EXTD_DIR_INFO,
-    FILE_ID_INFO, FILE_INFO_BY_HANDLE_CLASS, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
-    FILE_READ_DATA, FILE_STANDARD_INFO, FILE_TRAVERSE, FILE_WRITE_DATA, FileAttributeTagInfo,
-    FileDispositionInfo, FileDispositionInfoEx, FileIdExtdDirectoryInfo,
-    FileIdExtdDirectoryRestartInfo, FileIdInfo, FileStandardInfo, FlushFileBuffers,
-    GetFileInformationByHandleEx, READ_CONTROL, SYNCHRONIZE, SetFileInformationByHandle, WRITE_DAC,
+    CreateFileW, DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ALL_ACCESS,
+    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD,
+    FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+    FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_WRITE,
+    FILE_ID_EXTD_DIR_INFO, FILE_ID_INFO, FILE_INFO_BY_HANDLE_CLASS, FILE_LIST_DIRECTORY,
+    FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_STANDARD_INFO, FILE_TRAVERSE,
+    FILE_WRITE_DATA, FileAttributeTagInfo, FileDispositionInfo, FileDispositionInfoEx,
+    FileIdExtdDirectoryInfo, FileIdExtdDirectoryRestartInfo, FileIdInfo, FileStandardInfo,
+    FlushFileBuffers, GetFileInformationByHandleEx, GetFinalPathNameByHandleW, OPEN_EXISTING,
+    READ_CONTROL, SYNCHRONIZE, SetFileInformationByHandle, WRITE_DAC,
 };
 use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
 
@@ -549,21 +553,14 @@ impl WorkspaceRoot {
         {
             return Err(WorkspaceDirectoryCreateFailure::Created { directory, source });
         }
-        if sharing == Sharing::Pinned {
-            // Compatibility callers keep the original delete-capable pinned
-            // handle, preserving their previous rename exclusion and exact
-            // rollback behavior. Only renameable publication stages need a
-            // second, no-DELETE operation handle.
-            return Ok(directory);
-        }
-        // Keep the long-lived renameable receipt handle free of DELETE access.
-        // The later cleanup open can then request delete-pinning, compare the
-        // exact file id, and hold the name stable while removing that object.
+        // A second handle must share DELETE while the create handle still
+        // requests it. It holds the same object without DELETE access, so the
+        // eventual pinned handle can coexist with other pins and listings.
         let operational = match open_directory_child_writable_with_sharing(
             &self.0,
             name.existing(),
-            sharing,
-            false,
+            Sharing::Transient,
+            sharing == Sharing::Pinned,
         ) {
             Ok(operational) => operational,
             Err(source) => {
@@ -589,6 +586,48 @@ impl WorkspaceRoot {
             });
         }
         drop(directory);
+        if sharing == Sharing::Pinned {
+            // Keep the transient handle to the exact created object while the
+            // name is reopened with delete-pinning. A changed name is never
+            // accepted, and the held object remains available for rollback.
+            let pinned = match open_directory_child_writable_with_sharing(
+                &self.0,
+                name.existing(),
+                Sharing::Pinned,
+                true,
+            ) {
+                Ok(pinned) => pinned,
+                Err(source) => {
+                    return Err(WorkspaceDirectoryCreateFailure::Created {
+                        directory: Self(operational),
+                        source,
+                    });
+                }
+            };
+            let admitted = ensure_private_handle(pinned.handle.as_raw_handle())
+                .and_then(|()| {
+                    same_directory_object(
+                        pinned.handle.as_raw_handle(),
+                        operational.handle.as_raw_handle(),
+                    )
+                })
+                .and_then(|same| {
+                    if same {
+                        Ok(())
+                    } else {
+                        Err(invalid_data(
+                            "created child name changed before its pinned handle opened",
+                        ))
+                    }
+                });
+            if let Err(source) = admitted {
+                return Err(WorkspaceDirectoryCreateFailure::Created {
+                    directory: Self(operational),
+                    source,
+                });
+            }
+            return Ok(Self(pinned));
+        }
         Ok(Self(operational))
     }
 
@@ -638,7 +677,55 @@ impl WorkspaceRoot {
             return Err(invalid_data("created child has no direct name"));
         }
         let _ = enumerate_names(self.handle(), 0)?;
-        mark_delete(self.handle())?;
+        if let Err(error) = mark_delete(self.handle()) {
+            // During pinned-handle handoff the retained exact object has no
+            // DELETE access. Reopen that handle, never its mutable name, for
+            // rollback; fail closed if Windows cannot grant the access.
+            if error.kind() != io::ErrorKind::PermissionDenied {
+                return Err(error);
+            }
+            // Resolve the still-held object's current path, then pin the
+            // reopened name against rename and compare its complete identity.
+            // A moved or replaced name fails closed before any deletion.
+            let mut path = vec![0u16; 32768];
+            // SAFETY: the handle is live and the buffer has the stated length.
+            let len = unsafe {
+                GetFinalPathNameByHandleW(
+                    self.handle().cast(),
+                    path.as_mut_ptr(),
+                    path.len() as u32,
+                    FILE_NAME_NORMALIZED,
+                )
+            } as usize;
+            if len == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if len >= path.len() {
+                return Err(invalid_data("rollback object path exceeds Windows limit"));
+            }
+            path[len] = 0;
+            // SAFETY: path is NUL-terminated and the source remains held.
+            let raw = unsafe {
+                CreateFileW(
+                    path.as_ptr(),
+                    DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    ptr::null(),
+                    OPEN_EXISTING,
+                    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                    ptr::null_mut(),
+                )
+            };
+            if raw == INVALID_HANDLE_VALUE {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: successful CreateFileW transfers one owned handle.
+            let reopened = unsafe { OwnedHandle::from_raw_handle(raw.cast()) };
+            if !same_directory_object(self.handle(), reopened.as_raw_handle())? {
+                return Err(invalid_data("reopened rollback handle changed identity"));
+            }
+            mark_delete(reopened.as_raw_handle())?;
+        }
         flush_handle(parent.handle.as_raw_handle())
     }
 
@@ -665,6 +752,16 @@ impl WorkspaceRoot {
     /// Creates a new regular file exclusively beneath the pinned root. The
     /// protected current-user DACL is applied before the file handle escapes.
     pub fn create_file_exclusive(&self, path: &[&str]) -> io::Result<File> {
+        self.create_file_exclusive_with_sharing(path, Sharing::Pinned)
+    }
+
+    /// Creates a private regular file whose name can be replaced or unlinked
+    /// while the returned descriptor still refers to the original object.
+    pub fn create_file_exclusive_for_replacement(&self, path: &[&str]) -> io::Result<File> {
+        self.create_file_exclusive_with_sharing(path, Sharing::Transient)
+    }
+
+    fn create_file_exclusive_with_sharing(&self, path: &[&str], sharing: Sharing) -> io::Result<File> {
         let (parent, leaf) = self.parent_and_leaf(path)?;
         let handle = create_relative(
             parent.handle.as_raw_handle().cast(),
@@ -677,7 +774,7 @@ impl WorkspaceRoot {
                 | WRITE_DAC
                 | SYNCHRONIZE,
             FILE_NON_DIRECTORY_FILE,
-            Sharing::Pinned,
+            sharing,
         )?;
         restrict_handle_to_current_user(&handle)?;
         ensure_regular_file_handle(handle.as_raw_handle())?;
@@ -2048,6 +2145,32 @@ fn set_rename_information(
     }
 }
 
+/// Performs one extended, handle-relative replacement without changing the
+/// old file's attributes. Unsupported extended operations fail closed.
+pub(crate) fn replace_readonly_relative(
+    source: &File,
+    destination_parent: &File,
+    name: &str,
+) -> io::Result<()> {
+    let name = durability_component(name)?;
+    set_rename_information(
+        source.as_raw_handle().cast(),
+        destination_parent.as_raw_handle().cast(),
+        &name,
+        FILE_RENAME_INFORMATION_EX_CLASS,
+        FILE_RENAME_REPLACE_IF_EXISTS
+            | FILE_RENAME_POSIX_SEMANTICS
+            | FILE_RENAME_IGNORE_READONLY_ATTRIBUTE,
+    )
+    .map_err(|error| {
+        if extended_class_unsupported(&error) {
+            io::Error::new(io::ErrorKind::Unsupported, error)
+        } else {
+            error
+        }
+    })
+}
+
 /// Replaces `destination` with `source`, both absolute paths to ordinary files, using POSIX
 /// semantics: the destination is unlinked at once even while another handle holds it open (and
 /// even if it carries the read-only attribute), then the source takes its name.
@@ -2983,10 +3106,15 @@ mod adverse_tests;
 #[cfg(windows)]
 #[cfg(test)]
 mod tests {
-    use super::{EntryKind, Sharing, WorkspaceDirectoryCreateFailure, WorkspaceRoot};
+    use super::{
+        DirectoryNode, EntryKind, FILE_DIRECTORY_FILE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+        NewName, SYNCHRONIZE, Sharing, WorkspaceDirectoryCreateFailure, WorkspaceRoot,
+        create_relative,
+    };
     use std::fs;
     use std::io::{self, Read as _, Write as _};
     use std::path::PathBuf;
+    use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn fresh_path(label: &str) -> PathBuf {
@@ -3021,12 +3149,48 @@ mod tests {
         directory
             .remove_created_empty_self()
             .expect("rollback deletes only the held created object");
+        drop(directory);
         assert!(!path.join("original-created-object").exists());
         assert_eq!(
             fs::read(path.join("stage/payload")).expect("replacement survives"),
             b"replacement"
         );
 
+        drop(root);
+        fs::remove_dir_all(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn rollback_reopens_the_held_no_delete_directory_not_its_replacement() {
+        let path = fresh_path("handoff-rollback");
+        let root = WorkspaceRoot::create(&path).expect("create private root");
+        let name = NewName::parse("stage").expect("valid name");
+        let handle = create_relative(
+            root.handle(),
+            name,
+            FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_DIRECTORY_FILE,
+            Sharing::Transient,
+        )
+        .expect("create no-delete handoff handle");
+        let directory = WorkspaceRoot(Arc::new(DirectoryNode {
+            handle,
+            _parent: Some(Arc::clone(&root.0)),
+            name: Some("stage".into()),
+        }));
+        fs::rename(path.join("stage"), path.join("original-created-object"))
+            .expect("move held object");
+        fs::create_dir(path.join("stage")).expect("create replacement");
+        fs::write(path.join("stage/payload"), b"replacement").expect("write replacement");
+        directory
+            .remove_created_empty_self()
+            .expect("delete the held object");
+        drop(directory);
+        assert!(!path.join("original-created-object").exists());
+        assert_eq!(
+            fs::read(path.join("stage/payload")).expect("replacement survives"),
+            b"replacement"
+        );
         drop(root);
         fs::remove_dir_all(path).expect("remove fixture");
     }
