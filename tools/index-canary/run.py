@@ -15,6 +15,24 @@ import tempfile
 import time
 
 
+def object_value(value):
+    if not isinstance(value, dict):
+        raise ValueError("invalid object")
+    return value
+
+
+def list_value(value):
+    if not isinstance(value, list) or len(value) > 1024:
+        raise ValueError("invalid list")
+    return value
+
+
+def identifier(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", value):
+        raise ValueError("invalid identifier")
+    return value
+
+
 def atomic(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix=".canary-", dir=path.parent)
@@ -83,16 +101,23 @@ def run(a):
     durations = []
     error = None
     report = None
+    safe_cases = []
     with tempfile.TemporaryDirectory(prefix="run-", dir=a.work_dir or a.state_dir) as temp:
         evidence = Path(temp) / "evidence"
         try:
-            manifest = json.loads(a.manifest.read_text())
-            expected = {case["id"]: case for case in manifest["cases"]}
-            if len(expected) != len(manifest["cases"]) or not expected:
+            manifest = object_value(json.loads(a.manifest.read_text()))
+            manifest_cases = list_value(manifest["cases"])
+            expected = {identifier(object_value(case)["id"]): case for case in manifest_cases}
+            if len(expected) != len(manifest_cases) or not expected:
                 raise ValueError("empty or duplicate canary cases")
+            for case in manifest_cases:
+                for step in list_value(case["steps"]):
+                    identifier(object_value(step)["id"])
+                    if not isinstance(step.get("kind"), str):
+                        raise ValueError("invalid step kind")
             proc = subprocess.Popen([str(a.runner), "--manifest", str(a.manifest),
                 "--bin-dir", str(a.bin_dir), "--evidence", str(evidence)],
-                start_new_session=True)
+                start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             try:
                 code = proc.wait(timeout=a.timeout)
             except subprocess.TimeoutExpired:
@@ -103,24 +128,36 @@ def run(a):
                 proc.wait()
                 kill_delegated_children()
                 raise RuntimeError("Keel run exceeded deadline")
-            report = json.loads((evidence / "report.json").read_text())
+            report = object_value(json.loads((evidence / "report.json").read_text()))
             if report.get("manifest_sha256") != hashlib.sha256(a.manifest.read_bytes()).hexdigest():
                 raise ValueError("manifest receipt mismatch")
-            release = json.loads(a.release_receipt.read_text())
-            if not re.fullmatch(r"[0-9a-f]{40}", release.get("source_revision", "")):
+            release = object_value(json.loads(a.release_receipt.read_text()))
+            if not isinstance(release.get("source_revision"), str) or not re.fullmatch(r"[0-9a-f]{40}", release["source_revision"]):
                 raise ValueError("invalid release source revision")
+            if (a.bin_dir.parent / "share/nudox/source-revision.txt").read_text().strip() != release["source_revision"]:
+                raise ValueError("runtime revision mismatch")
             for key in ("manifest_sha256", "driver_sha256", "binaries"):
                 if not release.get(key) or release[key] != report.get(key):
                     raise ValueError("release receipt mismatch: " + key)
-            seen = {case["id"]: case for case in report["cases"]}
-            if set(seen) != set(expected) or len(seen) != len(report["cases"]):
+            containment = object_value(report["containment_policy"])
+            if containment.get("required") is not True or containment.get("root") != {"Unix": list(os.fsencode(os.environ["KEEL_CGROUP_ROOT"]))}:
+                raise ValueError("containment mismatch")
+            authority = report.get("authority_environment_sha256")
+            if not isinstance(authority, str) or not re.fullmatch(r"[0-9a-f]{64}", authority):
+                raise ValueError("invalid authority receipt")
+            report_cases = list_value(report["cases"])
+            seen = {identifier(object_value(case)["id"]): case for case in report_cases}
+            if set(seen) != set(expected) or len(seen) != len(report_cases):
                 raise ValueError("incomplete case receipt")
             invalid_cases = []
             for ident, case in expected.items():
                 observed = seen[ident]
-                steps = {step["id"]: step for step in observed["steps"]}
-                if len(steps) != len(observed["steps"]):
+                observed_steps = list_value(observed["steps"])
+                steps = {identifier(object_value(step)["id"]): step for step in observed_steps}
+                if len(steps) != len(observed_steps):
                     raise ValueError("duplicate step receipt")
+                if not isinstance(observed.get("status"), str) or any(not isinstance(s.get("status"), str) for s in steps.values()):
+                    raise ValueError("invalid status")
                 for step in case["steps"]:
                     result = steps.get(step["id"], {})
                     if step["kind"] == "index" and result.get("status") in ("pass", "fail"):
@@ -130,6 +167,7 @@ def run(a):
                         durations.append(duration / 1000)
                 if observed["status"] != "pass" or set(steps) != {s["id"] for s in case["steps"]} or any(s.get("status") != "pass" for s in steps.values()):
                     invalid_cases.append(ident)
+                safe_cases.append({"id": ident, "status": observed["status"] if observed["status"] in ("pass", "fail") else "other", "steps": [{"id": key, "status": value["status"] if value["status"] in ("pass", "fail") else "other"} for key, value in steps.items()]})
             if invalid_cases:
                 raise ValueError("case failed or incomplete: " + ", ".join(invalid_cases))
             success = code == 0 and report.get("status") == "pass" and bool(durations)
@@ -140,29 +178,11 @@ def run(a):
             receipt["source_revision"] = release["source_revision"]
             receipt["success_unix_seconds"] = time.time()
             atomic(a.state_dir / "last-success.json", json.dumps(receipt, sort_keys=True) + "\n")
-        except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError, OverflowError) as exc:
             success = False
-            error = str(exc)
+            error = "io-failure" if isinstance(exc, OSError) else "runtime-failure" if isinstance(exc, RuntimeError) else "invalid-receipt"
     # Keep only fixed receipt fields, not captured output or environment.
     # In particular credentials are never copied into retained evidence.
-    safe_cases = []
-    if isinstance(report, dict):
-        for case in report.get("cases", []):
-            safe_steps = []
-            for step in case.get("steps", []):
-                row = {key: step[key] for key in ("id", "status", "duration_ms") if key in step}
-                if isinstance(step.get("error"), str):
-                    # Keel redacts the private account key before errors leave
-                    # its process boundary. Retain a bounded actionable reason.
-                    row["error"] = step["error"][:2048]
-                detail = step.get("detail")
-                if isinstance(detail, dict):
-                    row["publication"] = {key: detail[key] for key in ("view_root", "profiles") if key in detail}
-                safe_steps.append(row)
-            safe_case = {"id": case.get("id"), "status": case.get("status"), "steps": safe_steps}
-            if isinstance(case.get("error"), str):
-                safe_case["error"] = case["error"][:2048]
-            safe_cases.append(safe_case)
     atomic(a.state_dir / "last-run.json", json.dumps({
         "completed_unix_seconds": time.time(), "success": success,
         "failure": error[:2048] if error else None, "cases": safe_cases,
