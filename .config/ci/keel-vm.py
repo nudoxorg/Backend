@@ -176,8 +176,9 @@ def run(args):
             or not argv[0].endswith("/bin/backend-keel-harness")
             or argv[1:] != ["--manifest", inventory_store, "--bin-dir", str(Path(bundle_store, "bin")), "--evidence", "/var/lib/keel-results/evidence"]
             or verification.get("schema") != 1 or verification.get("kind") != "keel-artifact-verification"
-            or verification.get("source_sha") != args.source_sha or verification.get("gate_exit") != int(code)
-            or verification.get("driver_exit") not in (0, 1)
+            or verification.get("source_sha") != args.source_sha
+            or type(verification.get("gate_exit")) is not int or verification["gate_exit"] != int(code)
+            or type(verification.get("driver_exit")) is not int or verification["driver_exit"] not in (0, 1)
             or verification.get("invocation_sha256") != hashlib.sha256(invocation_bytes).hexdigest()
             or verification.get("report_sha256") != hashlib.sha256(report_bytes).hexdigest()):
         raise ValueError("guest invocation/source/containment/report receipt mismatch")
