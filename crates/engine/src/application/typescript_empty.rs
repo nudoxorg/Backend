@@ -1,4 +1,4 @@
-//! Bounded compiler-owned proof for a single empty configured native TS program.
+//! Bounded compiler-owned proof for a single empty native TS program.
 //!
 //! This private evidence is not an inventory-completeness claim. The owner
 //! must separately bind the exact prior project and selected publication, and
@@ -17,7 +17,9 @@ use std::{
 };
 
 /// A freshly admitted native TS program with no authored or external source
-/// members, under one exact project configuration. It grants no mutation.
+/// members, under one exact project configuration or an empty inferred root set.
+/// Inferred roots are supplied by the caller; this witness does not prove source
+/// discovery was complete and grants no mutation.
 #[derive(Debug)]
 pub struct EmptyNativeTypeScriptProgram {
     root: PathBuf,
@@ -64,13 +66,15 @@ impl EmptyNativeTypeScriptProgram {
             .iter()
             .filter(|config| config.project_candidate)
             .collect();
-        if selected.len() != 1
-            || selected[0].path.as_ref() != root.join("tsconfig.json")
-            || !selected[0].references.is_empty()
-            || inputs.selected_build_config_paths.len() > 1
-        {
+        let configured = selected.len() == 1
+            && selected[0].path.as_ref() == root.join("tsconfig.json")
+            && selected[0].references.is_empty()
+            && inputs.selected_build_config_paths.len() <= 1;
+        let inferred = inputs.config_candidates.is_empty()
+            && inputs.selected_build_config_paths.is_empty();
+        if !configured && !inferred {
             return Err(
-                "empty native program requires exactly one root tsconfig without references".into(),
+                "empty native program requires no config or exactly one root tsconfig without references".into(),
             );
         }
         let mut resolver = inputs.resolver();
@@ -85,7 +89,7 @@ impl EmptyNativeTypeScriptProgram {
                 .iter()
                 .any(|diagnostic| !matches!(diagnostic.code, 18002 | 18003))
         {
-            return Err("native program is not a successful empty configured scope".into());
+            return Err("native program is not a successful empty scope".into());
         }
         let closure = TypeScriptForestClosureWitness(vec![program.closure_witness]);
         let owned_root = root.to_owned();

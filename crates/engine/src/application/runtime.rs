@@ -3811,7 +3811,8 @@ impl Clone for LocalCompilerClient {
 }
 
 impl LocalCompilerClient {
-    /// Capture one bounded, native-authority empty configured TypeScript program.
+    /// Capture one bounded, native-authority empty TypeScript program.
+    /// Inferred roots are empty; the caller must separately prove complete discovery.
     /// This witness does not grant source retirement and must be revalidated at grant.
     pub fn capture_empty_native_typescript_program(
         &self, root: &Path, cancelled: Arc<AtomicBool>,
