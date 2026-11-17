@@ -11,6 +11,7 @@ pub use builtin::search_benchmark;
 pub mod cluster_owner;
 /// Owner-managed exact trust policy for remote compiler peers.
 pub mod compiler_trust;
+mod dependency_metrics;
 mod discovery;
 mod embedded;
 pub mod listener;

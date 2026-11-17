@@ -32,6 +32,9 @@ pub enum Handled {
 
 /// A process-owned adapter around the one durable engine owner.
 pub trait OwnerService {
+    /// Returns initialized owner dependency measurements, if available.
+    fn dependency_metrics(&self) -> Option<backend_client::dependency_metrics::Snapshot> { None }
+
     /// Handles one CLI/MCP/library command body. The body is still a wire
     /// claim; implementations must decode it against owner-supplied expected
     /// values before returning a typed reply encoding.
@@ -210,6 +213,10 @@ impl<O: OwnerService> LocaldService<O> {
         if self.closed {
             return Err(ProtocolError::Closed);
         }
+        if payload == backend_client::dependency_metrics::REQUEST {
+            return serde_json::to_vec(&self.owner.dependency_metrics())
+                .map_err(|_| ProtocolError::InvalidControl("metrics serialization failed"));
+        }
         let request = match decode_request(payload, self.limits) {
             Ok(request) => request,
             Err(error) => {
@@ -264,6 +271,9 @@ impl<O: OwnerService> LocaldService<O> {
     ) -> Result<Handled, ProtocolError> {
         if self.closed {
             return Err(ProtocolError::Closed);
+        }
+        if payload == backend_client::dependency_metrics::REQUEST {
+            return self.handle_payload(payload).map(Handled::Reply);
         }
         match decode_request(payload, self.limits) {
             Ok(RequestFrame::Command(body)) => match self.owner.command_or_defer(&body, ticket)? {

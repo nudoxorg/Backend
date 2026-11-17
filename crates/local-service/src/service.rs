@@ -144,6 +144,7 @@ pub struct LocaldOwner<
     owner_lane_schedule: OwnerLaneSchedule,
     leases: LeaseTable,
     deferred: Option<Box<dyn DeferredCommands<M, V, A> + Send>>,
+    dependency_metrics: Option<crate::dependency_metrics::Metrics>,
 }
 
 #[path = "service/admission.rs"]
@@ -193,6 +194,11 @@ where
         deferred: Box<dyn DeferredCommands<M, V, A> + Send>,
     ) -> Self {
         self.deferred = Some(deferred);
+        self
+    }
+
+    pub(crate) fn with_dependency_metrics(mut self, metrics: crate::dependency_metrics::Metrics) -> Self {
+        self.dependency_metrics = Some(metrics);
         self
     }
 
@@ -251,6 +257,7 @@ where
             owner_lane_schedule: OwnerLaneSchedule::default(),
             leases: LeaseTable::default(),
             deferred: None,
+            dependency_metrics: None,
         }
     }
 }
@@ -274,6 +281,7 @@ where
             owner_lane_schedule: OwnerLaneSchedule::default(),
             leases: LeaseTable::default(),
             deferred: None,
+            dependency_metrics: None,
         }
     }
 
@@ -295,6 +303,7 @@ where
             owner_lane_schedule: OwnerLaneSchedule::default(),
             leases: LeaseTable::default(),
             deferred: None,
+            dependency_metrics: None,
         }
     }
 
@@ -319,6 +328,7 @@ where
             owner_lane_schedule: OwnerLaneSchedule::default(),
             leases: LeaseTable::default(),
             deferred: None,
+            dependency_metrics: None,
         }
     }
 
@@ -346,6 +356,10 @@ where
     R: ReplicationAdmission<M, V, A>,
     S: SemanticRangeAdmission,
 {
+    fn dependency_metrics(&self) -> Option<backend_client::dependency_metrics::Snapshot> {
+        self.dependency_metrics.as_ref().map(crate::dependency_metrics::Metrics::snapshot)
+    }
+
     fn command(&mut self, body: &[u8]) -> Result<Vec<u8>, ProtocolError> {
         (self.command)(&mut self.daemon, body)
             .map_err(|error| ProtocolError::CommandExecution(error.to_string()))
