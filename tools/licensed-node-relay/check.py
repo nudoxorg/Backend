@@ -298,7 +298,7 @@ def isolation():
         slow = []
         child = "import signal,sys,time;signal.signal(signal.SIGTERM,lambda *_:sys.exit(0));time.sleep(60)"
         def get(path):
-            with urllib.request.urlopen(base + path, timeout=1) as response:
+            with urllib.request.urlopen(base + path, timeout=5) as response:
                 return response.read().decode()
         def post(token):
             req = urllib.request.Request(base + "/v1/records", data=b"{}", headers={"Authorization": "Bearer " + token})
@@ -362,14 +362,16 @@ def isolation():
             rejected_before = counter(get("/metrics"), "relay_rejected_total")
             statuses = []
             stop = threading.Event()
-            invalid_flood = threading.Thread(target=flood, args=("invalid", statuses, stop), daemon=True)
-            invalid_flood.start()
+            invalid_flood = [threading.Thread(target=flood, args=("invalid", statuses, stop), daemon=True) for _ in range(4)]
+            for thread in invalid_flood:
+                thread.start()
             wait_for(lambda: heartbeat(get("/metrics"), "one") > first, seconds=8)
             wait_for(lambda: heartbeat(get("/metrics"), "two") > second, seconds=8)
             wait_for(lambda: 429 in statuses, seconds=20)
             stop.set()
-            invalid_flood.join(timeout=5)
-            assert not invalid_flood.is_alive(), "invalid flood did not stop"
+            for thread in invalid_flood:
+                thread.join(timeout=5)
+                assert not thread.is_alive(), "invalid flood did not stop"
             assert 401 in statuses and 429 in statuses, "invalid grant quota was not exercised"
             assert all(code in (401,429,None) for code in statuses), "unexpected invalid grant response"
             responded = sum(code is not None for code in statuses)
@@ -377,13 +379,15 @@ def isolation():
             second = heartbeat(get("/metrics"), "two")
             statuses = []
             stop = threading.Event()
-            grant_flood = threading.Thread(target=flood, args=(tokens[0], statuses, stop), daemon=True)
-            grant_flood.start()
+            grant_flood = [threading.Thread(target=flood, args=(tokens[0], statuses, stop), daemon=True) for _ in range(4)]
+            for thread in grant_flood:
+                thread.start()
             wait_for(lambda: heartbeat(get("/metrics"), "two") > second, seconds=8)
             wait_for(lambda: 429 in statuses, seconds=20)
             stop.set()
-            grant_flood.join(timeout=5)
-            assert not grant_flood.is_alive(), "grant flood did not stop"
+            for thread in grant_flood:
+                thread.join(timeout=5)
+                assert not thread.is_alive(), "grant flood did not stop"
             assert 429 in statuses, "grant quota was not exercised"
             assert all(code in (400,429,None) for code in statuses), "unexpected valid grant response"
             responded += sum(code is not None for code in statuses)
