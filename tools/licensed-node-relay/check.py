@@ -41,16 +41,23 @@ def main():
         (root / "token").write_text(token, encoding="ascii")
         (root / "token").chmod(0o600)
         now = int(time.time())
-        grant = {"tenant": "test", "node": "process", "token_sha256": hashlib.sha256(token.encode()).hexdigest(), "scope": "telemetry:write", "not_before": now - 60, "expires_at": now + 3600, "revoked": False}
+        grant = {"tenant": "test", "node": "process", "token_sha256": hashlib.sha256(token.encode()).hexdigest(), "activation_id": os.urandom(16).hex(), "scope": "telemetry:write", "not_before": now - 60, "expires_at": now + 3600, "revoked": False}
         registry = root / "registry"
 
-        def write_grant(value):
+        def write_grants(values):
             staging = root / "grant.new"
-            staging.write_text(json.dumps([value]), encoding="utf-8")
+            staging.write_text(json.dumps(values), encoding="utf-8")
             staging.chmod(0o600)
             os.replace(staging, registry)
 
-        write_grant(grant)
+        def write_grant(value):
+            write_grants([value])
+
+        expired_token, future_token = os.urandom(32).hex(), os.urandom(32).hex()
+        expired = {**grant, "node":"expired", "token_sha256":hashlib.sha256(expired_token.encode()).hexdigest(), "activation_id":os.urandom(16).hex(), "not_before":now-600, "expires_at":now-1}
+        future = {**grant, "node":"future", "token_sha256":hashlib.sha256(future_token.encode()).hexdigest(), "activation_id":os.urandom(16).hex(), "not_before":now+60}
+        initial = [grant, expired, future]
+        write_grants(initial)
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
@@ -72,7 +79,7 @@ def main():
             return int(next(line.split()[-1] for line in body.splitlines() if line.startswith(name + " ")))
 
         child = "import signal,sys,time;signal.signal(signal.SIGTERM,lambda *_:sys.exit(0));time.sleep(60)"
-        sender = subprocess.Popen([sys.executable, str(HERE / "sender.py"), base, str(root / "token"), str(root / "sender"), "--interval-seconds", "1", "--spool-capacity", "1", "--", sys.executable, "-c", child])
+        sender = subprocess.Popen([sys.executable, str(HERE / "sender.py"), base, str(root / "token"), str(root / "sender"), "--grant-activation", grant["activation_id"], "--interval-seconds", "1", "--spool-capacity", "1", "--", sys.executable, "-c", child])
         relay = None
         group_mode = False
 
@@ -101,6 +108,11 @@ def main():
                 exact = db.execute("SELECT body FROM queue ORDER BY seq LIMIT 1").fetchone()[0]
             relay = start_relay()
             assert request("/ready")[0] == 200
+            with socket.socket() as other:
+                other.bind(("127.0.0.1", 0))
+                second_port = other.getsockname()[1]
+            competing = subprocess.run([sys.executable, str(HERE / "relay.py"), str(registry), str(root / "relay" / "state.sqlite"), str(second_port)], capture_output=True, timeout=5)
+            assert competing.returncode != 0 and request("/ready")[0] == 200
             assert request("/v1/records", exact)[0] == 202
             assert request("/v1/records", exact)[0] == 200
             relay.terminate()
@@ -121,7 +133,7 @@ def main():
             # goodbye. The later heartbeat must supersede the earlier goodbye.
             pid_file = root / "child.pid"
             crashing_child = "import os,time;open(" + repr(str(pid_file)) + ", 'w').write(str(os.getpid()));time.sleep(60)"
-            sender = subprocess.Popen([sys.executable, str(HERE / "sender.py"), base, str(root / "token"), str(root / "sender"), "--", sys.executable, "-c", crashing_child])
+            sender = subprocess.Popen([sys.executable, str(HERE / "sender.py"), base, str(root / "token"), str(root / "sender"), "--grant-activation", grant["activation_id"], "--", sys.executable, "-c", crashing_child])
             wait_for(lambda: pid_file.exists())
             def newer_heartbeat():
                 body = metrics()
@@ -148,7 +160,7 @@ def main():
                 "time.sleep(60)\n"
             )
             group_mode = True
-            sender = subprocess.Popen([sys.executable, str(HERE / "sender.py"), base, str(root / "token"), str(root / "sender"), "--signal-mode", "cgroup", "--", sys.executable, "-c", group_child], start_new_session=True)
+            sender = subprocess.Popen([sys.executable, str(HERE / "sender.py"), base, str(root / "token"), str(root / "sender"), "--grant-activation", grant["activation_id"], "--signal-mode", "cgroup", "--", sys.executable, "-c", group_child], start_new_session=True)
             wait_for(lambda: group_pid.exists())
             os.killpg(sender.pid, signal.SIGTERM)
             assert sender.wait(timeout=10) == 0
@@ -157,23 +169,30 @@ def main():
             assert request("/v1/records", b"{}", bearer="invalid")[0] == 401
             assert request("/v1/records", b"{}")[0] == 400
             assert request("/v1/records", b"x" * 1025)[0] == 413
-            stale = json.dumps({"seq": 2**40, "kind": "heartbeat", "created_at": now - 600}).encode()
+            stale = json.dumps({"seq": 2**40, "kind": "heartbeat", "created_at": now - 600, "activation_id": grant["activation_id"]}).encode()
             assert request("/v1/records", stale)[0] == 409
-            write_grant({**grant, "revoked": True})
-            assert request("/v1/records", exact)[0] == 401
-            write_grant({**grant, "expires_at": int(time.time()) - 1})
-            assert request("/v1/records", exact)[0] == 401
-            write_grant({**grant, "not_before": int(time.time()) + 60})
-            assert request("/v1/records", exact)[0] == 401
-            write_grant(grant)
+            assert request("/v1/records", exact, bearer=expired_token)[0] == 401
+            assert request("/v1/records", exact, bearer=future_token)[0] == 401
             before = counter(metrics(), "relay_rejected_total")
+            # A live file rewrite does not change this immutable snapshot.
             registry.write_text("{", encoding="utf-8")
-            assert request("/v1/records", exact)[0] == 503
-            write_grant(grant)
-            assert counter(metrics(), "relay_rejected_total") == before
+            assert request("/ready")[0] == 200
             relay.terminate()
             relay.wait(timeout=5)
             relay = start_relay()
+            assert request("/v1/records", exact)[0] == 503
+            relay.terminate()
+            relay.wait(timeout=5)
+            write_grants(initial)
+            relay = start_relay()
+            assert counter(metrics(), "relay_rejected_total") == before
+            assert request("/ready")[0] == 200
+            # Revocation is authoritative after service restart.
+            relay.terminate()
+            relay.wait(timeout=5)
+            write_grants([{**grant, "revoked": True}, expired, future])
+            relay = start_relay()
+            assert request("/v1/records", exact)[0] == 401
             # After an orderly stop during an outage, a separate timer process
             # must deliver the actual queued goodbye without starting a node.
             relay.terminate()
@@ -183,11 +202,11 @@ def main():
             (root / "token2").write_text(token2, encoding="ascii")
             (root / "token2").chmod(0o600)
             (root / "drain-state").mkdir(mode=0o700)
-            grant2 = {**grant, "node": "drain", "token_sha256": hashlib.sha256(token2.encode()).hexdigest()}
+            grant2 = {**grant, "node": "drain", "token_sha256": hashlib.sha256(token2.encode()).hexdigest(), "activation_id": os.urandom(16).hex()}
             write_grant(grant2)
             pid_file = root / "drain-child.pid"
             draining_child = "import os,signal,sys,time;signal.signal(signal.SIGTERM,lambda *_:sys.exit(0));open(" + repr(str(pid_file)) + ",'w').write(str(os.getpid()));time.sleep(60)"
-            drain_base = [sys.executable, str(HERE / "sender.py"), base, str(root / "token2"), str(root / "drain-state")]
+            drain_base = [sys.executable, str(HERE / "sender.py"), base, str(root / "token2"), str(root / "drain-state"), "--grant-activation", grant2["activation_id"]]
             sender = subprocess.Popen(drain_base + ["--", sys.executable, "-c", draining_child])
             wait_for(lambda: pid_file.exists())
             assert subprocess.run(drain_base + ["--drain-only", "true", "--"], timeout=10).returncode == 75
@@ -207,10 +226,11 @@ def main():
             (root / "token3").write_text(token3, encoding="ascii")
             (root / "token3").chmod(0o600)
             (root / "killed-state").mkdir(mode=0o700)
-            write_grant({**grant, "node": "killed", "token_sha256": hashlib.sha256(token3.encode()).hexdigest()})
+            grant3 = {**grant, "node": "killed", "token_sha256": hashlib.sha256(token3.encode()).hexdigest(), "activation_id": os.urandom(16).hex()}
+            write_grant(grant3)
             pid_file = root / "killed-child.pid"
             killed_child = "import os,time;open(" + repr(str(pid_file)) + ",'w').write(str(os.getpid()));time.sleep(60)"
-            kill_base = [sys.executable, str(HERE / "sender.py"), base, str(root / "token3"), str(root / "killed-state")]
+            kill_base = [sys.executable, str(HERE / "sender.py"), base, str(root / "token3"), str(root / "killed-state"), "--grant-activation", grant3["activation_id"]]
             sender = subprocess.Popen(kill_base + ["--", sys.executable, "-c", killed_child])
             wait_for(lambda: pid_file.exists())
             def pending_heartbeat():
@@ -260,7 +280,7 @@ def isolation():
             path = root / ("token" + str(i))
             path.write_text(tokens[i], encoding="ascii")
             path.chmod(0o600)
-            grants.append({"tenant": "test", "node": node, "token_sha256": hashlib.sha256(tokens[i].encode()).hexdigest(), "scope": "telemetry:write", "not_before": now - 600, "expires_at": now + 3600, "revoked": False})
+            grants.append({"tenant": "test", "node": node, "token_sha256": hashlib.sha256(tokens[i].encode()).hexdigest(), "activation_id": os.urandom(16).hex(), "scope": "telemetry:write", "not_before": now - 600, "expires_at": now + 3600, "revoked": False})
         registry = root / "registry"
         registry.write_text(json.dumps(grants), encoding="utf-8")
         registry.chmod(0o600)
@@ -291,7 +311,7 @@ def isolation():
         try:
             wait_for(lambda: get("/ready"))
             def start(i):
-                senders.append(subprocess.Popen([sys.executable, str(HERE / "sender.py"), base, str(root / ("token" + str(i))), str(root / ("one" if i == 0 else "two")), "--interval-seconds", "1", "--", sys.executable, "-c", child]))
+                senders.append(subprocess.Popen([sys.executable, str(HERE / "sender.py"), base, str(root / ("token" + str(i))), str(root / ("one" if i == 0 else "two")), "--grant-activation", grants[i]["activation_id"], "--interval-seconds", "1", "--", sys.executable, "-c", child]))
             start(0)
             first = wait_for(lambda: heartbeat(get("/metrics"), "one"))
             body = get("/metrics")

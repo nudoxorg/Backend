@@ -21,14 +21,14 @@ MAX_AGE = 110
 def main():
     args = sys.argv[1:]
     if "--" not in args:
-        sys.exit("usage: sender.py URL TOKEN_FILE STATE_DIR [--interval-seconds N] [--spool-capacity N] [--observe-unit UNIT --systemctl ABSOLUTE_PATH] [--signal-mode forward|cgroup] [--drain-only true] -- [COMMAND [ARGS...]]")
+        sys.exit("usage: sender.py URL TOKEN_FILE STATE_DIR --grant-activation HEX [--interval-seconds N] [--spool-capacity N] [--observe-unit UNIT --systemctl ABSOLUTE_PATH] [--signal-mode forward|cgroup] [--drain-only true] -- [COMMAND [ARGS...]]")
     separator = args.index("--")
     options, command = args[:separator], args[separator + 1:]
     if len(options) < 3 or (len(options) - 3) % 2:
         sys.exit("invalid sender arguments")
     url_arg, token_path, state_path = options[:3]
     interval, capacity, signal_mode, drain_only = 60.0, CAPACITY, "forward", False
-    observe_unit, systemctl = None, None
+    observe_unit, systemctl, grant_activation = None, None, None
     seen = set()
     for name, value in zip(options[3::2], options[4::2]):
         if name in seen:
@@ -39,17 +39,18 @@ def main():
             elif name == "--spool-capacity": capacity = int(value)
             elif name == "--signal-mode": signal_mode = value
             elif name == "--observe-unit": observe_unit = value
+            elif name == "--grant-activation": grant_activation = value
             elif name == "--systemctl": systemctl = value
             elif name == "--drain-only" and value == "true": drain_only = True
             else: sys.exit("unknown sender option")
         except ValueError:
             sys.exit("invalid sender option")
-    if not 1.0 <= interval <= 60.0 or not 1 <= capacity <= CAPACITY or signal_mode not in ("forward", "cgroup") or (drain_only and command) or (observe_unit is not None and (command or systemctl is None)) or (observe_unit is None and not drain_only and not command) or (systemctl is not None and (observe_unit is None or not os.path.isabs(systemctl))) or (observe_unit is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.@-]{0,99}\.service", observe_unit)):
+    if not 1.0 <= interval <= 60.0 or not 1 <= capacity <= CAPACITY or signal_mode not in ("forward", "cgroup") or grant_activation is None or not re.fullmatch(r"[0-9a-f]{32}", grant_activation) or (drain_only and command) or (observe_unit is not None and (command or systemctl is None)) or (observe_unit is None and not drain_only and not command) or (systemctl is not None and (observe_unit is None or not os.path.isabs(systemctl))) or (observe_unit is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.@-]{0,99}\.service", observe_unit)):
         sys.exit("sender options out of bounds")
     url = urlsplit(url_arg)
     if url.scheme != "http" or url.hostname != "127.0.0.1" or not url.port or url.path not in ("", "/") or url.username or url.password or url.query or url.fragment:
         sys.exit("relay must be an explicit loopback HTTP URL")
-    fd = os.open(token_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    fd = os.open(token_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     with os.fdopen(fd, "rb") as f:
         st = os.fstat(f.fileno())
         if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o077:
@@ -146,7 +147,7 @@ def main():
                 return False
             seq = db.execute("UPDATE meta SET seq=seq+1 WHERE id=1 RETURNING seq").fetchone()[0]
             now = int(time.time())
-            value = {"seq":seq,"kind":kind,"created_at":now}
+            value = {"seq":seq,"kind":kind,"created_at":now,"activation_id":grant_activation}
             if kind == "diag": value["dropped"] = dropped
             body = json.dumps(value, separators=(",", ":")).encode()
             db.execute("INSERT INTO queue(seq,created,body,generation) VALUES(?,?,?,?)", (seq,now,body,generation))
@@ -163,16 +164,15 @@ def main():
                 enqueue("diag", min(lost, 2**31-1))
             return
         seq, created, body, generation = row
-        if time.time() - created > MAX_AGE:
-            # An unreceived record cannot be replayed as current liveness. Preserve
-            # its actual loss, including any loss counted by an expired diagnostic.
-            record = json.loads(body)
+        record = json.loads(body)
+        if time.time() - created > MAX_AGE or record.get("activation_id") != grant_activation:
+            # Never relabel an earlier or unbound activation. Preserve actual
+            # abandonment, including loss counted by an older diagnostic.
             lost = record.get("dropped", 1)
             with db:
                 db.execute("DELETE FROM queue WHERE seq=?", (seq,))
                 db.execute("UPDATE meta SET lost=lost+? WHERE id=1", (lost,))
             return
-        record = json.loads(body)
         if record["kind"] in ("heartbeat", "goodbye") and (generation or observe_unit):
             # Observer-tagged lifecycle records require a fresh manager sample.
             # Never send them from an unconfigured drain or during uncertainty.

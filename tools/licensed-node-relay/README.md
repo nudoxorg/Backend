@@ -10,28 +10,45 @@ The relay binds only to 127.0.0.1. Its private JSON grant registry is an array
 of at most 128 objects with exactly these fields:
 
 ```json
-{"tenant":"nudoxorg","node":"dogfood-node","token_sha256":"<lowercase SHA-256 of a random bearer token>","scope":"telemetry:write","not_before":0,"expires_at":1800000000,"revoked":false}
+{"tenant":"nudoxorg","node":"dogfood-node","token_sha256":"<lowercase SHA-256 of a random bearer token>","activation_id":"<unique 32 lowercase hex digits>","scope":"telemetry:write","not_before":0,"expires_at":1800000000,"revoked":false}
 ```
 
 The example is a shape, not a usable grant. `not_before` is also the
 operator's expected-since baseline for per-grant missing-heartbeat alerts;
 it is not emitted as a heartbeat. Set it to the time the operator expects the
-node to start sending. Advance it when reactivating a retired node, so an
-older goodbye cannot suppress the new activation. Tenant and node are fixed
+node to start sending. Every activation also has a unique random 128-bit
+`activation_id` and a unique random bearer token. Reactivation requires a
+strictly later `not_before` that also exceeds every prior relay-received
+heartbeat and goodbye, a new activation ID and a new token; neither ID nor
+token may be reused. An activation's validity timestamps are immutable.
+For rotation, stop the old relay first, choose a new baseline strictly after
+its last accepted receipt (typically a near-future whole second), then install
+the new registry and sender credentials and restart. Preserve the sender's
+sequence state across the rotation; resetting or replacing it needs an
+explicitly reviewed sequence migration. A backdated baseline fails closed
+instead of allowing scrape-cache samples from the prior activation. Tenant and node are fixed
 operator-provisioned label values, unique in the registry, with 1–48 ASCII
 letters, numbers, hyphens, or underscores. Tokens must be unique random secrets;
 the sender accepts 32–256 ASCII alphanumeric characters. The timestamps are
 integer Unix seconds and the validity interval is `[not_before, expires_at)`.
 Expired, not-yet-valid, revoked, unknown and invalid grants cannot ingest.
-The registry is read and validated on each ingest, including retries. An
-empty registry is valid but makes ingestion not ready. An invalid or unreadable
-registry fails closed. Update a mutable registry by atomic replacement. A
-systemd `LoadCredential` snapshot requires a relay restart to apply revocation
-or rotation. Provisioning and revocation are operator responsibilities.
+The relay holds an exclusive state lock and takes one immutable registry
+snapshot at startup and validates every
+ingest against it, including retries. Revocation or rotation requires a relay
+restart with a new `LoadCredential` snapshot. An empty registry is valid but
+makes ingestion not ready. An invalid or unreadable registry fails closed.
+Durable history forbids activation ID or token reuse and limits the registry
+to 128 historical node identities and 64 activations per identity. Exhaustion
+requires an explicitly reviewed state migration. Provisioning and revocation
+are operator responsibilities.
 
 `relay.py GRANT_REGISTRY STATE_DB PORT` exposes `/health`, `/ready`, `/metrics`,
 and authenticated `POST /v1/records`. It retains the node's receipt sequence,
-last payload fingerprint, liveness values, and counters in durable SQLite.
+last payload fingerprint, activation identity, liveness values, and counters
+in durable SQLite. Every queued record carries its original operator-provisioned
+activation ID; the relay checks it against the authenticated snapshot before
+accepting. Old or unbound queued records are abandoned and counted, never
+relabeled. Metrics for prior activations are omitted even if retained in state.
 The latest identical retry is acknowledged without changing counters or
 liveness; older sequences and records outside the 120-second window are
 rejected. All heartbeat and goodbye values are relay receipt times, never the
@@ -43,7 +60,7 @@ state only with a documented retention and replay policy.
 The production topology runs locald directly as its systemd unit's MainPID,
 independently of telemetry. Run a separate service as the same OS user:
 
-`sender.py http://127.0.0.1:PORT TOKEN_FILE STATE_DIR --observe-unit backend-owner.service --systemctl /absolute/path/to/systemctl --`
+`sender.py http://127.0.0.1:PORT TOKEN_FILE STATE_DIR --grant-activation ID --observe-unit backend-owner.service --systemctl /absolute/path/to/systemctl --`
 
 The observer reads systemd manager state and never starts, signals, or owns
 the node. It stores the boot ID, manager start timestamp and MainPID as a
@@ -63,7 +80,7 @@ An observer-to-manager sample can still race an immediately subsequent owner
 transition; this is bounded observation, not atomic systemd/relay coordination. The exact systemd lifecycle and observer-isolation behavior must be
 proved in the NixOS VM before deployment.
 
-The existing command-supervisor mode, `sender.py URL TOKEN_FILE STATE_DIR --
+The existing command-supervisor mode, `sender.py URL TOKEN_FILE STATE_DIR --grant-activation ID --
 COMMAND [ARGS...]`, is retained for local process checks only. Under systemd
 `KillMode=control-group`, it requires `--signal-mode cgroup` to avoid forwarding
 the manager's signal twice; it is not the production owner topology because a
@@ -89,7 +106,7 @@ exclusive to their relay or node. Do not copy or reset sender sequence state
 without a matching identity/replay migration. Neither data path logs tokens.
 
 When the node is stopped, an independent systemd timer must invoke
-`sender.py URL TOKEN_FILE STATE_DIR --drain-only true --observe-unit backend-owner.service --systemctl /absolute/path/to/systemctl --` to retry pending
+`sender.py URL TOKEN_FILE STATE_DIR --grant-activation ID --drain-only true --observe-unit backend-owner.service --systemctl /absolute/path/to/systemctl --` to retry pending
 records. Drain mode does not start a child or generate heartbeats or goodbyes;
 it uses the same exclusive state lock as the live sender, rechecks the manager
 before delivering a queued observer goodbye, and exits 75 if the

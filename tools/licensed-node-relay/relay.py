@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Loopback-only dogfood telemetry relay. See README.md for the contract."""
 import hashlib
+import fcntl
 import collections
 import hmac
 import http.client
@@ -19,6 +20,7 @@ from pathlib import Path
 
 MAX_BODY = 1024
 MAX_IDENTITIES = 128
+MAX_ACTIVATIONS_PER_NODE = 64
 MAX_SKEW = 120
 MAX_WORKERS = 16
 REQUEST_DEADLINE = 3.0
@@ -27,6 +29,7 @@ http.client._MAXLINE = 8192
 http.client._MAXHEADERS = 32
 LABEL = re.compile(r"^[a-zA-Z0-9_-]{1,48}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
+ACTIVATION = re.compile(r"^[0-9a-f]{32}$")
 
 
 def unique_object(pairs):
@@ -39,9 +42,9 @@ def unique_object(pairs):
 
 
 def load_identities(path):
-    # Read a bounded, private operator registry afresh on each use. Atomic
-    # replacement is supported; a systemd credential snapshot needs a restart.
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    # The operator registry is snapshotted once at process startup.
+    # Every ingest checks the same immutable snapshot; rotation needs restart.
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     fd = os.open(path, flags)
     with os.fdopen(fd, "rb") as f:
         st = os.fstat(f.fileno())
@@ -56,19 +59,21 @@ def load_identities(path):
     identities = []
     labels = set()
     hashes = set()
+    activations = set()
     for item in data:
-        if not isinstance(item, dict) or set(item) != {"tenant", "node", "token_sha256", "scope", "not_before", "expires_at", "revoked"}:
+        if not isinstance(item, dict) or set(item) != {"tenant", "node", "token_sha256", "activation_id", "scope", "not_before", "expires_at", "revoked"}:
             raise ValueError("invalid grant")
-        tenant, node, digest = item["tenant"], item["node"], item["token_sha256"]
-        if not all(isinstance(v, str) for v in (tenant, node, digest)) or not LABEL.fullmatch(tenant) or not LABEL.fullmatch(node) or not DIGEST.fullmatch(digest):
+        tenant, node, digest, activation = item["tenant"], item["node"], item["token_sha256"], item["activation_id"]
+        if not all(isinstance(v, str) for v in (tenant, node, digest, activation)) or not LABEL.fullmatch(tenant) or not LABEL.fullmatch(node) or not DIGEST.fullmatch(digest) or not ACTIVATION.fullmatch(activation):
             raise ValueError("invalid grant values")
         if item["scope"] != "telemetry:write" or type(item["not_before"]) is not int or type(item["expires_at"]) is not int or not 0 <= item["not_before"] < item["expires_at"] <= 2**63-1 or type(item["revoked"]) is not bool:
             raise ValueError("invalid grant policy")
-        if (tenant, node) in labels or digest in hashes:
+        if (tenant, node) in labels or digest in hashes or activation in activations:
             raise ValueError("duplicate grant")
         labels.add((tenant, node))
         hashes.add(digest)
-        identities.append((tenant, node, digest, item["not_before"], item["expires_at"], item["revoked"]))
+        activations.add(activation)
+        identities.append((tenant, node, digest, activation, item["not_before"], item["expires_at"], item["revoked"]))
     return identities
 
 
@@ -76,24 +81,30 @@ class RegistryError(Exception):
     """Operator registry is unavailable or malformed; fail closed as 503."""
 
 
-def active_grants(path, now):
-    try:
-        grants = load_identities(path)
-    except (OSError, ValueError, UnicodeError, RecursionError) as error:
-        raise RegistryError from error
-    return [(tenant, node, digest, start) for tenant, node, digest, start, end, revoked in grants if not revoked and start <= now < end]
+def active_grants(snapshot, now):
+    if snapshot is None:
+        raise RegistryError("registry snapshot unavailable")
+    return [(tenant, node, digest, activation, start) for tenant, node, digest, activation, start, end, revoked in snapshot if not revoked and start <= now < end]
 
 
 class Relay(socketserver.ThreadingMixIn, HTTPServer):
     daemon_threads = True
     request_queue_size = 32
     def __init__(self, state, registry, port):
-        self.registry = registry
+        try:
+            snapshot = load_identities(registry)
+        except (OSError, ValueError, UnicodeError, RecursionError):
+            snapshot = None
         self.workers = threading.BoundedSemaphore(MAX_WORKERS)
         self.db_lock = threading.RLock()
         self.quota_lock = threading.Lock()
         self.quotas = collections.OrderedDict()
         os.umask(0o077)
+        self.state_lock = open(str(state) + ".lock", "a+")
+        try:
+            fcntl.flock(self.state_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError("relay state is already in use")
         self.db = sqlite3.connect(state, check_same_thread=False)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
@@ -102,12 +113,55 @@ class Relay(socketserver.ThreadingMixIn, HTTPServer):
             seq INTEGER NOT NULL, digest TEXT NOT NULL, heartbeat REAL, goodbye REAL,
             PRIMARY KEY(tenant,node));
           CREATE TABLE IF NOT EXISTS counters(kind TEXT PRIMARY KEY, n INTEGER NOT NULL);
+          CREATE TABLE IF NOT EXISTS grant_history(tenant TEXT NOT NULL, node TEXT NOT NULL,
+            activation TEXT NOT NULL UNIQUE, token_digest TEXT NOT NULL UNIQUE,
+            PRIMARY KEY(tenant,node,activation));
+          CREATE TABLE IF NOT EXISTS grant_current(tenant TEXT NOT NULL, node TEXT NOT NULL,
+            activation TEXT NOT NULL, token_digest TEXT NOT NULL, not_before INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL, revoked INTEGER NOT NULL, present INTEGER NOT NULL,
+            PRIMARY KEY(tenant,node));
           CREATE TABLE IF NOT EXISTS ready_check(id INTEGER PRIMARY KEY, n INTEGER NOT NULL);
           INSERT OR IGNORE INTO ready_check VALUES(1,0);
           CREATE TABLE IF NOT EXISTS wall_clock(id INTEGER PRIMARY KEY, latest REAL NOT NULL);
           INSERT OR IGNORE INTO wall_clock VALUES(1,0);
         """)
+        if "activation" not in {row[1] for row in self.db.execute("PRAGMA table_info(node)")}:
+            self.db.execute("ALTER TABLE node ADD COLUMN activation TEXT NOT NULL DEFAULT ''")
         self.db.commit()
+        self.registry = None
+        if snapshot is not None:
+            try:
+                with self.db:
+                    old = {(r[0],r[1]):r[2:] for r in self.db.execute("SELECT tenant,node,activation,token_digest,not_before,expires_at,revoked,present FROM grant_current")}
+                    self.db.execute("UPDATE grant_current SET present=0")
+                    for tenant,node,digest,activation,start,end,revoked in snapshot:
+                        previous = old.get((tenant,node))
+                        if previous is None and len(old) >= MAX_IDENTITIES:
+                            raise RegistryError("historical identity capacity")
+                        if previous is not None:
+                            old_id, old_digest, old_start, old_end, old_revoked, old_present = previous
+                            if activation == old_id:
+                                if digest != old_digest or start != old_start or end != old_end or ((old_revoked or not old_present) and not revoked):
+                                    raise RegistryError("activation mutated or reactivated")
+                            elif start <= old_start:
+                                raise RegistryError("activation must advance")
+                        if previous is None or activation != previous[0]:
+                            # Downstream scrapers may retain an older series
+                            # briefly after an activation changes. The new
+                            # baseline must exceed all prior relay receipts.
+                            old_receipts = self.db.execute("SELECT heartbeat,goodbye FROM node WHERE tenant=? AND node=?", (tenant,node)).fetchone()
+                            if old_receipts and any(value is not None and start <= value for value in old_receipts):
+                                raise RegistryError("activation precedes prior receipt")
+                            count = self.db.execute("SELECT COUNT(*) FROM grant_history WHERE tenant=? AND node=?", (tenant,node)).fetchone()[0]
+                            if count >= MAX_ACTIVATIONS_PER_NODE:
+                                raise RegistryError("activation history capacity")
+                            self.db.execute("INSERT INTO grant_history VALUES(?,?,?,?)", (tenant,node,activation,digest))
+                            if previous is None:
+                                old[(tenant,node)] = (activation,digest,start,end,int(revoked),1)
+                        self.db.execute("INSERT INTO grant_current VALUES(?,?,?,?,?,?,?,1) ON CONFLICT(tenant,node) DO UPDATE SET activation=excluded.activation,token_digest=excluded.token_digest,not_before=excluded.not_before,expires_at=excluded.expires_at,revoked=excluded.revoked,present=1", (tenant,node,activation,digest,start,end,int(revoked)))
+                self.registry = tuple(snapshot)
+            except (sqlite3.Error, RegistryError):
+                self.db.rollback()
         super().__init__(("127.0.0.1", port), Handler)
 
     def checked_time(self, commit=False):
@@ -217,11 +271,13 @@ class Handler(BaseHTTPRequestHandler):
                         self.server.db.commit()
                         status, body = 200, b"ready\n"
                 else:
-                    rows = {(a,b):(c,d) for a,b,c,d in self.server.db.execute("SELECT tenant,node,heartbeat,goodbye FROM node")}
+                    rows = {(a,b):(c,d,e) for a,b,c,d,e in self.server.db.execute("SELECT tenant,node,heartbeat,goodbye,activation FROM node")}
                     counters = dict(self.server.db.execute("SELECT kind,n FROM counters"))
                     out = ["# TYPE nudox_node_heartbeat_seconds gauge", "# TYPE nudox_node_goodbye_seconds gauge", "# TYPE nudox_node_telemetry_grant_expected_since_seconds gauge"]
-                    for tenant, node, _, start in grants:
-                        hb, bye = rows.get((tenant,node), (None,None))
+                    for tenant, node, _, activation, start in grants:
+                        hb, bye, stored_activation = rows.get((tenant,node), (None,None,""))
+                        if stored_activation != activation:
+                            hb, bye = None, None
                         labels = f'tenant="{tenant}",node="{node}"'
                         out.append(f"nudox_node_telemetry_grant_expected_since_seconds{{{labels}}} {start}")
                         if hb is not None: out.append(f"nudox_node_heartbeat_seconds{{{labels}}} {hb!r}")
@@ -247,7 +303,7 @@ class Handler(BaseHTTPRequestHandler):
             # Initial lookup is deliberately outside the database lock so an
             # invalid local client cannot consume any valid grant's bucket.
             grants = active_grants(self.server.registry, time.time())
-            identity = next(((t,n) for t,n,h,_ in grants if digest and hmac.compare_digest(digest,h)), None)
+            identity = next(((t,n) for t,n,h,_,_ in grants if digest and hmac.compare_digest(digest,h)), None)
             if not self.server.allow(identity):
                 self.server.reject()
                 return self.reply(429)
@@ -266,24 +322,28 @@ class Handler(BaseHTTPRequestHandler):
                 self.server.reject()
                 return self.reply(400)
             record = json.loads(raw, object_pairs_hook=unique_object)
-            if not isinstance(record,dict) or record.get("kind") not in ("heartbeat","goodbye","diag") or set(record) != ({"seq","kind","created_at","dropped"} if record.get("kind") == "diag" else {"seq","kind","created_at"}) or type(record["seq"]) is not int or not 1 <= record["seq"] <= 2**63-1 or type(record["created_at"]) is not int or (record["kind"] == "diag" and (type(record["dropped"]) is not int or not 1 <= record["dropped"] <= 2**31-1)):
+            if not isinstance(record,dict) or record.get("kind") not in ("heartbeat","goodbye","diag") or set(record) != ({"seq","kind","created_at","activation_id","dropped"} if record.get("kind") == "diag" else {"seq","kind","created_at","activation_id"}) or type(record["seq"]) is not int or not 1 <= record["seq"] <= 2**63-1 or type(record["created_at"]) is not int or not isinstance(record["activation_id"], str) or not ACTIVATION.fullmatch(record["activation_id"]) or (record["kind"] == "diag" and (type(record["dropped"]) is not int or not 1 <= record["dropped"] <= 2**31-1)):
                 raise ValueError("schema")
             fingerprint = hashlib.sha256(raw).hexdigest()
             tenant,node = identity
             with self.server.db_lock, self.server.db:
                 db = self.server.db
                 db.execute("BEGIN IMMEDIATE")
-                prior = db.execute("SELECT seq,digest,heartbeat,goodbye FROM node WHERE tenant=? AND node=?", identity).fetchone()
+                prior = db.execute("SELECT seq,digest,heartbeat,goodbye,activation FROM node WHERE tenant=? AND node=?", identity).fetchone()
                 received = self.server.checked_time()
-                still_allowed = any(t == tenant and n == node and hmac.compare_digest(digest,h)
-                                    for t,n,h,_ in active_grants(self.server.registry, received))
+                grant = next(((activation,start) for t,n,h,activation,start in active_grants(self.server.registry, received)
+                              if t == tenant and n == node and hmac.compare_digest(digest,h)), None)
                 if time.monotonic() >= self.deadline:
                     db.rollback()
                     status, body = 503, b""
-                elif not still_allowed:
+                elif grant is None:
                     db.rollback()
                     self.server.reject()
                     status, body = 401, b""
+                elif record["activation_id"] != grant[0]:
+                    db.rollback()
+                    self.server.reject()
+                    status, body = 409, b""
                 elif prior and record["seq"] == prior[0] and hmac.compare_digest(fingerprint, prior[1]):
                     db.rollback()
                     status, body = 200, b"duplicate\n"
@@ -295,11 +355,11 @@ class Handler(BaseHTTPRequestHandler):
                     db.rollback()
                     self.server.reject()
                     status, body = 429, b""
-                elif prior and any(value is not None and received <= value for value in prior[2:]):
+                elif prior and any(value is not None and received <= value for value in prior[2:4]):
                     db.rollback()
                     status, body = 503, b""
                 else:
-                    db.execute("INSERT INTO node(tenant,node,seq,digest) VALUES(?,?,?,?) ON CONFLICT(tenant,node) DO UPDATE SET seq=excluded.seq,digest=excluded.digest", (tenant,node,record["seq"],fingerprint))
+                    db.execute("INSERT INTO node(tenant,node,seq,digest,activation) VALUES(?,?,?,?,?) ON CONFLICT(tenant,node) DO UPDATE SET seq=excluded.seq,digest=excluded.digest,heartbeat=CASE WHEN node.activation=excluded.activation THEN node.heartbeat ELSE NULL END,goodbye=CASE WHEN node.activation=excluded.activation THEN node.goodbye ELSE NULL END,activation=excluded.activation", (tenant,node,record["seq"],fingerprint,grant[0]))
                     if record["kind"] in ("heartbeat", "goodbye"):
                         db.execute(f"UPDATE node SET {record['kind']}=? WHERE tenant=? AND node=?", (received,tenant,node))
                     self.server.count(record["kind"])
@@ -322,7 +382,6 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     if len(sys.argv) != 4:
         sys.exit("usage: relay.py IDENTITIES_JSON STATE_DB LOOPBACK_PORT")
-    load_identities(sys.argv[1])
     parent = Path(sys.argv[2]).resolve().parent
     if os.stat(parent).st_uid != os.geteuid() or os.stat(parent).st_mode & 0o077:
         sys.exit("state directory must be service-owned and private")
