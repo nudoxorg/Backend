@@ -2,6 +2,7 @@
 """Build the artifact-backed VM test on a Nix builder with KVM support."""
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -87,6 +88,7 @@ def run(args):
         with inventory.open("wb") as stream:
             inventory_expr = "import ((builtins.getFlake " + nix_string(source_ref) + ").outPath + \"/tests/keel/default.nix\")"
             subprocess.run(["nix", "eval", "--json", "--expr", inventory_expr], stdout=stream, check=True)
+        inventory_digest = hashlib.sha256(inventory.read_bytes()).hexdigest()
         inventory_store = output("nix", "store", "add-file", str(inventory))
         bundle_store = output("nix", "store", "add-path", str(bundle))
         subprocess.run([sys.executable, str(checked_verifier), "verify", bundle_store, "--source-sha", args.source_sha, "--import-runtime"], check=True, env=verifier_environment())
@@ -141,7 +143,47 @@ def run(args):
     if not status.is_file():
         return 125
     code = status.read_text().strip()
-    return 0 if code == "0" else (1 if code == "1" else 125)
+    if code not in {"0", "1"}:
+        return 125
+    collected = args.output / "keel-results"
+    receipt_paths = [collected / "invocation.json", collected / "verification.json", collected / "evidence/report.json"]
+    if (collected.is_symlink() or (collected / "evidence").is_symlink()
+            or any(path.is_symlink() or not path.is_file() for path in receipt_paths)):
+        raise ValueError("missing or symlinked guest invocation/report receipts")
+    invocation_bytes, verification_bytes, report_bytes = [path.read_bytes() for path in receipt_paths]
+    invocation, verification, report = map(json.loads, (invocation_bytes, verification_bytes, report_bytes))
+    if not all(isinstance(value, dict) for value in (invocation, verification, report)):
+        raise ValueError("guest receipt must be an object")
+    environment = invocation.get("environment", {})
+    argv = invocation.get("argv", [])
+    if not isinstance(environment, dict) or not isinstance(argv, list):
+        raise ValueError("invalid recorded guest environment or argv")
+    root = environment.get("KEEL_CGROUP_ROOT")
+    if (not isinstance(root, dict) or set(root) != {"Unix"} or not isinstance(root["Unix"], list)
+            or not root["Unix"] or any(type(value) is not int or not 0 <= value <= 255 for value in root["Unix"])):
+        raise ValueError("invalid recorded Unix cgroup root bytes")
+    if (invocation.get("schema") != 1 or invocation.get("kind") != "keel-artifact-invocation"
+            or invocation.get("source_sha") != args.source_sha
+            or invocation.get("artifact_manifest_sha256") != hashlib.sha256(Path(bundle_store, "manifest.json").read_bytes()).hexdigest()
+            or invocation.get("manifest_sha256") != inventory_digest
+            or re.fullmatch(r"[0-9a-f]{64}", str(invocation.get("driver_sha256", ""))) is None
+            or re.fullmatch(r"[0-9a-f]{64}", str(invocation.get("authority_environment_sha256", ""))) is None
+            or invocation.get("driver_sha256") != report.get("driver_sha256")
+            or invocation.get("authority_environment_sha256") != report.get("authority_environment_sha256")
+            or environment.get("KEEL_REQUIRE_CGROUP") != "1"
+            or report.get("containment_policy") != {"required": True, "root": environment.get("KEEL_CGROUP_ROOT")}
+            or len(argv) != 7 or not isinstance(argv[0], str) or not argv[0].startswith("/nix/store/")
+            or not argv[0].endswith("/bin/backend-keel-harness")
+            or argv[1:] != ["--manifest", inventory_store, "--bin-dir", str(Path(bundle_store, "bin")), "--evidence", "/var/lib/keel-results/evidence"]
+            or verification.get("schema") != 1 or verification.get("kind") != "keel-artifact-verification"
+            or verification.get("source_sha") != args.source_sha or verification.get("gate_exit") != int(code)
+            or verification.get("driver_exit") not in (0, 1)
+            or verification.get("invocation_sha256") != hashlib.sha256(invocation_bytes).hexdigest()
+            or verification.get("report_sha256") != hashlib.sha256(report_bytes).hexdigest()):
+        raise ValueError("guest invocation/source/containment/report receipt mismatch")
+    if code == "0" and (verification["driver_exit"] != 0 or report.get("status") != "pass"):
+        raise ValueError("guest success receipt disagrees with the driver outcome")
+    return int(code)
 
 
 if __name__ == "__main__":

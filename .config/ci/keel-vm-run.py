@@ -18,6 +18,14 @@ def sha256(path):
     return digest.hexdigest()
 
 
+def write_receipt(path, value):
+    with path.open("x", encoding="utf-8") as stream:
+        json.dump(value, stream, sort_keys=True)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
 def verify_bundle(bundle, expected_sha):
     manifest = json.loads((bundle / "manifest.json").read_bytes())
     if manifest.get("source_sha") != expected_sha:
@@ -78,12 +86,27 @@ def main():
         raise ValueError("Keel evidence path already exists")
     # The driver owns creation of its fresh evidence leaf.
     evidence.parent.mkdir(parents=True, exist_ok=True)
-    completed = subprocess.run([str(harness), "--manifest", str(manifest_path), "--bin-dir", str(bundle / "bin"), "--evidence", str(evidence)], env=env, check=False)
+    command = [str(harness), "--manifest", str(manifest_path), "--bin-dir", str(bundle / "bin"), "--evidence", str(evidence)]
+    invocation = {
+        "schema": 1, "kind": "keel-artifact-invocation", "source_sha": source_sha,
+        "artifact_manifest_sha256": t1_manifest_digest,
+        "manifest_sha256": hashlib.sha256(inventory_bytes).hexdigest(),
+        "driver_sha256": driver_digest, "argv": command,
+        "environment": {"KEEL_REQUIRE_CGROUP": env["KEEL_REQUIRE_CGROUP"],
+                        "KEEL_CGROUP_ROOT": {"Unix": list(os.fsencode(env["KEEL_CGROUP_ROOT"]))}},
+        "authority_environment_sha256": canonical.get("authority_environment_sha256"),
+        "authority": "trusted-local-guest-wrapper; unsigned invocation capture",
+    }
+    invocation_path = evidence.parent / "invocation.json"
+    write_receipt(invocation_path, invocation)
+    invocation_digest = sha256(invocation_path)
+    completed = subprocess.run(command, env=env, check=False)
     verify_bundle(bundle, source_sha)
     if (sha256(harness) != driver_digest or manifest_path.read_bytes() != inventory_bytes
             or sha256(bundle / "manifest.json") != t1_manifest_digest):
         raise ValueError("driver, inventory or T1 manifest changed during execution")
-    report = json.loads((evidence / "report.json").read_bytes())
+    report_bytes = (evidence / "report.json").read_bytes()
+    report = json.loads(report_bytes)
     reported = [case["id"] for case in report["cases"]]
     artifact_binaries = {Path(entry["path"]).name: entry["sha256"] for entry in t1["files"]
                          if Path(entry["path"]).parent == Path("bin")}
@@ -95,14 +118,24 @@ def main():
     if (report.get("schema") != 1 or report.get("driver_sha256") != driver_digest
             or report.get("manifest_sha256") != hashlib.sha256(inventory_bytes).hexdigest()
             or policy.get("required") is not True
-            or root_bytes != list(os.fsencode(os.environ["KEEL_CGROUP_ROOT"]))
+            or root_bytes != invocation["environment"]["KEEL_CGROUP_ROOT"]["Unix"]
             or report.get("inventory") != canonical["cases"]
             or report.get("authority_environment_sha256") != canonical.get("authority_environment_sha256")
             or len(reported) != len(ids) or set(reported) != set(ids)):
         raise ValueError("Keel report identity or complete case coverage mismatch")
-    if completed.returncode or report.get("status") != "pass" or any(case.get("status") != "pass" for case in report["cases"]):
-        return 1
-    return 0
+    if sha256(invocation_path) != invocation_digest:
+        raise ValueError("original invocation receipt changed during execution")
+    gate_exit = (125 if completed.returncode not in (0, 1) else
+                 1 if completed.returncode or report.get("status") != "pass" or
+                 any(case.get("status") != "pass" for case in report["cases"]) else 0)
+    write_receipt(evidence.parent / "verification.json", {
+        "schema": 1, "kind": "keel-artifact-verification", "source_sha": source_sha,
+        "invocation_sha256": invocation_digest,
+        "report_sha256": hashlib.sha256(report_bytes).hexdigest(),
+        "driver_exit": completed.returncode, "gate_exit": gate_exit,
+        "bindings": "verified; gate_exit determines product or infrastructure outcome",
+    })
+    return gate_exit
 
 
 if __name__ == "__main__":
