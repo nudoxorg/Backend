@@ -67,7 +67,14 @@ in {
       {
         id = "reject-stale-source"; kind = "mcp-call"; session = "source";
         call = "\${continuation}"; mcp_error = true;
-        expect = { exit = 0; json = [ (eq "/answer" "fault") (eq "/slug" "cursor-mismatch") ]; };
+        expect = { exit = 0; json = [
+          (eq "/answer" "fault")
+          (eq "/slug" "invalid-query")
+          (eq "/operand" "source")
+          (eq "/cause" "malformed")
+          { pointer = "/detail"; contains = "indexed source changed on disk; reindex and retry"; }
+          { pointer = "/source"; absent = true; }
+        ]; };
       }
       { id = "close-mcp"; kind = "mcp-stop"; session = "source"; }
     ];
