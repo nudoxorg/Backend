@@ -457,3 +457,179 @@ fn real_view_journal_append_success_and_path_failure() {
     wait_for(|| metrics.0.try_wait().unwrap().is_some());
     assert!(metrics.0.wait().unwrap().success());
 }
+
+#[test]
+fn real_sparse_boundary_compaction_survives_cold_restart() {
+    let dir = tempfile::Builder::new()
+        .prefix("bm-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = dir.path().join("owner.sock");
+    let workspace = dir.path().join("workspace");
+    let project = dir.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::write(
+        project.join("package.json"),
+        "{\"name\":\"metrics-compaction\",\"version\":\"1.0.0\"}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.join("index.js"),
+        "export function value() { return 1; }\n",
+    )
+    .unwrap();
+    let bin_dir = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let locald = std::env::var_os("BACKEND_LOCALD_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| bin_dir.join("backend-locald"));
+    let cli = std::env::var_os("BACKEND_CLI_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| bin_dir.join("backend-cli"));
+    assert!(
+        locald.is_file() && cli.is_file(),
+        "build backend-locald and backend-cli first"
+    );
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = reserve.local_addr().unwrap().to_string();
+    drop(reserve);
+    let mut metrics = Process(
+        Command::new(env!("CARGO_BIN_EXE_backend-metrics"))
+            .args(["--endpoint", socket.to_str().unwrap(), "--bind", &addr])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait_for(|| TcpStream::connect(&addr).is_ok());
+    let start_owner = || {
+        Process(
+            Command::new(&locald)
+                .args([
+                    "--endpoint",
+                    socket.to_str().unwrap(),
+                    "--workspace",
+                    workspace.to_str().unwrap(),
+                    "--idle-timeout-ms",
+                    "0",
+                    "--registry-offline",
+                    "--advisory-offline",
+                    "--forge-offline",
+                    "--registry-discovery-offline",
+                ])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        )
+    };
+    let wait_owner = |owner: &mut Process| {
+        wait_for(|| {
+            assert!(
+                owner.0.try_wait().unwrap().is_none(),
+                "locald exited during startup"
+            );
+            get(&addr, "/health").starts_with("HTTP/1.1 200")
+        })
+    };
+    let command = |args: &[&str]| {
+        let mut child = Process(
+            Command::new(&cli)
+                .args([
+                    "--endpoint",
+                    socket.to_str().unwrap(),
+                    "--workspace",
+                    workspace.to_str().unwrap(),
+                    "--project",
+                    project.to_str().unwrap(),
+                ])
+                .args(args)
+                .current_dir(&project)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        wait_for(|| child.0.try_wait().unwrap().is_some());
+        let status = child.0.wait().unwrap();
+        let mut stdout = Vec::new();
+        child
+            .0
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_end(&mut stdout)
+            .unwrap();
+        let mut stderr = String::new();
+        child
+            .0
+            .stderr
+            .take()
+            .unwrap()
+            .read_to_string(&mut stderr)
+            .unwrap();
+        assert!(status.success(), "CLI failed: {stderr}");
+        stdout
+    };
+    let mut owner = start_owner();
+    wait_owner(&mut owner);
+    command(&["add", ".", "--wait", "--wait-timeout", "90"]);
+    let before = get(&addr, "/metrics");
+    let counter =
+        "store_requests_total{backend=\"view_journal\",op=\"replace\",outcome=\"success\"} ";
+    let bucket = "store_request_duration_seconds_bucket{backend=\"view_journal\",op=\"replace\",outcome=\"success\",le=\"+Inf\"} ";
+    let journal = workspace.join("view.journal");
+    let old_length = std::fs::metadata(&journal).unwrap().len();
+    assert!(old_length < 128 * 1024 * 1024);
+    // Deliberate sparse boundary fixture: this is not a claim about natural workload size.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&journal)
+        .unwrap()
+        .set_len(128 * 1024 * 1024)
+        .unwrap();
+    std::fs::write(
+        project.join("index.js"),
+        "export function value() { return 2; }\n",
+    )
+    .unwrap();
+    command(&["add", ".", "--wait", "--wait-timeout", "90"]);
+    let after = get(&addr, "/metrics");
+    let delta = value(&after, counter) - value(&before, counter);
+    assert!(delta >= 1.0);
+    assert_eq!(value(&after, bucket) - value(&before, bucket), delta);
+    assert!(std::fs::metadata(&journal).unwrap().len() < 128 * 1024 * 1024);
+    let selected = command(&["packages"]);
+    assert!(String::from_utf8_lossy(&selected).contains("metrics-compaction"));
+    assert!(
+        Command::new("kill")
+            .args(["-TERM", &owner.0.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    wait_for(|| owner.0.try_wait().unwrap().is_some());
+    assert!(owner.0.wait().unwrap().success());
+    let mut restarted = start_owner();
+    wait_owner(&mut restarted);
+    assert_eq!(
+        command(&["packages"]),
+        selected,
+        "cold restart changed selected package state"
+    );
+    assert!(
+        Command::new("kill")
+            .args(["-TERM", &metrics.0.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    wait_for(|| metrics.0.try_wait().unwrap().is_some());
+    assert!(metrics.0.wait().unwrap().success());
+}
