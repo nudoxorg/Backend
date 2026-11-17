@@ -28,6 +28,9 @@ exclude = [
     "frontends/postgres",
     "frontends/sqlite",
     "tools/package",
+    # Python/Nix services are not Cargo workspace members.
+    "tools/index-canary",
+    "tools/licensed-node-relay",
     "vendor/pyrefly_config_native_1_2",
     "vendor/stylo-native",
     "vendor/selectors-native",
