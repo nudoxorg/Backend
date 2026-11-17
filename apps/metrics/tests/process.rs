@@ -420,8 +420,18 @@ fn real_view_journal_append_success_and_permission_failure() {
     std::fs::set_permissions(&journal, std::fs::Permissions::from_mode(0o400)).unwrap();
     std::fs::write(project.join("src/lib.rs"), "pub fn value() -> u32 { 2 }\n").unwrap();
     let mut second = Process(start_add());
-    wait_for(|| value(&get(&addr, "/metrics"), &counter("error")) > error_before);
-    let after_failure = get(&addr, "/metrics");
+    let mut after_failure = String::new();
+    wait_for(|| {
+        let scrape = get(&addr, "/metrics");
+        if !scrape.contains("backend_dependency_snapshot_available 1\n") {
+            return false;
+        }
+        if value(&scrape, &counter("error")) <= error_before {
+            return false;
+        }
+        after_failure = scrape;
+        true
+    });
     let errors = value(&after_failure, &counter("error"));
     let histogram = "store_request_duration_seconds_bucket{backend=\"view_journal\",op=\"append\",outcome=\"error\",le=\"+Inf\"} ";
     assert_eq!(value(&after_failure, histogram), errors);
