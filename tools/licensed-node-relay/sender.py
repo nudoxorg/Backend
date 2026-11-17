@@ -20,13 +20,13 @@ MAX_AGE = 110
 def main():
     args = sys.argv[1:]
     if "--" not in args:
-        sys.exit("usage: sender.py URL TOKEN_FILE STATE_DIR [--interval-seconds N] [--spool-capacity N] -- COMMAND [ARGS...]")
+        sys.exit("usage: sender.py URL TOKEN_FILE STATE_DIR [--interval-seconds N] [--spool-capacity N] [--signal-mode forward|cgroup] -- COMMAND [ARGS...]")
     separator = args.index("--")
     options, command = args[:separator], args[separator + 1:]
     if len(options) < 3 or not command or (len(options) - 3) % 2:
         sys.exit("invalid sender arguments")
     url_arg, token_path, state_path = options[:3]
-    interval, capacity = 60.0, CAPACITY
+    interval, capacity, signal_mode = 60.0, CAPACITY, "forward"
     seen = set()
     for name, value in zip(options[3::2], options[4::2]):
         if name in seen:
@@ -35,10 +35,11 @@ def main():
         try:
             if name == "--interval-seconds": interval = float(value)
             elif name == "--spool-capacity": capacity = int(value)
+            elif name == "--signal-mode": signal_mode = value
             else: sys.exit("unknown sender option")
         except ValueError:
             sys.exit("invalid sender option")
-    if not 1.0 <= interval <= 60.0 or not 1 <= capacity <= CAPACITY:
+    if not 1.0 <= interval <= 60.0 or not 1 <= capacity <= CAPACITY or signal_mode not in ("forward", "cgroup"):
         sys.exit("sender options out of bounds")
     url = urlsplit(url_arg)
     if url.scheme != "http" or url.hostname != "127.0.0.1" or not url.port or url.path not in ("", "/") or url.username or url.password or url.query or url.fragment:
@@ -125,8 +126,9 @@ def main():
     def forward(signum, _frame):
         nonlocal stopping
         stopping = True
-        try: child.send_signal(signum)
-        except ProcessLookupError: pass
+        if signal_mode == "forward":
+            try: child.send_signal(signum)
+            except ProcessLookupError: pass
     signal.signal(signal.SIGTERM, forward)
     signal.signal(signal.SIGINT, forward)
     next_heartbeat = 0.0

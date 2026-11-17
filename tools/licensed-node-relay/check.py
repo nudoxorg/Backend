@@ -73,6 +73,7 @@ def main():
         child = "import signal,sys,time;signal.signal(signal.SIGTERM,lambda *_:sys.exit(0));time.sleep(60)"
         sender = subprocess.Popen([sys.executable, str(HERE / "sender.py"), base, str(root / "token"), str(root / "sender"), "--interval-seconds", "1", "--spool-capacity", "1", "--", sys.executable, "-c", child])
         relay = None
+        group_mode = False
 
         def start_relay():
             process = subprocess.Popen([sys.executable, str(HERE / "relay.py"), str(registry), str(root / "relay" / "state.sqlite"), str(port)])
@@ -124,6 +125,29 @@ def main():
             os.kill(int(pid_file.read_text()), signal.SIGKILL)
             assert sender.wait(timeout=10) == 137
             assert counter(metrics(), 'relay_records_total{kind="goodbye"}') == clean_goodbyes
+            # Model systemd's control-group signal delivery with a dedicated
+            # process group. The child detects a duplicated termination signal.
+            group_pid = root / "group-child.pid"
+            group_child = (
+                "import os,signal,sys,time\n"
+                "seen=False\n"
+                "def stop(*_):\n"
+                " global seen\n"
+                " if seen: sys.exit(143)\n"
+                " seen=True\n"
+                " time.sleep(0.5)\n"
+                " sys.exit(0)\n"
+                "signal.signal(signal.SIGTERM,stop)\n"
+                "open(" + repr(str(group_pid)) + ", 'w').write(str(os.getpid()))\n"
+                "time.sleep(60)\n"
+            )
+            group_mode = True
+            sender = subprocess.Popen([sys.executable, str(HERE / "sender.py"), base, str(root / "token"), str(root / "sender"), "--signal-mode", "cgroup", "--", sys.executable, "-c", group_child], start_new_session=True)
+            wait_for(lambda: group_pid.exists())
+            os.killpg(sender.pid, signal.SIGTERM)
+            assert sender.wait(timeout=10) == 0
+            group_mode = False
+            wait_for(lambda: counter(metrics(), 'relay_records_total{kind="goodbye"}') == clean_goodbyes + 1)
             assert request("/v1/records", b"{}", bearer="invalid")[0] == 401
             assert request("/v1/records", b"{}")[0] == 400
             assert request("/v1/records", b"x" * 1025)[0] == 413
@@ -139,15 +163,21 @@ def main():
             relay.terminate()
             relay.wait(timeout=5)
             relay = start_relay()
-            print("real process overflow, diagnostic, goodbye, crash, denial and restart/dedup: passed")
+            print("real process overflow, diagnostic, graceful/group shutdown, crash, denial and restart/dedup: passed")
         finally:
             if sender.poll() is None:
                 sender.send_signal(signal.SIGCONT)
-                sender.terminate()
+                if group_mode:
+                    os.killpg(sender.pid, signal.SIGTERM)
+                else:
+                    sender.terminate()
                 try:
                     sender.wait(timeout=8)
                 except subprocess.TimeoutExpired:
-                    sender.kill()
+                    if group_mode:
+                        os.killpg(sender.pid, signal.SIGKILL)
+                    else:
+                        sender.kill()
                     sender.wait()
             if relay is not None and relay.poll() is None:
                 relay.terminate()

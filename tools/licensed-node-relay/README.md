@@ -38,7 +38,12 @@ state only with a documented retention and replay policy.
 
 `sender.py http://127.0.0.1:PORT TOKEN_FILE STATE_DIR -- COMMAND [ARGS...]`
 supervises the actual node process, emitting a heartbeat while it is alive and
-a goodbye only for successful exit. It forwards SIGINT and SIGTERM. The
+a goodbye only for successful exit. It forwards SIGINT and SIGTERM. Under systemd `KillMode=control-group`, pass `--signal-mode cgroup` before
+`--`: systemd delivers the stop signal to both sender and child, so the sender
+must not deliver it a second time. In this mode stop the service through
+systemd, which signals the entire cgroup; signaling the sender PID alone does
+not stop the child. The default `--signal-mode forward` is for callers that
+signal only the sender and need it to forward termination to the child. The
 optional `--interval-seconds` (1–60, default 60) and `--spool-capacity`
 (1–256, default 256) occur before `--`; they make bounded overflow observable
 in a short VM proof. A durable SQLite FIFO retains pending records and the
