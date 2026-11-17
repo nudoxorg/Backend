@@ -74,6 +74,7 @@ mod sql_embedded;
 mod sql_admission;
 mod sql_intent;
 mod csharp_intent;
+mod native_ts_retirement_receipt;
 mod sql_receipt;
 mod sql_receipt_index;
 mod sql_catalog;

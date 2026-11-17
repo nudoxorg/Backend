@@ -6,6 +6,8 @@
 //! engine while each capability boundary has a focused implementation module.
 
 mod authority;
+mod native_ts_retirement_receipt;
+pub use native_ts_retirement_receipt::NativeTsRetirementReceiptSchema;
 mod sql_receipt_index;
 pub use sql_receipt_index::*;
 mod sql_decode;
