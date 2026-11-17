@@ -2756,6 +2756,24 @@ def run_case(case: dict, bin_dir: Path) -> dict:
         record["performance"]["cpu_seconds"] = round(preproof_usage["cpu_seconds"] + postproof_cpu, 2)
         record["performance"]["peak_rss_kib"] = max(
             preproof_usage["peak_rss_kib"], phase_record["post_reset_peak_rss_kib"])
+        if case["name"] == "typescript-query-core":
+            # Check membership, not just the package row count in the answer.
+            # The accompanying manifest also records the compiler provenance
+            # reviewed for each external row; see its evidence note.
+            manifest = json.loads((SURFACE / "typescript-query-core-membership.json").read_text())
+            if row_dump is None or not row_dump.exists():
+                raise RuntimeError("typescript-query-core: missing view membership dump")
+            # The reviewed CI evidence prints at most 400 characters per row.
+            actual = [row[:400] for row in row_dump.read_text().splitlines()]
+            expected = manifest["rows"]
+            if len(actual) != len(set(actual)) or set(actual) != set(expected):
+                missing = sorted(set(expected) - set(actual))
+                added = sorted(set(actual) - set(expected))
+                raise RuntimeError(
+                    f"typescript-query-core: view membership changed: "
+                    f"{len(missing)} missing, {len(added)} added; "
+                    f"first missing={missing[:3]!r}, first added={added[:3]!r}"
+                )
     finally:
         case_error = sys.exc_info()[1]
         try:
