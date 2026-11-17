@@ -2654,8 +2654,14 @@ fn semantic_rows(
             // Match the query/graph package's entire selected image scope,
             // including a TS import whose local target is in the TSX profile.
             drop(opened);
-            if let Some(selected) = selected {
-                native_selections.retain(key, selected)?;
+            match (selected, observed) {
+                (Some(selected), None) => native_selections.retain(
+                    key, super::native_target_aliases::NativeAliasArtifacts::Current(selected),
+                )?,
+                (None, Some(observed)) => native_selections.retain(
+                    key, super::native_target_aliases::NativeAliasArtifacts::Observed(observed),
+                )?,
+                _ => return Err(BuiltinModelError("invalid selected semantic artifacts".into())),
             }
         }
         if package_ended || (bounds.is_some() && page.next().is_none()) {
