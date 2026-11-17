@@ -77,8 +77,13 @@ def main():
 
         def start_relay():
             process = subprocess.Popen([sys.executable, str(HERE / "relay.py"), str(registry), str(root / "relay" / "state.sqlite"), str(port)])
-            wait_for(lambda: request("/health")[0] == 200)
-            return process
+            try:
+                wait_for(lambda: request("/health")[0] == 200)
+                return process
+            except BaseException:
+                process.terminate()
+                process.wait(timeout=5)
+                raise
 
         try:
             # The live child generates real records while its relay is absent;
