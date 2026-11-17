@@ -3321,3 +3321,4 @@ mod owner_fairness_tests {
         OwnerService::close(&mut owner);
     }
 }
+mod native_ts_intent_decode;
