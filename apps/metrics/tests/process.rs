@@ -308,3 +308,133 @@ fn dependency_snapshot_trickle_is_bounded_and_omitted() {
     assert!(metrics.0.wait().unwrap().success());
     peer.join().unwrap();
 }
+
+#[test]
+fn real_view_journal_append_success_and_permission_failure() {
+    let dir = tempfile::Builder::new()
+        .prefix("bm-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = dir.path().join("owner.sock");
+    let workspace = dir.path().join("workspace");
+    let project = dir.path().join("project");
+    std::fs::create_dir_all(project.join("src")).unwrap();
+    std::fs::write(
+        project.join("Cargo.toml"),
+        "[package]\nname='metrics_fixture'\nversion='0.1.0'\nedition='2021'\n",
+    )
+    .unwrap();
+    std::fs::write(project.join("src/lib.rs"), "pub fn value() -> u32 { 1 }\n").unwrap();
+    let bin_dir = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let locald = std::env::var_os("BACKEND_LOCALD_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| bin_dir.join("backend-locald"));
+    let cli = std::env::var_os("BACKEND_CLI_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| bin_dir.join("backend-cli"));
+    assert!(
+        locald.is_file() && cli.is_file(),
+        "build backend-locald and backend-cli first"
+    );
+    let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = reserve.local_addr().unwrap().to_string();
+    drop(reserve);
+    let mut metrics = Process(
+        Command::new(env!("CARGO_BIN_EXE_backend-metrics"))
+            .args(["--endpoint", socket.to_str().unwrap(), "--bind", &addr])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait_for(|| TcpStream::connect(&addr).is_ok());
+    let mut owner = Process(
+        Command::new(locald)
+            .args([
+                "--endpoint",
+                socket.to_str().unwrap(),
+                "--workspace",
+                workspace.to_str().unwrap(),
+                "--idle-timeout-ms",
+                "0",
+                "--registry-offline",
+                "--advisory-offline",
+                "--forge-offline",
+                "--registry-discovery-offline",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait_for(|| {
+        assert!(
+            owner.0.try_wait().unwrap().is_none(),
+            "locald exited during startup"
+        );
+        get(&addr, "/health").starts_with("HTTP/1.1 200")
+    });
+    let counter = |outcome: &str| {
+        format!(
+            "store_requests_total{{backend=\"view_journal\",op=\"append\",outcome=\"{outcome}\"}} "
+        )
+    };
+    let initial = value(&get(&addr, "/metrics"), &counter("success"));
+    let start_add = || {
+        Command::new(&cli)
+            .args([
+                "--endpoint",
+                socket.to_str().unwrap(),
+                "--workspace",
+                workspace.to_str().unwrap(),
+                "--project",
+                project.to_str().unwrap(),
+                "add",
+                ".",
+                "--wait",
+                "--wait-timeout",
+                "90",
+            ])
+            .current_dir(&project)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    };
+    let mut first = Process(start_add());
+    wait_for(|| first.0.try_wait().unwrap().is_some());
+    let after = get(&addr, "/metrics");
+    assert!(
+        value(&after, &counter("success")) > initial,
+        "real request did not append to journal"
+    );
+    let error_before = value(&after, &counter("error"));
+    let journal = workspace.join("view.journal");
+    std::fs::set_permissions(&journal, std::fs::Permissions::from_mode(0o400)).unwrap();
+    std::fs::write(project.join("src/lib.rs"), "pub fn value() -> u32 { 2 }\n").unwrap();
+    let mut second = Process(start_add());
+    wait_for(|| value(&get(&addr, "/metrics"), &counter("error")) > error_before);
+    let after_failure = get(&addr, "/metrics");
+    let errors = value(&after_failure, &counter("error"));
+    let histogram = "store_request_duration_seconds_bucket{backend=\"view_journal\",op=\"append\",outcome=\"error\",le=\"+Inf\"} ";
+    assert_eq!(value(&after_failure, histogram), errors);
+    std::fs::set_permissions(&journal, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let _ = second.0.kill();
+    let _ = second.0.wait();
+    assert!(
+        Command::new("kill")
+            .args(["-TERM", &metrics.0.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    wait_for(|| metrics.0.try_wait().unwrap().is_some());
+    assert!(metrics.0.wait().unwrap().success());
+}

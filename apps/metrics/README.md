@@ -31,13 +31,14 @@ stop acceptance and drain bounded in-flight requests.
 For the real-process integration test, build both executables and run:
 
 ```sh
-cargo build -p backend-locald -p backend-metrics
+cargo build -p backend-cli -p backend-locald -p backend-metrics
 cargo test -p backend-metrics --test process
 ```
 
 The test finds `backend-locald` beside the test profile's binaries; set
-`BACKEND_LOCALD_BIN` to override that path. It creates a private temporary
-workspace, runs a real owner and HTTP service, and cleans up both processes.
+`BACKEND_LOCALD_BIN` and `BACKEND_CLI_BIN` to override those paths. It creates
+a private temporary workspace and project, exercises real journal appends and
+a deliberately denied write, and cleans up the processes.
 
 When a fresh authenticated snapshot is returned by an initialized owner,
 `store_requests_total` and `store_request_duration_seconds` describe that
