@@ -16,7 +16,13 @@ let
         searchBarrier = if step.tool == "backend.search" then {
           wait_for = true;
           expect = step.expect // {
-            json = step.expect.json ++ [ { pointer = "/readiness"; equals = "ready"; } ];
+            # Wait for full-search preparation, while preserving honest partial
+            # semantic coverage (for example a JavaScript program without full
+            # static type evidence). Every remaining field still compares.
+            json = step.expect.json ++ [
+              { pointer = "/full_search"; absent = true; }
+              { pointer = "/search_scope"; absent = true; }
+            ];
           };
         } else {};
       in step // {

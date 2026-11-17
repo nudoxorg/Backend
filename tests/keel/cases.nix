@@ -24,6 +24,35 @@ let
     };
     expect = { exit = 0; json = [ (eq "/records/0/identity/name" "keel_fanout_${suffix}") ]; };
   };
+  diamondIdentity = suffix: (search "diamond-identity-${suffix}" "keel_diamond_${suffix}") // {
+    bind = {
+      "diamond_${suffix}" = { pointer = "/records/0/identity/semantic_data"; transform = "selected-symbol-key"; };
+      "diamond_${suffix}_coordinate" = "/records/0/identity/coordinate";
+    };
+  };
+  targetNode = { id = "\${center_id}"; coordinate = "\${coordinate}"; };
+  callerNode = suffix: { id = "\${caller_${suffix}}"; coordinate = "\${caller_${suffix}_coordinate}"; };
+  diamondNode = suffix: { id = "\${diamond_${suffix}}"; coordinate = "\${diamond_${suffix}_coordinate}"; };
+  u32Node = { id = "\${u32_id}"; coordinate = "\${u32_coordinate}"; };
+  compilerEdge = from: to: relation: {
+    from = from.coordinate; from_id = from.id;
+    to = to.coordinate; to_id = to.id;
+    inherit relation; confidence = "compiler";
+  };
+  relatedCapture = id: center: edges: {
+    inherit id; kind = "pages"; tool = "backend.related";
+    arguments = { coordinate = center.coordinate; limit = 20; };
+    minimum_pages = 1; maximum_pages = 1;
+    expect = { exit = 0; json = [
+      (eq "/first/related_basis/schema" 1)
+      (eq "/first/related_basis/center_id" center.id)
+      (eq "/first/related_basis/coordinate" center.coordinate)
+      (eq "/first/related_basis/source_view_root" "\${source_root}")
+      (eq "/first/related_basis/relation_coverage" "unknown")
+      (eq "/first/related_evidence_withheld" false)
+      { pointer = "/first/edges"; set_equals = edges; }
+    ]; };
+  };
   show = id: name: path: {
     inherit id;
     kind = "cli";
@@ -76,6 +105,7 @@ in {
         }; })
         (callerIdentity "a") (callerIdentity "b") (callerIdentity "c") (callerIdentity "d")
         (callerIdentity "e") (callerIdentity "f") (callerIdentity "g") (callerIdentity "h")
+        (diamondIdentity "left") (diamondIdentity "right") (diamondIdentity "top")
         {
           id = "resolve-return-type"; kind = "query";
           cli = [ "resolve" "u32" "--limit" "20" ];
@@ -124,28 +154,31 @@ in {
             (eq "/source/extent" "complete")
           ]; };
         }
-        {
-          id = "typed-related-call-edges"; kind = "pages"; tool = "backend.related";
-          arguments = { coordinate = "\${coordinate}"; limit = 20; };
-          minimum_pages = 1; maximum_pages = 16;
-          expect = { exit = 0; json = [
-            (eq "/first/related_basis/schema" 1)
-            (eq "/first/related_basis/center_id" "\${center_id}")
-            (eq "/first/related_basis/coordinate" "\${coordinate}")
-            (eq "/first/related_basis/source_view_root" "\${source_root}")
-            (eq "/first/related_basis/relation_coverage" "unknown")
-            { pointer = "/first/edges"; set_equals = (map (suffix: {
-              from = "\${caller_${suffix}_coordinate}";
-              from_id = "\${caller_${suffix}}";
-              to = "\${coordinate}"; to_id = "\${center_id}";
-              relation = "calls"; confidence = "compiler";
-            }) [ "a" "b" "c" "d" "e" "f" "g" "h" ]) ++ [ {
-              from = "\${coordinate}"; from_id = "\${center_id}";
-              to = "\${u32_coordinate}"; to_id = "\${u32_id}";
-              relation = "type-reference"; confidence = "compiler";
-            } ]; }
-          ]; };
-        }
+        (relatedCapture "typed-related-call-edges" targetNode (
+          (map (suffix: compilerEdge (callerNode suffix) targetNode "calls") [ "a" "b" "c" "d" "e" "f" "g" "h" ])
+          ++ [ (compilerEdge targetNode u32Node "type-reference") ]
+        ))
+        (relatedCapture "typed-diamond-junction" (callerNode "a") [
+          (compilerEdge (callerNode "a") targetNode "calls")
+          (compilerEdge (diamondNode "left") (callerNode "a") "calls")
+          (compilerEdge (diamondNode "right") (callerNode "a") "calls")
+          (compilerEdge (callerNode "a") u32Node "type-reference")
+        ])
+        (relatedCapture "typed-diamond-left" (diamondNode "left") [
+          (compilerEdge (diamondNode "left") (callerNode "a") "calls")
+          (compilerEdge (diamondNode "top") (diamondNode "left") "calls")
+          (compilerEdge (diamondNode "left") u32Node "type-reference")
+        ])
+        (relatedCapture "typed-diamond-right" (diamondNode "right") [
+          (compilerEdge (diamondNode "right") (callerNode "a") "calls")
+          (compilerEdge (diamondNode "top") (diamondNode "right") "calls")
+          (compilerEdge (diamondNode "right") u32Node "type-reference")
+        ])
+        (relatedCapture "typed-diamond-top" (diamondNode "top") [
+          (compilerEdge (diamondNode "top") (diamondNode "left") "calls")
+          (compilerEdge (diamondNode "top") (diamondNode "right") "calls")
+          (compilerEdge (diamondNode "top") u32Node "type-reference")
+        ])
         {
           id = "guidance-status-after"; kind = "query"; tool = "backend.status";
           cli = [ "status" ];
