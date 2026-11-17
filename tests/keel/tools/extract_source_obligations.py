@@ -58,7 +58,7 @@ def rust_rows(path, rel, src):
         if key in seen: continue
         seen.add(key)
         # include preceding adjacent test attrs/annotations, but start hash at anchor
-        brace=code.find('{',fs+f.end()); end=brace+1 if brace>=0 else fs+f.end(); depth=1 if brace>=0 else 0
+        signature_end=a.end()+f.end(); brace=code.find('{',signature_end); end=brace+1 if brace>=0 else signature_end; depth=1 if brace>=0 else 0
         while depth and end<len(code):
             if code[end]=='{': depth+=1
             elif code[end]=='}': depth-=1
