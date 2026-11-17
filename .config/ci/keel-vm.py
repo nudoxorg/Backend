@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import secrets
@@ -17,6 +18,15 @@ FLAKE_NAR = "sha256-tuetFsHeyVP2NvnEkM14AuA8hvYwcNh39fFh1RjHI6U="
 
 def output(*command, **kwargs):
     return subprocess.check_output(command, text=True, **kwargs).strip()
+
+
+def verifier_environment():
+    # The source-bound verifier needs only local Nix tools and daemon access.
+    # Do not expose the remote-builder credentials or ambient task environment.
+    environment = {"PATH": os.environ.get("PATH", os.defpath), "HOME": "/nonexistent", "LANG": "C.UTF-8"}
+    if "NIX_REMOTE" in os.environ:
+        environment["NIX_REMOTE"] = os.environ["NIX_REMOTE"]
+    return environment
 
 
 def main():
@@ -56,7 +66,7 @@ def run(args):
     checked_verifier = Path(source_store, ".config/ci/t1_artifacts.py")
     if verifier.read_bytes() != checked_verifier.read_bytes():
         raise ValueError("published T1 verifier differs from exact-source verifier")
-    subprocess.run([sys.executable, str(checked_verifier), "verify", str(bundle), "--source-sha", args.source_sha], check=True)
+    subprocess.run([sys.executable, str(checked_verifier), "verify", str(bundle), "--source-sha", args.source_sha], check=True, env=verifier_environment())
     t1 = json.loads((bundle / "manifest.json").read_bytes())
     metadata = json.loads(output("nix", "flake", "metadata", "--json", FLAKE))
     if (metadata.get("locked", {}).get("narHash") != FLAKE_NAR
@@ -70,7 +80,7 @@ def run(args):
             subprocess.run(["nix", "eval", "--json", "--file", source_store + "/tests/keel/default.nix"], stdout=stream, check=True)
         inventory_store = output("nix", "store", "add-file", str(inventory))
         bundle_store = output("nix", "store", "add-path", str(bundle))
-        subprocess.run([sys.executable, str(checked_verifier), "verify", bundle_store, "--source-sha", args.source_sha, "--import-runtime"], check=True)
+        subprocess.run([sys.executable, str(checked_verifier), "verify", bundle_store, "--source-sha", args.source_sha, "--import-runtime"], check=True, env=verifier_environment())
         stored_t1 = json.loads(Path(bundle_store, "manifest.json").read_bytes())
         if stored_t1 != t1:
             raise ValueError("T1 manifest changed while staging")
