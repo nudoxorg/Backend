@@ -40,21 +40,38 @@ backwards clock fail closed with 503 until it catches up. At most 128 distinct
 node identities may ever enter one relay state database; retire or migrate
 state only with a documented retention and replay policy.
 
-`sender.py http://127.0.0.1:PORT TOKEN_FILE STATE_DIR -- COMMAND [ARGS...]`
-supervises the actual node process, emitting a heartbeat while it is alive and
-a goodbye only for successful exit. It forwards SIGINT and SIGTERM. Under systemd `KillMode=control-group`, pass `--signal-mode cgroup` before
-`--`: systemd delivers the stop signal to both sender and child, so the sender
-must not deliver it a second time. In this mode stop the service through
-systemd, which signals the entire cgroup; signaling the sender PID alone does
-not stop the child. The default `--signal-mode forward` is for callers that
-signal only the sender and need it to forward termination to the child. The
-optional `--interval-seconds` (1–60, default 60) and `--spool-capacity`
+The production topology runs locald directly as its systemd unit's MainPID,
+independently of telemetry. Run a separate service as the same OS user:
+
+`sender.py http://127.0.0.1:PORT TOKEN_FILE STATE_DIR --observe-unit backend-owner.service --systemctl /absolute/path/to/systemctl --`
+
+The observer reads systemd manager state and never starts, signals, or owns
+the node. It stores the boot ID, manager start timestamp and MainPID as a
+bounded generation. A heartbeat requires a recent manager observation that
+the unit is active with the same main process. A goodbye requires a matching
+generation and manager-confirmed successful process exit. If a generation's
+terminal state cannot be proved, the observer omits goodbye rather than
+inferring a crash or a clean stop. Brief processes or transitions missed while
+the observer is unavailable may have no reported goodbye. A stopped or failed
+observer, missing credential, inaccessible registry, or spool failure does not
+block or terminate the independently managed locald. A manager outage causes
+pending heartbeats to be abandoned and counted rather than asserted as current
+liveness. The exact systemd lifecycle and observer-isolation behavior must be
+proved in the NixOS VM before deployment.
+
+The existing command-supervisor mode, `sender.py URL TOKEN_FILE STATE_DIR --
+COMMAND [ARGS...]`, is retained for local process checks only. Under systemd
+`KillMode=control-group`, it requires `--signal-mode cgroup` to avoid forwarding
+the manager's signal twice; it is not the production owner topology because a
+supervisor failure can terminate its child.
+
+The optional `--interval-seconds` (1–60, default 60) and `--spool-capacity`
 (1–256, default 256) occur before `--`; they make bounded overflow observable
 in a short VM proof. A durable SQLite FIFO retains pending records and the
 number actually abandoned by the sender. It reserves one extra bounded slot
 for an orderly goodbye; replacing an older pending goodbye counts that older
-record as abandoned. Queue overflow, expiry, or abandoning
-queued heartbeats when the child exits increments that count; a subsequent
+record as abandoned. Queue overflow, expiry, or abandoning queued heartbeats
+when current liveness is not proved increments that count; a subsequent
 diagnostic reports it. The relay durably counts accepted diagnostics and their
 reported dropped-record totals. An ambiguous acknowledgment may mean that a
 record abandoned by the sender was already received; the count describes the
@@ -76,11 +93,8 @@ as a retryable timer outcome. A goodbye that cannot reach the relay inside the
 freshness window is abandoned and counted; replaying it as current could mask
 a real later failure.
 
-The service must use a systemd control group with `KillMode=control-group` and
-stop remaining processes when the supervisor exits, so killing the supervisor
-also tears down its backend child. This required custody has not yet been
-proved in a NixOS VM. Running the wrapper outside a service manager with that
-property can leave its child alive after the wrapper is forcibly killed.
+Run locald and the observer in separate systemd units and control groups;
+locald must have no `Requires=` or fatal credential dependency on telemetry.
 Backups or rollback of relay or sender state can reopen replay windows and need
 a separate recovery policy. The relay is single-process, local-only, and must
 not be exposed to a hostile network. No production credential or grant is

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Supervise a real node process and send its lifecycle to the dogfood relay."""
+"""Report observed local owner lifecycle to the dogfood relay."""
 import fcntl
 import http.client
 import json
 import os
+import re
 from pathlib import Path
 import signal
 import sqlite3
@@ -20,13 +21,14 @@ MAX_AGE = 110
 def main():
     args = sys.argv[1:]
     if "--" not in args:
-        sys.exit("usage: sender.py URL TOKEN_FILE STATE_DIR [--interval-seconds N] [--spool-capacity N] [--signal-mode forward|cgroup] [--drain-only true] -- [COMMAND [ARGS...]]")
+        sys.exit("usage: sender.py URL TOKEN_FILE STATE_DIR [--interval-seconds N] [--spool-capacity N] [--observe-unit UNIT --systemctl ABSOLUTE_PATH] [--signal-mode forward|cgroup] [--drain-only true] -- [COMMAND [ARGS...]]")
     separator = args.index("--")
     options, command = args[:separator], args[separator + 1:]
     if len(options) < 3 or (len(options) - 3) % 2:
         sys.exit("invalid sender arguments")
     url_arg, token_path, state_path = options[:3]
     interval, capacity, signal_mode, drain_only = 60.0, CAPACITY, "forward", False
+    observe_unit, systemctl = None, None
     seen = set()
     for name, value in zip(options[3::2], options[4::2]):
         if name in seen:
@@ -36,11 +38,13 @@ def main():
             if name == "--interval-seconds": interval = float(value)
             elif name == "--spool-capacity": capacity = int(value)
             elif name == "--signal-mode": signal_mode = value
+            elif name == "--observe-unit": observe_unit = value
+            elif name == "--systemctl": systemctl = value
             elif name == "--drain-only" and value == "true": drain_only = True
             else: sys.exit("unknown sender option")
         except ValueError:
             sys.exit("invalid sender option")
-    if not 1.0 <= interval <= 60.0 or not 1 <= capacity <= CAPACITY or signal_mode not in ("forward", "cgroup") or (drain_only and command) or (not drain_only and not command):
+    if not 1.0 <= interval <= 60.0 or not 1 <= capacity <= CAPACITY or signal_mode not in ("forward", "cgroup") or (drain_only and (command or observe_unit or systemctl)) or (observe_unit is not None and (command or systemctl is None)) or (observe_unit is None and not drain_only and not command) or (systemctl is not None and (observe_unit is None or not os.path.isabs(systemctl))) or (observe_unit is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.@-]{0,99}\.service", observe_unit)):
         sys.exit("sender options out of bounds")
     url = urlsplit(url_arg)
     if url.scheme != "http" or url.hostname != "127.0.0.1" or not url.port or url.path not in ("", "/") or url.username or url.password or url.query or url.fragment:
@@ -77,11 +81,17 @@ def main():
       CREATE TABLE IF NOT EXISTS meta(id INTEGER PRIMARY KEY CHECK(id=1), seq INTEGER NOT NULL, lost INTEGER NOT NULL);
       INSERT OR IGNORE INTO meta VALUES(1,0,0);
       CREATE TABLE IF NOT EXISTS queue(seq INTEGER PRIMARY KEY, created INTEGER NOT NULL, body BLOB NOT NULL);
+      CREATE TABLE IF NOT EXISTS observed(id INTEGER PRIMARY KEY CHECK(id=1), generation TEXT NOT NULL, ended INTEGER NOT NULL);
+      INSERT OR IGNORE INTO observed VALUES(1,'',1);
     """)
     db.commit()
 
-    def enqueue(kind, dropped=None):
+    def enqueue(kind, dropped=None, terminal_generation=None):
         with db:
+            if terminal_generation is not None:
+                row = db.execute("SELECT generation,ended FROM observed WHERE id=1").fetchone()
+                if row != (terminal_generation, 0):
+                    return False
             # Reserve one bounded slot for orderly retirement. If an older
             # unacknowledged goodbye exists, replace it with the latest real
             # retirement and durably count the abandoned older record.
@@ -93,6 +103,8 @@ def main():
             limit = capacity + 1 if kind == "goodbye" else capacity
             if db.execute("SELECT COUNT(*) FROM queue").fetchone()[0] >= limit:
                 db.execute("UPDATE meta SET lost=lost+1 WHERE id=1")
+                if terminal_generation is not None:
+                    db.execute("UPDATE observed SET ended=1 WHERE id=1")
                 return False
             seq = db.execute("UPDATE meta SET seq=seq+1 WHERE id=1 RETURNING seq").fetchone()[0]
             now = int(time.time())
@@ -101,6 +113,8 @@ def main():
             body = json.dumps(value, separators=(",", ":")).encode()
             db.execute("INSERT INTO queue VALUES(?,?,?)", (seq,now,body))
             if kind == "diag": db.execute("UPDATE meta SET lost=lost-? WHERE id=1", (dropped,))
+            if terminal_generation is not None:
+                db.execute("UPDATE observed SET ended=1 WHERE id=1")
         return True
 
     def flush():
@@ -154,6 +168,104 @@ def main():
             time.sleep(0.1)
         db.close()
         return 75  # Durable work remains for the next timer run.
+
+    if observe_unit is not None:
+        # This process is a separate systemd service, never the owner's parent
+        # or MainPID. Telemetry failures cannot terminate or prevent the owner.
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+        if not re.fullmatch(r"[0-9a-f-]{36}", boot):
+            sys.exit("invalid boot identity")
+        started_at = int(time.monotonic() * 1_000_000)
+        stopping = False
+        def stop_observer(_signum, _frame):
+            nonlocal stopping
+            stopping = True
+        signal.signal(signal.SIGTERM, stop_observer)
+        signal.signal(signal.SIGINT, stop_observer)
+        def inspect_owner():
+            try:
+                result = subprocess.run([systemctl, "show", observe_unit,
+                    "--property=Id,LoadState,ActiveState,MainPID,ExecMainPID,ExecMainStartTimestampMonotonic,ExecMainCode,ExecMainStatus,Result"],
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=2, check=True)
+                if len(result.stdout) > 8192:
+                    return None
+                props = {}
+                for line in result.stdout.decode("ascii").splitlines():
+                    key, sep, value = line.partition("=")
+                    if not sep or key in props:
+                        return None
+                    props[key] = value
+                required = {"Id", "LoadState", "ActiveState", "MainPID", "ExecMainPID", "ExecMainStartTimestampMonotonic", "ExecMainCode", "ExecMainStatus", "Result"}
+                if set(props) != required or props["Id"] != observe_unit or props["LoadState"] != "loaded":
+                    return None
+                main, pid = int(props["MainPID"]), int(props["ExecMainPID"])
+                start = int(props["ExecMainStartTimestampMonotonic"])
+                code, status = int(props["ExecMainCode"]), int(props["ExecMainStatus"])
+                if start <= 0 or pid <= 1:
+                    return None
+                generation = f"{boot}:{start}:{pid}"
+                active = props["ActiveState"] == "active" and main == pid
+                terminal = props["ActiveState"] in ("inactive", "failed")
+                clean = terminal and props["Result"] == "success" and code == 1 and status == 0
+                return generation, start, active, terminal, clean
+            except (OSError, ValueError, UnicodeError, subprocess.SubprocessError):
+                return None
+        # An old queued heartbeat cannot establish current owner liveness.
+        abandon_heartbeats()
+        next_check = next_heartbeat = 0.0
+        observed_active = False
+        while not stopping:
+            now = time.monotonic()
+            if now >= next_check:
+                next_check = now + 1.0
+                sample = inspect_owner()
+                if sample is None:
+                    observed_active = False
+                    abandon_heartbeats()
+                else:
+                    generation, start, active, terminal, clean = sample
+                    prior, ended = db.execute("SELECT generation,ended FROM observed WHERE id=1").fetchone()
+                    if active:
+                        if generation != prior or ended:
+                            abandon_heartbeats()
+                            with db:
+                                db.execute("UPDATE observed SET generation=?,ended=0 WHERE id=1", (generation,))
+                            next_heartbeat = 0.0
+                        observed_active = True
+                        if now >= next_heartbeat:
+                            enqueue("heartbeat")
+                            next_heartbeat = now + interval
+                    elif terminal:
+                        observed_active = False
+                        abandon_heartbeats()
+                        # A never-observed old unit status is not a fresh
+                        # goodbye. A generation begun during this observer's
+                        # lifetime is also direct manager evidence.
+                        if generation != prior and start >= started_at:
+                            with db:
+                                db.execute("UPDATE observed SET generation=?,ended=0 WHERE id=1", (generation,))
+                            prior, ended = generation, 0
+                        if generation == prior and not ended:
+                            if clean:
+                                enqueue("goodbye", terminal_generation=generation)
+                            else:
+                                with db:
+                                    db.execute("UPDATE observed SET ended=1 WHERE id=1")
+                    else:
+                        observed_active = False
+                        abandon_heartbeats()
+            lost = db.execute("SELECT lost FROM meta WHERE id=1").fetchone()[0]
+            queued = db.execute("SELECT COUNT(*) FROM queue").fetchone()[0]
+            if lost and queued < capacity:
+                enqueue("diag", min(lost, 2**31-1))
+            # Never transmit a queued heartbeat without a recent active sample.
+            row = db.execute("SELECT body FROM queue ORDER BY seq LIMIT 1").fetchone()
+            if not row or json.loads(row[0])["kind"] != "heartbeat" or observed_active:
+                flush()
+            time.sleep(0.1)
+        abandon_heartbeats()
+        db.close()
+        return 0
 
     child = subprocess.Popen(command)
     stopping = False
