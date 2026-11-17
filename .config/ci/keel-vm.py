@@ -3,7 +3,6 @@
 
 import argparse
 import json
-import os
 from pathlib import Path
 import re
 import secrets
@@ -83,35 +82,38 @@ def run(args):
             raise ValueError("T1 runtime closure is empty")
         for start in range(0, len(closure), 100):
             subprocess.run(["nix-store", "--verify-path", *closure[start:start + 100]], check=True)
-        env = os.environ.copy()
-        env.update({"KEEL_VM_SOURCE": source_store, "KEEL_VM_BUNDLE": bundle_store,
-                    "KEEL_VM_INVENTORY": inventory_store, "KEEL_VM_SHA": args.source_sha,
-                    "KEEL_VM_FLAKE": source_ref,
-                    "KEEL_VM_ROOTS": json.dumps(roots), "KEEL_VM_NONCE": secrets.token_hex(16)})
-        expression = '''
+        def nix_string(value):
+            return json.dumps(value).replace("${", "\\${")
+
+        parameters = {
+            "sourceRef": source_ref, "sourcePath": source_store, "bundlePath": bundle_store,
+            "inventoryPath": inventory_store, "sourceSha": args.source_sha,
+            "rootsJson": json.dumps(roots), "runNonce": secrets.token_hex(16),
+        }
+        expression = "let " + " ".join(f"{key} = {nix_string(value)};" for key, value in parameters.items()) + " in " + '''
           let
-            source = builtins.storePath (builtins.getEnv "KEEL_VM_SOURCE");
-            flake = builtins.getFlake (builtins.getEnv "KEEL_VM_FLAKE");
+            flake = builtins.getFlake sourceRef;
+            source = flake.outPath;
+            storeReference = path: builtins.appendContext path { "${path}".path = true; };
             runtime = flake.packages.x86_64-linux.backend-service-runtime;
             pkgs = import flake.inputs.nixpkgs { system = "x86_64-linux"; };
             keel = builtins.getFlake "github:nudoxorg/keel/c1ec0936f7473319992d5227c6b23d7cc836a45d";
-          in assert flake.rev == builtins.getEnv "KEEL_VM_SHA";
-          assert toString flake.outPath == toString source;
+          in assert flake.rev == sourceSha;
+          assert toString source == sourcePath;
           import (source + "/.config/ci/keel-vm-test.nix") {
             inherit pkgs;
-            bundle = builtins.storePath (builtins.getEnv "KEEL_VM_BUNDLE");
-            sourceSha = builtins.getEnv "KEEL_VM_SHA";
-            inventory = builtins.storePath (builtins.getEnv "KEEL_VM_INVENTORY");
+            bundle = storeReference bundlePath;
+            inherit sourceSha runNonce;
+            inventory = storeReference inventoryPath;
             sourceTree = source;
             driver = keel.packages.x86_64-linux.keel-nudox-harness;
             compilerEnvironment = runtime.compilerEnvironment;
             compilerPath = runtime.compilerPath;
             python = pkgs.python3;
-            runtimeRoots = map builtins.storePath (builtins.fromJSON (builtins.getEnv "KEEL_VM_ROOTS"));
-            runNonce = builtins.getEnv "KEEL_VM_NONCE";
+            runtimeRoots = map storeReference (builtins.fromJSON rootsJson);
           }
         '''
-        result = output("nix", "build", "--option", "max-jobs", "0", "--impure", "--no-link", "--print-out-paths", "--expr", expression, env=env)
+        result = output("nix", "build", "--option", "max-jobs", "0", "--no-link", "--print-out-paths", "--expr", expression)
         if "\n" in result or not result.startswith("/nix/store/"):
             raise ValueError("unexpected Nix test output")
         shutil.copytree(result, args.output, dirs_exist_ok=True)

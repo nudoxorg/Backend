@@ -70,6 +70,7 @@ def main():
     env["LD_LIBRARY_PATH"] = str(bundle / "lib") + os.pathsep + env.get("LD_LIBRARY_PATH", "")
     canonical = json.loads(subprocess.check_output([str(harness), "--manifest", str(manifest_path), "--inventory"], env=env, timeout=120))
     if (canonical.get("schema") != 1 or canonical.get("kind") != "keel-contract-inventory"
+            or canonical.get("driver_sha256") != driver_digest
             or canonical.get("manifest_sha256") != hashlib.sha256(inventory_bytes).hexdigest()
             or [case["id"] for case in canonical["cases"]] != ids):
         raise ValueError("canonical Keel inventory does not match the source manifest")
@@ -93,6 +94,7 @@ def main():
             or policy.get("required") is not True
             or root_bytes != list(os.fsencode(os.environ["KEEL_CGROUP_ROOT"]))
             or report.get("inventory") != canonical["cases"]
+            or report.get("authority_environment_sha256") != canonical.get("authority_environment_sha256")
             or len(reported) != len(ids) or set(reported) != set(ids)):
         raise ValueError("Keel report identity or complete case coverage mismatch")
     if completed.returncode or report.get("status") != "pass" or any(case.get("status") != "pass" for case in report["cases"]):
