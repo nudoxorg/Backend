@@ -48,7 +48,7 @@ independently of telemetry. Run a separate service as the same OS user:
 The observer reads systemd manager state and never starts, signals, or owns
 the node. It stores the boot ID, manager start timestamp and MainPID as a
 bounded generation. A heartbeat requires a recent manager observation that
-the unit is active with the same main process. A goodbye requires a matching
+the unit is active or reloading with the same main process. A goodbye requires a matching
 generation and manager-confirmed successful process exit. If a generation's
 terminal state cannot be proved, the observer omits goodbye rather than
 inferring a crash or a clean stop. Brief processes or transitions missed while
@@ -56,7 +56,11 @@ the observer is unavailable may have no reported goodbye. A stopped or failed
 observer, missing credential, inaccessible registry, or spool failure does not
 block or terminate the independently managed locald. A manager outage causes
 pending heartbeats to be abandoned and counted rather than asserted as current
-liveness. The exact systemd lifecycle and observer-isolation behavior must be
+liveness. Queued observer lifecycle records carry their systemd generation
+locally; before delivery, the sender rechecks that generation and the relevant
+active or clean-terminal state. Superseded records are abandoned and counted.
+An observer-to-manager sample can still race an immediately subsequent owner
+transition; this is bounded observation, not atomic systemd/relay coordination. The exact systemd lifecycle and observer-isolation behavior must be
 proved in the NixOS VM before deployment.
 
 The existing command-supervisor mode, `sender.py URL TOKEN_FILE STATE_DIR --
@@ -85,9 +89,10 @@ exclusive to their relay or node. Do not copy or reset sender sequence state
 without a matching identity/replay migration. Neither data path logs tokens.
 
 When the node is stopped, an independent systemd timer must invoke
-`sender.py URL TOKEN_FILE STATE_DIR --drain-only true --` to retry pending
+`sender.py URL TOKEN_FILE STATE_DIR --drain-only true --observe-unit backend-owner.service --systemctl /absolute/path/to/systemctl --` to retry pending
 records. Drain mode does not start a child or generate heartbeats or goodbyes;
-it uses the same exclusive state lock as the live sender and exits 75 if the
+it uses the same exclusive state lock as the live sender, rechecks the manager
+before delivering a queued observer goodbye, and exits 75 if the
 lock is busy or durable work remains after its five-second attempt. Treat 75
 as a retryable timer outcome. A goodbye that cannot reach the relay inside the
 freshness window is abandoned and counted; replaying it as current could mask
