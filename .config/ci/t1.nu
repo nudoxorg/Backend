@@ -30,12 +30,19 @@ const SURFACES = [
 
 def main []: nothing -> nothing {
     let started = (date now)
-    # Record the actual commands supplied by the smoke shell and fail before
-    # building when native staging or closure export cannot run.
-    let tools = ci-step "t1" "native tool preflight" {||
-        run-bounded 10sec "sh" "-c" 'for tool in patchelf readelf nix-store; do path=$(command -v "$tool") || exit 1; printf "CI-T1-TOOL %s %s\n" "$tool" "$path"; done'
+    let host = (^rustc -vV | lines | where {|line| $line | str starts-with "host: "} | first | str replace "host: " "")
+    let native_artifact_host = $host == "x86_64-unknown-linux-gnu"
+    let artifact_root = $env.CI_T1_ARTIFACT_ROOT? | default ""
+    if not $native_artifact_host and ($artifact_root | is-not-empty) {
+        error make {msg: $"T1 native artifact publication requires x86_64-unknown-linux-gnu, got ($host)"}
     }
-    if not $tools { finish-lane "t1" [$tools]; return }
+    if $native_artifact_host {
+        # Record the actual tools used for native staging and closure export.
+        let tools = ci-step "t1" "native tool preflight" {||
+            run-bounded 10sec "sh" "-c" 'for tool in patchelf readelf nix-store; do path=$(command -v "$tool") || exit 1; printf "CI-T1-TOOL %s %s\n" "$tool" "$path"; done'
+        }
+        if not $tools { finish-lane "t1" [$tools]; return }
+    }
     let cache = $env.CI_T1_CACHE_ROOT? | default ""
     let target_dir = if ($cache | is-not-empty) {
         $cache | path join "t1-target"
@@ -67,11 +74,12 @@ def main []: nothing -> nothing {
     }
     if ($cache | is-empty) { $env.CARGO_TARGET_DIR = $target_dir }
     print $"CI-TIMING lane=t1 step=cache-preparation seconds=(((date now) - $started) / 1sec | math round)"
-    let host = (^rustc -vV | lines | where {|line| $line | str starts-with "host: "} | first | str replace "host: " "")
-    let build_bin_dir = $target_dir | path join $host "debug"
-    mkdir .local/t1-stages
-    let stage = (^mktemp -d --tmpdir=.local/t1-stages native.XXXXXX | str trim | path expand)
-    let bin_dir = $stage | path join "bin"
+    let build_bin_dir = if $native_artifact_host { $target_dir | path join $host "debug" } else { $target_dir | path join "debug" }
+    let stage = if $native_artifact_host {
+        mkdir .local/t1-stages
+        ^mktemp -d --tmpdir=.local/t1-stages native.XXXXXX | str trim | path expand
+    } else { "" }
+    let bin_dir = if $native_artifact_host { $stage | path join "bin" } else { $build_bin_dir }
     let cargo = $env.BACKEND_PARALLEL_CARGO? | default "cargo"
 
     let capacity = ci-step "t1" "disk and memory preflight" {||
@@ -97,15 +105,19 @@ def main []: nothing -> nothing {
             ))
             print $"T1 cargo jobs: ($jobs)"
             with-env {CARGO_BUILD_JOBS: $jobs, CARGO_LOG: $fingerprint_log} {
-                let anchors = (prepare-keel-native $host $target_dir ($jobs | into int) $stage)
-                with-env $anchors {
-                    run-bounded 60min $cargo "build" "--locked" "--target" $host "--jobs" $jobs ...$build_args
+                if $native_artifact_host {
+                    let anchors = (prepare-keel-native $host $target_dir ($jobs | into int) $stage)
+                    with-env $anchors {
+                        run-bounded 60min $cargo "build" "--locked" "--target" $host "--jobs" $jobs ...$build_args
+                    }
+                    for surface in $SURFACES {
+                        ^cp ($build_bin_dir | path join $surface.bin) ($bin_dir | path join $surface.bin)
+                        ^chmod 700 ($bin_dir | path join $surface.bin)
+                    }
+                    verify-keel-native $host $target_dir $stage --without-keel
+                } else {
+                    run-bounded 30min $cargo "build" "--locked" "--jobs" $jobs ...$build_args
                 }
-                for surface in $SURFACES {
-                    ^cp ($build_bin_dir | path join $surface.bin) ($bin_dir | path join $surface.bin)
-                    ^chmod 700 ($bin_dir | path join $surface.bin)
-                }
-                verify-keel-native $host $target_dir $stage --without-keel
             }
         }
     } else { false }
@@ -119,7 +131,6 @@ def main []: nothing -> nothing {
         print "== t1: build was not admitted or failed; skipping smoke checks =="
         []
     }
-    let artifact_root = $env.CI_T1_ARTIFACT_ROOT? | default ""
     # Publish successful builds even when a smoke is red. Artifact presence
     # enables T2 diagnosis; the smoke results remain part of finish-lane below.
     let published = if $built and ($artifact_root | is-not-empty) {
