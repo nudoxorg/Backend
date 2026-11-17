@@ -108,7 +108,8 @@ class ArtifactProcessControls(unittest.TestCase):
     def test_inventory_and_import_reject_damage_before_execution(self):
         (self.root / "runtime.nar").write_bytes(b"damaged")
         for action in (("inventory", self.root, "--source-sha", SHA),
-                       ("verify", self.root, "--source-sha", SHA, "--import-runtime")):
+                       ("verify", self.root, "--source-sha", SHA, "--import-runtime"),
+                       ("verify", self.root, "--source-sha", SHA, "--observe-native")):
             result = self.run_cli(*action)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("artifact checksum mismatch", result.stderr)

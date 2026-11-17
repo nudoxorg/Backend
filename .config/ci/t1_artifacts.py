@@ -200,6 +200,7 @@ def main() -> None:
     consumer.add_argument("--source-sha", required=True)
     consumer.add_argument("--target", default=TARGET)
     consumer.add_argument("--import-runtime", action="store_true", help="verify and import runtime without launching smoke (for T2 consumers)")
+    consumer.add_argument("--observe-native", action="store_true", help="reobserve bundled workers using an already available runtime closure")
     consumer.add_argument("--smoke", action="store_true", help="import runtime closure and smoke the exact published binaries")
     inspector = commands.add_parser("inventory", help="verify and print retained byte identities without executing anything")
     inspector.add_argument("artifact", type=Path)
@@ -217,7 +218,7 @@ def main() -> None:
     if args.smoke or args.import_runtime:
         with (args.artifact / "runtime.nar").open("rb") as stream:
             subprocess.run(["nix-store", "--import"], stdin=stream, check=True, timeout=300)
-    if args.smoke or args.import_runtime:
+    if args.smoke or args.import_runtime or args.observe_native:
         observation = json.loads((args.artifact / "development-observation.json").read_text())
         for observer, worker, key in (("stylo_identity_observer", "backend-stylo-worker", "stylo"),
                                       ("installed_basis_observer", "backend-sqlite-worker", "sqlite")):
