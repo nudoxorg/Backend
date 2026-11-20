@@ -2284,8 +2284,10 @@ struct FrontendSet {
     values: [ProductFrontend; 7],
 }
 
-// Readiness must never construct a syntax parser. Legacy indexing may fill
-// this registry; capability reporting only observes what was already admitted.
+// The structural registry admits the linked syntax baselines once per process.
+// It is initialized by either indexing or the first readiness read, so status
+// reports the same linked frontends whether or not a legacy scan ran first.
+// Construction only admits grammar metadata; it never parses project source.
 static FRONTENDS: OnceLock<FrontendSet> = OnceLock::new();
 
 impl FrontendSet {
@@ -2348,7 +2350,9 @@ pub(super) fn semantic_capabilities(
     baseline: &backend_engine::CapabilityInventory,
     compiler: &backend_engine::application::LocalCompilerClient,
 ) -> Result<backend_engine::CapabilityInventory, String> {
-    let frontends = FRONTENDS.get();
+    // Readiness admits the linked structural baselines itself, so the count is
+    // stable whether or not a scan already touched this process.
+    let frontends = frontends().ok();
     let target = backend_engine::CapabilityTarget::Native {
         os: native_os(),
         architecture: native_architecture(),
