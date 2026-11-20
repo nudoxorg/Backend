@@ -1560,6 +1560,18 @@ class SnapshotContinuationTests(unittest.TestCase):
             surface.walk_record_pages(first, lambda _current, token: {
                 "pc4-a": second, "pc4-b": cycle}[token])
 
+    def test_selected_symbol_ids_use_canonical_hex_across_wire_spellings(self):
+        symbol = hashlib.sha256(b"Digest").digest()
+
+        def identity(value):
+            return {"semantic_data": {"kind": "selected-symbol-id", "value": value}}
+
+        for value in (symbol.hex(), list(symbol)):
+            self.assertEqual(surface._exact_symbol_id(identity(value)), symbol.hex())
+        for value in (symbol.hex()[:-1], "g" * 64, "0" * 64, [True] * 32, [0] * 32):
+            with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, "malformed selected-symbol ID"):
+                surface._exact_symbol_id(identity(value))
+
 
 class InteractiveMcpTests(unittest.TestCase):
     def _run_phase_accounting_scenario(self, proof_peak_rss, gui_peak_rss,
@@ -2070,6 +2082,34 @@ for line in sys.stdin:
             self.assertEqual(answer["exit"], 0)
             self.assertEqual(len(answer["calls"]), 1)
             self.assertEqual(answer["calls"][0]["reply"]["structuredContent"]["nextCursor"], "mcp2-issued")
+
+    def test_live_mcp_search_exhausts_the_session_owned_cursor(self):
+        from unittest.mock import patch
+
+        records = [{"identity": {"name": name}} for name in ("first", "last")]
+        reference = {"answer": "records", "query": "Digest", "coverage": [], "readiness": "ready",
+                     "records": records, "more": False}
+        request = {"tool": "backend.search", "arguments": {"query": "Digest", "limit": 1}}
+        initial = dict(reference, records=records[:1], more=True, nextCursor="mcp2-issued")
+        continuation = {"tool": "backend.search", "arguments": {
+            "query": "Digest", "limit": 1, "cursor": "mcp2-issued"}}
+
+        def session(_owner, _project, calls, timeout, on_reply):
+            self.assertEqual(calls, [request])
+            self.assertEqual(timeout, 30)
+
+            def exchange(call):
+                self.assertEqual(call, continuation)
+                return {"structuredContent": dict(reference, records=records[1:])}
+
+            reply = {"structuredContent": initial}
+            on_reply(request, reply, exchange, None)
+            return {"exit": 0, "calls": [{"call": request, "reply": reply}]}, 0.5
+
+        with patch.object(surface, "run_mcp_interactive", side_effect=session) as interactive, \
+                patch.object(surface, "run_mcp", side_effect=AssertionError("unexpected new session")):
+            self.assertEqual(surface._walk_live_mcp_search(None, Path("/fixture"), "Digest", reference), (2, 0.5))
+            interactive.assert_called_once()
 
 
 class ParallelCaseTests(unittest.TestCase):
