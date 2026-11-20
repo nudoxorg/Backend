@@ -1338,6 +1338,35 @@ class SnapshotContinuationTests(unittest.TestCase):
             surface.require_mcp_wire_budget(bad, size)
         self.assertEqual(one["mcp"]["calls"][0]["reply"]["_meta"]["backend/wireBudget"]["limitBytes"], 49152)
 
+    def test_snapshot_tolerates_only_accounted_clipping_of_a_proven_outline_preview(self):
+        import json
+
+        def fixture(tail="", *, token="mcp3-<live-validated>", root="Task", size_error=0, clipped=True):
+            text = "# Tasks\n▣ Task" + tail
+            if clipped:
+                text += surface._MCP_SHORTENED_PREVIEW
+            size = 1024 + len(json.dumps(text, ensure_ascii=False).encode()) + size_error
+            return {"mcp": {"calls": [{"call": {"tool": "backend.outline"}, "reply": {
+                "isError": False,
+                "content": [{"type": "text", "text": text}],
+                "structuredContent": {"answer": "outline", "roots": [{"name": root}], "nextCursor": token},
+                "_meta": {"backend/wireBudget": {"bytesPerToken": 4,
+                    "normalizedFrameBytesExcludingCounters": size,
+                    "normalizedEstimatedTokensExcludingCounters": (size + 3) // 4}},
+            }}]}}
+
+        reviewed = fixture(" › Task")
+        actual = fixture()
+        self.assertNotEqual(reviewed, actual)
+        old, new = surface.snapshot_comparison_answers(reviewed, actual)
+        self.assertEqual(old, new)
+        self.assertNotEqual(reviewed, actual, "keep the original evidence")
+        for changed in (fixture(" different"), fixture(root="Other"), fixture(size_error=1),
+                        fixture(token="mcp3-live"), fixture(clipped=False), fixture("x" * 80)):
+            with self.subTest(changed=changed):
+                old, new = surface.snapshot_comparison_answers(reviewed, changed)
+                self.assertNotEqual(old, new)
+
     def test_same_cursor_from_distinct_mcp_answers_requires_each_answer_proof(self):
         token = "mcp2-reused-across-answers"
         reply = {"structuredContent": self.page(token)}

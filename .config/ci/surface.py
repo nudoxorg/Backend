@@ -1571,6 +1571,75 @@ def canonical_snapshot_symbols(value):
     return value
 
 
+_MCP_SHORTENED_PREVIEW = (
+    "\n\n… readable preview shortened to fit this response; structuredContent contains the complete "
+    "page and any nextCursor; when present, copy structuredContent.continuation_call unchanged."
+)
+_MCP_PREVIEW_TAIL_DRIFT_BYTES = 64
+
+
+def _shortened_outline_preview(call: dict) -> tuple[dict, dict, str] | None:
+    if call.get("call", {}).get("tool") != "backend.outline":
+        return None
+    reply = call.get("reply", {})
+    page = reply.get("structuredContent", {})
+    cursor = page.get("nextCursor")
+    if (reply.get("isError") is not False or page.get("answer") != "outline"
+            or not isinstance(cursor, str) or not re.fullmatch(r"mcp[0-9]+-<live-validated>", cursor)):
+        return None
+    content = reply.get("content", [])
+    if len(content) != 1 or content[0].get("type") != "text":
+        return None
+    block = content[0]
+    text = block.get("text")
+    if not isinstance(text, str) or not text.endswith(_MCP_SHORTENED_PREVIEW):
+        return None
+    budget = reply.get("_meta", {}).get("backend/wireBudget", {})
+    width = budget.get("bytesPerToken")
+    size = budget.get("normalizedFrameBytesExcludingCounters")
+    tokens = budget.get("normalizedEstimatedTokensExcludingCounters")
+    if (type(width) is not int or width <= 0 or type(size) is not int or size <= 0
+            or type(tokens) is not int or tokens != (size + width - 1) // width):
+        return None
+    return block, budget, text.removesuffix(_MCP_SHORTENED_PREVIEW)
+
+
+def snapshot_comparison_answers(reviewed: dict, actual: dict) -> tuple[dict, dict]:
+    """Compare complete answers with bounded drift at a clipped outline's last byte."""
+    reviewed, actual = canonical_snapshot_symbols(reviewed), canonical_snapshot_symbols(actual)
+    for previous, current in zip(reviewed.get("mcp", {}).get("calls", []),
+                                 actual.get("mcp", {}).get("calls", [])):
+        old = _shortened_outline_preview(previous)
+        new = _shortened_outline_preview(current)
+        if old is None or new is None:
+            continue
+        old_block, old_budget, old_prefix = old
+        new_block, new_budget, new_prefix = new
+        shorter, longer = sorted((old_prefix, new_prefix), key=len)
+        # A live cursor's bytes and tokenization affect the space left for
+        # duplicate prose. Only a small extension of the same text may drift.
+        if not shorter or not longer.startswith(shorter):
+            continue
+        text_delta = len(longer[len(shorter):].encode())
+        if not 0 < text_delta <= _MCP_PREVIEW_TAIL_DRIFT_BYTES:
+            continue
+        old_size = old_budget["normalizedFrameBytesExcludingCounters"]
+        new_size = new_budget["normalizedFrameBytesExcludingCounters"]
+        old_text_bytes = len(json.dumps(old_block["text"], ensure_ascii=False).encode())
+        new_text_bytes = len(json.dumps(new_block["text"], ensure_ascii=False).encode())
+        if new_size - old_size != new_text_bytes - old_text_bytes:
+            continue
+        width = old_budget["bytesPerToken"]
+        if width != new_budget["bytesPerToken"]:
+            continue
+        size = min(old_size, new_size)
+        for block, budget in ((old_block, old_budget), (new_block, new_budget)):
+            block["text"] = shorter + _MCP_SHORTENED_PREVIEW
+            budget.update(normalizedFrameBytesExcludingCounters=size,
+                          normalizedEstimatedTokensExcludingCounters=(size + width - 1) // width)
+    return reviewed, actual
+
+
 def _search_record_identity(row: dict) -> str:
     """Use the full symbol ID, falling back to the same structural tuple as traversal."""
     identity = row.get("identity") if isinstance(row, dict) else None
@@ -3069,8 +3138,7 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
         if isinstance(baseline, (int, float)) and baseline > 0 and isinstance(indexed, (int, float)):
             entry["index_delta_percent"] = round((indexed / baseline - 1) * 100, 2)
         slow = regressions(reviewed.get("performance", {}), record["performance"])
-        reviewed_answers = canonical_snapshot_symbols(reviewed["answers"])
-        actual_answers = canonical_snapshot_symbols(record["answers"])
+        reviewed_answers, actual_answers = snapshot_comparison_answers(reviewed["answers"], record["answers"])
         if reviewed_answers != actual_answers:
             old = json.dumps(reviewed_answers, indent=2, sort_keys=True, ensure_ascii=False).splitlines()
             new = json.dumps(actual_answers, indent=2, sort_keys=True, ensure_ascii=False).splitlines()
