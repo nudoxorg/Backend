@@ -1328,6 +1328,7 @@ fn the_default_worker_wall_holds_for_realistic_migration_files() {
         );
         assert!(matches!(terminal, SqlHostTerminal::Parsed { .. }), "{path}: {terminal:?}");
     }
+}
 
 /// S6 (home): a column renamed by a later migration is filed under the file of
 /// its last rename, with lineage back to the creating file. Search, show and
