@@ -158,24 +158,37 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             };
             (checker, project_host)
         };
-        let pyrefly = self.executable(
-            LocalHostVariable::NudoxPyrefly,
-            LocalHostPathRole::Pyrefly,
-            ArrayVec::new(),
-        )?;
-        let python_checker = match pyrefly.as_deref() {
-            Some(executable) => {
-                match probe_command(NativeTool::Python, executable, &["--version"], probe_limits) {
-                    Ok(output) => LocalRuntimePythonCheckerAdmission::Ready {
-                        adapter: Pyrefly::from_executable(executable.to_path_buf())?,
-                        proof: PyreflyToolchainIdentity::from_version_output(&output),
-                    },
-                    Err(error) => LocalRuntimePythonCheckerAdmission::ProbeFailed {
-                        cause: python_checker_probe_failure(&error),
-                    },
-                }
+        let python_checker = if self.environment.python_checker_failure().is_some() {
+            // A closed explicit failure is a failed external selection, never permission to
+            // fall back to the compiled native checker or rediscover a host executable.
+            LocalRuntimePythonCheckerAdmission::ProbeFailed {
+                cause: LocalRuntimePythonCheckerProbeFailure::ConfiguredPath,
             }
-            None => LocalRuntimePythonCheckerAdmission::DeferredNativePython,
+        } else {
+            let pyrefly = self.executable(
+                LocalHostVariable::NudoxPyrefly,
+                LocalHostPathRole::Pyrefly,
+                ArrayVec::new(),
+            )?;
+            match pyrefly.as_deref() {
+                Some(executable) => {
+                    match probe_command(
+                        NativeTool::Python,
+                        executable,
+                        &["--version"],
+                        probe_limits,
+                    ) {
+                        Ok(output) => LocalRuntimePythonCheckerAdmission::Ready {
+                            adapter: Pyrefly::from_executable(executable.to_path_buf())?,
+                            proof: PyreflyToolchainIdentity::from_version_output(&output),
+                        },
+                        Err(error) => LocalRuntimePythonCheckerAdmission::ProbeFailed {
+                            cause: python_checker_probe_failure(&error),
+                        },
+                    }
+                }
+                None => LocalRuntimePythonCheckerAdmission::DeferredNativePython,
+            }
         };
         let deferred_native_python = matches!(
             python_checker,
@@ -258,6 +271,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 producer: CSharpOracle::new(helper),
                 assembly_name: None,
                 reference_directory: None,
+                additional_reference_directories: Box::new([]),
                 define_symbols: Box::new([]),
                 extra_usings: Box::new([]),
                 implicit_usings: true,

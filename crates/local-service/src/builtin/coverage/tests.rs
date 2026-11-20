@@ -272,6 +272,26 @@ fn completed_native_scope_is_complete_without_optional_embeddings() {
 }
 
 #[test]
+fn csharp_unknown_input_closure_is_gapped_after_activation() {
+    use backend_semantic::vocabulary::CSharpVersion;
+    let label = "pkg:nuget/csharp-fixture@1.0.0";
+    let key = ProductSemanticPublicationKey::new(
+        backend_engine::PackageReference::parse(label.to_owned()).unwrap(),
+        backend_semantic::vocabulary::PackageUrl::parse(label.to_owned()).unwrap(),
+        LanguageProfile::CSharp(CSharpVersion::CSharp14),
+    ).unwrap();
+    let record = published(b"legacy-csharp-publication");
+    assert_eq!(tally(&[(key.clone(), record.clone())], &activated(&[&key])).coverage(),
+        vec![ViewCoverage::Complete, ViewCoverage::Gapped { lane: Lane::Semantic }]);
+    assert_eq!(tally(&[(key.clone(), record.clone())], &ActivatedProfiles::new()).coverage(),
+        vec![ViewCoverage::Complete, ViewCoverage::Partial { lane: Lane::Semantic, completed: 0, total: 1 }]);
+    let mut pending = SemanticTally::default();
+    pending.observe(&key, &record, &activated(&[&key])).unwrap();
+    pending.observe_current(&key, Some(&record), Some(backend_engine::builtin::ProductSemanticCaptureOutcome::Pending { prior: None }), &ActivatedProfiles::new()).unwrap();
+    assert!(matches!(pending.coverage().as_slice(), [ViewCoverage::Complete, ViewCoverage::Partial { lane: Lane::Semantic, .. }]));
+}
+
+#[test]
 fn missing_native_authority_with_a_published_sibling_is_a_settled_gap() {
     let done = selected_key("native-complete");
     for reason in [SemanticUnavailableReason::Toolchain, SemanticUnavailableReason::ProjectAuthority] {
@@ -998,4 +1018,45 @@ fn cancelled_refresh_preserves_partial_selected_coverage_and_mixed_profile_failu
         backend_engine::RowState::Ready
     );
     Ok(())
+}
+
+#[test]
+fn observed_native_scope_is_gapped_without_changing_legacy_coverage() {
+    use backend_semantic::vocabulary::TypeScriptSource;
+    let label = "pkg:npm/native-fixture@1.0.0";
+    let package = backend_engine::PackageReference::parse(label.to_owned()).expect("package");
+    let coordinate = backend_semantic::vocabulary::PackageUrl::parse(label).expect("coordinate");
+    let key = ProductSemanticPublicationKey::new(
+        package, coordinate, LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+    ).expect("selected key");
+    let record = published(b"observed-native");
+    let active = activated(&[&key]);
+    let mut legacy = tally(&[(key.clone(), record.clone())], &active);
+    legacy.qualify_observed_native(&key, &record, &active, &Default::default(), true);
+    assert_eq!(legacy.coverage(), vec![ViewCoverage::Complete]);
+    let owners = [key.package_key().to_bytes()].into_iter().collect();
+    let mut observed = tally(&[(key.clone(), record.clone())], &active);
+    observed.qualify_observed_native(&key, &record, &active, &owners, true);
+    assert_eq!(observed.coverage(), vec![ViewCoverage::Complete, ViewCoverage::Gapped { lane: Lane::Semantic }]);
+    let mut removed = tally(&[(key.clone(), record.clone())], &active);
+    removed.qualify_observed_native(&key, &record, &active, &owners, false);
+    assert_eq!(removed.coverage(), vec![ViewCoverage::Complete]);
+    let mut pending = SemanticTally::default();
+    pending.qualify_observed_native(&key, &record, &active, &owners, true);
+    pending.observe_current(&key, Some(&record), Some(
+        backend_engine::builtin::ProductSemanticCaptureOutcome::Pending { prior: None }
+    ), &active).expect("pending observation");
+    assert_eq!(pending.coverage(), vec![ViewCoverage::Complete, ViewCoverage::Partial {
+        lane: Lane::Semantic, completed: 0, total: 1,
+    }]);
+}
+
+#[test]
+fn failed_latest_sql_attempt_leaves_names_gapped() {
+    use backend_engine::builtin::{SqlAnalysisRecord, SqlAttemptOutcome, SqlUnavailable};
+    let attempt = |outcome| SqlAnalysisRecord::Attempt {
+        project: [1; 32], outcome, served_selection: Some([2; 32]),
+    };
+    assert!(super::sql_row_incomplete(&attempt(SqlAttemptOutcome::Unavailable(SqlUnavailable::Deadline))));
+    assert!(!super::sql_row_incomplete(&attempt(SqlAttemptOutcome::Observed)));
 }

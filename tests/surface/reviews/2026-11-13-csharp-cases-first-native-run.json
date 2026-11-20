@@ -1,0 +1,48 @@
+{
+  "cases": [
+    "polyglot",
+    "csharp-tinyioc",
+    "typescript-query-core"
+  ],
+  "method": {
+    "baseline": "Earlier T2 runs of this change set could not index polyglot or csharp-tinyioc, because the corpus environment named the SDK's bin/dotnet launcher script as the C# execution host and the producer refuses a script it cannot hold in private custody. With the host set to the SDK's ELF muxer, polyglot published 7 complete native profiles and csharp-tinyioc published its native profiles, so these are the first answers this change set produced for both cases.",
+    "snapshot_diff": "Each candidate snapshot printed by T2 was diffed leaf by leaf against the committed snapshot, and every changed text field was compared character by character.",
+    "typescript-query-core": "Only the derived source identity moved since the snapshot accepted in 2026-11-13-typescript-query-core-native-evidence.json. frontends/typescript/build.rs hashes Cargo.toml and Cargo.lock into the TypeScript frontend identity, and the workspace wiring commit changes both files, so the source_root and revision are recomputed values, not answer changes."
+  },
+  "changes": [
+    {
+      "class": "semantic lane coverage and readiness",
+      "detail": "Only the semantic lane moves complete -> partial; exact, names and graph stay complete. The CLI outline page, the CLI searches, the MCP replies and the MCP outline page report readiness partial, the packages entry gains partial_lanes [\"semantic\"], and the MCP text renders the lane as \"semantic◐ partial\" instead of \"semantic✓n\".",
+      "verified": "SemanticTally::observe in crates/local-service/src/builtin/coverage.rs marks the semantic lane gapped for every published selected C# profile, because no C# publication yet carries an authenticated compiler-input and generator closure (5d386ac79). polyglot also carries native TypeScript evidence, which qualify_observed_native gaps the same way. Both cases already declare settled_gap_lanes [\"semantic\"] in tests/surface/cases.json (d092f32c3)."
+    },
+    {
+      "class": "outline summary wording",
+      "detail": "The outline summary line gains \" (outline pagination only; analysis coverage is not certified)\": \"18 declaration(s) · complete\" for polyglot and \"50 declaration(s) · truncated\" for csharp-tinyioc. The declaration counts and the truncation state are unchanged.",
+      "verified": "The same clause, from c3a228cf5, was accepted for twelve cases in 2026-11-13-sql-query-tool-and-outline-wording.json and for cpp-pugixml."
+    },
+    {
+      "class": "MCP tool list",
+      "detail": "backend.sql_query is listed between backend.source and backend.status, which moves two later entries by one index.",
+      "verified": "Same change, and the same cause, as accepted in 2026-11-13-sql-query-tool-and-outline-wording.json."
+    },
+    {
+      "class": "budgets",
+      "detail": "Every changed bytes, bytesExcludingCursor and normalized frame figure follows the text growth above: \"ready\" -> \"partial\" adds 2 bytes, \"complete\" -> \"partial\" removes 1, and the outline clause adds 62.",
+      "verified": "In all three updated snapshots, estimatedTokens equals ceil(bytes / 4) for every budget object (15 in polyglot, 4 in csharp-tinyioc, 4 in typescript-query-core)."
+    },
+    {
+      "class": "source identity",
+      "detail": "source_root and revision change in all three cases.",
+      "verified": "Derived roots over the changed source and build inputs; not recomputed by hand."
+    }
+  ],
+  "performance": {
+    "action": "Reviewed performance objects retained byte-for-byte; measurements from the candidate run were not adopted as baselines."
+  },
+  "required_before_merge": "A normal full T2 on the final exact head must reproduce these answers and pass every other correctness and performance check.",
+  "reviewer": "Claude Code / Opus 5.5, 2026-11-13",
+  "schema": 1,
+  "scope": "Answer-only update of the polyglot, csharp-tinyioc and typescript-query-core snapshots; no tolerance, deadline, baseline or normalizer changed.",
+  "task": "Review the T2 answer changes for the C# cases on their first native run, and the recomputed typescript-query-core source identity",
+  "unchanged": "Every declaration, name, kind, coordinate, source location, search record and outline node; the outline declaration counts (18 and 50) and truncation; coverage lanes exact, names and graph."
+}

@@ -11,6 +11,7 @@ arrayvec.workspace = true
 backend-platform = { path = "../platform" }
 backend-version = { path = "../version" }
 blake3.workspace = true
+bytemuck = { version = "=1.25.2", default-features = false, features = ["extern_crate_alloc"] }
 derive_more.workspace = true
 fearless_simd = { workspace = true, features = ["libm"] }
 loom = { workspace = true, optional = true }

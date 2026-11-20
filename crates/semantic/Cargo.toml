@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 arrayvec.workspace = true
 blake3 = { workspace = true }
+bytemuck = { version = "=1.25.2", default-features = false, features = ["extern_crate_alloc"] }
 backend-version = { path = "../version" }
 backend-flow = { path = "../flow" }
 loom = { workspace = true, optional = true }

@@ -17,6 +17,9 @@
         "csharp",
         "cpp"
       ],
+      "settled_gap_lanes": [
+        "semantic"
+      ],
       "cli": [
         [
           "search",
@@ -738,6 +741,9 @@
       "languages": [
         "csharp"
       ],
+      "settled_gap_lanes": [
+        "semantic"
+      ],
       "index_mode": "wait",
       "authored_symbols": {
         "TinyIoCContainer": "Content/TinyIoC.cs",
@@ -786,6 +792,9 @@
       "upstream": "npm:@tanstack/query-core@5.62.8",
       "languages": [
         "typescript"
+      ],
+      "settled_gap_lanes": [
+        "semantic"
       ],
       "index_mode": "wait",
       "authored_symbols": {

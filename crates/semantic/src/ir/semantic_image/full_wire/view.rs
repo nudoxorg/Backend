@@ -82,6 +82,28 @@ impl SemanticImageProofOwner {
         }
     }
 
+    /// Copies and admits an image under the caller's shared resource ledger.
+    /// The returned wrapper holds its retention charge until its backing
+    /// allocation and proof are dropped.
+    pub fn copy_bounded<'meter>(
+        bytes: &[u8],
+        meter: &'meter dyn validate::SemanticImageAdmissionMeter,
+    ) -> Result<RetainedSemanticImage<'meter>, FullSemanticImageError> {
+        validate::work(meter, 1)?;
+        let retention = validate::Reservation::new(meter, bytes.len())?;
+        validate::work(meter, u64::try_from(bytes.len().div_ceil(1024)).unwrap_or(u64::MAX))?;
+        let mut retained = bytemuck::allocation::try_zeroed_slice_box::<u8>(bytes.len())
+            .map_err(|_| super::FullSemanticImageFault::ImageStorageAllocation { bytes: bytes.len() })?;
+        for (destination, source) in retained.chunks_mut(1024).zip(bytes.chunks(1024)) {
+            validate::work(meter, 1)?;
+            destination.copy_from_slice(source);
+        }
+        let owner = Self { bytes: retained, proof: OnceLock::new(), admission: Mutex::new(()) };
+        let view = SemanticImageView::reopen_bounded(owner.as_bytes(), meter)?;
+        let _ = owner.proof.set(view.proof());
+        Ok(RetainedSemanticImage { owner, _retention: retention })
+    }
+
     /// Exact immutable encoded bytes held by this proof owner.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
@@ -106,6 +128,18 @@ impl SemanticImageProofOwner {
         let _ = self.proof.set(view.proof());
         Ok(view)
     }
+}
+
+/// An immutable admitted owner paired with its live retention reservation.
+/// The owner cannot be detached from the reservation.
+pub struct RetainedSemanticImage<'meter> {
+    owner: SemanticImageProofOwner,
+    _retention: validate::Reservation<'meter>,
+}
+
+impl Deref for RetainedSemanticImage<'_> {
+    type Target = SemanticImageProofOwner;
+    fn deref(&self) -> &Self::Target { &self.owner }
 }
 
 impl AsRef<[u8]> for SemanticImageProofOwner {
@@ -136,6 +170,18 @@ impl<'bytes> SemanticImageView<'bytes> {
             facts: validated.image,
             validated,
         })
+    }
+
+    /// Validates every plane while charging work and scratch to `meter`.
+    /// The returned view borrows the same immutable bytes, without retaining
+    /// or copying them.
+    pub fn reopen_bounded(
+        bytes: &'bytes [u8],
+        meter: &dyn validate::SemanticImageAdmissionMeter,
+    ) -> Result<Self, FullSemanticImageError> {
+        VALIDATIONS.with(|cell| cell.set(cell.get().saturating_add(1)));
+        let validated = validate::reopen_full_semantic_image_with_meter(bytes, meter)?;
+        Ok(Self { bytes, facts: validated.image, validated })
     }
 
     /// Copies a proof for use only by a byte-owning implementation in this

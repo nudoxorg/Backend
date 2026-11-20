@@ -51,7 +51,7 @@
           "schema": 3,
           "sequence": 2,
           "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-          "source_root": "28674b21f6653e215939270ffa1bec76d8b3da6b05a99f4f8f1d379d8c26d677"
+          "source_root": "d14003215d9c54383fa5a6e7e56b45def660037e96a28e483ca5415c36c8e20b"
         },
         "roots": [
           {
@@ -1179,7 +1179,7 @@
           }
         ],
         "readiness": "ready",
-        "revision": "28674b21",
+        "revision": "d1400321",
         "rows": 406
       }
     },
@@ -2291,8 +2291,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 5702,
-                "normalizedFrameBytesExcludingCounters": 22806,
+                "normalizedEstimatedTokensExcludingCounters": 5717,
+                "normalizedFrameBytesExcludingCounters": 22868,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -2301,7 +2301,7 @@
             },
             "content": [
               {
-                "text": "# project\n`/tmp/nudox-surface/python-blinker/project`\n\n◆ Symbol  `src/blinker/_utilities.py:12 › Symbol`\n  ƒ __init__  `src/blinker/_utilities.py:32 › __init__`\n    ▫ name  `name`\n    ▫ __init__  `__init__`\n  ƒ __repr__  `src/blinker/_utilities.py:35 › __repr__`\n    ▫ __repr__  `__repr__`\n  ƒ __getnewargs__  `src/blinker/_utilities.py:38 › __getnewargs__`\n    ▫ __getnewargs__  `__getnewargs__`\n  ƒ __new__  `src/blinker/_utilities.py:24 › __new__`\n    ▫ name  `name`\n    ▫ cls  `cls`\n    ▫ __new__  `__new__`\n  · symbols  `src/blinker/_utilities.py:22 › symbols`\n◆ Namespace  `src/blinker/base.py:483 › Namespace`\n  ƒ signal  `src/blinker/base.py:486 › signal`\n    ▫ doc  `doc`\n    ▫ name  `name`\n    ▫ signal  `signal`\n◆ Signal  `src/blinker/base.py:24 › Signal`\n  ƒ _clear_state  `src/blinker/base.py:456 › _clear_state`\n    ▫ _clear_state  `_clear_state`\n  ƒ has_receivers_for  `src/blinker/base.py:305 › has_receivers_for`\n    ▫ has_receivers_for  `has_receivers_for`\n    ▫ sender  `sender`\n  ƒ send  `src/blinker/base.py:204 › send`\n    ▫ sender  `sender`\n    ▫ kwargs  `kwargs`\n    ▫ send  `send`\n    ▫ _async_wrapper  `_async_wrapper`\n  ƒ _make_cleanup_receiver  `src/blinker/base.py:399 › _make_cleanup_receiver`\n    ƒ cleanup  `src/blinker/base.py:406 › cleanup`\n      ▫ cleanup  `cleanup`\n      ▫ ref  `ref`\n    ▫ _make_cleanup_receiver  `_make_cleanup_receiver`\n    ▫ receiver_id  `receiver_id`\n  ƒ send_async  `src/blinker/base.py:255 › send_async`\n    ▫ _sync_wrapper  `_sync_wrapper`\n    ▫ send_async  `send_async`\n    ▫ sender  `sender`\n    ▫ kwargs  `kwargs`\n  ƒ _cleanup_bookkeeping  `src/blinker/base.py:430 › _cleanup_bookkeeping`\n    ▫ _cleanup_bookkeeping  `_cleanup_bookkeeping`\n  ƒ _disconnect  `src/blinker/base.py:388 › _disconnect`\n    ▫ _disconnect  `_disconnect`\n    ▫ sender_id  `sender_id`\n    ▫ receiver_id  `receiver_id`\n  ƒ disconnect  `src/blinker/base.py:364 › disconnect`\n    ▫ sender  `sender`\n    ▫ receiver  `receiver`\n    ▫ disconnect  `disconnect`\n50 declaration(s) · truncated\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 50 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/python-blinker/project\",\"limit\":50,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
+                "text": "# project\n`/tmp/nudox-surface/python-blinker/project`\n\n◆ Symbol  `src/blinker/_utilities.py:12 › Symbol`\n  ƒ __init__  `src/blinker/_utilities.py:32 › __init__`\n    ▫ name  `name`\n    ▫ __init__  `__init__`\n  ƒ __repr__  `src/blinker/_utilities.py:35 › __repr__`\n    ▫ __repr__  `__repr__`\n  ƒ __getnewargs__  `src/blinker/_utilities.py:38 › __getnewargs__`\n    ▫ __getnewargs__  `__getnewargs__`\n  ƒ __new__  `src/blinker/_utilities.py:24 › __new__`\n    ▫ name  `name`\n    ▫ cls  `cls`\n    ▫ __new__  `__new__`\n  · symbols  `src/blinker/_utilities.py:22 › symbols`\n◆ Namespace  `src/blinker/base.py:483 › Namespace`\n  ƒ signal  `src/blinker/base.py:486 › signal`\n    ▫ doc  `doc`\n    ▫ name  `name`\n    ▫ signal  `signal`\n◆ Signal  `src/blinker/base.py:24 › Signal`\n  ƒ _clear_state  `src/blinker/base.py:456 › _clear_state`\n    ▫ _clear_state  `_clear_state`\n  ƒ has_receivers_for  `src/blinker/base.py:305 › has_receivers_for`\n    ▫ has_receivers_for  `has_receivers_for`\n    ▫ sender  `sender`\n  ƒ send  `src/blinker/base.py:204 › send`\n    ▫ sender  `sender`\n    ▫ kwargs  `kwargs`\n    ▫ send  `send`\n    ▫ _async_wrapper  `_async_wrapper`\n  ƒ _make_cleanup_receiver  `src/blinker/base.py:399 › _make_cleanup_receiver`\n    ƒ cleanup  `src/blinker/base.py:406 › cleanup`\n      ▫ cleanup  `cleanup`\n      ▫ ref  `ref`\n    ▫ _make_cleanup_receiver  `_make_cleanup_receiver`\n    ▫ receiver_id  `receiver_id`\n  ƒ send_async  `src/blinker/base.py:255 › send_async`\n    ▫ _sync_wrapper  `_sync_wrapper`\n    ▫ send_async  `send_async`\n    ▫ sender  `sender`\n    ▫ kwargs  `kwargs`\n  ƒ _cleanup_bookkeeping  `src/blinker/base.py:430 › _cleanup_bookkeeping`\n    ▫ _cleanup_bookkeeping  `_cleanup_bookkeeping`\n  ƒ _disconnect  `src/blinker/base.py:388 › _disconnect`\n    ▫ _disconnect  `_disconnect`\n    ▫ sender_id  `sender_id`\n    ▫ receiver_id  `receiver_id`\n  ƒ disconnect  `src/blinker/base.py:364 › disconnect`\n    ▫ sender  `sender`\n    ▫ receiver  `receiver`\n    ▫ disconnect  `disconnect`\n50 declaration(s) · truncated (outline pagination only; analysis coverage is not certified)\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 50 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/python-blinker/project\",\"limit\":50,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
                 "type": "text"
               }
             ],
@@ -2352,7 +2352,7 @@
                 "schema": 3,
                 "sequence": 2,
                 "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-                "source_root": "28674b21f6653e215939270ffa1bec76d8b3da6b05a99f4f8f1d379d8c26d677"
+                "source_root": "d14003215d9c54383fa5a6e7e56b45def660037e96a28e483ca5415c36c8e20b"
               },
               "roots": [
                 {
@@ -4564,6 +4564,7 @@
         "backend.resolve",
         "backend.search",
         "backend.source",
+        "backend.sql_query",
         "backend.status"
       ]
     }

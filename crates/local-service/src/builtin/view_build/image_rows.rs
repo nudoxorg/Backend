@@ -340,10 +340,10 @@ pub(super) fn append_resident_image_rows(
 ) -> Result<(), super::super::BuiltinModelError> {
     let image_identity = image_digest(image.as_ref());
     let key = projection_key(image_identity, project, profile, sink);
-    if let Some(cached) = residence.cached(key) {
-        return apply_projected_image(cached, sink);
+    if sink.native_ts_lines.is_none() {
+        if let Some(cached) = residence.cached(key) { return apply_projected_image(cached, sink); }
     }
-    let projected = project_image_rows(
+    let projected = super::semantic::project_image_rows_with_native_ts(
         image,
         image_identity,
         project,
@@ -354,7 +354,10 @@ pub(super) fn append_resident_image_rows(
         sink.site_declarations,
         sink.native_projection(),
         sink.native_csharp_projection(),
+        sink.native_ts_evidence,
+        sink.native_ts_lines,
     )?;
+    if sink.native_ts_lines.is_some() { return apply_projected_image(&projected, sink); }
     match residence.store(key, projected) {
         Ok(cached) => apply_projected_image(cached, sink),
         Err(bypassed) => apply_projected_image(&bypassed, sink),
@@ -410,7 +413,9 @@ fn apply_charge(
 ) -> Result<(), super::super::BuiltinModelError> {
     let updated = match charge {
         Charge::Sub(bytes) => sink.remaining_bytes.checked_sub(bytes),
-        Charge::Add(bytes) => sink.remaining_bytes.checked_add(bytes),
+        // A credit cannot raise an unbounded budget (`usize::MAX`) above itself;
+        // only an over-charge is a bound violation.
+        Charge::Add(bytes) => Some(sink.remaining_bytes.saturating_add(bytes)),
     };
     *sink.remaining_bytes = updated.ok_or_else(|| {
         super::super::BuiltinModelError(
@@ -447,6 +452,16 @@ fn projection_key(
         hasher.update(&[1]);
         hasher.update(source.source_identity().as_ref());
         hasher.update(&source.content_digest());
+    } else {
+        hasher.update(&[0]);
+    }
+    if let Some(claim) = sink.native_ts_evidence {
+        use backend_engine::Relation as _;
+        let mut encoded = Vec::new();
+        backend_engine::builtin::NativeSourceEvidenceRelation::encode_value(claim, &mut encoded);
+        hasher.update(&[1]);
+        hasher.update(&(encoded.len() as u64).to_le_bytes());
+        hasher.update(&encoded);
     } else {
         hasher.update(&[0]);
     }
@@ -797,6 +812,7 @@ pub(super) fn apply_resident_image(
     sink: &mut SemanticRowSink<'_>,
     residence: &mut ImageRowResidence,
 ) -> Result<bool, super::super::BuiltinModelError> {
+    if sink.native_ts_lines.is_some() { return Ok(false); }
     let key = projection_key(digest, project, profile, sink);
     let Some(projected) = residence.cached(key) else {
         return Ok(false);
@@ -1308,6 +1324,8 @@ fn publish_image_batch(
                     path: &path,
                     site_declarations: &[],
                     native_source: None,
+            native_ts_evidence: None,
+                native_ts_lines: None,
                 };
                 append_resident_image_rows(view, project, profile, &mut sink, residence)
                     .expect("project image");
@@ -1325,6 +1343,8 @@ fn publish_image_batch(
                     path: path.as_str(),
                     site_declarations: &[],
                     native_source: None,
+            native_ts_evidence: None,
+                native_ts_lines: None,
                 };
                 let applied = apply_resident_image(*digest, project, profile, &mut sink, residence)
                     .expect("apply image");
@@ -1372,6 +1392,8 @@ fn admit(
         path: "src/worker.rs",
         site_declarations: &[],
         native_source: None,
+            native_ts_evidence: None,
+                native_ts_lines: None,
     };
     append_resident_image_rows(
         image,
@@ -1575,6 +1597,8 @@ mod tests {
             path: PATH,
             site_declarations: sites,
             native_source,
+            native_ts_evidence: None,
+                native_ts_lines: None,
         };
         append_resident_image_rows(
             image,
@@ -1620,6 +1644,8 @@ mod tests {
             path: PATH,
             site_declarations: sites,
             native_source: None,
+            native_ts_evidence: None,
+                native_ts_lines: None,
         };
         super::apply_projected_image(&projected, &mut sink).expect("apply direct projection");
         rows
@@ -1648,6 +1674,8 @@ mod tests {
             path: PATH,
             site_declarations: &[],
             native_source: None,
+            native_ts_evidence: None,
+                native_ts_lines: None,
         };
         append_image_rows(
             image,
@@ -2074,6 +2102,8 @@ mod tests {
             path: PATH,
             site_declarations: &[],
             native_source: None,
+            native_ts_evidence: None,
+                native_ts_lines: None,
         };
         apply_projected_image(&tweaked, &mut sink).expect("apply");
         let admitted = rows.first().expect("admitted");
@@ -2241,6 +2271,8 @@ mod tests {
                 path,
                 site_declarations: &[],
                 native_source: None,
+            native_ts_evidence: None,
+                native_ts_lines: None,
             };
             append_resident_image_rows(
                 &image,
@@ -2268,6 +2300,8 @@ mod tests {
             path: "src/a.rs",
             site_declarations: &[],
             native_source: None,
+            native_ts_evidence: None,
+                native_ts_lines: None,
         };
         append_resident_image_rows(
             &image,
@@ -2293,6 +2327,8 @@ mod tests {
             path: "src/c.rs",
             site_declarations: &[],
             native_source: None,
+            native_ts_evidence: None,
+                native_ts_lines: None,
         };
         append_resident_image_rows(
             &image,
@@ -2523,6 +2559,8 @@ mod tests {
             path: PATH,
             site_declarations: &[],
             native_source: None,
+            native_ts_evidence: None,
+                native_ts_lines: None,
         };
         apply_projected_image(projected, &mut sink).expect("replay projected rows");
         (rows, remaining_bytes)
@@ -2679,6 +2717,8 @@ mod tests {
             path: PATH,
             site_declarations: &[],
             native_source: None,
+            native_ts_evidence: None,
+                native_ts_lines: None,
         };
         let applied = apply_resident_image(
             digest,
@@ -2734,6 +2774,8 @@ mod tests {
             path: PATH,
             site_declarations: &[],
             native_source: None,
+            native_ts_evidence: None,
+                native_ts_lines: None,
         };
         let applied = apply_resident_image(
             digest,
@@ -2783,6 +2825,8 @@ mod tests {
             path: PATH,
             site_declarations: &[],
             native_source: None,
+            native_ts_evidence: None,
+                native_ts_lines: None,
         };
         let fresh_hit = apply_resident_image(
             digest,
@@ -2841,6 +2885,8 @@ mod tests {
             path: PATH,
             site_declarations: &[],
             native_source: None,
+            native_ts_evidence: None,
+                native_ts_lines: None,
         };
         let failed = apply_resident_image(
             digest,
@@ -2871,6 +2917,8 @@ mod tests {
             path: PATH,
             site_declarations: &[],
             native_source: None,
+            native_ts_evidence: None,
+                native_ts_lines: None,
         };
         let recovered = apply_resident_image(
             digest,
@@ -3236,6 +3284,8 @@ mod tests {
             path: PATH,
             site_declarations: &[],
             native_source: None,
+            native_ts_evidence: None,
+                native_ts_lines: None,
         };
         let applied = apply_resident_image(
             digest,

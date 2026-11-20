@@ -121,7 +121,7 @@ impl crate::SemanticShapeReadRequest {
             object(json!({"source_relation_root":bytes(32),"semantic_relation_root":bytes(32)}));
         json!({"type":"object","properties":{
             "source":{"oneOf":[inline,reference]},"source_epoch":epoch,
-            "symbols":{"type":"array","items":bytes(32),"minItems":1,"maxItems":crate::MAX_SEMANTIC_SHAPE_BATCH},
+            "symbols":{"type":"array","items":{"oneOf":[{"type":"string","pattern":"^[0-9a-fA-F]{64}$"},bytes(32)]},"minItems":1,"maxItems":crate::MAX_SEMANTIC_SHAPE_BATCH},
             "max_nodes":{"type":"integer","minimum":1,"maximum":crate::MAX_SEMANTIC_SHAPE_NODES},
             "max_bytes":{"type":"integer","minimum":1,"maximum":crate::MAX_SEMANTIC_SHAPE_BYTES},
         },"required":["source","symbols","max_nodes","max_bytes"],"additionalProperties":false,

@@ -11,7 +11,7 @@
 //! Nothing here performs I/O, and nothing here renders. An operand the engine
 //! cannot admit fails with a [`Fault`] naming that exact operand.
 
-use crate::fault::{Fault, Operand};
+use crate::fault::{Affordance, Fault, Operand};
 use crate::grammar::{ArgumentKind, ArgumentSpec, CommandGrammar, grammar_for};
 use backend_library::{
     CommandId, CompileExecutionIntent, DeclarationRead, DeclarationSelector, IndexJobTicket,
@@ -143,6 +143,8 @@ impl Invocation {
             .any(|spec| spec.kind() == ArgumentKind::SelectedSymbol)
             && self.at(0).is_none()
             && self.option("selected-id").is_none()
+            // `graph --component` starts from a component name, not a declaration.
+            && !(self.grammar.name() == "graph" && self.option("component").is_some())
         {
             return Err(Fault::usage(
                 self.grammar.name(),
@@ -220,9 +222,9 @@ fn take_json(
         return Ok(());
     }
     if spec.kind() == ArgumentKind::Flag {
-        let enabled = value.as_bool().ok_or_else(|| {
-            Fault::usage(spec.name(), "a flag takes a JSON boolean")
-        })?;
+        let enabled = value
+            .as_bool()
+            .ok_or_else(|| Fault::usage(spec.name(), "a flag takes a JSON boolean"))?;
         if enabled {
             call.raise(spec.name());
         }
@@ -242,6 +244,10 @@ fn take_json(
                 | ArgumentKind::PackageCompilerOutcomeSelector
                 | ArgumentKind::SemanticShapeRequest
                 | ArgumentKind::SemanticSourceRequest
+                | ArgumentKind::ImpactCaptureRequest
+                | ArgumentKind::ImpactCompareRequest
+                | ArgumentKind::ImpactSourceRequest
+                | ArgumentKind::ImpactDiffRequest
         ) && scalar.is_object()
             || matches!(
                 spec.continuation_domain(),
@@ -344,12 +350,23 @@ pub enum Request {
         /// Original owner query credit, preserved by every continuation.
         limit: u16,
     },
+    /// A bounded page of incoming and outgoing related edges.
+    RelatedPage {
+        /// Exact selected declaration or coordinate.
+        selector: DeclarationSelector,
+        /// Original owner query credit.
+        limit: u16,
+        /// Opaque owner-sealed predecessor, if resuming.
+        cursor: Option<String>,
+    },
     /// A bounded search page.
     Search {
         /// Query text.
         text: String,
         /// Page bound.
         limit: u16,
+        /// Drop import and external rows from the page; they are counted, never silent.
+        declarations_only: bool,
     },
     /// A bounded name resolution page.
     Resolve {
@@ -367,6 +384,9 @@ pub enum Request {
         path: String,
         /// Owner query limit, retained unchanged by every continuation.
         limit: u16,
+        /// Declaration kinds the page keeps; empty keeps everything. Applied to the
+        /// owner's page, with the removed count reported.
+        kinds: crate::outline::KindFilter,
     },
     /// One durable product operation.
     Surface(Box<SurfaceCommand>),
@@ -420,6 +440,15 @@ pub fn declaration_selector(invocation: &Invocation) -> Result<DeclarationSelect
 
 fn declaration_request(invocation: &Invocation, read: DeclarationRead) -> Result<Request, Fault> {
     let selector = declaration_selector(invocation)?;
+    if read == DeclarationRead::Related
+        && (invocation.option("limit").is_some() || invocation.option("cursor").is_some())
+    {
+        let cursor = invocation.option("cursor").map(str::to_owned);
+        if cursor.as_deref() == Some("") {
+            return Err(Fault::usage("cursor", "related continuation must not be empty"));
+        }
+        return Ok(Request::RelatedPage { selector, limit: limit(invocation)?, cursor });
+    }
     if read == DeclarationRead::Graph
         && (invocation.option("limit").is_some() || invocation.option("cursor").is_some())
     {
@@ -507,14 +536,58 @@ pub fn lower_with_opener(
         }
         CommandId::Source => declaration_request(invocation, DeclarationRead::Source),
         CommandId::Related => declaration_request(invocation, DeclarationRead::Related),
+        CommandId::Graph | CommandId::GraphQuery if invocation.option("component").is_some() => {
+            // The neighbourhood of a component in the style graph: what it relies on.
+            // It starts from the name alone, so a declaration or a page position
+            // would be ignored; refuse them rather than answer something else.
+            if invocation.at(0).is_some()
+                || invocation.option("selected-id").is_some()
+                || invocation.option("cursor").is_some()
+            {
+                return Err(Fault::usage(
+                    "component",
+                    "--component starts from a component name; drop the coordinate, --selected-id and --cursor",
+                ));
+            }
+            let name = invocation.option("component").unwrap_or_default();
+            let seed = backend_library::impact::ImpactSeedSpec {
+                domain: backend_library::impact::ImpactDomain::Code,
+                kind: "component".to_owned(),
+                name: name.to_owned(),
+                path: invocation.option("in").map(str::to_owned),
+            };
+            style_graph_request(
+                project,
+                seed,
+                backend_library::impact::ImpactDirection::Dependencies,
+                2,
+                limit(invocation)?,
+            )
+        }
         CommandId::Graph | CommandId::GraphQuery => {
             declaration_request(invocation, DeclarationRead::Graph)
+        }
+        CommandId::References
+            if invocation.at(0).and_then(css_reference_seed).is_some() =>
+        {
+            // A CSS name as the target: the components which use it.
+            let seed = invocation.at(0).and_then(css_reference_seed).ok_or_else(|| {
+                Fault::usage("coordinate", "expected a CSS class, id or custom property")
+            })?;
+            style_graph_request(
+                project,
+                seed,
+                backend_library::impact::ImpactDirection::Dependents,
+                1,
+                200,
+            )
         }
         CommandId::Search => query_cursor(
             invocation,
             Request::Search {
                 text: invocation.require(0)?.to_owned(),
                 limit: limit(invocation)?,
+                declarations_only: invocation.flag("declarations-only"),
             },
         ),
         CommandId::Resolve | CommandId::Name => query_cursor(
@@ -534,12 +607,22 @@ pub fn lower_with_opener(
             } else {
                 path
             };
-            if invocation.option("limit").is_some() || invocation.option("cursor").is_some() {
+            let kinds = crate::outline::KindFilter::parse(
+                invocation.option("kind"),
+                invocation.option("exclude-kind"),
+            )
+            .map_err(|message| Fault::usage("kind", message))?
+            .with_top_level(invocation.flag("top-level"));
+            if invocation.option("limit").is_some()
+                || invocation.option("cursor").is_some()
+                || !kinds.is_empty()
+            {
                 query_cursor(
                     invocation,
                     Request::OutlinePage {
                         path,
                         limit: limit(invocation)?,
+                        kinds,
                     },
                 )
             } else {
@@ -592,6 +675,64 @@ pub fn lower_with_opener(
             surface(invocation, spec.id, opener).map(|command| Request::Surface(Box::new(command)))
         }
     }
+}
+
+/// A CSS name written where `references` expects a coordinate: `.card`,
+/// `#hero` or `--brand`, optionally narrowed to one stylesheet as
+/// `.title@src/Header.module.css`. Declaration coordinates never begin with
+/// these, so nothing that named a symbol before names a CSS target now.
+pub(crate) fn css_reference_seed(target: &str) -> Option<backend_library::impact::ImpactSeedSpec> {
+    use backend_library::impact::{ImpactDomain, ImpactSeedSpec};
+    let (name, path) = match target.split_once('@') {
+        Some((name, path)) if !path.is_empty() => (name, Some(path.to_owned())),
+        Some(_) => return None,
+        None => (target, None),
+    };
+    let ident = |text: &str| {
+        !text.is_empty()
+            && text.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_') || !c.is_ascii())
+            && !text.starts_with(|c: char| c.is_ascii_digit())
+    };
+    let (kind, name) = if let Some(rest) = name.strip_prefix("--") {
+        ("custom-property", format!("--{rest}"), ident(rest))
+    } else if let Some(rest) = name.strip_prefix('.') {
+        ("class", rest.to_owned(), ident(rest))
+    } else if let Some(rest) = name.strip_prefix('#') {
+        ("id", rest.to_owned(), ident(rest))
+    } else {
+        return None;
+    }
+    .into_valid()?;
+    Some(ImpactSeedSpec { domain: ImpactDomain::Css, kind: kind.to_owned(), name, path })
+}
+
+trait IntoValid<A, B> {
+    fn into_valid(self) -> Option<(A, B)>;
+}
+impl<A, B> IntoValid<A, B> for (A, B, bool) {
+    fn into_valid(self) -> Option<(A, B)> {
+        self.2.then_some((self.0, self.1))
+    }
+}
+
+fn style_graph_request(
+    project: &str,
+    seed: backend_library::impact::ImpactSeedSpec,
+    direction: backend_library::impact::ImpactDirection,
+    depth: u8,
+    page_rows: u16,
+) -> Result<Request, Fault> {
+    use backend_library::impact::{ImpactRequest, ImpactSeed};
+    let package = PackageReference::parse(project)
+        .map_err(|error| Fault::admission(error, Operand::Argument(project.to_owned())))?;
+    let mut request = ImpactRequest::new(package, ImpactSeed::Named(seed));
+    request.direction = direction;
+    request.depth = depth;
+    request.page_rows = page_rows;
+    request
+        .admit()
+        .map_err(|error| Fault::usage("request", error.to_string()))?;
+    Ok(Request::Surface(Box::new(SurfaceCommand::Impact { request })))
 }
 
 /// Lowers the JSON escape hatch, which takes one tagged surface object.
@@ -666,8 +807,28 @@ fn text(invocation: &Invocation, index: usize) -> Result<ProductText, Fault> {
 
 fn package(invocation: &Invocation, index: usize) -> Result<PackageReference, Fault> {
     let value = invocation.require(index)?;
-    PackageReference::parse(value)
-        .map_err(|error| Fault::admission(error, Operand::Argument(value.to_owned())))
+    PackageReference::parse(value).map_err(|error| {
+        let unversioned_name = value
+            .strip_prefix("pkg:")
+            .and_then(|purl| purl.split_once('/'))
+            .filter(|(ecosystem, path)| {
+                !ecosystem.is_empty() && !path.contains(['?', '#'])
+            })
+            .and_then(|(_, path)| path.rsplit('/').next())
+            .filter(|name| !name.is_empty() && !name.contains('@'));
+        if let Some(name) = unversioned_name {
+            Fault::usage(
+                value,
+                "registry package facts require an exact version; search the configured registry index by package name, then choose a returned pinned coordinate. An empty or unavailable index may require registry discovery to be configured",
+            )
+            .with_affordance(Affordance::UseCommand {
+                name: "index-search",
+                args: Box::new([name.to_owned()]),
+            })
+        } else {
+            Fault::admission(error, Operand::Argument(value.to_owned()))
+        }
+    })
 }
 
 fn selector(invocation: &Invocation, index: usize) -> Result<ProjectSelector, Fault> {
@@ -1003,6 +1164,219 @@ fn surface(
                     format!("invalid semantic source request: {error}"),
                 )
             })?,
+        },
+        CommandId::StyloQuery => {
+            use backend_library::stylo_query::{
+                StyloNameRole, StyloQueryCursor, StyloQueryRequest,
+            };
+            let (role, name) = match (
+                invocation.option("class"),
+                invocation.option("custom-property"),
+            ) {
+                (Some(name), None) => (StyloNameRole::Class, name),
+                (None, Some(name)) => (StyloNameRole::CustomProperty, name),
+                _ => {
+                    return Err(Fault::usage(
+                        "class",
+                        "supply exactly one of --class or --custom-property",
+                    ));
+                }
+            };
+            let number = |key: &str, default: u32| -> Result<u32, Fault> {
+                invocation.option(key).map_or(Ok(default), |value| {
+                    value
+                        .parse::<u32>()
+                        .map_err(|_| Fault::usage(key, "expected a non-negative integer"))
+                })
+            };
+            let page_rows = limit(invocation)?;
+            let request = StyloQueryRequest {
+                package: package(invocation, 0)?,
+                role,
+                name: name.to_owned(),
+                page_rows,
+                output_bytes: number("output-bytes", 131_072)?,
+                // A whole project's CSS facts fit the admitted ceiling; an agent should
+                // not have to page through an index just to find a class.
+                scan_rows: number("scan-rows", 4096)?,
+                scan_bytes: number("scan-bytes", 4_194_304)?,
+                continuation: invocation
+                    .option("cursor")
+                    .map(|value| StyloQueryCursor::parse(value.to_owned()))
+                    .transpose()
+                    .map_err(|error| Fault::usage("cursor", error.to_string()))?,
+            };
+            request
+                .normalized_name()
+                .map_err(|error| Fault::usage("query", error.to_string()))?;
+            SurfaceCommand::StyloQuery { request }
+        }
+        CommandId::ImpactCapture => {
+            let request = serde_json::from_str::<backend_library::impact_comparison::ImpactCaptureRequest>(invocation.require(0)?).map_err(|e| Fault::usage("request", e.to_string()))?;
+            request.admit().map_err(|e| Fault::usage("request", e.to_string()))?;
+            SurfaceCommand::ImpactCapture { request }
+        }
+        CommandId::ImpactCompare => {
+            let request = serde_json::from_str::<backend_library::impact_comparison::ImpactCompareRequest>(invocation.require(0)?).map_err(|e| Fault::usage("request", e.to_string()))?;
+            request.limits.admit().map_err(|e| Fault::usage("request", e.to_string()))?;
+            SurfaceCommand::ImpactCompare { request }
+        }
+        CommandId::ImpactDiff => {
+            let request = serde_json::from_str::<backend_library::impact_comparison::ImpactDiffRequest>(invocation.require(0)?).map_err(|e| Fault::usage("request", e.to_string()))?;
+            request.limits.admit().map_err(|e| Fault::usage("request", e.to_string()))?;
+            SurfaceCommand::ImpactDiff { request }
+        }
+        CommandId::ImpactReadSource => {
+            let request = serde_json::from_str::<backend_library::impact_comparison::ImpactReadSourceRequest>(invocation.require(0)?).map_err(|e| Fault::usage("request", e.to_string()))?;
+            SurfaceCommand::ImpactReadSource { request }
+        }
+        CommandId::StyloImpact => {
+            let request =
+                serde_json::from_str::<backend_library::stylo_impact::StyloImpactRequest>(
+                    invocation.require(0)?,
+                )
+                .map_err(|error| Fault::usage("request", error.to_string()))?;
+            request
+                .admit()
+                .map_err(|error| Fault::usage("request", error.to_string()))?;
+            SurfaceCommand::StyloImpact { request }
+        }
+        CommandId::Impact => {
+            use backend_library::impact::{
+                ImpactCursor, ImpactDirection, ImpactDomain, ImpactHandle, ImpactRequest,
+                ImpactSeed, ImpactSeedSpec, ImpactStrengthFilter, IMPACT_DEFAULT_DEPTH,
+            };
+            const SEEDS: [(&str, ImpactDomain, &str); 13] = [
+                ("class", ImpactDomain::Css, "class"),
+                ("id", ImpactDomain::Css, "id"),
+                ("selector", ImpactDomain::Css, "selector"),
+                ("custom-property", ImpactDomain::Css, "custom-property"),
+                ("at-rule", ImpactDomain::Css, "at-rule"),
+                ("stylesheet", ImpactDomain::Css, "file"),
+                ("component", ImpactDomain::Code, "component"),
+                ("sql-table", ImpactDomain::Sql, "table"),
+                ("sql-column", ImpactDomain::Sql, "column"),
+                ("sql-view", ImpactDomain::Sql, "view"),
+                ("sql-index", ImpactDomain::Sql, "index"),
+                ("sql-function", ImpactDomain::Sql, "function"),
+                ("sql-trigger", ImpactDomain::Sql, "trigger"),
+            ];
+            let named: Vec<_> = SEEDS
+                .iter()
+                .filter_map(|(option, domain, kind)| {
+                    invocation.option(option).map(|name| (*domain, *kind, name))
+                })
+                .collect();
+            let handle = invocation.option("handle");
+            let seed = match (named.as_slice(), handle) {
+                ([(domain, kind, name)], None) => ImpactSeed::Named(ImpactSeedSpec {
+                    domain: *domain,
+                    kind: (*kind).to_owned(),
+                    name: (*name).to_owned(),
+                    path: invocation.option("in").map(str::to_owned),
+                }),
+                ([], Some(handle)) => ImpactSeed::Handle {
+                    handle: ImpactHandle::parse(handle.to_owned())
+                        .map_err(|error| Fault::usage("handle", error.to_string()))?,
+                },
+                _ => {
+                    return Err(Fault::usage(
+                        "seed",
+                        "name exactly one thing to change: --class, --id, --selector, --custom-property, --at-rule, --stylesheet, --component, --sql-table, --sql-column, --sql-view, --sql-index, --sql-function, --sql-trigger, or --handle",
+                    ));
+                }
+            };
+            let direction = match invocation.option("direction").unwrap_or("dependents") {
+                "dependents" => ImpactDirection::Dependents,
+                "dependencies" => ImpactDirection::Dependencies,
+                _ => return Err(Fault::usage("direction", "expected dependents or dependencies")),
+            };
+            let depth = invocation.option("depth").map_or(Ok(IMPACT_DEFAULT_DEPTH), |value| {
+                value
+                    .parse::<u8>()
+                    .map_err(|_| Fault::usage("depth", "expected an integer from 1 to 6"))
+            })?;
+            let mut request = ImpactRequest::new(package(invocation, 0)?, seed);
+            request.direction = direction;
+            request.depth = depth;
+            request.strength = if invocation.flag("exact") {
+                ImpactStrengthFilter::Exact
+            } else {
+                ImpactStrengthFilter::Any
+            };
+            request.page_rows = limit(invocation)?;
+            request.continuation = invocation
+                .option("cursor")
+                .map(|value| ImpactCursor::parse(value.to_owned()))
+                .transpose()
+                .map_err(|error| Fault::usage("cursor", error.to_string()))?;
+            request.admit().map_err(|error| Fault::usage("request", error.to_string()))?;
+            SurfaceCommand::Impact { request }
+        }
+        CommandId::StyloReadSite => SurfaceCommand::StyloReadSite {
+            reference: backend_library::stylo_query::StyloSourceReference::parse(
+                invocation.require(0)?.to_owned(),
+            )
+            .map_err(|error| Fault::usage("reference", error.to_string()))?,
+        },
+        CommandId::SqlQuery => {
+            use backend_library::sql_query::{SqlObjectKind, SqlQueryCursor, SqlQueryRequest, SqlQueryRole};
+            // `--uses-view NAME` and friends are seeds: who mentions this object.
+            let typed_uses: Vec<String> = [("view", "uses-view"), ("index", "uses-index"), ("function", "uses-function")]
+                .iter()
+                .filter_map(|(kind, option)| invocation.option(option).map(|name| format!("{kind}:{name}")))
+                .collect();
+            if typed_uses.len() + usize::from(invocation.option("uses").is_some()) > 1 {
+                return Err(Fault::usage("uses", "name at most one of --uses, --uses-view, --uses-index, --uses-function"));
+            }
+            let uses = typed_uses.into_iter().next().or_else(|| invocation.option("uses").map(str::to_owned));
+            // Without `--role`, the filters say which fact family is meant:
+            // a uses filter (`--uses` or a typed seed) is reference-only and
+            // `--parent` a definition-only one. A bare `--name` / `--kind` asks
+            // for every definition and mention of that object, which is `any`.
+            let implied_role = if uses.is_some() {
+                "reference"
+            } else if invocation.option("parent").is_some() {
+                "definition"
+            } else {
+                "any"
+            };
+            let role = match invocation.option("role").unwrap_or(implied_role) {
+                "any" => SqlQueryRole::Any, "relation" => SqlQueryRole::Relation,
+                "output_lineage" => SqlQueryRole::OutputLineage, "diagnostic" => SqlQueryRole::Diagnostic,
+                "column_read" => SqlQueryRole::ColumnRead,
+                "statement" => SqlQueryRole::Statement, "gap" => SqlQueryRole::Gap,
+                "definition" => SqlQueryRole::Definition, "reference" => SqlQueryRole::Reference,
+                _ => return Err(Fault::usage("role", "expected any, definition, reference, gap, statement, relation, output_lineage, diagnostic, or column_read")),
+            };
+            let kind = match invocation.option("kind") {
+                None => None,
+                Some(value) => Some(SqlObjectKind::parse(value).ok_or_else(|| {
+                    Fault::usage("kind", "expected schema, table, view, column, index, trigger, function, type, or sequence")
+                })?),
+            };
+            let number = |key: &str, default: u32| -> Result<u32, Fault> {
+                invocation.option(key).map_or(Ok(default), |value| value.parse::<u32>()
+                    .map_err(|_| Fault::usage(key, "expected a non-negative integer")))
+            };
+            let request = SqlQueryRequest { package: package(invocation, 0)?, role,
+                name: invocation.option("name").map(str::to_owned), kind,
+                parent: invocation.option("parent").map(str::to_owned),
+                uses, page_rows: limit(invocation)?,
+                output_bytes: number("output-bytes", 131_072)?, scan_rows: number("scan-rows", 65_536)?,
+                scan_bytes: number("scan-bytes", 33_554_432)?,
+                continuation: invocation.option("cursor").map(|value| SqlQueryCursor::parse(value.to_owned()))
+                    .transpose().map_err(|error| Fault::usage("cursor", error.to_string()))?,
+            };
+            if let Some(problem) = request.filter_problem() {
+                return Err(Fault::usage("query", problem));
+            }
+            request.validate().map_err(|error| Fault::usage("query", error.to_string()))?;
+            SurfaceCommand::SqlQuery { request }
+        }
+        CommandId::SqlReadSource => SurfaceCommand::SqlReadSource {
+            reference: backend_library::sql_query::SqlSourceReference::parse(invocation.require(0)?.to_owned())
+                .map_err(|error| Fault::usage("reference", error.to_string()))?,
         },
         CommandId::SemanticShapes => {
             let request = serde_json::from_str::<backend_library::SemanticShapeReadRequest>(

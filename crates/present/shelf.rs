@@ -112,11 +112,105 @@ impl LanguageCount {
     }
 }
 
+/// Where one profile's semantic refresh stands for a project, from its source receipt.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ProfileSemantic {
+    /// A generation was selected and covered the whole declared scope.
+    Complete,
+    /// A generation was selected and covered `completed` of `total` files.
+    Partial {
+        /// Files the generation covered.
+        completed: u32,
+        /// Files in the declared scope.
+        total: u32,
+    },
+    /// Semantic work has not reached a terminal result.
+    Pending,
+    /// No semantic generation could be selected; the files are indexed structurally.
+    Unavailable,
+    /// The last refresh failed.
+    Failed,
+}
+
+impl ProfileSemantic {
+    /// Returns the stable lowercase name shared by every surface.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::Partial { .. } => "partial",
+            Self::Pending => "pending",
+            Self::Unavailable => "unavailable",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// How many source files one language profile holds in a project, and how far its
+/// semantic lane got. This is file evidence from the owner's source receipt, not a
+/// declaration count.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ProfileFiles {
+    profile: &'static str,
+    files: u64,
+    semantic: ProfileSemantic,
+}
+
+impl ProfileFiles {
+    /// Records one profile's file count and semantic state.
+    #[must_use]
+    pub const fn new(profile: &'static str, files: u64, semantic: ProfileSemantic) -> Self {
+        Self {
+            profile,
+            files,
+            semantic,
+        }
+    }
+
+    /// Returns the closed profile spelling (`typescript`, `tsx`, `csharp`, ...).
+    #[must_use]
+    pub const fn profile(self) -> &'static str {
+        self.profile
+    }
+
+    /// Returns the number of source files in this profile's frontier.
+    #[must_use]
+    pub const fn files(self) -> u64 {
+        self.files
+    }
+
+    /// Returns the semantic state of this profile.
+    #[must_use]
+    pub const fn semantic(self) -> ProfileSemantic {
+        self.semantic
+    }
+
+    /// Returns the clause every text renderer prints: `typescript 9 file(s)`, with
+    /// the semantic state appended when it is not complete.
+    #[must_use]
+    pub fn phrase(self) -> String {
+        match self.semantic {
+            ProfileSemantic::Complete => format!("{} {} file(s)", self.profile, self.files),
+            ProfileSemantic::Partial { completed, total } => format!(
+                "{} {} file(s) (semantic partial {completed} of {total})",
+                self.profile, self.files
+            ),
+            other => format!(
+                "{} {} file(s) (semantic {})",
+                self.profile,
+                self.files,
+                other.name()
+            ),
+        }
+    }
+}
+
 /// One project on the shelf.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ShelfEntry {
     identity: Identity,
     readiness: Readiness,
+    profiles: Box<[ProfileFiles]>,
     languages: Box<[LanguageCount]>,
     declarations: Option<RowCount>,
     published_rows: Option<RowCount>,
@@ -130,6 +224,7 @@ impl ShelfEntry {
         Self {
             identity,
             readiness,
+            profiles: Box::new([]),
             languages: Box::new([]),
             declarations: None,
             published_rows: None,
@@ -166,6 +261,12 @@ impl ShelfEntry {
         })));
         self.languages = sorted.into_boxed_slice();
         self
+    }
+
+    /// Returns the per-profile source-file counts, in the receipt's canonical order.
+    #[must_use]
+    pub fn profiles(&self) -> &[ProfileFiles] {
+        &self.profiles
     }
 
     /// Returns the project identity.
@@ -274,6 +375,23 @@ impl Shelf {
     #[must_use]
     pub fn with_facts(mut self, facts: PublishedFacts) -> Self {
         self.facts = facts;
+        self
+    }
+
+    /// Attaches per-project source-file counts by package row. A package without an
+    /// entry in `profiles` keeps the shelf's earlier answer: no language evidence.
+    #[must_use]
+    pub(crate) fn with_profiles(
+        mut self,
+        profiles: &std::collections::BTreeMap<backend_library::PackageKey, Vec<ProfileFiles>>,
+    ) -> Self {
+        for entry in &mut self.entries {
+            if let IdentityKey::Package(package) = entry.identity.key()
+                && let Some(found) = profiles.get(&package)
+            {
+                entry.profiles = found.clone().into_boxed_slice();
+            }
+        }
         self
     }
 

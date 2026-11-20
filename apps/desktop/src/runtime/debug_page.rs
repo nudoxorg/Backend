@@ -52,7 +52,7 @@ fn relation(relation: &Relation) -> String {
     };
     let provenance = match relation.provenance {
         Provenance::Derived { via, confidence } => {
-            format!("derived:{via:?}/{}", confidence_name(confidence))
+            format!("derived:{via:?}/{}", confidence.map_or("unspecified", confidence_name))
         }
         other => other.name().to_owned(),
     };
@@ -204,6 +204,9 @@ pub fn symbol_text(page: &SymbolPage) -> String {
             let _ = writeln!(out, "  references: {}", gap(missing));
         }
     }
+    if let Some(missing) = &page.references_gap {
+        let _ = writeln!(out, "  references coverage: {}", gap(missing));
+    }
     let _ = writeln!(
         out,
         "  outline: {}",
@@ -345,6 +348,9 @@ pub fn source_text(view: &SourceView) -> String {
     }));
     let _ = writeln!(out, "  uses here: {}", known(&view.uses, |spans| format!("{} spans", spans.len())));
     let _ = writeln!(out, "  uses elsewhere: {}", view.uses_elsewhere.len());
+    if let Some(missing) = &view.references_gap {
+        let _ = writeln!(out, "  references coverage: {}", gap(missing));
+    }
     match &view.text {
         Known::Known(text) => {
             let _ = writeln!(out, "  text ({:?}, from line {}):", text.origin, text.first_line());

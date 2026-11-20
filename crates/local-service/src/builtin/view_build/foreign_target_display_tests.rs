@@ -442,7 +442,7 @@ fn duplicate_foreign_names_keep_distinct_native_ids_and_empty_name_stays_unknown
             .chain(second.root.row_refs())
             .map(|row| row.id)
             .collect::<BTreeSet<_>>();
-        assert_eq!(seen, targets.iter().map(|row| row.row.id).collect());
+        assert_eq!(seen, targets.iter().map(|row| row.row.id).collect::<BTreeSet<_>>());
     }
 }
 

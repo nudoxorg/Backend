@@ -497,3 +497,47 @@ fn existing_index_worker_displaced_read_maps_retire_on_its_original_thread() {
     let completion = worker.join();
     settle_then_write(&mut fixture, completion);
 }
+
+#[test]
+fn actual_worker_late_stop_retires_current_and_queued_attempts() -> Result<(), Box<dyn std::error::Error>> {
+    if crate::test_support::run_test_in_child(module_path!(), "actual_worker_late_stop_retires_current_and_queued_attempts")? { return Ok(()); }
+    use backend_extension_turso::{AttemptDisposition, CandidateAttemptRetirementReason};
+    let mut fixture = AdapterFixture::new();
+    install_mixed_native_compiler(&mut fixture);
+    let work = actual_work_with_queue(&mut fixture, true);
+    let mut attempts = vec![work.identity.attempt.clone()];
+    attempts.extend(work.job.pending_attempts());
+    assert_eq!(attempts.len(), 2);
+    let cancelled = work.cancellation_for_test();
+    let (reached_tx, reached_rx) = std::sync::mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    crate::builtin::semantic_authority::test_install_before_local_selection_gate(reached_tx, release_rx);
+    struct WorkerGuard {
+        worker: Option<ProfileWorker>,
+        cancellation: Arc<AtomicBool>,
+        release: Option<std::sync::mpsc::SyncSender<()>>,
+    }
+    impl Drop for WorkerGuard {
+        fn drop(&mut self) {
+            self.cancellation.store(true, Ordering::Release);
+            if let Some(release) = self.release.take() { let _ = release.try_send(()); }
+            if let Some(worker) = self.worker.take() { let _ = worker.join(); }
+        }
+    }
+    let worker = ProfileWorker::spawn(work).map_err(|(_, error)| std::io::Error::other(format!("spawn compiler: {error}")))?;
+    let mut guard = WorkerGuard { worker: Some(worker), cancellation: Arc::clone(&cancelled), release: Some(release_tx) };
+    reached_rx.recv_timeout(std::time::Duration::from_secs(600)).map_err(|e| std::io::Error::other(format!("publication gate: {e}")))?;
+    cancelled.store(true, Ordering::Release);
+    guard.release.take().ok_or("missing gate release")?.send(())?;
+    let completion = guard.worker.take().ok_or("missing worker")?.join();
+    assert!(matches!(&completion.outcome, ProfileOutcome::Admitted(Err(_)) | ProfileOutcome::Cancelled));
+    let adapter = fixture.adapter.as_mut().expect("actual adapter");
+    install_transition_job(adapter);
+    let job = adapter.indexing.as_mut().expect("actual resident job");
+    job.cancelled = cancelled;
+    job.work = IndexJobWork::Compiling { worker: ProfileWorker::Returned(completion) };
+    adapter.close();
+    drop(fixture.adapter.take());
+    assert_eq!(attempt_dispositions(&fixture, &attempts), vec![AttemptDisposition::Retired(CandidateAttemptRetirementReason::Cancelled); 2]);
+    Ok(())
+}

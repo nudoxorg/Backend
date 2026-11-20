@@ -137,27 +137,6 @@ fn exercise(fixture: &OwnerFixture) {
     let camera = graph.read_with(rig.cx, |graph, _| graph.camera().expect("actual resource-enabled wheel camera"));
     assert_ne!(camera, fitted, "positive native wheel at the exact later stale-frame point");
 
-    // Delay an actual successful projection, after real rows were assembled.
-    // This gate supplies no root, facts, Ready state, or composition receipt.
-    let delivery = Arc::new(TestProjectionGate::default());
-    rig.cx.update(|_, cx| {
-        indexed_world::install_test_production_delivery(&old_key, delivery.clone(), cx);
-        indexed_world::invalidate_publication(fixture.root.authority(), cx);
-    });
-    let requester = rig.cx.new(|_| ());
-    let held_key = requester.update(rig.cx, |_, cx| {
-        let key = indexed_world::key(fixture.root, old_key.preferred().cloned(), cx).expect("real serving key");
-        assert!(matches!(indexed_world::get(&key, cx), State::Reading));
-        key
-    });
-    let deadline = Instant::now() + Duration::from_secs(120);
-    while !delivery.entered() {
-        rig.cx.run_until_parked();
-        assert!(Instant::now() < deadline, "actual production projection must reach its delivery gate");
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    assert!(delivery.production_rows().is_some_and(|rows| rows > 0), "held value contains actual indexed rows");
-
     super::tab_to_graph_control(&mut rig, "Declarations");
     let resource_origin = rig.cx.update(|window, cx| {
         let origin = window.focused(cx).expect("actual production resource receiver");
@@ -187,8 +166,15 @@ fn exercise(fixture: &OwnerFixture) {
     let revision = renewal.revision().expect("actual service recertifies attachment renewal");
     let renewed_root = VersionedRoot::from_revision(1, revision.cursor(), 0);
     assert!(renewed_root.same_authority(fixture.root));
+    rig.cx.update(|_, cx| {
+        assert_eq!(rig.shell.read(cx).graph_entity(cx).expect("scene before renewal").entity_id(), graph.entity_id(),
+            "the retained scene must survive local interaction before renewal");
+        assert!(old_key.at_authority(renewed_root), "renewal retains the exact producer authority");
+        assert!(old_key.serving_owner(cx).is_some(), "the original serving generation remains registered");
+    });
     gate.publish(OwnerState::Ready { key: renewed_root, mode: ServiceMode::Attached });
     rig.settle();
+    assert_eq!(projection(&mut rig).0, old_key, "renewal must preserve the indexed-world key");
     assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("renewed same-generation scene").entity_id(), graph.entity_id());
     assert!(native_bounds(&mut rig, "Button", "Declarations", true).is_some(), "a certified attachment renewal re-admits resource controls");
     assert!(native_bounds(&mut rig, "Status", "Earlier indexed graph · local exploration available; the index connection is unavailable.", false).is_none(),
@@ -201,6 +187,27 @@ fn exercise(fixture: &OwnerFixture) {
     let target = targets.native_keys().into_iter().next().expect("registered production Shelf receiver");
     rig.cx.update(|window, cx| assert!(targets.focus_native(&target, window, cx)));
     let later_origin = rig.cx.update(|window, cx| window.focused(cx)).expect("later real Shelf focus");
+    // Delay an actual successful projection, after real rows were assembled.
+    // This gate supplies no root, facts, Ready state, or composition receipt.
+    let delivery = Arc::new(TestProjectionGate::default());
+    rig.cx.update(|_, cx| {
+        indexed_world::install_test_production_delivery(&old_key, delivery.clone(), cx);
+        indexed_world::invalidate_publication(fixture.root.authority(), cx);
+    });
+    let requester = rig.cx.new(|_| ());
+    let held_key = requester.update(rig.cx, |_, cx| {
+        let key = indexed_world::key(fixture.root, old_key.preferred().cloned(), cx).expect("real serving key");
+        assert!(matches!(indexed_world::get(&key, cx), State::Reading));
+        key
+    });
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while !delivery.entered() {
+        rig.cx.run_until_parked();
+        assert!(Instant::now() < deadline, "actual production projection must reach its delivery gate");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(delivery.production_rows().is_some_and(|rows| rows > 0), "held value contains actual indexed rows");
+
     assert!(gate.attached_lost_at(gate.attached_ready_epoch().expect("renewed attachment"), "actual renewed attachment withdrawn".into()));
     rig.settle();
     assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), Some(later_origin),
@@ -509,7 +516,10 @@ fn exercise_header_controls(fixture: &OwnerFixture) {
         header_tab_to(&mut rig, &targets, "view-code");
         let bounds = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("view-page", cx)).expect("old painted Page");
         let native = header_node(&mut rig, "Show Page view");
-        let (original_focus, observed_frame, retained_frame) = rig.cx.update(|window, cx| {
+        let deferred_observed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let observed = deferred_observed.clone();
+        let store = rig.graph.store.clone();
+        rig.cx.update(|window, cx| {
             let before = window.focused(cx);
             assert_eq!(targets.native_focused(window).as_deref(), Some("view-code"));
             let armed_frame = window.a11y_frame_number();
@@ -561,15 +571,17 @@ fn exercise_header_controls(fixture: &OwnerFixture) {
             if retained { assert_eq!(window.a11y_frame_number(), armed_frame, "retained input must not paint a new AX capability"); }
             assert_eq!(window.focused(cx), before, "retired input does not transfer keyboard ownership");
             assert_eq!(rig.graph.store.read(cx).snapshot().route(), &Route::World, "old controls cannot navigate");
-            (before, window.a11y_frame_number(), retained)
+            let observed_frame = window.a11y_frame_number();
+            // Queued after the actual input's deferred focus work, this runs
+            // after region borrows return and before test-support's eager paint.
+            window.defer(cx, move |window, cx| {
+                assert_eq!(window.focused(cx), before, "retired deferred input cannot steal native focus");
+                if retained { assert_eq!(window.a11y_frame_number(), observed_frame); }
+                assert_eq!(store.read(cx).snapshot().route(), &Route::World);
+                observed.set(true);
+            });
         });
-        // Observe the real deferred Tab/activation phase after region borrows
-        // return, before pumping the owner watcher or a later native event.
-        rig.cx.update(|window, cx| {
-            assert_eq!(window.focused(cx), original_focus, "retired deferred input cannot steal native focus");
-            if retained_frame { assert_eq!(window.a11y_frame_number(), observed_frame); }
-            assert_eq!(rig.graph.store.read(cx).snapshot().route(), &Route::World);
-        });
+        assert!(deferred_observed.get(), "the deferred input observation must run");
         rig.cx.run_until_parked();
         assert_eq!(rig.route(), Route::World);
     }

@@ -51,7 +51,7 @@
           "schema": 3,
           "sequence": 2,
           "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-          "source_root": "f3b51d188eda41ead7bbc6af5ea14e8549bfa729977ac5f9f2c70af8b6ad8979"
+          "source_root": "950d4adc284a19699a2dcbd67fe534b6f9edbe74aa9656c3822931c995724d1a"
         },
         "roots": [
           {
@@ -2270,7 +2270,7 @@
           }
         ],
         "readiness": "ready",
-        "revision": "f3b51d18",
+        "revision": "950d4adc",
         "rows": 1866
       }
     },
@@ -2578,7 +2578,7 @@
           {
             "identity": {
               "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::b3e329d4a650c9a2d70d62ade1ed4cf8d7691a2b4017d811605ae4e0fe86377e::ttl",
-              "line": 540,
+              "line": 539,
               "name": "ttl",
               "path": "src/cachetools/__init__.py",
               "segments": [
@@ -2622,7 +2622,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/__init__.py:540 › ttl"
+              "trail": "project › src/cachetools/__init__.py:539 › ttl"
             },
             "kind": "property",
             "language": "python",
@@ -2882,7 +2882,7 @@
           {
             "identity": {
               "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::e1ae0f68e58b7ed6547d3b7dd958d088b7f118795cb101d9d0dd2dde89cdc3aa::cached",
-              "line": 186,
+              "line": 185,
               "name": "cached",
               "path": "src/cachetools/__init__.pyi",
               "segments": [
@@ -2926,7 +2926,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/__init__.pyi:186 › cached"
+              "trail": "project › src/cachetools/__init__.pyi:185 › cached"
             },
             "kind": "function",
             "language": "python",
@@ -2936,7 +2936,7 @@
           {
             "identity": {
               "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::e1ae0f68e58b7ed6547d3b7dd958d08888035d1ca8ce27cbd6272c7514e1063d::cached",
-              "line": 177,
+              "line": 176,
               "name": "cached",
               "path": "src/cachetools/__init__.pyi",
               "segments": [
@@ -2980,7 +2980,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/__init__.pyi:177 › cached"
+              "trail": "project › src/cachetools/__init__.pyi:176 › cached"
             },
             "kind": "function",
             "language": "python",
@@ -2990,7 +2990,7 @@
           {
             "identity": {
               "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::e1ae0f68e58b7ed6547d3b7dd958d08819d646b6a235a593ceec6f59bc8ecf62::cached",
-              "line": 169,
+              "line": 168,
               "name": "cached",
               "path": "src/cachetools/__init__.pyi",
               "segments": [
@@ -3034,7 +3034,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/__init__.pyi:169 › cached"
+              "trail": "project › src/cachetools/__init__.pyi:168 › cached"
             },
             "kind": "function",
             "language": "python",
@@ -3366,7 +3366,7 @@
           {
             "identity": {
               "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::aa44b5b6fbe938f8a0808367ded5047a0cb33339164d024873da3539cfff6e40::_cached_wrapper",
-              "line": 153,
+              "line": 152,
               "name": "_cached_wrapper",
               "path": "src/cachetools/__init__.pyi",
               "segments": [
@@ -3410,7 +3410,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/__init__.pyi:153 › _cached_wrapper"
+              "trail": "project › src/cachetools/__init__.pyi:152 › _cached_wrapper"
             },
             "kind": "class",
             "language": "python",
@@ -3420,7 +3420,7 @@
           {
             "identity": {
               "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::6788037bbf9a0945fe14042416357b32c7b9107b2bd14126bea4b196818390b4::_cached_wrapper_info",
-              "line": 165,
+              "line": 164,
               "name": "_cached_wrapper_info",
               "path": "src/cachetools/__init__.pyi",
               "segments": [
@@ -3464,7 +3464,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/__init__.pyi:165 › _cached_wrapper_info"
+              "trail": "project › src/cachetools/__init__.pyi:164 › _cached_wrapper_info"
             },
             "kind": "class",
             "language": "python",
@@ -3528,7 +3528,7 @@
           {
             "identity": {
               "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::1acdf8e35af7850eb30888b17bc7391ed8ec41cb467bf97ad0dd00928a66428a::_cachedmethod_wrapper",
-              "line": 195,
+              "line": 194,
               "name": "_cachedmethod_wrapper",
               "path": "src/cachetools/__init__.pyi",
               "segments": [
@@ -3572,7 +3572,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/__init__.pyi:195 › _cachedmethod_wrapper"
+              "trail": "project › src/cachetools/__init__.pyi:194 › _cachedmethod_wrapper"
             },
             "kind": "class",
             "language": "python",
@@ -3582,7 +3582,7 @@
           {
             "identity": {
               "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::ab26e2716c1949b7d1f6c4b65369eed1a54517ac1709243011b1268b05532a62::_cachedmethod_wrapper_info",
-              "line": 211,
+              "line": 210,
               "name": "_cachedmethod_wrapper_info",
               "path": "src/cachetools/__init__.pyi",
               "segments": [
@@ -3626,7 +3626,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/__init__.pyi:211 › _cachedmethod_wrapper_info"
+              "trail": "project › src/cachetools/__init__.pyi:210 › _cachedmethod_wrapper_info"
             },
             "kind": "class",
             "language": "python",
@@ -3746,7 +3746,7 @@
           {
             "identity": {
               "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::5896c7fb286f74377b0dcbcbbc63222aa28fc2650edc28c9d8503571e99bb1b2::cachedmethod",
-              "line": 218,
+              "line": 217,
               "name": "cachedmethod",
               "path": "src/cachetools/__init__.pyi",
               "segments": [
@@ -3790,7 +3790,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/__init__.pyi:218 › cachedmethod"
+              "trail": "project › src/cachetools/__init__.pyi:217 › cachedmethod"
             },
             "kind": "function",
             "language": "python",
@@ -3800,7 +3800,7 @@
           {
             "identity": {
               "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::5896c7fb286f74377b0dcbcbbc63222a3f15e414237ed6fe65c00a5fd66af447::cachedmethod",
-              "line": 237,
+              "line": 236,
               "name": "cachedmethod",
               "path": "src/cachetools/__init__.pyi",
               "segments": [
@@ -3844,7 +3844,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/__init__.pyi:237 › cachedmethod"
+              "trail": "project › src/cachetools/__init__.pyi:236 › cachedmethod"
             },
             "kind": "function",
             "language": "python",
@@ -3909,7 +3909,7 @@
           {
             "identity": {
               "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::5896c7fb286f74377b0dcbcbbc63222a34630770070ec7c516b8dc92c5c2e97a::cachedmethod",
-              "line": 226,
+              "line": 225,
               "name": "cachedmethod",
               "path": "src/cachetools/__init__.pyi",
               "segments": [
@@ -3953,7 +3953,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/__init__.pyi:226 › cachedmethod"
+              "trail": "project › src/cachetools/__init__.pyi:225 › cachedmethod"
             },
             "kind": "function",
             "language": "python",
@@ -4548,7 +4548,7 @@
                 {
                   "identity": {
                     "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::e1ae0f68e58b7ed6547d3b7dd958d088b7f118795cb101d9d0dd2dde89cdc3aa::cached",
-                    "line": 186,
+                    "line": 185,
                     "name": "cached",
                     "path": "src/cachetools/__init__.pyi",
                     "segments": [
@@ -4592,7 +4592,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project › src/cachetools/__init__.pyi:186 › cached"
+                    "trail": "project › src/cachetools/__init__.pyi:185 › cached"
                   },
                   "kind": "function",
                   "language": "python",
@@ -4602,7 +4602,7 @@
                 {
                   "identity": {
                     "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::e1ae0f68e58b7ed6547d3b7dd958d08888035d1ca8ce27cbd6272c7514e1063d::cached",
-                    "line": 177,
+                    "line": 176,
                     "name": "cached",
                     "path": "src/cachetools/__init__.pyi",
                     "segments": [
@@ -4646,7 +4646,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project › src/cachetools/__init__.pyi:177 › cached"
+                    "trail": "project › src/cachetools/__init__.pyi:176 › cached"
                   },
                   "kind": "function",
                   "language": "python",
@@ -4672,8 +4672,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 5723,
-                "normalizedFrameBytesExcludingCounters": 22891,
+                "normalizedEstimatedTokensExcludingCounters": 5739,
+                "normalizedFrameBytesExcludingCounters": 22953,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -4682,7 +4682,7 @@
             },
             "content": [
               {
-                "text": "# project\n`/tmp/nudox-surface/python-cachetools/project`\n\n◆ LFUCache  `src/cachetools/__init__.py:203 › LFUCache`\n  ◆ _Link  `src/cachetools/__init__.py:206 › _Link`\n    ƒ unlink  `src/cachetools/__init__.py:213 › unlink`\n    ƒ __init__  `src/cachetools/__init__.py:209 › __init__`\n      ▫ count  `count`\n    · __slots__  `src/cachetools/__init__.py:207 › __slots__`\n  ƒ __init__  `src/cachetools/__init__.py:219 › __init__`\n    ▫ maxsize  `maxsize`\n    ▫ getsizeof  `getsizeof`\n  ƒ __setitem__  `src/cachetools/__init__.py:231 › __setitem__`\n    ▫ cache_setitem  `cache_setitem`\n    ▫ value  `value`\n    ▫ key  `key`\n  ƒ popitem  `src/cachetools/__init__.py:253 › popitem`\n  ƒ clear  `src/cachetools/__init__.py:262 › clear`\n  ƒ __delitem__  `src/cachetools/__init__.py:246 › __delitem__`\n    ▫ cache_delitem  `cache_delitem`\n    ▫ key  `key`\n  ƒ __touch  `src/cachetools/__init__.py:268 › __touch`\n    ▫ key  `key`\n  ƒ __getitem__  `src/cachetools/__init__.py:225 › __getitem__`\n    ▫ cache_getitem  `cache_getitem`\n    ▫ key  `key`\n◆ _TimedCache  `src/cachetools/__init__.py:373 › _TimedCache`\n  ◆ _Timer  `src/cachetools/__init__.py:376 › _Timer`\n    ƒ __exit__  `src/cachetools/__init__.py:395 › __exit__`\n      ▫ exc  `exc`\n    ƒ __init__  `src/cachetools/__init__.py:377 › __init__`\n      ▫ timer  `timer`\n    ƒ __call__  `src/cachetools/__init__.py:381 › __call__`\n    ƒ __getattr__  `src/cachetools/__init__.py:401 › __getattr__`\n      ▫ name  `name`\n    ƒ __reduce__  `src/cachetools/__init__.py:398 › __reduce__`\n    ƒ __enter__  `src/cachetools/__init__.py:387 › __enter__`\n  ƒ expire  `src/cachetools/__init__.py:447 › expire`\n    ▫ time  `time`\n  ƒ setdefault  `src/cachetools/__init__.py:437 › setdefault`\n    ▫ args  `args`\n    ▫ kwargs  `kwargs`\n  ƒ __init__  `src/cachetools/__init__.py:404 › __init__`\n    ▫ getsizeof  `getsizeof`\n    ▫ maxsize  `maxsize`\n    ▫ timer  `timer`\n  ƒ get  `src/cachetools/__init__.py:429 › get`\n    ▫ args  `args`\n    ▫ kwargs  `kwargs`\n  ƒ __len__  `src/cachetools/__init__.py:413 › __len__`\n    ▫ cache_len  `cache_len`\n  ƒ clear  `src/cachetools/__init__.py:441 › clear`\n  ƒ pop  `src/cachetools/__init__.py:433 › pop`\n50 declaration(s) · truncated\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 50 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/python-cachetools/project\",\"limit\":50,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
+                "text": "# project\n`/tmp/nudox-surface/python-cachetools/project`\n\n◆ LFUCache  `src/cachetools/__init__.py:203 › LFUCache`\n  ◆ _Link  `src/cachetools/__init__.py:206 › _Link`\n    ƒ unlink  `src/cachetools/__init__.py:213 › unlink`\n    ƒ __init__  `src/cachetools/__init__.py:209 › __init__`\n      ▫ count  `count`\n    · __slots__  `src/cachetools/__init__.py:207 › __slots__`\n  ƒ __init__  `src/cachetools/__init__.py:219 › __init__`\n    ▫ maxsize  `maxsize`\n    ▫ getsizeof  `getsizeof`\n  ƒ __setitem__  `src/cachetools/__init__.py:231 › __setitem__`\n    ▫ cache_setitem  `cache_setitem`\n    ▫ value  `value`\n    ▫ key  `key`\n  ƒ popitem  `src/cachetools/__init__.py:253 › popitem`\n  ƒ clear  `src/cachetools/__init__.py:262 › clear`\n  ƒ __delitem__  `src/cachetools/__init__.py:246 › __delitem__`\n    ▫ cache_delitem  `cache_delitem`\n    ▫ key  `key`\n  ƒ __touch  `src/cachetools/__init__.py:268 › __touch`\n    ▫ key  `key`\n  ƒ __getitem__  `src/cachetools/__init__.py:225 › __getitem__`\n    ▫ cache_getitem  `cache_getitem`\n    ▫ key  `key`\n◆ _TimedCache  `src/cachetools/__init__.py:373 › _TimedCache`\n  ◆ _Timer  `src/cachetools/__init__.py:376 › _Timer`\n    ƒ __exit__  `src/cachetools/__init__.py:395 › __exit__`\n      ▫ exc  `exc`\n    ƒ __init__  `src/cachetools/__init__.py:377 › __init__`\n      ▫ timer  `timer`\n    ƒ __call__  `src/cachetools/__init__.py:381 › __call__`\n    ƒ __getattr__  `src/cachetools/__init__.py:401 › __getattr__`\n      ▫ name  `name`\n    ƒ __reduce__  `src/cachetools/__init__.py:398 › __reduce__`\n    ƒ __enter__  `src/cachetools/__init__.py:387 › __enter__`\n  ƒ expire  `src/cachetools/__init__.py:447 › expire`\n    ▫ time  `time`\n  ƒ setdefault  `src/cachetools/__init__.py:437 › setdefault`\n    ▫ args  `args`\n    ▫ kwargs  `kwargs`\n  ƒ __init__  `src/cachetools/__init__.py:404 › __init__`\n    ▫ getsizeof  `getsizeof`\n    ▫ maxsize  `maxsize`\n    ▫ timer  `timer`\n  ƒ get  `src/cachetools/__init__.py:429 › get`\n    ▫ args  `args`\n    ▫ kwargs  `kwargs`\n  ƒ __len__  `src/cachetools/__init__.py:413 › __len__`\n    ▫ cache_len  `cache_len`\n  ƒ clear  `src/cachetools/__init__.py:441 › clear`\n  ƒ pop  `src/cachetools/__init__.py:433 › pop`\n50 declaration(s) · truncated (outline pagination only; analysis coverage is not certified)\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 50 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/python-cachetools/project\",\"limit\":50,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
                 "type": "text"
               }
             ],
@@ -4733,7 +4733,7 @@
                 "schema": 3,
                 "sequence": 2,
                 "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-                "source_root": "f3b51d188eda41ead7bbc6af5ea14e8549bfa729977ac5f9f2c70af8b6ad8979"
+                "source_root": "950d4adc284a19699a2dcbd67fe534b6f9edbe74aa9656c3822931c995724d1a"
               },
               "roots": [
                 {
@@ -6947,6 +6947,7 @@
         "backend.resolve",
         "backend.search",
         "backend.source",
+        "backend.sql_query",
         "backend.status"
       ]
     }

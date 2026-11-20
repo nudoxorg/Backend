@@ -7,7 +7,7 @@
 //!
 //! # Format
 //!
-//! `[8-byte magic "TSZSNAP\x0a"][bincode payload]`. Bumping the trailing
+//! `[8-byte magic "TSZSNAP\x0b"][bincode payload]`. Bumping the trailing
 //! byte invalidates older snapshots — necessary when the
 //! `BinderState`/`NodeArena` layout shifts in a way that breaks
 //! positional binary decoding.
@@ -57,7 +57,7 @@ use tsz_parser::parser::node::NodeArena;
 
 /// Magic header. Trailing byte is the format version. Bump on layout
 /// changes that break round-trip.
-const SNAPSHOT_MAGIC: &[u8; 8] = b"TSZSNAP\x0a";
+const SNAPSHOT_MAGIC: &[u8; 8] = b"TSZSNAP\x0b";
 
 /// Environment variable that controls the lib snapshot cache.
 const ENV_VAR: &str = "TSZ_LIB_CACHE";
@@ -501,6 +501,24 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_preserves_parser_owned_async_token() {
+        let source = "export async function run() {}";
+        let lib = parse_and_bind("async.ts", source);
+        let snapshot = LibSnapshot {
+            file_name: "async.ts".to_string(), content_hash: 0,
+            arena: (*lib.arena).clone(), binder: (*lib.binder).clone(),
+            root_index: lib.root_index,
+        };
+        let bytes = encode_snapshot(&snapshot).expect("snapshot encode");
+        let reopened = decode_snapshot(&bytes).expect("snapshot decode");
+        let offsets: Vec<_> = reopened.arena.nodes.iter().filter_map(|node| {
+            reopened.arena.get_function(node).and_then(|function| function.async_start)
+        }).collect();
+        assert_eq!(offsets, vec![source.find("async").unwrap() as u32]);
+        assert!(decode_snapshot(&bytes[..8]).is_err());
+    }
+
+    #[test]
     fn old_header_cold_misses_then_nonempty_retained_rows_rebind_and_reopen() {
         let dir = tempfile::TempDir::new().expect("private cache directory");
         let name = "retained-café.d.ts";
@@ -509,7 +527,7 @@ mod tests {
         let path = snapshot_path(dir.path(), hash);
         // A previous-format header must miss before reading any old positional
         // payload. The sentinel deliberately cannot decode as the new layout.
-        let old = b"TSZSNAP\x09old positional binder payload";
+        let old = b"TSZSNAP\x0aold positional binder payload";
         fs::write(&path, old).expect("old disk entry");
         assert_eq!(
             decode_snapshot(old).err().unwrap().to_string(),
@@ -534,7 +552,7 @@ mod tests {
         let root = lib.root_index;
         drop(lib);
         let bytes = fs::read(&path).expect("new disk bytes");
-        assert_eq!(&bytes[..8], b"TSZSNAP\x0a");
+        assert_eq!(&bytes[..8], b"TSZSNAP\x0b");
         let cold = try_load_in_dir(dir.path(), name, source).expect("fresh bincode disk reopen");
         assert_eq!(cold.root_index, root);
         assert_eq!(

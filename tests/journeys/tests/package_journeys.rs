@@ -19,10 +19,14 @@
 #[path = "../src/fake_registry.rs"]
 mod fake_registry;
 
+#[path = "package_journeys/registry_discovery.rs"]
+mod package_registry_discovery_journey;
+
 use backend_client::Session;
 use backend_library::{CommandReply, RowId};
 use fake_registry::{FakeFile, FakePackage, FakeRegistry, RegistryMode};
 use serde_json::{Value, json};
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{Read, Write};
@@ -36,8 +40,10 @@ use std::time::{Duration, Instant};
 
 /// Bound on one CLI or MCP process.
 const PROCESS_DEADLINE: Duration = Duration::from_secs(120);
-/// Bound on a package becoming searchable after `add` returns.
-const INDEX_DEADLINE: Duration = Duration::from_secs(150);
+/// Bound on a package becoming searchable after `add` returns, and on the first
+/// read after a fresh owner start, which prepares its search projection first.
+/// Slow storage stretches both, so it is generous: it only bounds a failure.
+const INDEX_DEADLINE: Duration = Duration::from_secs(600);
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
 
 /// What a reader must see for one declaration of a lane's package.
@@ -300,7 +306,7 @@ const CPP: Lane = Lane {
 
 #[derive(Debug)]
 struct Daemon {
-    child: Option<Child>,
+    child: RefCell<Option<Child>>,
     endpoint: PathBuf,
 }
 
@@ -335,7 +341,7 @@ impl Daemon {
             .spawn()
             .expect("spawn locald");
         let mut daemon = Self {
-            child: Some(child),
+            child: RefCell::new(Some(child)),
             endpoint,
         };
         daemon.wait_ready();
@@ -343,12 +349,18 @@ impl Daemon {
     }
 
     fn wait_ready(&mut self) {
-        let end = Instant::now() + Duration::from_secs(60);
+        // The owner opens its durable workspace and journals before it listens,
+        // which is a few hundred synced file creations. On slow storage that
+        // can take minutes, so the wait is bounded by the process itself (it
+        // asserts below if locald exits) and by a generous ceiling, never by
+        // a short fixed guess.
+        let ceiling = std::env::var("BACKEND_JOURNEY_READY_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(420);
+        let end = Instant::now() + Duration::from_secs(ceiling);
         while Instant::now() < end {
-            let exited = self
-                .child
-                .as_mut()
-                .and_then(|child| child.try_wait().expect("poll locald"));
+            let exited = self.exit_status();
             assert!(
                 exited.is_none(),
                 "locald exited before readiness: {exited:?}"
@@ -364,10 +376,18 @@ impl Daemon {
         panic!("locald never listened at {}", self.endpoint.display());
     }
 
+    /// The daemon's exit status once it has exited, `None` while it runs.
+    fn exit_status(&self) -> Option<std::process::ExitStatus> {
+        self.child
+            .borrow_mut()
+            .as_mut()
+            .and_then(|child| child.try_wait().expect("poll locald"))
+    }
+
     /// Kills the daemon without a graceful shutdown: the next process must
     /// recover everything from the durable workspace alone.
     fn crash(&mut self) {
-        if let Some(mut child) = self.child.take() {
+        if let Some(mut child) = self.child.get_mut().take() {
             let _ = child.kill();
             child.wait().expect("reap crashed locald");
         }
@@ -381,7 +401,7 @@ impl Daemon {
 
 impl Drop for Daemon {
     fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
+        if let Some(mut child) = self.child.get_mut().take() {
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -484,6 +504,42 @@ fn cli(endpoint: &Path, workspace: &Path, format: &str, words: &[&str]) -> Outpu
     run_bounded(command, &format!("CLI {words:?}"), None)
 }
 
+/// Like [`cli_json`] for the first read after an owner starts: the owner
+/// prepares its search projection on first use, and a CLI read that outlasts
+/// its deadline is reported as a retryable `endpoint` fault ("the read changes
+/// nothing and can be repeated on a new connection"). Any other failure, and
+/// the end of `INDEX_DEADLINE`, still fails the test, as does the owner
+/// exiting while the read is being retried.
+fn cli_json_after_start(owner: &Daemon, workspace: &Path, words: &[&str]) -> Value {
+    let end = Instant::now() + INDEX_DEADLINE;
+    loop {
+        let output = cli(&owner.endpoint, workspace, "json", words);
+        if output.status.success() {
+            return serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+                panic!(
+                    "CLI {words:?} printed no JSON ({error}): {}",
+                    text(&output.stdout)
+                )
+            });
+        }
+        let retryable = serde_json::from_slice::<Value>(&output.stdout)
+            .is_ok_and(|fault| fault["slug"] == "endpoint" && fault["cause"] == "unreachable");
+        assert!(
+            retryable && Instant::now() < end,
+            "CLI {words:?} failed ({}): stdout={} stderr={}",
+            output.status,
+            text(&output.stdout),
+            text(&output.stderr)
+        );
+        let exited = owner.exit_status();
+        assert!(
+            exited.is_none(),
+            "locald exited while CLI {words:?} was being retried: {exited:?}"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
 fn cli_json(endpoint: &Path, workspace: &Path, words: &[&str]) -> Value {
     let output = cli(endpoint, workspace, "json", words);
     assert!(
@@ -525,8 +581,8 @@ fn mcp(
     }));
     let mut input = lines.join("\n").into_bytes();
     input.push(b'\n');
-    // The MCP entry point indexes its `--project` at startup; an empty
-    // directory keeps that from touching anything but the package.
+    // Keep the MCP session rooted in an empty fixture project. Startup does
+    // not index it; indexing is a separate explicit tool operation.
     let project = workspace.with_file_name("mcp-project");
     std::fs::create_dir_all(&project).expect("create empty MCP project");
     let mut command = ProcessCommand::new(env!("CARGO_BIN_EXE_backend-journey-mcp"));

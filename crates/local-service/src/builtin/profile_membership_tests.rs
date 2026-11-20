@@ -12,6 +12,306 @@ use std::sync::Arc;
 type TestFile = ([u8; 32], String, [u8; 32]);
 
 #[test]
+fn malformed_native_source_refusal_binds_to_selected_bytes_and_survives_reopen() {
+    use backend_engine::builtin::{
+        NativePathDisposition, ProductSemanticCaptureOutcome, ProductSemanticPublicationKey,
+        SemanticSourceCapture, build_native_frontier_records_with_content,
+        semantic_capture_relation,
+    };
+    use backend_library::interface::{CompilerAttempt, CompilerFragmentFailure, SourceAuthority};
+    use backend_semantic::ir::{BuildError, EntityId};
+    use backend_semantic::vocabulary::{CSharpVersion, LanguageProfile, PackageUrl};
+    use backend_version::{CompileRecipeDomain, ContentId, SourceFactDomain};
+
+    let temp = TempWorkspace::new();
+    let label = "pkg:nuget/refusal-fixture@1.0.0";
+    let path = "src/malformed.cs";
+    let bytes = b"public class C {\n";
+    let package = backend_engine::PackageKey::from_value(label);
+    let project = package.to_bytes();
+    let file_key = backend_engine::product_source_file_key(project, path);
+    let other_path = "src/regular.cs";
+    let other_bytes = b"public class Regular {}\n";
+    let other_key = backend_engine::product_source_file_key(project, other_path);
+    let other_identity = ContentId::<SourceFactDomain>::from_canonical_bytes(other_bytes);
+    let other_analysis = backend_frontend_csharp::syntax_frontend().expect("C# frontend")
+        .analyze(Path::new(other_path), other_bytes).expect("parsed C# source");
+    let other_content = other_analysis.content().to_bytes();
+    let profile = LanguageProfile::CSharp(CSharpVersion::CSharp14);
+    let identity = ContentId::<SourceFactDomain>::from_canonical_bytes(bytes);
+    let disposition = NativePathDisposition::CSharpMalformed {
+        content: backend_compile::typed_of::<backend_compile::InputContentSchema>(bytes).to_bytes(),
+        source_identity: identity,
+        byte_length: 0,
+        chunk_count: 0,
+    };
+    let mut rows = build_native_frontier_records_with_content(
+        project,
+        profile,
+        vec![
+            (path.to_owned(), disposition),
+            (other_path.to_owned(), NativePathDisposition::Structural {
+                content: other_content, source_identity: other_identity,
+            }),
+        ],
+        vec![(path.to_owned(), bytes.to_vec())],
+    )
+    .expect("exact native bytes");
+    let mut version = blake3::Hasher::new();
+    version.update(b"backend.project-snapshot.v2\0");
+    version.update(b"nudox.project-native-frontier-source-version.v1\0");
+    for (_, row) in &rows {
+        if matches!(
+            row,
+            backend_engine::builtin::ProductNativeFrontierRecord::Profile { .. }
+        ) {
+            let mut encoded = Vec::new();
+            <backend_engine::builtin::ProductNativeFrontierRelation as backend_engine::Relation>::encode_value(row, &mut encoded);
+            version.update(&(encoded.len() as u64).to_be_bytes());
+            version.update(&encoded);
+        }
+    }
+    version.update(&file_key);
+    version.update(&[0; 32]);
+    version.update(&[0x41; 32]);
+    version.update(&other_key);
+    version.update(&other_content);
+    version.update(&[0x41; 32]);
+    let source_version = *version.finalize().as_bytes();
+    for (_, row) in &mut rows {
+        if let backend_engine::builtin::ProductNativeFrontierRecord::Profile {
+            package_target,
+            ..
+        } = row
+        {
+            *package_target = Some(PackageUrl::parse(label.to_owned()).expect("native target"));
+        }
+    }
+    let native = rows
+        .into_iter()
+        .map(|(key, row)| BuiltinNativeFrontierChange {
+            key,
+            expected: None,
+            after: Some(row),
+        })
+        .collect();
+    let source = BuiltinPackageRecord::file_unavailable(
+        project,
+        path,
+        SourceLanguage::CSharp,
+        [0x41; 32],
+        backend_library::SourceUnavailableReason::Unparsed,
+    )
+    .expect("unparsed structural source");
+    let other_source = BuiltinPackageRecord::identified_file_within_row_capacity(
+        project, other_path, SourceLanguage::CSharp, other_content, [0x41; 32],
+        other_analysis.declarations().clone(), other_identity,
+    ).expect("parsed source row");
+    let mut file_keys = vec![file_key, other_key];
+    file_keys.sort();
+    let project_row = BuiltinPackageRecord::project(label, source_version, file_keys)
+        .expect("project frontier");
+    let key = ProductSemanticPublicationKey::new(
+        backend_engine::PackageReference::parse(label.to_owned()).expect("reference"),
+        PackageUrl::parse(label.to_owned()).expect("coordinate"),
+        profile,
+    )
+    .expect("profile key");
+    let capture =
+        SemanticSourceCapture::new(None, source_version, [0x51; 32], 1, 2).expect("source capture");
+    let mut daemon = open_daemon(temp.0.path());
+    let basis = capture_basis_for_snapshot(&daemon.engine().daemon().owner().snapshot())
+        .expect("selected genesis basis");
+    let intent = BuiltinIntent::index_with_capture(
+        package,
+        label,
+        vec![
+            BuiltinSourceChange {
+                key: project,
+                after: Some(project_row.clone()),
+            },
+            BuiltinSourceChange {
+                key: file_key,
+                after: Some(source.clone()),
+            },
+            BuiltinSourceChange {
+                key: other_key,
+                after: Some(other_source),
+            },
+        ],
+        Vec::new(),
+        vec![BuiltinCaptureChange {
+            cargo_target: None,
+            key: key.clone(),
+            expected: None,
+            capture,
+            outcome: ProductSemanticCaptureOutcome::Pending { prior: None },
+            compiler_failure: None,
+        }],
+    )
+    .expect("pending capture")
+    .with_capture_basis(basis)
+    .expect("bind capture to selected genesis")
+    .with_native_frontier(native)
+    .expect("native frontier");
+    super::super::commands::commit_builtin_intent(&mut daemon, 1, &intent)
+        .expect("publish source and pending capture");
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let pending = semantic_capture_relation(&snapshot)
+        .expect("capture relation")
+        .expect("capture present")
+        .lookup(&key)
+        .expect("read capture")
+        .expect("pending");
+    let original_root = *snapshot.root().as_bytes();
+    let original_sequence = snapshot.sequence();
+    let observation_row = project_row.clone()
+        .with_source_selection(backend_library::SourceSelectionObservation::project_vue(1))
+        .expect("same-project observation-only update");
+    let observation_intent = BuiltinIntent::index_with_semantics(
+        package, label,
+        vec![BuiltinSourceChange { key: project, after: Some(observation_row) }], Vec::new(),
+    ).expect("observation update intent");
+    super::super::commands::commit_builtin_intent(&mut daemon, 2, &observation_intent)
+        .expect("publish observation without changing compiler source");
+    let other_label = "pkg:cargo/unrelated-fixture@1.0.0";
+    let other = backend_engine::PackageKey::from_value(other_label);
+    let other_project = BuiltinPackageRecord::project(other_label, [0x71; 32], Vec::new())
+        .expect("unrelated empty project");
+    let other_intent = BuiltinIntent::index_with_semantics(
+        other,
+        other_label,
+        vec![BuiltinSourceChange { key: other.to_bytes(), after: Some(other_project) }],
+        Vec::new(),
+    ).expect("unrelated publication");
+    super::super::commands::commit_builtin_intent(&mut daemon, 3, &other_intent)
+        .expect("advance an unrelated project after capture");
+    let latest = daemon.engine().daemon().owner().snapshot();
+    latest.with_persisted_transition(|_, store| {
+        let ancestor = backend_engine::workspace::recovery::selected_ancestor_transition(
+            store, *latest.root().as_bytes(), latest.sequence(), original_root, original_sequence,
+            64 * 1024 * 1024,
+        ).expect("open the original source capture through checked history");
+        assert_eq!(
+            *ancestor.membership_id().expect("authenticated closure").as_bytes(),
+            *snapshot.closure().binding().closure().as_bytes(),
+        );
+        assert_eq!(ancestor.request(), *pending.request_identity());
+    }).expect("selected latest snapshot");
+    let failure = backend_library::PackageCompilerFailure::from_fragment_failure(
+        path,
+        CompilerAttempt {
+            source: SourceAuthority {
+                identity,
+                byte_len: bytes.len() as u32,
+            },
+            recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"recipe"),
+        },
+        &CompilerFragmentFailure::build(BuildError::InvalidOccurrenceSpan {
+            owner: EntityId::new(7),
+            start: 0,
+            end: 1,
+        }),
+    )
+    .expect("exact typed compiler refusal");
+    let forged = backend_library::PackageCompilerFailure::from_fragment_failure(
+        path,
+        CompilerAttempt {
+            source: SourceAuthority {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"foreign source"),
+                byte_len: bytes.len() as u32,
+            },
+            recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"recipe"),
+        },
+        &CompilerFragmentFailure::build(BuildError::InvalidOccurrenceSpan {
+            owner: EntityId::new(7), start: 0, end: 1,
+        }),
+    ).expect("well-formed foreign source refusal");
+    let forged_intent = BuiltinIntent::index_with_capture(
+        package, label, Vec::new(), Vec::new(), vec![BuiltinCaptureChange {
+            cargo_target: None, key: key.clone(), expected: Some(pending.clone()), capture,
+            outcome: ProductSemanticCaptureOutcome::Unavailable {
+                reason: backend_engine::builtin::SemanticUnavailableReason::Rejected,
+            }, compiler_failure: Some(forged),
+        }],
+    ).expect("foreign terminal intent");
+    let before_forged = daemon.engine().daemon().owner().head().root();
+    let forged_error = super::super::commands::commit_builtin_intent(&mut daemon, 4, &forged_intent)
+        .expect_err("foreign source identity cannot be admitted");
+    assert!(forged_error.to_string().contains("source identity does not match captured source"), "{forged_error}");
+    assert_eq!(daemon.engine().daemon().owner().head().root(), before_forged);
+    let terminal = BuiltinIntent::index_with_capture(
+        package,
+        label,
+        Vec::new(),
+        Vec::new(),
+        vec![BuiltinCaptureChange {
+            cargo_target: None,
+            key: key.clone(),
+            expected: Some(pending),
+            capture,
+            outcome: ProductSemanticCaptureOutcome::Unavailable {
+                reason: backend_engine::builtin::SemanticUnavailableReason::Rejected,
+            },
+            compiler_failure: Some(failure.clone()),
+        }],
+    )
+    .expect("terminal refusal");
+    let replaced = BuiltinPackageRecord::file_unavailable(
+        project, path, SourceLanguage::CSharp, [0x42; 32],
+        backend_library::SourceUnavailableReason::Unparsed,
+    ).expect("replacement source row");
+    let replace = BuiltinIntent::index_with_semantics(
+        package, label, vec![BuiltinSourceChange { key: file_key, after: Some(replaced) }], Vec::new(),
+    ).expect("replacement intent");
+    super::super::commands::commit_builtin_intent(&mut daemon, 5, &replace).expect("replace captured file");
+    let before_replaced_refusal = daemon.engine().daemon().owner().head().root();
+    let replaced_error = super::super::commands::commit_builtin_intent(&mut daemon, 6, &terminal)
+        .expect_err("a replaced selected file cannot use the old capture");
+    assert!(replaced_error.to_string().contains("selected source file differs"), "{replaced_error}");
+    assert_eq!(daemon.engine().daemon().owner().head().root(), before_replaced_refusal);
+    let restore = BuiltinIntent::index_with_semantics(
+        package, label, vec![BuiltinSourceChange { key: file_key, after: Some(source) }], Vec::new(),
+    ).expect("restore capture source intent");
+    super::super::commands::commit_builtin_intent(&mut daemon, 7, &restore).expect("restore original source row");
+    let mut combined = terminal.clone();
+    combined.changes = vec![BuiltinSourceChange {
+        key: file_key,
+        after: Some(BuiltinPackageRecord::file_unavailable(
+            project, path, SourceLanguage::CSharp, [0x42; 32],
+            backend_library::SourceUnavailableReason::Unparsed,
+        ).expect("combined replacement source")),
+    }].into_boxed_slice();
+    let before_combined = daemon.engine().daemon().owner().head().root();
+    let error = super::super::commands::commit_builtin_intent(&mut daemon, 8, &combined)
+        .expect_err("a terminal refusal cannot also replace its source");
+    assert!(error.to_string().contains("terminal cannot also change source"), "{error}");
+    assert_eq!(daemon.engine().daemon().owner().head().root(), before_combined);
+    super::super::commands::commit_builtin_intent(&mut daemon, 9, &terminal)
+        .expect("exact compiler refusal must be recorded");
+    let changed_source = BuiltinPackageRecord::file_unavailable(
+        project, path, SourceLanguage::CSharp, [0x42; 32],
+        backend_library::SourceUnavailableReason::Unparsed,
+    ).expect("later source observation");
+    let later = BuiltinIntent::index_with_semantics(
+        package, label, vec![BuiltinSourceChange { key: file_key, after: Some(changed_source) }], Vec::new(),
+    ).expect("later same-project publication");
+    super::super::commands::commit_builtin_intent(&mut daemon, 10, &later)
+        .expect("publish a later change after terminalization");
+    drop(daemon);
+    let reopened = open_daemon(temp.0.path());
+    let snapshot = reopened.engine().daemon().owner().snapshot();
+    let retained = semantic_capture_relation(&snapshot)
+        .expect("cold capture relation")
+        .expect("cold capture present")
+        .lookup(&key)
+        .expect("cold read")
+        .expect("cold terminal");
+    assert_eq!(retained.compiler_failure(), Some(&failure));
+}
+
+
+#[test]
 fn product_store_registry_admits_every_persisted_product_relation() {
     let registry = super::super::product_relation_registry().expect("product relation registry");
     for schema in [
@@ -49,7 +349,9 @@ pub(super) fn open_daemon(workspace: &Path) -> super::super::ProductDaemon {
     try_open_daemon(workspace).expect("open product daemon")
 }
 
-fn try_open_daemon(workspace: &Path) -> Result<super::super::ProductDaemon, crate::LocaldError> {
+pub(super) fn try_open_daemon(
+    workspace: &Path,
+) -> Result<super::super::ProductDaemon, crate::LocaldError> {
     let profile = profile_descriptor(BuiltinProfile::Product).expect("product profile");
     let dispatcher = super::super::builtin_dispatcher(
         Some(super::super::ECHO_AUTHORITY_SECRET),

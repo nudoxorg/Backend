@@ -427,6 +427,13 @@ impl UiRootEntity {
                     self.reduced = self.reduced.saturating_add(1);
                     super::acquire::add_owned(release, Some(composition), owner, cx.weak_entity(), cx);
                 }
+                QueuedIntent::Acquire { intent: Intent::RemoveRelease { release, page }, composition, attachment, owner }
+                    if super::acquire::current_composition(cx).is_some_and(|current| current.generation == composition.generation)
+                        && self.store.as_ref().is_some_and(|store| store.read(cx).admits_owner_attachment(&attachment)) =>
+                {
+                    self.reduced = self.reduced.saturating_add(1);
+                    super::acquire::remove_owned(release, page, Some(composition), owner, cx.weak_entity(), cx);
+                }
                 QueuedIntent::Acquire { .. } => {}
                 QueuedIntent::Index { intent, attachment }
                     if matches!(&intent, Intent::IndexProject { project, operation, basis, .. }
@@ -822,17 +829,25 @@ impl UiRootEntity {
             let Some(expected) = self.snapshot().workspace().projects.iter()
                 .find(|row| row.id == *project).cloned() else { return; };
             self.pending.push(QueuedIntent::Retry { intent, expected });
-        } else if matches!(&intent, Intent::AddRelease(_)) {
+        } else if matches!(&intent, Intent::AddRelease(_) | Intent::RemoveRelease { .. }) {
             // Capture before the end-effect handoff. A newly installed owner
             // cannot inherit a click admitted by the previous composition.
-            let Some(composition) = super::acquire::current_composition(cx) else { return; };
+            // A press that finds no serving index is said, never dropped: the
+            // release shows why nothing was sent, with the ordinary "Try again".
+            // A stale press (the page moved on) stays silent, as before.
+            let refuse = |intent: &Intent, cx: &mut App| match intent {
+                Intent::AddRelease(release) => super::acquire::refuse_unserved_add(release.clone(), cx),
+                Intent::RemoveRelease { release, .. } => super::acquire::refuse_unserved_removal(release.clone(), cx),
+                _ => {}
+            };
+            let Some(composition) = super::acquire::current_composition(cx) else { refuse(&intent, cx); return; };
             let Some(store) = &self.store else { return; };
             let store = store.read(cx);
             let snapshot = self.snapshot();
             if snapshot.route() != store.snapshot().route() || snapshot.overlay() != store.snapshot().overlay()
                 || !snapshot.key().same_authority(store.snapshot().key()) { return; }
-            let Some(attachment) = store.current_owner_attachment() else { return; };
-            let Some(lease) = store.current_index_owner() else { return; };
+            let (attachment, lease) = (store.current_owner_attachment(), store.current_index_owner());
+            let (Some(attachment), Some(lease)) = (attachment, lease) else { refuse(&intent, cx); return; };
             let owner = super::acquire::OwnerRequest::new(lease, snapshot.key());
             self.pending.push(QueuedIntent::Acquire { intent, composition, attachment, owner });
         } else {
@@ -1062,6 +1077,15 @@ impl UiRootEntity {
             Intent::AddRelease(release) => {
                 if let Some(owner) = self.acquisition_owner(cx) {
                     super::acquire::add_owned(release, super::acquire::current_composition(cx), owner, cx.weak_entity(), cx);
+                } else {
+                    super::acquire::refuse_unserved_add(release, cx);
+                }
+            },
+            Intent::RemoveRelease { release, page } => {
+                if let Some(owner) = self.acquisition_owner(cx) {
+                    super::acquire::remove_owned(release, page, super::acquire::current_composition(cx), owner, cx.weak_entity(), cx);
+                } else {
+                    super::acquire::refuse_unserved_removal(release, cx);
                 }
             },
             other => self.dispatch_runtime(other, cx),

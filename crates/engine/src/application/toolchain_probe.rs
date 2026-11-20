@@ -1043,6 +1043,20 @@ pub(crate) fn admit_typescript_script_invocation(
     ))
 }
 
+/// A cold .NET host can spend many seconds on its first launch (file-system
+/// cache misses, signature verification of a freshly installed runtime), so the
+/// general five second version-probe bound is too tight for it. A failed probe
+/// disables every C# profile, so give it room. The wait stays bounded.
+const CSHARP_COLD_START_PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+
+fn probe_limits_for_tool(tool: NativeTool, limits: ToolchainProbeLimits) -> ToolchainProbeLimits {
+    if tool != NativeTool::CSharpCompiler || limits.timeout >= CSHARP_COLD_START_PROBE_TIMEOUT {
+        return limits;
+    }
+    ToolchainProbeLimits::new(CSHARP_COLD_START_PROBE_TIMEOUT, limits.maximum_stream_bytes)
+        .unwrap_or(limits)
+}
+
 fn probe_prepared_command(
     tool: NativeTool,
     executable: &Path,
@@ -1050,6 +1064,7 @@ fn probe_prepared_command(
     limits: ToolchainProbeLimits,
     cancelled: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<Box<[u8]>, ToolchainProbeError> {
+    let limits = probe_limits_for_tool(tool, limits);
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1633,5 +1648,38 @@ mod failure_tests {
             Path::new(&sysroot).is_absolute() && sysroot.is_dir(),
             "the sysroot is an existing absolute directory: {sysroot:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod csharp_cold_start_probe_tests {
+    use super::{CSHARP_COLD_START_PROBE_TIMEOUT, ToolchainProbeLimits, probe_limits_for_tool};
+    use backend_semantic::vocabulary::NativeTool;
+    use std::{num::NonZeroUsize, time::Duration};
+
+    fn limits(seconds: u64) -> ToolchainProbeLimits {
+        ToolchainProbeLimits::new(Duration::from_secs(seconds), NonZeroUsize::new(64).unwrap())
+            .unwrap()
+    }
+
+    #[test]
+    fn only_the_dotnet_probe_gets_the_cold_start_allowance() {
+        let general = limits(5);
+        assert_eq!(
+            probe_limits_for_tool(NativeTool::CSharpCompiler, general).timeout,
+            CSHARP_COLD_START_PROBE_TIMEOUT
+        );
+        for tool in [NativeTool::Rustc, NativeTool::Python, NativeTool::GoCompiler] {
+            assert_eq!(probe_limits_for_tool(tool, general).timeout, Duration::from_secs(5));
+        }
+    }
+
+    #[test]
+    fn a_longer_configured_bound_is_kept_and_the_stream_bound_never_changes() {
+        let generous = limits(120);
+        let kept = probe_limits_for_tool(NativeTool::CSharpCompiler, generous);
+        assert_eq!(kept.timeout, Duration::from_secs(120));
+        let widened = probe_limits_for_tool(NativeTool::CSharpCompiler, limits(5));
+        assert_eq!(widened.maximum_stream_bytes.get(), 64);
     }
 }

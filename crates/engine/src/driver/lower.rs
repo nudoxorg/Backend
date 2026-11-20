@@ -4995,7 +4995,7 @@ fn live_type<'source>(
             tree.intern_computed(ComputedType::TemplateLiteral(parts))?
                 .erase()
         }
-        SemanticTypeTag::SelfType if record.text == Some(b"this") => {
+        SemanticTypeTag::SelfType if record.text == Some(b"this".as_slice()) => {
             tree.intern_computed(ComputedType::This)?.erase()
         }
         SemanticTypeTag::SelfType | SemanticTypeTag::TypeVar => {

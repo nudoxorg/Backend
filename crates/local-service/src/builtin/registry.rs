@@ -553,6 +553,28 @@ impl RegistryGateway {
         Arc::clone(&self.advisory)
     }
 
+    /// Evaluates an exact registry coordinate without acquiring a package.
+    /// Advisory coverage is independent of unobserved registry standing.
+    pub(super) fn advisory_for_unacquired(
+        &self,
+        coordinate: &PackageCoordinate,
+    ) -> Option<backend_engine::advisory::AdvisoryPackageDto> {
+        let admitted = backend_engine::registry::admit_registry_coordinate(coordinate).ok()?;
+        let identity = backend_engine::advisory::normalize_package(
+            admitted.ecosystem().package_type().as_str(),
+            admitted.qualified_name().as_str(),
+        ).ok()?;
+        let observation = self.advisory.observe(
+            &identity, admitted.version().as_str(), false, false,
+            advisory_now(), self.advisory_config.offline,
+        );
+        let decision = self.advisory_config.gate.decide(&observation);
+        Some(
+            backend_engine::advisory::AdvisoryPackageDto::from_observation(&observation, decision)
+                .without_registry_standing(),
+        )
+    }
+
     /// Refreshes every configured advisory source, persists the result, and
     /// makes it the authority for every later read and acquisition.
     ///
@@ -804,14 +826,29 @@ impl RegistryGateway {
                     forge_sources,
                     advisory,
                 };
-                let mut authority = package_fact_authority(
+                let observation = self.fresh_package_facts
+                    .get(&(source_id, published.coordinate.clone()));
+                let now_millis = current_millis();
+                let current_standing = observation.is_some_and(|observation| {
+                    observation.facts_version == published.facts.version()
+                        && observation.source_provenance == published.provenance.as_bytes()
+                        && observation.is_current_at(now_millis)
+                });
+                record.advisory = super::product_state::qualify_registry_advisory(
+                    record.advisory,
+                    record.standing,
+                    true,
+                    current_standing,
+                );
+                advisory_overlay.entries.insert(advisory_key, record.advisory.clone());
+                let mut authority = package_fact_authority_at(
                     source_id,
                     source_facts_root,
                     published.provenance.as_bytes(),
                     published.facts.version(),
                     &record,
-                    self.fresh_package_facts
-                        .get(&(source_id, published.coordinate.clone())),
+                    observation,
+                    now_millis,
                 )?;
                 if matches!(
                     authority.release_facts_freshness,
@@ -1616,6 +1653,7 @@ fn snapshot_selects_package(
         && snapshot.claims().binary_search(&claim.id).is_ok()
 }
 
+#[cfg(test)]
 fn package_fact_authority(
     source: [u8; 32],
     source_facts_root: [u8; 32],
@@ -1624,11 +1662,23 @@ fn package_fact_authority(
     record: &backend_engine::RegistryPackageRecord,
     observation: Option<&FreshPackageFactsObservation>,
 ) -> Result<PackageFactAuthority, String> {
+    package_fact_authority_at(source, source_facts_root, source_provenance, facts_version, record, observation, current_millis())
+}
+
+fn package_fact_authority_at(
+    source: [u8; 32],
+    source_facts_root: [u8; 32],
+    source_provenance: [u8; 32],
+    facts_version: [u8; 32],
+    record: &backend_engine::RegistryPackageRecord,
+    observation: Option<&FreshPackageFactsObservation>,
+    now_millis: u64,
+) -> Result<PackageFactAuthority, String> {
     let freshness = observation
         .filter(|observation| {
             observation.facts_version == facts_version
                 && observation.source_provenance == source_provenance
-                && observation.is_current_at(current_millis())
+                && observation.is_current_at(now_millis)
         })
         .map_or(PackageFactFreshness::Historical, |observation| {
             PackageFactFreshness::Observed {
@@ -4034,6 +4084,28 @@ mod tests {
     }
 
     #[test]
+    fn configured_advisory_for_unacquired_exact_coordinate_keeps_positive_and_unknown_standing() {
+        let root = scratch();
+        fs::create_dir_all(&root).expect("workspace root");
+        let feed = root.join("unacquired-osv.json");
+        fs::write(&feed, br#"{"schema_version":"1.3.1","id":"OSV-UNACQUIRED-1","modified":"2026-09-28T00:00:00Z","affected":[{"package":{"ecosystem":"Cargo","name":"demo"},"ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"2.0.0"}]}]}]}"#).expect("fake feed");
+        let config = registry_config("http://127.0.0.1:9".to_owned());
+        let mut gateway = RegistryGateway::open(&config, &root, &advisory_config(Some(&feed)))
+            .expect("open gateway").expect("configured");
+        gateway.refresh_advisories().expect("refresh local feed");
+        let coordinate = PackageCoordinate::parse("pkg:cargo/demo@1.0.0").expect("coordinate");
+        let advisory = gateway.advisory_for_unacquired(&coordinate).expect("authority projection");
+        assert_eq!(advisory.coverage, backend_engine::advisory::AdvisoryCoverage::Partial);
+        assert_eq!(advisory.freshness, backend_engine::advisory::FreshnessState::Fresh);
+        assert_eq!(advisory.registry_standing_observed, None);
+        assert!(advisory.reasons.contains(&backend_engine::advisory::PolicyReason::RegistryStandingUnknown));
+        assert!(advisory.advisories.iter().any(|row| row.canonical_id == "OSV-UNACQUIRED-1"));
+        assert!(matches!(advisory.decision, backend_engine::advisory::AcquisitionDecision::Deny(_)));
+        drop(gateway);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
     fn failed_advisory_refresh_cold_reopen_keeps_findings_and_marks_unavailable() {
         const ADVISORY_ID: &str = "OSV-REGRESSION-1";
         let root = scratch();
@@ -4114,6 +4186,12 @@ mod tests {
             .publication_stamp()
             .expect("initial published catalog stamp");
         assert_eq!(clean_projection.records.len(), 1);
+        assert_eq!(clean_projection.records[0].advisory.registry_standing_observed, Some(true));
+        assert_eq!(
+            clean_projection.records[0].authority.expect("authority").advisory_facts_version,
+            *blake3::hash(&serde_json::to_vec(&clean_projection.records[0].advisory).expect("advisory bytes")).as_bytes(),
+            "qualified live advisory must match its selected authority digest"
+        );
         assert_eq!(
             clean_projection.records[0].advisory.coverage,
             backend_engine::advisory::AdvisoryCoverage::Partial
@@ -4185,6 +4263,12 @@ mod tests {
         let vulnerable_projection = gateway
             .catalog_projection()
             .expect("vulnerable projection after cold reopen");
+        assert_eq!(vulnerable_projection.records[0].advisory.registry_standing_observed, None);
+        assert_eq!(
+            vulnerable_projection.records[0].authority.expect("authority").advisory_facts_version,
+            *blake3::hash(&serde_json::to_vec(&vulnerable_projection.records[0].advisory).expect("advisory bytes")).as_bytes(),
+            "cold advisory qualification must precede fingerprinting"
+        );
         assert_ne!(
             clean_projection.advisory_generation,
             vulnerable_projection.advisory_generation
@@ -6107,7 +6191,7 @@ mod tests {
             repaired,
             backend_library::CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
                 format!(
-                    "package {} does not match any indexed local manifest",
+                    "package {} is not in the acquired registry catalog or an indexed local manifest; discovery alone does not acquire it. Use index-search (backend.index_search) to inspect discovered releases",
                     package.as_str()
                 )
             )),

@@ -121,7 +121,135 @@ pub(super) fn descriptor_matches_base(
     }
 }
 
+fn history_file_identity(file: &File, path: &Path) -> Result<backend_platform::FileIdentity, StoreError> {
+    let held = backend_platform::FileIdentity::of_file(file).map_err(|error| io_error(&error))?;
+    let named = backend_platform::FileIdentity::of_path_nofollow(path).map_err(|error| io_error(&error))?;
+    if held != named { return Err(StoreError::WrongBase); }
+    Ok(held)
+}
+
+/// Bounded owner-held selected-publication history lookup refusal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkspaceHistoryError {
+    /// Caller cancellation was observed.
+    Cancelled,
+    /// The explicit batch or journal-work budget was exceeded.
+    Limit,
+    /// A requested generation is not a selected PUBLISHED record.
+    Missing,
+    /// The selected head changed, the journal was malformed, or IO failed.
+    Store(StoreError),
+}
+impl std::fmt::Display for WorkspaceHistoryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "workspace history: {self:?}") }
+}
+impl std::error::Error for WorkspaceHistoryError {}
+
 impl FileStore {
+    /// Resolves a workspace publication in the authenticated history of the
+    /// exact currently selected head. The caller supplies a journal byte
+    /// budget; a longer journal is refused rather than scanned under the
+    /// publication lock without a bound.
+    ///
+    /// # Errors
+    /// Returns `Bounds` when the journal exceeds `max_journal_bytes`, and
+    /// `Corrupt` when the current head or requested ancestor is not selected
+    /// by the verified workspace history.
+    pub fn workspace_selected_ancestor(
+        &self,
+        current_root: Hash,
+        current_generation: u64,
+        ancestor_root: Hash,
+        ancestor_generation: u64,
+        max_journal_bytes: u64,
+    ) -> Result<SelectedHead, StoreError> {
+        let _process_lock = self.acquire_process_lock()?;
+        let journal_path = self.root.join("journal");
+        if journal_length(&journal_path)? > max_journal_bytes {
+            return Err(StoreError::Bounds);
+        }
+        let current = self.read_state()?.selected.ok_or(StoreError::Corrupt)?;
+        let descriptor = current.descriptor();
+        let binding = descriptor.workspace().ok_or(StoreError::Corrupt)?;
+        if binding.root() != &descriptor.target()
+            || binding.closure() != descriptor.closure()
+            || descriptor.target() != current_root
+            || descriptor.target_generation() != current_generation
+            || ancestor_generation == 0
+            || ancestor_generation > current_generation
+        {
+            return Err(StoreError::Corrupt);
+        }
+        find_workspace_publication(&journal_path, ancestor_root, ancestor_generation)?
+            .ok_or(StoreError::Corrupt)
+    }
+
+    /// Reopen a sorted batch of previously PUBLISHED workspace generations in
+    /// one bounded hash-chain scan, anchored to the exact current selected
+    /// head. A PREPARED-only frame is never returned. The caller must hold the
+    /// owner lease and separately admit each historical closure/transaction.
+    ///
+    /// # Errors
+    /// Refuses cancellation, a missing generation, stale head, malformed
+    /// journal, or a batch/work budget exceeding the explicit hard limits.
+    pub fn selected_workspace_history(
+        &self, expected: SelectedHead, generations: &[u64], max_frames: u64,
+        cancellation: &std::sync::atomic::AtomicBool,
+    ) -> Result<Vec<SelectedHead>, WorkspaceHistoryError> {
+        use std::sync::atomic::Ordering;
+        let check = || if cancellation.load(Ordering::Acquire) { Err(WorkspaceHistoryError::Cancelled) } else { Ok(()) };
+        check()?;
+        if generations.len() > 4096 || max_frames == 0 || max_frames > 2_000_000
+            || generations.iter().any(|generation| *generation == 0)
+            || generations.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(WorkspaceHistoryError::Limit);
+        }
+        let _lock = self.acquire_process_lock().map_err(WorkspaceHistoryError::Store)?;
+        check()?;
+        let selected = head::read_head_bounded(&self.root.join("HEAD")).map_err(WorkspaceHistoryError::Store)?
+            .ok_or(WorkspaceHistoryError::Missing)?.head;
+        if selected != expected { return Err(WorkspaceHistoryError::Store(StoreError::WrongBase)); }
+        let path = self.root.join("journal");
+        let mut file = backend_platform::durability::open_regular_file_nofollow(&path)
+            .map_err(|error| WorkspaceHistoryError::Store(io_error(&error)))?;
+        let identity = history_file_identity(&file, &path).map_err(WorkspaceHistoryError::Store)?;
+        let length = file.metadata().map_err(|error| WorkspaceHistoryError::Store(io_error(&error)))?.len();
+        let record_bytes = u64::try_from(JOURNAL_RECORD_BYTES).map_err(|_| WorkspaceHistoryError::Limit)?;
+        if length % record_bytes != 0 { return Err(WorkspaceHistoryError::Store(StoreError::Corrupt)); }
+        let frames = length / record_bytes;
+        if frames > max_frames { return Err(WorkspaceHistoryError::Limit); }
+        if selected.journal_sequence() > frames { return Err(WorkspaceHistoryError::Store(StoreError::Corrupt)); }
+        let mut previous = [0u8; 32];
+        let mut current = None;
+        let mut out = Vec::new();
+        out.try_reserve_exact(generations.len()).map_err(|_| WorkspaceHistoryError::Limit)?;
+        let mut wanted = 0usize;
+        for sequence in 1..=frames {
+            check()?;
+            let frame = journal::read_record(&mut file).map_err(WorkspaceHistoryError::Store)?;
+            if frame.sequence != sequence || frame.previous != previous { return Err(WorkspaceHistoryError::Store(StoreError::Corrupt)); }
+            current = apply_frame(&path, &frame, current.as_ref()).map_err(WorkspaceHistoryError::Store)?;
+            if frame.tag == PUBLISHED_TAG && generations.get(wanted) == Some(&frame.payload.target_generation) {
+                let binding = frame.payload.workspace.ok_or(WorkspaceHistoryError::Store(StoreError::Corrupt))?;
+                if binding.root() != &frame.payload.target || binding.closure() != frame.payload.closure {
+                    return Err(WorkspaceHistoryError::Store(StoreError::Corrupt));
+                }
+                out.push(SelectedHead { journal_sequence: frame.sequence, descriptor: frame.payload });
+                wanted += 1;
+            }
+            previous = frame.checksum;
+        }
+        check()?;
+        if file.metadata().map_err(|error| WorkspaceHistoryError::Store(io_error(&error)))?.len() != length
+            || history_file_identity(&file, &path).map_err(WorkspaceHistoryError::Store)? != identity
+            || head::read_head_bounded(&self.root.join("HEAD")).map_err(WorkspaceHistoryError::Store)?.map(|checkpoint| checkpoint.head) != Some(selected) {
+            return Err(WorkspaceHistoryError::Store(StoreError::WrongBase));
+        }
+        if current != Some(selected) { return Err(WorkspaceHistoryError::Store(StoreError::Corrupt)); }
+        if wanted != generations.len() { return Err(WorkspaceHistoryError::Missing); }
+        Ok(out)
+    }
+
     /// Reopens the exact publication selected immediately before the named
     /// current workspace head. The current publication's authenticated
     /// journal descriptor binds its base root and generation; this method
@@ -475,5 +603,25 @@ fn apply_frame(
             }))
         }
         _ => Err(StoreError::Corrupt),
+    }
+}
+
+#[cfg(all(test, unix))]
+mod sql_history_identity_tests {
+    use super::*;
+    #[test]
+    fn named_journal_replacement_does_not_match_held_file() {
+        let temp = std::env::temp_dir().join(format!("nudox-history-journal-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos()));
+        std::fs::create_dir(&temp).expect("private test root");
+        let path = temp.join("journal");
+        std::fs::write(&path, b"original").expect("original");
+        let held = backend_platform::durability::open_regular_file_nofollow(&path).expect("held");
+        assert!(history_file_identity(&held, &path).is_ok());
+        std::fs::rename(&path, temp.join("old-journal")).expect("rename");
+        std::fs::write(&path, b"replacement").expect("replacement");
+        assert!(matches!(history_file_identity(&held, &path), Err(StoreError::WrongBase)));
+        drop(held);
+        std::fs::remove_dir_all(temp).expect("test cleanup");
     }
 }

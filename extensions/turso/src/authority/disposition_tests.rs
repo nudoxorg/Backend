@@ -411,6 +411,11 @@ fn malformed_compiler_history_bindings_are_corrupt_while_attempt_and_head_stay_u
                 head_before.as_ref().map(SelectedFrontier::generation),
                 Some(selected.generation())
             );
+            // A second durable observation exists, so the observation case
+            // below points the history row at a real but wrong observation
+            // instead of a row that does not exist.
+            let wrong = observe(&mut authority, 4).await;
+            assert_eq!(wrong.sequence(), claim.observation_sequence + 1);
 
             authority
                 .connection
@@ -433,12 +438,13 @@ fn malformed_compiler_history_bindings_are_corrupt_while_attempt_and_head_stay_u
                 .await
                 .unwrap_or_else(|error| panic!("persist {field} corruption: {error}"));
 
+            let disposition = authority.attempt_disposition(&claim).await;
             assert!(
                 matches!(
-                    authority.attempt_disposition(&claim).await,
+                    disposition,
                     Err(AuthorityError::CorruptRecord("selected_attempt_history"))
                 ),
-                "valid-size wrong {field} must not become the attempt's publication"
+                "valid-size wrong {field} must not become the attempt's publication: {disposition:?}"
             );
             assert_eq!(
                 attempt_row(&authority, &claim).await,

@@ -330,6 +330,26 @@ impl Default for DiscoveryPolicy {
 }
 
 impl DiscoveryPolicy {
+    /// Canonical policy parameters for consumers that bind a selected walk.
+    /// This describes configured discovery rules, not current ignore-file bytes.
+    #[must_use]
+    pub fn source_scope_identity_bytes(&self) -> Vec<u8> {
+        let mut out = b"nudox.discovery-policy.v1\0".to_vec();
+        out.extend_from_slice(&[
+            u8::from(self.generated_defaults),
+            match self.source_scope { SourceSelectionScope::Generic => 0, SourceSelectionScope::PythonPackages => 1 },
+            u8::from(self.respect_gitignore), u8::from(self.case_insensitive),
+        ]);
+        for patterns in [&self.includes, &self.excludes] {
+            out.extend_from_slice(&(patterns.len() as u64).to_be_bytes());
+            for pattern in patterns {
+                out.extend_from_slice(&(pattern.len() as u64).to_be_bytes());
+                out.extend_from_slice(pattern.as_bytes());
+            }
+        }
+        out
+    }
+
     /// Creates the production policy for a local source tree.
     #[must_use]
     pub fn new() -> Self {
@@ -539,6 +559,17 @@ impl DiscoveryPolicy {
         if csharp_binary_output {
             return false;
         }
+        // A `bin` directory beside a .NET project file is build output. `dotnet watch`,
+        // `dotnet test` and IDEs rewrite it constantly, and walking it would let that
+        // churn invalidate the revision fence of an index that never reads from it.
+        if relative
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("bin"))
+            && path.is_dir()
+            && path.parent().is_some_and(contains_dotnet_project_file)
+        {
+            return false;
+        }
         let directory = relative;
         let generated = self.generated_defaults
             && ignored_source_components(
@@ -557,6 +588,20 @@ impl DiscoveryPolicy {
         include_overrides.is_some_and(|overrides| overrides.matched(path, false).is_whitelist())
             || self.include_reopens_directory_contents(root, path)
     }
+}
+
+/// Whether `directory` directly holds a .NET project file, which makes its `bin` and
+/// `obj` siblings build output rather than source.
+fn contains_dotnet_project_file(directory: &Path) -> bool {
+    std::fs::read_dir(directory).is_ok_and(|entries| {
+        entries.filter_map(Result::ok).any(|entry| {
+            entry.path().extension().is_some_and(|extension| {
+                ["csproj", "fsproj", "vbproj"]
+                    .iter()
+                    .any(|project| extension.eq_ignore_ascii_case(project))
+            })
+        })
+    })
 }
 
 impl DiscoveryPolicy {
@@ -655,6 +700,117 @@ impl DiscoveryPolicy {
             context_capture,
             context_validated: false,
         }
+    }
+}
+
+/// Ignore inputs the walker reads from outside the per-directory files of the tree it walks,
+/// as exact bytes (`None` when a file is absent).
+///
+/// `walk` consults every ancestor directory's ignore files, each visited
+/// directory's `.git/info/exclude`, and the configured global Git excludes. Only the
+/// walk's result used to witness them, so a scan could not tell that the same
+/// inventory was selected by the same rules. A caller that hashes these entries
+/// next to the walk's own policy can.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AmbientIgnoreInputs {
+    entries: Vec<(PathBuf, Option<Vec<u8>>)>,
+}
+
+impl AmbientIgnoreInputs {
+    /// Canonical length-prefixed encoding of the paths and their exact bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut out = b"nudox.ambient-ignore-inputs.v1\0".to_vec();
+        out.extend_from_slice(&(self.entries.len() as u64).to_be_bytes());
+        for (path, contents) in &self.entries {
+            let path = path.as_os_str().as_encoded_bytes();
+            out.extend_from_slice(&(path.len() as u64).to_be_bytes());
+            out.extend_from_slice(path);
+            match contents {
+                None => out.push(0),
+                Some(bytes) => {
+                    out.push(1);
+                    out.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+                    out.extend_from_slice(bytes);
+                }
+            }
+        }
+        out
+    }
+}
+
+const AMBIENT_IGNORE_FILE_LIMIT: u64 = 1024 * 1024;
+const AMBIENT_IGNORE_TOTAL_LIMIT: u64 = 16 * 1024 * 1024;
+const AMBIENT_IGNORE_NAMES: [&str; 4] = [".ignore", ".gitignore", ".nudoxignore", ".git/info/exclude"];
+
+impl DiscoveryPolicy {
+    /// Reads the ambient ignore inputs `walk(root)` consults.
+    ///
+    /// `directories` are the walked directories (relative to `root`, the root as
+    /// an empty path). Returns `None` when an input exists but cannot be read as a
+    /// bounded regular file: the caller must then treat the discovery as unwitnessed.
+    #[must_use]
+    pub fn ambient_ignore_inputs(
+        &self,
+        root: &Path,
+        directories: &[PathBuf],
+    ) -> Option<AmbientIgnoreInputs> {
+        self.ambient_ignore_inputs_with(
+            root,
+            directories,
+            ignore::gitignore::gitconfig_excludes_path(),
+        )
+    }
+
+    fn ambient_ignore_inputs_with(
+        &self,
+        root: &Path,
+        directories: &[PathBuf],
+        global_excludes: Option<PathBuf>,
+    ) -> Option<AmbientIgnoreInputs> {
+        if !self.respect_gitignore {
+            return Some(AmbientIgnoreInputs { entries: Vec::new() });
+        }
+        let mut paths = std::collections::BTreeSet::new();
+        for ancestor in root.ancestors() {
+            for name in AMBIENT_IGNORE_NAMES {
+                paths.insert(ancestor.join(name));
+            }
+        }
+        for directory in directories {
+            paths.insert(root.join(directory).join(".git/info/exclude"));
+        }
+        if let Some(global) = global_excludes {
+            paths.insert(global);
+        }
+        let mut total = 0_u64;
+        let mut entries = Vec::with_capacity(paths.len());
+        for path in paths {
+            let contents = match std::fs::metadata(&path) {
+                Ok(metadata) if metadata.is_file() && metadata.len() <= AMBIENT_IGNORE_FILE_LIMIT => {
+                    total = total.checked_add(metadata.len())?;
+                    if total > AMBIENT_IGNORE_TOTAL_LIMIT {
+                        return None;
+                    }
+                    Some(std::fs::read(&path).ok()?)
+                }
+                // A directory where a file could be (for example `.git` as a
+                // file in a worktree) is read by the walker as absent.
+                Ok(metadata) if !metadata.is_file() => None,
+                Ok(_) => return None,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                    ) =>
+                {
+                    None
+                }
+                Err(_) => return None,
+            };
+            entries.push((path, contents));
+        }
+        Some(AmbientIgnoreInputs { entries })
     }
 }
 
@@ -897,6 +1053,20 @@ fn slash_path(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn source_scope_identity_changes_with_rule_order_and_options() {
+        use super::DiscoveryPolicy;
+        let first = DiscoveryPolicy::new().include("a").exclude("b");
+        let same = DiscoveryPolicy::new().include("a").exclude("b");
+        let changed = DiscoveryPolicy::new().include("b").exclude("a");
+        let ordered = DiscoveryPolicy::new().include("a").include("b");
+        let reversed = DiscoveryPolicy::new().include("b").include("a");
+        assert_eq!(first.source_scope_identity_bytes(), same.source_scope_identity_bytes());
+        assert_ne!(first.source_scope_identity_bytes(), changed.source_scope_identity_bytes());
+        assert_ne!(ordered.source_scope_identity_bytes(), reversed.source_scope_identity_bytes());
+        assert_ne!(first.source_scope_identity_bytes(), first.clone().respect_gitignore(false).source_scope_identity_bytes());
+    }
+
     use super::*;
     use std::{
         fs,
@@ -921,6 +1091,43 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn ambient_ignore_inputs_follow_ancestor_global_and_exclude_files() {
+        let scratch = Scratch::new("ambient-ignore");
+        let root = scratch.0.join("outer/project");
+        fs::create_dir_all(root.join(".git/info")).expect("project");
+        let global = scratch.0.join("global-ignore");
+        let policy = DiscoveryPolicy::default();
+        let read = |global: Option<&Path>| {
+            policy
+                .ambient_ignore_inputs_with(&root, &[PathBuf::new()], global.map(Path::to_path_buf))
+                .expect("bounded inputs")
+                .canonical_bytes()
+        };
+        let base = read(Some(&global));
+        assert_eq!(base, read(Some(&global)), "unchanged inputs encode identically");
+        fs::write(scratch.0.join("outer/.gitignore"), "*.gen.ts\n").expect("ancestor ignore");
+        let ancestor = read(Some(&global));
+        assert_ne!(base, ancestor, "an ancestor ignore file is witnessed");
+        fs::write(&global, "scratch/\n").expect("global ignore");
+        let with_global = read(Some(&global));
+        assert_ne!(ancestor, with_global, "the global excludes are witnessed");
+        fs::write(root.join(".git/info/exclude"), "local.ts\n").expect("exclude");
+        assert_ne!(with_global, read(Some(&global)), "the repository exclude is witnessed");
+        assert_ne!(base, read(None), "the global excludes' location is witnessed");
+        assert!(
+            policy
+                .clone()
+                .respect_gitignore(false)
+                .ambient_ignore_inputs_with(&root, &[], Some(global.clone()))
+                .is_some_and(|inputs| inputs.entries.is_empty()),
+            "a policy that ignores no Git files has nothing ambient"
+        );
+        // An input too large to witness is refused rather than skipped.
+        fs::write(scratch.0.join("outer/.ignore"), vec![b'#'; 2 * 1024 * 1024]).expect("large ignore");
+        assert!(policy.ambient_ignore_inputs_with(&root, &[], Some(global)).is_none());
     }
 
     #[test]
@@ -970,9 +1177,15 @@ mod tests {
             b"/coverage/\n!target/\n!node_modules/\n",
         )
         .expect("ignore");
+        // The project's own ignore file is a discovered input (see
+        // `hard_defaults_are_unreincludeable`); the ignored report is not.
         assert_eq!(
             files(),
-            ["src/builtin/coverage/tests.rs", "src/coverage/report.ts"]
+            [
+                ".gitignore",
+                "src/builtin/coverage/tests.rs",
+                "src/coverage/report.ts"
+            ]
         );
         assert!(!is_hard_ignored_path(Path::new(
             "src/builtin/coverage/tests.rs"
@@ -1269,6 +1482,36 @@ mod tests {
         assert!(
             !files(DiscoveryPolicy::default()).contains(&PathBuf::from("npm/bin/cli.js")),
             "repository ignore rules still govern bin sources"
+        );
+    }
+
+    #[test]
+    fn a_dotnet_projects_bin_directory_is_never_walked_but_other_bin_sources_are() {
+        let scratch = Scratch::new("dotnet-bin");
+        for path in [
+            "api/Api.csproj",
+            "api/Program.cs",
+            "api/bin/Debug/net10.0/Api.dll",
+            "api/bin/Debug/net10.0/deps/extra.json",
+            "api/obj/Debug/cache.txt",
+            "scripts/bin/run.py",
+        ] {
+            let path = scratch.0.join(path);
+            fs::create_dir_all(path.parent().expect("parent")).expect("directory");
+            fs::write(path, b"x").expect("file");
+        }
+        let seen = DiscoveryPolicy::default()
+            .walk(&scratch.0)
+            .map(|entry| slash_path(entry.expect("discovery").path().strip_prefix(&scratch.0).expect("relative")))
+            .collect::<Vec<_>>();
+        assert!(
+            !seen.iter().any(|path| path.starts_with("api/bin") || path.starts_with("api/obj")),
+            "build output beside a .NET project must not be walked, saw {seen:?}"
+        );
+        assert!(seen.contains(&"api/Program.cs".to_owned()), "{seen:?}");
+        assert!(
+            seen.contains(&"scripts/bin/run.py".to_owned()),
+            "a bin directory with no .NET project beside it stays source: {seen:?}"
         );
     }
 

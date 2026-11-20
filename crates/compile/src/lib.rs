@@ -34,6 +34,7 @@ mod syntax;
 mod syntax_facts;
 mod syntax_kind;
 mod syntax_macros;
+mod verified_source;
 
 pub use backend_version::{
     AuthorityScopeClaim, Coverage, CoverageAdmissionError, CoverageWitness, ScopeRoot,
@@ -113,6 +114,8 @@ pub use prepared::{
     PreparationCache, PreparationCacheConfig, PreparationCacheStats, PreparationError,
     PreparationKey, PreparedCompilationCache, PreparedRequest,
 };
+#[cfg(target_os = "linux")]
+pub use process::NativeLibraryLease;
 pub use process::{
     ExecutableIdentity, MAX_EXECUTABLE_BYTES, ProcessEnvironment, ProcessLimits, ProcessReceipt,
     ProcessStdin, ProcessTerminal, Stdin, StdinSpec, SupervisedCommand, ToolchainArtifact,
@@ -137,6 +140,9 @@ pub use syntax::{
     SourceExcerptExtent, SourceLanguage, SourceLocation, SyntaxError, SyntaxFrontend,
 };
 pub use syntax_kind::python_binding_kind;
+pub use verified_source::{
+    SourceVerificationError, VerifiedSourceBinding, VerifiedSourceExtent, VerifiedSourceText,
+};
 
 #[cfg(test)]
 mod tests;

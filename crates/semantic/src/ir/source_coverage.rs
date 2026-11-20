@@ -150,9 +150,11 @@ impl SourceCoverageRow {
             self,
             Self::Gap {
                 cause: SourceCoverageGapCause::RustSourceOutsideActiveCargoTarget
+                    | SourceCoverageGapCause::RustSourceSharedByCargoTargets
                     | SourceCoverageGapCause::PythonSourceSyntaxUnavailable
                     | SourceCoverageGapCause::PythonSourceEncodingUnavailable
-                    | SourceCoverageGapCause::PythonSourceDependencyUnavailable,
+                    | SourceCoverageGapCause::PythonSourceDependencyUnavailable
+                    | SourceCoverageGapCause::CSharpSourceDoesNotCompile,
                 ..
             }
         ) {
@@ -797,6 +799,14 @@ pub enum SourceCoverageGapCause {
     SourceNotRepresentable,
     /// The package's compile deadline passed before this source finished or could start.
     CompileDeadlineExceeded,
+    /// Several active Cargo targets own this Rust source (a helper module two integration
+    /// tests both declare), so no single target scope applies and it was not analysed under
+    /// any of them. It is inside the package's targets, unlike an unowned source.
+    RustSourceSharedByCargoTargets,
+    /// Roslyn bound the C# project but reported errors in this exact file (an unrestored
+    /// package or a missing reference is the usual cause), so its declarations and uses
+    /// are not trustworthy. Every other file of the project keeps the facts it would have had.
+    CSharpSourceDoesNotCompile,
 }
 
 impl std::fmt::Display for SourceCoverageGapCause {
@@ -818,6 +828,12 @@ impl std::fmt::Display for SourceCoverageGapCause {
             Self::SourceRejectedByNativeCompiler => "the native compiler rejected it",
             Self::SourceNotRepresentable => "lowering cannot represent it",
             Self::CompileDeadlineExceeded => "the compile deadline passed before it finished",
+            Self::RustSourceSharedByCargoTargets => {
+                "several Cargo targets share it, so no single target scope applies"
+            }
+            Self::CSharpSourceDoesNotCompile => {
+                "it does not compile (restore packages and fix its errors)"
+            }
         })
     }
 }
@@ -828,9 +844,11 @@ impl SourceCoverageGapCause {
         !matches!(
             self,
             Self::RustSourceOutsideActiveCargoTarget
+                | Self::RustSourceSharedByCargoTargets
                 | Self::PythonSourceSyntaxUnavailable
                 | Self::PythonSourceEncodingUnavailable
                 | Self::PythonSourceDependencyUnavailable
+                | Self::CSharpSourceDoesNotCompile
         )
     }
     fn tag(self) -> u8 {
@@ -845,6 +863,8 @@ impl SourceCoverageGapCause {
             Self::SourceRejectedByNativeCompiler => 8,
             Self::SourceNotRepresentable => 9,
             Self::CompileDeadlineExceeded => 10,
+            Self::RustSourceSharedByCargoTargets => 11,
+            Self::CSharpSourceDoesNotCompile => 12,
         }
     }
     fn from_tag(tag: u8) -> Result<Self, &'static str> {
@@ -859,6 +879,8 @@ impl SourceCoverageGapCause {
             8 => Self::SourceRejectedByNativeCompiler,
             9 => Self::SourceNotRepresentable,
             10 => Self::CompileDeadlineExceeded,
+            11 => Self::RustSourceSharedByCargoTargets,
+            12 => Self::CSharpSourceDoesNotCompile,
             _ => return Err("invalid coverage cause"),
         })
     }
@@ -1093,9 +1115,11 @@ mod tests {
     fn typescript_catalog_rejects_foreign_language_causes_at_construction_and_decode() {
         for cause in [
             SourceCoverageGapCause::RustSourceOutsideActiveCargoTarget,
+            SourceCoverageGapCause::RustSourceSharedByCargoTargets,
             SourceCoverageGapCause::PythonSourceSyntaxUnavailable,
             SourceCoverageGapCause::PythonSourceEncodingUnavailable,
             SourceCoverageGapCause::PythonSourceDependencyUnavailable,
+            SourceCoverageGapCause::CSharpSourceDoesNotCompile,
         ] {
             let mut foreign = rows();
             if let SourceCoverageRow::Gap { cause: seen, .. } = &mut foreign[2] {

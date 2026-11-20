@@ -401,6 +401,9 @@ mod tests {
     /// The scrim publishes itself as a veil: what was published before it, inside it, is under it.
     #[gpui::test]
     fn an_open_dialog_publishes_a_veil_over_the_page_beneath(cx: &mut TestAppContext) {
+        // A dialog traps focus through the registry the component library
+        // installs at start (7ab3fda85).
+        cx.update(|cx| gpui_component::init(cx));
         cx.update(|cx| crate::probe::enable(cx));
         let (_view, cx) = cx.add_window_view(|_, _| Labelled);
         cx.simulate_resize(size(px(900.0), px(700.0)));

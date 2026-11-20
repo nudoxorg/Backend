@@ -1,0 +1,869 @@
+// Copyright 2025 The syntaqlite Authors. All rights reserved.
+// Licensed under the Apache License, Version 2.0.
+
+use syntaqlite_syntax::ParserConfig;
+use syntaqlite_syntax::any::{
+    AnyNodeId, AnyParseError, AnyParsedStatement, AnyParser, AnyTokenizer, ParseOutcome,
+};
+use syntaqlite_syntax::source::{DocLen, DocRange, StmtLen, StmtOffset, StmtRange, StmtText};
+
+use super::FormatConfig;
+use super::FormatError;
+use super::comment::{CommentCtx, CommentEntry, TokenEntry};
+use super::doc::{DocArena, DocId, NIL_DOC, RenderBuffers};
+use super::interpret::{FmtCtx, InterpretScratch};
+use super::macro_structured;
+use crate::dialect::AnyDialect;
+
+/// Convert a parse error (statement-relative offsets) to a
+/// [`FormatError`] with a document-absolute range.
+fn parse_error_to_format_error(e: &AnyParseError<'_>) -> FormatError {
+    let base = e.statement_base();
+    let range = match (e.offset(), e.length()) {
+        (Some(off), Some(len)) => Some(DocRange::from_offset_len(off.to_doc(base), len.into())),
+        (Some(off), None) => Some(DocRange::from_offset_len(
+            off.to_doc(base),
+            DocLen::default(),
+        )),
+        _ => None,
+    };
+    FormatError::new(e.message().to_owned(), range)
+}
+
+/// High-level SQL formatter that pretty-prints SQL source text.
+///
+/// Created from a [`Dialect`](crate::Dialect) and a [`FormatConfig`], the
+/// formatter is designed to be **reused** across many inputs. Internal
+/// buffers (parser, arena, scratch space) are recycled between calls to
+/// [`format`](Self::format), avoiding per-call allocation overhead.
+///
+/// # Quick start
+///
+/// ```rust
+/// # use syntaqlite::Formatter;
+/// let mut fmt = Formatter::new();   // SQLite dialect, default config
+/// let output = fmt.format("select 1+2").unwrap();
+/// assert_eq!(output, "SELECT 1 + 2;\n");
+/// ```
+///
+/// # Custom configuration
+///
+/// ```rust
+/// # use syntaqlite::fmt::KeywordCase;
+/// # use syntaqlite::{Formatter, FormatConfig};
+/// let config = FormatConfig::default()
+///     .with_keyword_case(KeywordCase::Lower)
+///     .with_semicolons(false);
+///
+/// let mut fmt = Formatter::with_config(&config);
+/// let output = fmt.format("SELECT 1").unwrap();
+/// assert_eq!(output, "select 1\n");
+/// ```
+pub struct Formatter {
+    pub(super) dialect: AnyDialect,
+    pub(super) parser: AnyParser,
+    /// Dedicated parser for structured macro-arg mini-parses.  Kept
+    /// separate from `parser` because each parser instance holds a
+    /// single `ParserInner`: while the outer render is walking a
+    /// statement, `parser`'s inner is still owned by the outer
+    /// session and cannot serve a second `parse()` call.
+    pub(super) mini_parser: AnyParser,
+    pub(super) config: FormatConfig,
+    // Statement-scoped state cached on the formatter to avoid per-statement allocations.
+    pub(super) arena: DocArena<'static>,
+    pub(super) interpret_scratch: InterpretScratch,
+    pub(super) render_bufs: RenderBuffers,
+    /// Byte ranges (offset, length) of macro calls in the source.  The
+    /// formatter only needs positions to decide when to emit a call
+    /// verbatim; full `Rewrite` records would tie this buffer to
+    /// the statement lifetime and prevent reuse across statements.
+    pub(super) rewrites: Vec<(StmtOffset, StmtLen)>,
+    pub(super) comment_entries: Vec<CommentEntry>,
+    pub(super) token_entries: Vec<TokenEntry>,
+    pub(super) parts: Vec<DocId>,
+    pub(super) consumed_regions: Vec<bool>,
+    /// Reusable tokenizer for macro body re-indentation.
+    pub(super) macro_tokenizer: AnyTokenizer,
+}
+
+#[cfg(feature = "sqlite")]
+impl Default for Formatter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Formatter {
+    /// Create a formatter for the built-in `SQLite` dialect with default configuration.
+    #[cfg(feature = "sqlite")]
+    pub fn new() -> Formatter {
+        Formatter::with_config(&FormatConfig::default())
+    }
+
+    /// Create a formatter for the built-in `SQLite` dialect with custom configuration.
+    #[cfg(feature = "sqlite")]
+    pub fn with_config(format_config: &FormatConfig) -> Formatter {
+        Formatter::with_dialect_config(crate::sqlite::dialect::dialect(), format_config)
+    }
+
+    /// Create a formatter bound to the given dialect with custom configuration.
+    ///
+    /// # Panics
+    /// Panics if `dialect` has no formatter bytecode (i.e. the `.synq` definitions
+    /// do not include `fmt` blocks).
+    pub fn with_dialect_config(
+        dialect: impl Into<AnyDialect>,
+        format_config: &FormatConfig,
+    ) -> Self {
+        let dialect = dialect.into();
+        assert!(
+            dialect.has_fmt_data(),
+            "dialect has no formatter bytecode — ensure .synq definitions include fmt blocks",
+        );
+        // Use the dialect handle embedded in the dialect — do NOT hardcode the
+        // SQLite dialect here, as this method is called with external dialects too.
+        let syntax = (*dialect).clone();
+        let has_macros = syntax.has_macro_style();
+        let parser = AnyParser::with_config(
+            syntax.clone(),
+            &ParserConfig::default()
+                .with_collect_tokens(true)
+                .with_macro_fallback(has_macros)
+                .with_collect_node_extents(has_macros),
+        );
+        // Extents locate each arg's subtree; macro fallback keeps a nested
+        // `foo!(...)` inside an arg parsing as a TK_ID rather than an error.
+        let mini_parser = AnyParser::with_config(
+            syntax,
+            &ParserConfig::default()
+                .with_collect_tokens(true)
+                .with_collect_node_extents(true)
+                .with_macro_fallback(has_macros),
+        );
+        let macro_tokenizer = AnyTokenizer::new((*dialect).clone());
+        Formatter {
+            dialect,
+            parser,
+            mini_parser,
+            config: format_config.clone(),
+            arena: DocArena::with_capacity(256),
+            interpret_scratch: InterpretScratch::new(),
+            render_bufs: RenderBuffers::new(),
+            rewrites: Vec::with_capacity(32),
+            comment_entries: Vec::with_capacity(64),
+            token_entries: Vec::with_capacity(256),
+            parts: Vec::with_capacity(64),
+            consumed_regions: Vec::with_capacity(32),
+            macro_tokenizer,
+        }
+    }
+
+    /// Populate side-channel buffers (comments, tokens, macro regions) from an erased statement.
+    fn collect_side_channels(&mut self, erased: &AnyParsedStatement<'_>) {
+        self.rewrites.clear();
+        self.comment_entries.clear();
+        self.comment_entries
+            .extend(erased.comment_spans().map(|c| CommentEntry {
+                offset: c.offset(),
+                length: c.length(),
+                kind: c.kind(),
+                side: c.side(),
+            }));
+        self.token_entries.clear();
+        // `stmt_range` drills expansion-layer tokens up to their authored
+        // call site, so every entry is in the coordinates the formatter emits.
+        self.token_entries.extend(erased.tokens().map(|t| {
+            let range = t.stmt_range();
+            TokenEntry {
+                offset: range.start,
+                length: range.len(),
+            }
+        }));
+        // Only top-level fallback rewrites are addressable here: an expanded
+        // macro's tokens live in the expansion buffer, not at the call site.
+        self.rewrites.extend(
+            erased
+                .rewrites()
+                .filter(|r| r.parent().is_none() && r.is_fallback())
+                .map(|r| {
+                    (
+                        StmtOffset::from_raw(r.call_offset().as_u32()),
+                        StmtLen::from(r.call_length()),
+                    )
+                }),
+        );
+    }
+
+    /// Format SQL source text. Handles multiple statements and preserves comments.
+    ///
+    /// Pipeline overview per statement:
+    /// 1. Parse and collect token/comment/macro metadata.
+    /// 2. Interpret formatter bytecode into Doc fragments.
+    /// 3. Render Doc fragments with a Wadler-style pretty-printer (`DocArena`).
+    /// 4. Recycle temporary buffers for the next statement.
+    ///
+    /// # Errors
+    /// Returns [`FormatError`] when parsing fails for any statement in `source`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use syntaqlite::Formatter;
+    /// let mut fmt = Formatter::new();
+    ///
+    /// // Single statement
+    /// let out = fmt.format("select 1").unwrap();
+    /// assert_eq!(out, "SELECT 1;\n");
+    ///
+    /// // Multiple statements (reuses the same formatter)
+    /// let out = fmt.format("select 1; select 2").unwrap();
+    /// assert!(out.contains("SELECT 1"));
+    /// assert!(out.contains("SELECT 2"));
+    /// ```
+    pub fn format(&mut self, source: &str) -> Result<String, FormatError> {
+        // Outlives each statement's arena, which borrows keyword strings
+        // from the dialect's tables.
+        let dialect = self.dialect.clone();
+        let mut session = self.parser.parse(source);
+        let mut result = String::with_capacity(source.len());
+        let mut stmt_num: usize = 0;
+
+        loop {
+            let stmt = match session.next() {
+                ParseOutcome::Done => break,
+                ParseOutcome::Ok(stmt) => stmt,
+                ParseOutcome::Err(e) => {
+                    return Err(parse_error_to_format_error(&e));
+                }
+            };
+
+            let erased = stmt.erase();
+            self.collect_side_channels(&erased);
+            let stmt_source = erased.text();
+
+            let root_id = erased.root_id();
+            // Reclaimed after render; nothing to track when the statement has
+            // neither comments nor macros.
+            let comment_ctx =
+                (!self.comment_entries.is_empty() || !self.rewrites.is_empty()).then(|| {
+                    CommentCtx::new(
+                        std::mem::take(&mut self.comment_entries),
+                        std::mem::take(&mut self.token_entries),
+                    )
+                });
+
+            // A fresh arena drops the previous statement's borrows.
+            let prev_arena = std::mem::replace(&mut self.arena, DocArena::new());
+            let mut arena = DocArena::recycle(prev_arena);
+            self.parts.clear();
+
+            if stmt_num > 0 {
+                emit_stmt_separator(
+                    comment_ctx.as_ref(),
+                    stmt_source,
+                    &mut arena,
+                    &mut self.parts,
+                );
+            } else if let Some(cctx) = comment_ctx.as_ref() {
+                drain_gap_comments(cctx, stmt_source, &mut arena, &mut self.parts);
+            }
+
+            // Macro calls whose args parse as expressions get a structured
+            // doc; the rest fall through to verbatim emission in `try_macro`.
+            // Comments come from `comment_ctx`, which owns them by now.
+            let macro_docs = macro_structured::compute_macro_docs(
+                &self.mini_parser,
+                &self.dialect,
+                &erased,
+                &self.macro_tokenizer,
+                comment_ctx.as_ref().map_or(&[][..], |c| c.comments()),
+                &mut arena,
+            );
+
+            let ctx = FmtCtx {
+                dialect: &dialect,
+                reader: erased,
+                comment_ctx,
+                rewrites: std::mem::take(&mut self.rewrites),
+                macro_docs,
+            };
+            let interpreted = self.interpret_node(&ctx, root_id, &mut arena);
+            self.parts.push(interpreted);
+
+            // The terminator renders in this cycle, not the next statement's:
+            // comments attached to the SEMI are line suffixes, and a line
+            // suffix only lands on the line its cycle emitted.
+            if self.config.semicolons && !root_id.is_null() {
+                let semi = arena.text(";");
+                self.parts.push(semi);
+            }
+
+            if let Some(cctx) = ctx.comment_ctx.as_ref() {
+                self.parts
+                    .push(cctx.drain_remaining(stmt_source, &mut arena));
+            }
+
+            // Render here, while `erased` and `ctx` still borrow the session.
+            let doc = arena.cats(&self.parts);
+            let mut bufs = std::mem::take(&mut self.render_bufs);
+            bufs.clear();
+            arena.render_into(doc, &self.config, &mut bufs);
+            // An empty statement contributes its comments and nothing else,
+            // so it ends no line of its own and claims no slot when it has
+            // no comments either.
+            let rendered = if root_id.is_null() {
+                bufs.out.trim_end()
+            } else {
+                bufs.out.as_str()
+            };
+            if !rendered.trim().is_empty() {
+                result.push_str(rendered);
+                stmt_num += 1;
+            }
+            self.render_bufs = bufs;
+
+            if let Some(cctx) = ctx.comment_ctx {
+                let (comments, tokens) = cctx.into_parts();
+                self.comment_entries = comments;
+                self.token_entries = tokens;
+            }
+            self.rewrites = ctx.rewrites;
+
+            // Recycle the arena, releasing all Doc borrows from this iteration.
+            self.arena = DocArena::recycle(arena);
+        }
+
+        if stmt_num == 0 {
+            return Ok(String::new());
+        }
+
+        result.push('\n');
+
+        Ok(result)
+    }
+
+    /// Dump the raw interpreter bytecode for each statement.
+    ///
+    /// # Errors
+    ///
+    /// Returns `FormatError` if the source cannot be parsed.
+    pub fn dump_bytecode(&mut self, source: &str) -> Result<String, FormatError> {
+        use std::fmt::Write;
+        use syntaqlite_common::fmt::bytecode::opcodes;
+
+        let mut session = self.parser.parse(source);
+        let mut result = String::new();
+
+        loop {
+            let stmt = match session.next() {
+                ParseOutcome::Done => break,
+                ParseOutcome::Ok(stmt) => stmt,
+                ParseOutcome::Err(e) => {
+                    return Err(parse_error_to_format_error(&e));
+                }
+            };
+
+            let erased = stmt.erase();
+            let root_id = erased.root_id();
+            let Some((tag, _fields)) = erased.extract_fields(root_id) else {
+                continue;
+            };
+
+            let node_name = self.dialect.syntax_dialect().node_name(tag);
+            let _ = writeln!(result, "=== {node_name} (tag={}) ===", u32::from(tag));
+
+            let Some((ops_bytes, ops_len)) = self.dialect.fmt_dispatch(tag) else {
+                result.push_str("  <no fmt bytecode>\n");
+                continue;
+            };
+
+            let mut depth: usize = 0;
+            for ip in 0..ops_len {
+                let base = ip * 6;
+                let opcode = ops_bytes[base];
+                let a = ops_bytes[base + 1];
+                let b = u16::from_le_bytes([ops_bytes[base + 2], ops_bytes[base + 3]]);
+                let c = u16::from_le_bytes([ops_bytes[base + 4], ops_bytes[base + 5]]);
+
+                // Dedent closers before printing.
+                match opcode {
+                    opcodes::END_IF
+                    | opcodes::ELSE_OP
+                    | opcodes::GROUP_END
+                    | opcodes::NEST_END
+                    | opcodes::FOR_EACH_END => {
+                        depth = depth.saturating_sub(1);
+                    }
+                    _ => {}
+                }
+
+                let indent_str = "  ".repeat(depth);
+                let desc = match opcode {
+                    opcodes::KEYWORD => {
+                        let s = self.dialect.fmt_string(b);
+                        format!("Keyword \"{s}\"")
+                    }
+                    opcodes::SPAN => format!("Span(field={a})"),
+                    opcodes::CHILD => format!("Child(field={a})"),
+                    opcodes::LINE => "Line".to_string(),
+                    opcodes::SOFTLINE => "SoftLine".to_string(),
+                    opcodes::HARDLINE => "HardLine".to_string(),
+                    opcodes::GROUP_START => "Group {".to_string(),
+                    opcodes::GROUP_END
+                    | opcodes::NEST_END
+                    | opcodes::END_IF
+                    | opcodes::FOR_EACH_END => "}".to_string(),
+                    opcodes::NEST_START => "Nest {".to_string(),
+                    opcodes::IF_SET => format!("IfSet(field={a}) {{"),
+                    opcodes::ELSE_OP => "} Else {".to_string(),
+                    opcodes::FOR_EACH_START => format!("ForEach(field={a}) {{"),
+                    opcodes::CHILD_ITEM => "ChildItem".to_string(),
+                    opcodes::FOR_EACH_SEP => {
+                        let s = self.dialect.fmt_string(b);
+                        format!("Sep \"{s}\"")
+                    }
+                    opcodes::IF_BOOL => format!("IfBool(field={a}) {{"),
+                    opcodes::IF_FLAG => format!("IfFlag(field={a}, mask={b:#x}) {{"),
+                    opcodes::IF_ENUM => format!("IfEnum(field={a}, val={b}) {{"),
+                    opcodes::IF_SPAN => format!("IfSpan(field={a}) {{"),
+                    opcodes::ENUM_DISPLAY => format!("EnumDisplay(field={a}, base={b})"),
+                    opcodes::FOR_EACH_SELF_START => "ForEachSelf {".to_string(),
+                    opcodes::CHILD_PREC => format!("ChildPrec(field={a}, table={b}, packed={c})"),
+                    opcodes::CHILD_PAREN_LIST => format!("ChildParenList(field={a})"),
+                    opcodes::CHILD_PREC_FIXED => {
+                        format!("ChildPrecFixed(field={a}, packed={b}, is_right={c})")
+                    }
+                    _ => format!("Unknown(opcode={opcode}, a={a}, b={b}, c={c})"),
+                };
+
+                let _ = writeln!(result, "  {ip:3}: {indent_str}{desc}");
+
+                // Indent openers after printing.
+                match opcode {
+                    opcodes::IF_SET
+                    | opcodes::IF_BOOL
+                    | opcodes::IF_FLAG
+                    | opcodes::IF_ENUM
+                    | opcodes::IF_SPAN
+                    | opcodes::ELSE_OP
+                    | opcodes::GROUP_START
+                    | opcodes::NEST_START
+                    | opcodes::FOR_EACH_START
+                    | opcodes::FOR_EACH_SELF_START => {
+                        depth += 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Dump the Wadler-Lindig document tree after bytecode interpretation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `FormatError` if the source cannot be parsed.
+    pub fn dump_doc_tree(&mut self, source: &str) -> Result<String, FormatError> {
+        use std::fmt::Write;
+        let dialect = self.dialect.clone();
+        let mut session = self.parser.parse(source);
+        let mut result = String::new();
+        let mut stmt_num = 0usize;
+
+        loop {
+            let stmt = match session.next() {
+                ParseOutcome::Done => break,
+                ParseOutcome::Ok(stmt) => stmt,
+                ParseOutcome::Err(e) => {
+                    return Err(parse_error_to_format_error(&e));
+                }
+            };
+
+            let erased = stmt.erase();
+            self.collect_side_channels(&erased);
+            let root_id = erased.root_id();
+
+            if let Some((tag, _)) = erased.extract_fields(root_id) {
+                let node_name = self.dialect.syntax_dialect().node_name(tag);
+                let _ = writeln!(result, "=== {node_name} ===");
+            }
+
+            let has_comments = !self.comment_entries.is_empty();
+            let has_macros = !self.rewrites.is_empty();
+            let needs_token_ctx = has_comments || has_macros;
+
+            let comment_ctx = if needs_token_ctx {
+                Some(CommentCtx::new(
+                    std::mem::take(&mut self.comment_entries),
+                    std::mem::take(&mut self.token_entries),
+                ))
+            } else {
+                None
+            };
+
+            let prev_arena = std::mem::replace(&mut self.arena, DocArena::new());
+            let mut arena = DocArena::recycle(prev_arena);
+            self.parts.clear();
+
+            let stmt_source = erased.text();
+            if stmt_num > 0 {
+                emit_stmt_separator(
+                    comment_ctx.as_ref(),
+                    stmt_source,
+                    &mut arena,
+                    &mut self.parts,
+                );
+            } else if let Some(cctx) = comment_ctx.as_ref() {
+                drain_gap_comments(cctx, stmt_source, &mut arena, &mut self.parts);
+            }
+
+            let macro_docs = macro_structured::compute_macro_docs(
+                &self.mini_parser,
+                &self.dialect,
+                &erased,
+                &self.macro_tokenizer,
+                comment_ctx.as_ref().map_or(&[][..], |c| c.comments()),
+                &mut arena,
+            );
+
+            let ctx = FmtCtx {
+                dialect: &dialect,
+                reader: erased,
+                comment_ctx,
+                rewrites: std::mem::take(&mut self.rewrites),
+                macro_docs,
+            };
+            let interpreted = self.interpret_node(&ctx, root_id, &mut arena);
+            self.parts.push(interpreted);
+
+            if let Some(cctx) = ctx.comment_ctx.as_ref() {
+                self.parts
+                    .push(cctx.drain_remaining(stmt_source, &mut arena));
+            }
+
+            let doc = arena.cats(&self.parts);
+            result.push_str(&arena.dump(doc));
+            result.push('\n');
+
+            // Recycle buffers.
+            if let Some(cctx) = ctx.comment_ctx {
+                let (comments, tokens) = cctx.into_parts();
+                self.comment_entries = comments;
+                self.token_entries = tokens;
+            }
+            self.rewrites = ctx.rewrites;
+            self.arena = DocArena::recycle(arena);
+
+            stmt_num += 1;
+        }
+
+        Ok(result)
+    }
+}
+
+// ── Multi-statement helpers ─────────────────────────────────────────────
+
+fn emit_stmt_separator<'a>(
+    comment_ctx: Option<&CommentCtx>,
+    source: &'a StmtText,
+    arena: &mut DocArena<'a>,
+    parts: &mut Vec<DocId>,
+) {
+    parts.push(arena.hardline());
+    parts.push(arena.hardline());
+    if let Some(cctx) = comment_ctx {
+        drain_gap_comments(cctx, source, arena, parts);
+    }
+}
+
+/// Emit the comments sitting before the cursor as statement-level lines.
+fn drain_gap_comments<'a>(
+    ctx: &CommentCtx,
+    source: &'a StmtText,
+    arena: &mut DocArena<'a>,
+    parts: &mut Vec<DocId>,
+) {
+    let Some(before) = ctx.cursor_offset() else {
+        return;
+    };
+    let source_end = StmtOffset::default() + source.byte_len();
+    while let Some(c) = ctx.peek_comment() {
+        if c.offset >= before {
+            break;
+        }
+        let text = &source[StmtRange::from_offset_len(c.offset, c.length)];
+        let end = c.offset + c.length;
+        parts.push(arena.text(text));
+        parts.push(arena.hardline());
+        ctx.advance_comment();
+        // Preserve a blank line the source had after this comment, whether
+        // what follows is another comment or the next statement.
+        let next = ctx.peek_comment().map_or(before, |n| n.offset);
+        let gap = StmtRange {
+            start: end.min(source_end),
+            end: next.min(source_end),
+        };
+        if !gap.is_empty() && source[gap].contains("\n\n") {
+            parts.push(arena.hardline());
+        }
+    }
+}
+
+// ── Macro-call emission ─────────────────────────────────────────────────
+
+/// Emit a macro call at `child_id`, preferring pre-computed structured
+/// formatting when available and falling back to verbatim reindent.
+///
+/// Requires `ctx.comment_ctx` populated (`format_parsed` satisfies
+/// this).  Emits only at a node whose bytecode-emitted content is
+/// exactly the macro call: any additional content the node would emit
+/// (keywords, aliases, siblings) would be silently dropped by
+/// `ReturnAction::Discard` in the caller.
+///
+/// The position check boils down to:
+/// - `tok_offset == r_start`: the next unconsumed token *is* the
+///   macro's first token.  Guards against *leading* content the node's
+///   bytecode would emit (such a token would sit before `r_start`).
+/// - `node_end == r_end`: the node's extent ends exactly where the
+///   macro ends.  Guards against *trailing* content (e.g. a
+///   `ResultColumn` alias).
+/// - Node extent start is deliberately *not* checked: extents include
+///   preceding keyword glue consumed by the parent (`FROM` before a
+///   `TableRef`, `AS` before an alias `IdentName`).
+///
+/// Deliberately does NOT advance the cctx cursor — the child frame's
+/// `Span` op advances it when the fallback `TK_ID` emits, so trailing
+/// comments drain against the outer frame rather than the inner group.
+pub(crate) fn try_macro<'a>(
+    ctx: &FmtCtx<'a>,
+    arena: &mut DocArena<'a>,
+    consumed: &mut [bool],
+    tokenizer: &AnyTokenizer,
+    child_id: AnyNodeId,
+) -> Option<DocId> {
+    let cctx = ctx.comment_ctx.as_ref()?;
+    let tok_offset = cctx.cursor_offset()?;
+    let source = ctx.text();
+
+    let (node_text, node_off) = ctx.reader.node_text(child_id)?;
+    let node_len = StmtLen::from_raw(
+        u32::try_from(node_text.len())
+            .expect("node text length fits in u32; source buffer is addressed via u32 offsets"),
+    );
+    let node_end = node_off + node_len;
+
+    for (i, &(r_start, r_len)) in ctx.rewrites.iter().enumerate() {
+        let r_end = r_start + r_len;
+        if tok_offset != r_start || node_end != r_end {
+            continue;
+        }
+        if consumed[i] {
+            return Some(NIL_DOC);
+        }
+        consumed[i] = true;
+        if let Some(Some(doc)) = ctx.macro_docs.get(i) {
+            return Some(*doc);
+        }
+        let macro_text = &source[StmtRange {
+            start: r_start,
+            end: r_end,
+        }];
+        return Some(reindent_macro(macro_text, tokenizer, arena));
+    }
+    None
+}
+
+/// Raw LP/RP token type values from the `SQLite` tokenizer. These are stable
+/// across all dialects built on the `SQLite` dialect.
+const TK_LP: u32 = 113;
+const TK_RP: u32 = 115;
+
+/// Re-indent a multiline macro call using tokenizer-based paren-depth tracking.
+///
+/// Single-line macros (e.g. `foo!(1 + 2)`) are returned verbatim.
+/// Multiline macros get each line trimmed and re-indented based on
+/// parenthesis nesting depth, using `hardline` + `nest()` so that
+/// the base indentation adapts to the surrounding formatter context.
+///
+/// Paren depth is computed by tokenizing the macro body with the dialect's
+/// tokenizer, so parentheses inside strings, comments, and quoted identifiers
+/// are correctly ignored.
+fn reindent_macro<'a>(
+    macro_text: &'a str,
+    tokenizer: &AnyTokenizer,
+    arena: &mut DocArena<'a>,
+) -> DocId {
+    // Find "!(" to split name from body.
+    let Some(bang_pos) = macro_text.find("!(") else {
+        return arena.text(macro_text);
+    };
+
+    let prefix = &macro_text[..bang_pos + 2]; // "name!("
+    let inner = &macro_text[bang_pos + 2..]; // everything after "!("
+
+    // Single-line: return verbatim.
+    if !inner.contains('\n') {
+        return arena.text(macro_text);
+    }
+
+    // Paren depth after each newline, starting at 1 for the `!(` itself.
+    let mut depth: i32 = 1;
+    let mut depth_at_newline: Vec<i32> = Vec::new();
+
+    for tok in tokenizer.tokenize(inner) {
+        let tt: u32 = tok.token_type().into();
+        let tok_text = tok.text();
+
+        // Strings and comments never tokenize as LP/RP, so their parens
+        // are ignored for free.
+        if tt == TK_LP {
+            depth += 1;
+        } else if tt == TK_RP {
+            depth -= 1;
+        }
+
+        // Newlines arrive inside Space tokens, and block comments.
+        for _ in tok_text.bytes().filter(|&b| b == b'\n') {
+            depth_at_newline.push(depth);
+        }
+    }
+    // tokenizer cursor is dropped here
+
+    // Step 2: Build doc from lines using pre-computed depths.
+    let mut result = arena.text(prefix);
+    let mut first = true;
+
+    for (i, line) in inner.split('\n').enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            if first {
+                first = false;
+            }
+            continue;
+        }
+
+        // Line 0 is inside `!(`; the rest start at the preceding newline.
+        let line_depth = if i == 0 {
+            1
+        } else {
+            depth_at_newline.get(i - 1).copied().unwrap_or(0)
+        };
+
+        // A `)` at the start of trimmed text is always an RP token, never
+        // the inside of a string or comment, so raw counting is safe.
+        let leading_close =
+            i32::try_from(trimmed.bytes().take_while(|&b| b == b')').count()).unwrap_or(i32::MAX);
+        let indent = i16::try_from((line_depth - leading_close).max(0)).unwrap_or(i16::MAX);
+
+        if first {
+            // Content on same line as "!(" — keep inline.
+            first = false;
+            let txt = arena.text(trimmed);
+            result = arena.cat(result, txt);
+        } else {
+            // Emit hardline + indent via nest wrappers.
+            let hl = arena.hardline();
+            let txt = arena.text(trimmed);
+            let line_doc = arena.cat(hl, txt);
+            let indented = if indent > 0 {
+                arena.nest(indent, line_doc)
+            } else {
+                line_doc
+            };
+            result = arena.cat(result, indented);
+        }
+    }
+
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syntaqlite_syntax::{CommentKind, CommentSide};
+
+    /// Verify that `Formatter` stores an `AnyParser` derived from the dialect,
+    /// not a hardcoded `SQLite` `Parser`.
+    ///
+    /// This test FAILS TO COMPILE before the fix because `fmt.parser` is of
+    /// type `syntaqlite_syntax::Parser` (SQLite-only), not `AnyParser`.
+    /// After the fix, the field type changes to `AnyParser`.
+    #[test]
+    #[cfg(feature = "sqlite")]
+    fn formatter_parser_is_any_dialect_based() {
+        use syntaqlite_syntax::any::AnyParser;
+        let dialect = crate::sqlite::dialect::dialect();
+        let fmt = Formatter::with_dialect_config(dialect, &FormatConfig::default());
+        // Type assertion: fails to compile if fmt.parser is Parser, not AnyParser.
+        let _: &AnyParser = &fmt.parser;
+    }
+
+    fn render_parts(arena: &mut DocArena<'_>, parts: &[DocId]) -> String {
+        let root = arena.cats(parts);
+        arena.render(root, &FormatConfig::default())
+    }
+
+    #[test]
+    fn emit_stmt_separator_without_comments_emits_blank_line() {
+        let source = StmtText::new("SELECT 1");
+        let mut arena = DocArena::new();
+        let mut parts = Vec::new();
+        emit_stmt_separator(None, source, &mut arena, &mut parts);
+        assert_eq!(render_parts(&mut arena, &parts), "\n\n");
+    }
+
+    #[test]
+    fn emit_stmt_separator_drains_leading_block_comment_after_break() {
+        // The separator only breaks and drains the next statement's leading
+        // comments; the terminator and its trailing comments come from
+        // `format`.
+        let source = StmtText::new("/*x*/SELECT");
+        let ctx = CommentCtx::new(
+            vec![CommentEntry {
+                offset: StmtOffset::from_raw(0),
+                length: StmtLen::from_raw(5),
+                kind: CommentKind::Block,
+                side: CommentSide::Leading,
+            }],
+            vec![TokenEntry {
+                offset: StmtOffset::from_raw(5),
+                length: StmtLen::from_raw(6),
+            }],
+        );
+        let mut arena = DocArena::new();
+        let mut parts = Vec::new();
+        emit_stmt_separator(Some(&ctx), source, &mut arena, &mut parts);
+        assert_eq!(render_parts(&mut arena, &parts), "\n\n/*x*/\n");
+    }
+
+    #[test]
+    fn drain_gap_comments_writes_each_comment_on_own_line() {
+        let source = StmtText::new("--a\n/*b*/SELECT");
+        let ctx = CommentCtx::new(
+            vec![
+                CommentEntry {
+                    offset: StmtOffset::from_raw(0),
+                    length: StmtLen::from_raw(3),
+                    kind: CommentKind::Line,
+                    side: CommentSide::Leading,
+                },
+                CommentEntry {
+                    offset: StmtOffset::from_raw(4),
+                    length: StmtLen::from_raw(5),
+                    kind: CommentKind::Block,
+                    side: CommentSide::Leading,
+                },
+            ],
+            vec![TokenEntry {
+                offset: StmtOffset::from_raw(9),
+                length: StmtLen::from_raw(6),
+            }],
+        );
+        let mut arena = DocArena::new();
+        let mut parts = Vec::new();
+        drain_gap_comments(&ctx, source, &mut arena, &mut parts);
+        assert_eq!(render_parts(&mut arena, &parts), "--a\n/*b*/\n");
+    }
+}

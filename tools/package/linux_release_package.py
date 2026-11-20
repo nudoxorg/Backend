@@ -7,6 +7,7 @@ is required. An optional legacy Compiler API payload requires both SDK flags.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import datetime as dt
 import gzip
 import hashlib
@@ -19,11 +20,13 @@ import stat
 import subprocess
 import sys
 import tarfile
+import time
 import tomllib
 
 BINARIES = ("backend-cli", "backend-mcp", "backend-locald")
 DESKTOP_ROLE = {"executable": "backend-desktop", "launcher": "nudox-desktop"}
 MAX_BINARY_BYTES = 512 * 1024 * 1024
+MAX_STYLO_LIBGCC_BYTES = 16 * 1024 * 1024
 MAX_TYPESCRIPT_PACKAGE_BYTES = 96 * 1024 * 1024
 MAX_NODE_LIBRARY_BYTES = 512 * 1024 * 1024
 MAX_NODE_LIBRARIES = 64
@@ -44,6 +47,24 @@ GLIBC_ABI_SINCE = {"GLIBC_ABI_DT_RELR": "2.36", "GLIBC_ABI_GNU2_TLS": "2.42"}
 
 def fail(message: str) -> None:
     raise ValueError(message)
+
+
+@contextmanager
+def clean_git_environment():
+    """Do not let caller Git variables redirect an exact-source observation."""
+    inherited = {key: value for key, value in os.environ.items() if key.startswith("GIT_")}
+    for key in inherited:
+        os.environ.pop(key, None)
+    os.environ.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+                       "GIT_CONFIG_SYSTEM": os.devnull, "GIT_CONFIG_COUNT": "2",
+                       "GIT_CONFIG_KEY_0": "core.fsmonitor", "GIT_CONFIG_VALUE_0": "false",
+                       "GIT_CONFIG_KEY_1": "core.excludesFile", "GIT_CONFIG_VALUE_1": os.devnull})
+    try:
+        yield
+    finally:
+        for key in [key for key in os.environ if key.startswith("GIT_")]:
+            os.environ.pop(key, None)
+        os.environ.update(inherited)
 
 
 def sha256(path: Path) -> str:
@@ -421,6 +442,211 @@ def admit_embedding_helper(path: Path, receipt_path: Path, revision: str, tree: 
     return {"bytes": size, "sha256": digest}, hashlib.sha256(raw).hexdigest()
 
 
+def reject_private_paths(path: Path, private_paths: list[str], label: str) -> None:
+    patterns = [os.fsencode(value) for value in private_paths]
+    overlap = max(map(len, patterns), default=1) - 1
+    tail = b""
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            block = tail + chunk
+            if any(pattern in block for pattern in patterns):
+                fail(f"{label} contains a private build path")
+            tail = block[-overlap:] if overlap else b""
+
+
+def valid_build_tool(record: object) -> bool:
+    return (isinstance(record, dict) and isinstance(record.get("path"), str)
+            and Path(record["path"]).is_absolute() and isinstance(record.get("sha256"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", record["sha256"]) is not None)
+
+
+def admit_stylo_worker(path: Path, receipt_path: Path, revision: str, tree: str, lock_sha: str) -> tuple[dict, str]:
+    """Admit build custody only; installed-owner permit admission is separate."""
+    raw = read_regular_bytes(receipt_path, 65536, "Stylo worker build receipt")
+    receipt = parse_json_bytes(raw, "Stylo worker build receipt")
+    if receipt.get("schema") != "nudox.stylo-worker-build-receipt.v2" or receipt.get("remap_schema") != "nudox.stylo-worker-remap.v2":
+        fail("unsupported Stylo worker build receipt")
+    source = receipt.get("source", {})
+    if not isinstance(source, dict) or (source.get("commit"), source.get("tree"), source.get("cargo_lock_sha256")) != (revision, tree, lock_sha):
+        fail("Stylo worker and product were not built from the same exact source")
+    if type(receipt.get("exit")) is not int or receipt["exit"] != 0 or source.get("clean_before") is not True or source.get("clean_after") is not True or not isinstance(receipt.get("toolchain"), dict) or receipt["toolchain"].get("unchanged") is not True:
+        fail("Stylo worker receipt does not attest an unchanged successful build")
+    if not isinstance(receipt.get("execution"), dict) or receipt["execution"].get("process_group_retired") is not True or receipt["execution"].get("exit") != 0 or type(receipt["execution"].get("exit")) is not int:
+        fail("Stylo worker build process did not retire successfully")
+    if not isinstance(receipt.get("environment"), dict) or receipt["environment"].get("CARGO_BUILD_TARGET") != TARGET or receipt["environment"].get("CARGO_NET_OFFLINE") != "true":
+        fail("Stylo worker build target or offline environment differs")
+    env = receipt["environment"]
+    allowed_env = {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "TZ", "RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_HOME", "CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR", "CARGO_BUILD_TARGET", "CARGO_NET_OFFLINE", "CARGO_BUILD_JOBS", "CARGO_INCREMENTAL", "CARGO_CACHE_AUTO_CLEAN_FREQUENCY", "CARGO_TERM_COLOR"}
+    if any(not isinstance(value, str) for value in env.values()) or not set(env).issubset(allowed_env):
+        fail("Stylo worker receipt has unadmitted effective environment")
+    private_paths = [receipt.get("source_path"), env.get("CARGO_HOME"), env.get("CARGO_TARGET_DIR"), env.get("CARGO_BUILD_BUILD_DIR")]
+    if any(not isinstance(value, str) or not Path(value).is_absolute() or "\x1f" in value or "=" in value for value in private_paths):
+        fail("Stylo worker receipt has invalid private-path remapping inputs")
+    expected_flags = "\x1f".join(f"--remap-path-prefix={value}=/nudox/{label}" for value, label in zip(private_paths, ("source", "cargo-home", "target", "build")))
+    if env.get("HOME") != env.get("CARGO_BUILD_BUILD_DIR") or env.get("TMPDIR") != env.get("CARGO_BUILD_BUILD_DIR") or env.get("CARGO_BUILD_JOBS") not in {"1", "2", "3", "4"} or env.get("CARGO_INCREMENTAL") != "0" or env.get("CARGO_CACHE_AUTO_CLEAN_FREQUENCY") != "never" or env.get("CARGO_TERM_COLOR") != "never" or env.get("RUSTC_WRAPPER") != "" or env.get("RUSTC_WORKSPACE_WRAPPER") != "" or env.get("RUSTFLAGS") != "" or env.get("CARGO_ENCODED_RUSTFLAGS") != expected_flags:
+        fail("Stylo worker receipt lacks its fixed private-path remaps")
+    helpers = receipt.get("build_helpers")
+    if not isinstance(helpers, dict) or set(helpers) != {"cc", "make", "python3", "sh"} or any(not valid_build_tool(item) for item in helpers.values()) or not valid_build_tool(receipt["toolchain"].get("cargo")) or not valid_build_tool(receipt["toolchain"].get("rustc")) or receipt["toolchain"]["rustc"].get("path") != env.get("RUSTC"):
+        fail("Stylo worker receipt omits its compiler or build helpers")
+    if receipt.get("argv") != ["cargo", "build", "--release", "--locked", "-p", "backend-frontend-stylo", "--bin", "backend-stylo-worker"]:
+        fail("Stylo worker receipt does not attest the fixed worker build recipe")
+    artifact = receipt.get("artifact", {})
+    size, digest = admit_file_digest(path, MAX_BINARY_BYTES)
+    if not isinstance(artifact, dict) or artifact.get("architecture") != "x86_64" or type(artifact.get("bytes")) is not int or size != artifact["bytes"] or digest != artifact.get("sha256"):
+        fail("Stylo worker differs from its exact successful build receipt")
+    reject_private_paths(path, private_paths, "Stylo worker")
+    if admit_file_digest(path, MAX_BINARY_BYTES) != (size, digest):
+        fail("Stylo worker changed during its privacy scan")
+    return {"bytes": size, "sha256": digest}, hashlib.sha256(raw).hexdigest()
+
+
+def admit_stylo_bound_owner(receipt_path: Path, *, source: tuple[str, str, str],
+                            cli_record: dict, cli_manifest_sha: str,
+                            raw_worker: dict, worker_receipt_sha: str,
+                            worker_private_paths: list[str]) -> tuple[dict, str]:
+    """Admit the finite two-phase build receipt before substituting locald."""
+    raw = read_regular_bytes(receipt_path, 65536, "Stylo bound owner receipt")
+    receipt = parse_json_bytes(raw, "Stylo bound owner receipt")
+    built = receipt.get("source")
+    if receipt.get("schema") != "nudox.stylo-bound-owner-build-receipt.v4" or not isinstance(built, dict) or (built.get("commit"), built.get("tree"), built.get("cargo_lock_sha256")) != source or built.get("clean_before") is not True or built.get("clean_after") is not True:
+        fail("Stylo owner receipt has a different or unclean source")
+    if receipt.get("cli_build_manifest_sha256") != cli_manifest_sha or receipt.get("worker_build_receipt_sha256") != worker_receipt_sha or receipt.get("worker_source") != raw_worker:
+        fail("Stylo owner receipt differs from its CLI or raw worker inputs")
+    if len(worker_private_paths) != 4 or any(not isinstance(value, str) or not Path(value).is_absolute() for value in worker_private_paths) or receipt.get("worker_private_paths") != worker_private_paths:
+        fail("Stylo owner receipt differs from its worker build paths")
+    cli = receipt.get("cli")
+    if not isinstance(cli, dict) or any(cli.get(key) != cli_record.get(key) for key in ("path", "bytes", "sha256")):
+        fail("Stylo owner receipt differs from the selected source-receipted CLI")
+    observer = receipt.get("observer")
+    observer_execution = receipt.get("observer_execution")
+    if receipt.get("observer_argv") != ["cargo", "build", "--release", "--locked", "-p", "backend-compile", "--example", "stylo_identity_observer"] or not isinstance(observer_execution, dict) or type(observer_execution.get("exit")) is not int or observer_execution.get("exit") != 0 or observer_execution.get("process_group_retired") is not True or not isinstance(observer, dict) or not isinstance(observer.get("path"), str):
+        fail("Stylo identity observer lacks its fixed source build receipt")
+    observer_path = Path(observer["path"])
+    if not observer_path.is_absolute() or observer_path.is_symlink() or not os.access(observer_path, os.X_OK) or admit_file_digest(observer_path, MAX_BINARY_BYTES) != (observer.get("bytes"), observer.get("sha256")):
+        fail("Stylo identity observer differs from its build receipt")
+    anchor = receipt.get("worker_anchor")
+    env = receipt.get("environment")
+    if not isinstance(anchor, str) or not re.fullmatch(r"[0-9a-f]{64}", anchor) or anchor == "0" * 64 or not isinstance(env, dict) or env.get("NUDOX_BUILD_STYLO_WORKER_ID") != anchor:
+        fail("Stylo owner receipt has no exact compiled worker anchor")
+    if receipt.get("observer_environment") != {key: value for key, value in env.items() if key not in {"NUDOX_BUILD_STYLO_WORKER_ID", "NUDOX_BUILD_SQLITE_WORKER_ID", "NUDOX_BUILD_SQLITE_BASIS_JSON"}}:
+        fail("Stylo observer environment differs from the fixed pre-anchor build recipe")
+    if observer_path != Path(env.get("CARGO_TARGET_DIR", "")) / TARGET / "release/examples/stylo_identity_observer":
+        fail("Stylo identity observer is not the fixed Cargo output")
+    source_path = receipt.get("source_path")
+    private_paths = [source_path, env.get("CARGO_HOME"), env.get("CARGO_TARGET_DIR"), env.get("CARGO_BUILD_BUILD_DIR")]
+    if receipt.get("remap_schema") != "nudox.stylo-owner-remap.v1" or receipt.get("c_remap_schema") != "nudox.stylo-c-prefix-map.v1" or any(not isinstance(path, str) or not Path(path).is_absolute() or "\x1f" in path or "=" in path for path in private_paths):
+        fail("Stylo owner receipt has invalid private-path remapping inputs")
+    expected_flags = "\x1f".join(f"--remap-path-prefix={path}=/nudox/{label}" for path, label in zip(private_paths, ("source", "cargo-home", "target", "build")))
+    if any(any(character.isspace() for character in path) for path in private_paths):
+        fail("Stylo owner C prefix-map path contains whitespace")
+    expected_cflags = " ".join(f"-{kind}-prefix-map={path}=/nudox/{label}" for path, label in zip(private_paths, ("source", "cargo-home", "target", "build")) for kind in ("ffile", "fmacro"))
+    if env.get("CFLAGS") != expected_cflags or env.get("CXXFLAGS") != expected_cflags:
+        fail("Stylo owner C/C++ prefix-map flags differ from the fixed recipe")
+    allowed_env = {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "TZ", "RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_HOME", "CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR", "CARGO_BUILD_TARGET", "CARGO_NET_OFFLINE", "CARGO_BUILD_JOBS", "CARGO_INCREMENTAL", "CARGO_CACHE_AUTO_CLEAN_FREQUENCY", "CARGO_TERM_COLOR", "NUDOX_BUILD_STYLO_WORKER_ID", "NUDOX_BUILD_SQLITE_WORKER_ID", "NUDOX_BUILD_SQLITE_BASIS_JSON", "CFLAGS", "CXXFLAGS"}
+    if any(not isinstance(value, str) for value in env.values()) or not set(env).issubset(allowed_env):
+        fail("Stylo owner receipt has unadmitted effective environment")
+    if receipt.get("argv") != ["cargo", "build", "--release", "--locked", "-p", "backend-locald", "--bin", "backend-locald"] or env.get("HOME") != env.get("CARGO_BUILD_BUILD_DIR") or env.get("TMPDIR") != env.get("CARGO_BUILD_BUILD_DIR") or env.get("CARGO_BUILD_TARGET") != TARGET or env.get("CARGO_NET_OFFLINE") != "true" or env.get("CARGO_INCREMENTAL") != "0" or env.get("CARGO_BUILD_JOBS") not in {"1", "2", "3", "4"} or env.get("CARGO_CACHE_AUTO_CLEAN_FREQUENCY") != "never" or env.get("CARGO_TERM_COLOR") != "never" or env.get("RUSTFLAGS") != "" or env.get("CARGO_ENCODED_RUSTFLAGS") != expected_flags or env.get("RUSTC_WRAPPER") != "" or env.get("RUSTC_WORKSPACE_WRAPPER") != "":
+        fail("Stylo owner receipt does not attest the fixed build recipe")
+    execution = receipt.get("execution")
+    if type(receipt.get("exit")) is not int or receipt["exit"] != 0 or not isinstance(execution, dict) or type(execution.get("exit")) is not int or execution["exit"] != 0 or execution.get("process_group_retired") is not True or not isinstance(receipt.get("toolchain"), dict) or receipt["toolchain"].get("unchanged") is not True:
+        fail("Stylo owner build did not complete with unchanged toolchain")
+    linker = receipt.get("linker")
+    if not valid_build_tool(linker) or not valid_build_tool(receipt["toolchain"].get("cargo")) or not valid_build_tool(receipt["toolchain"].get("rustc")) or receipt["toolchain"]["rustc"].get("path") != env.get("RUSTC"):
+        fail("Stylo owner receipt omits its pinned compiler or linker")
+    helpers = receipt.get("build_helpers")
+    if not isinstance(helpers, dict) or set(helpers) != {"make", "python3", "sh"} or any(not valid_build_tool(item) for item in helpers.values()):
+        fail("Stylo owner receipt omits pinned build helpers")
+    relocated, owner, dependency = receipt.get("worker"), receipt.get("owner"), receipt.get("dependency")
+    for label, item in (("worker", relocated), ("owner", owner), ("dependency", dependency)):
+        if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+            fail(f"Stylo {label} output is absent")
+        path = Path(item["path"])
+        if not path.is_absolute() or path.is_symlink() or item.get("architecture") != "x86_64":
+            fail(f"Stylo {label} output has an invalid path or architecture")
+        limit = MAX_STYLO_LIBGCC_BYTES if label == "dependency" else MAX_BINARY_BYTES
+        size, digest = admit_file_digest(path, limit)
+        if type(item.get("bytes")) is not int or (size, digest) != (item["bytes"], item.get("sha256")):
+            fail(f"Stylo {label} differs from its two-phase receipt")
+    if Path(dependency["path"]).name != "libgcc_s.so.1":
+        fail("Stylo dependency does not use the fixed SONAME")
+    if dependency["bytes"] > MAX_STYLO_LIBGCC_BYTES:
+        fail("Stylo dependency exceeds its private-lease byte bound")
+    transform = receipt.get("transformation")
+    if not isinstance(transform, dict) or transform.get("runpath_kind") != "DT_RUNPATH" or not isinstance(transform.get("before"), dict) or not isinstance(transform.get("after"), dict) or not isinstance(transform["before"].get("interpreter"), str) or not transform["before"]["interpreter"] or not isinstance(transform["before"].get("needed"), list) or transform["after"].get("interpreter") != INTERPRETER or transform["after"].get("needed") != transform["before"].get("needed"):
+        fail("Stylo worker relocation receipt has an invalid ELF contract")
+    if any(not isinstance(item, str) or "/" in item for item in transform["before"]["needed"]) or set(transform["before"]["needed"]) - GLIBC_SONAMES != {"libgcc_s.so.1"}:
+        fail("Stylo worker has an unexpected non-platform dependency")
+    loader = receipt.get("source_loader")
+    if not valid_build_tool(loader) or loader.get("selected") != transform["before"]["interpreter"] or type(loader.get("bytes")) is not int:
+        fail("Stylo worker source-loader identity is absent")
+    loader_admission = receipt.get("source_loader_admission")
+    if not isinstance(loader_admission, dict) or loader_admission.get("path") != loader.get("path") or loader_admission.get("sha256") != loader.get("sha256"):
+        fail("Stylo source loader differs from its explicit tool admission")
+    selected_loader = Path(loader["selected"])
+    resolved_loader = selected_loader.resolve(strict=True)
+    if str(resolved_loader) != loader["path"] or not os.access(resolved_loader, os.X_OK) or admit_file_digest(resolved_loader, MAX_BINARY_BYTES) != (loader["bytes"], loader["sha256"]) or selected_loader.resolve(strict=True) != resolved_loader:
+        fail("Stylo worker source loader changed since observation")
+    argv = transform.get("argv")
+    if not isinstance(argv, list) or len(argv) != 6 or not isinstance(argv[0], str) or not Path(argv[0]).is_absolute() or argv[1:] != ["--set-interpreter", INTERPRETER, "--set-rpath", "$ORIGIN/../lib", relocated["path"]]:
+        fail("Stylo worker relocation receipt does not attest the fixed command")
+    hashes = transform.get("tool_sha256")
+    if not isinstance(hashes, dict) or set(hashes) != {"patchelf", "readelf"} or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value) for value in hashes.values()):
+        fail("Stylo worker relocation tool identities are absent")
+    dep_source, dep_transform = receipt.get("dependency_source"), receipt.get("dependency_transformation")
+    if not isinstance(dep_source, dict) or not isinstance(dep_source.get("path"), str) or not Path(dep_source["path"]).is_absolute() or Path(dep_source["path"]).is_symlink() or type(dep_source.get("bytes")) is not int or admit_file_digest(Path(dep_source["path"]), MAX_STYLO_LIBGCC_BYTES) != (dep_source["bytes"], dep_source.get("sha256")):
+        fail("Stylo source libgcc differs from its receipt")
+    if not isinstance(dep_transform, dict) or dep_transform.get("soname") != "libgcc_s.so.1" or dep_transform.get("runpath_kind") != "DT_RUNPATH" or not isinstance(dep_transform.get("before"), dict) or not isinstance(dep_transform.get("after"), dict) or not isinstance(dep_transform["before"].get("needed"), list) or any(not isinstance(item, str) or "/" in item for item in dep_transform["before"]["needed"]) or set(dep_transform["before"]["needed"]) - GLIBC_SONAMES or dep_transform["after"].get("needed") != dep_transform["before"].get("needed"):
+        fail("Stylo libgcc relocation receipt has an invalid ELF contract")
+    dep_argv = dep_transform.get("argv")
+    if not isinstance(dep_argv, list) or len(dep_argv) != 4 or dep_argv[0] != argv[0] or dep_argv[1:] != ["--set-rpath", "$ORIGIN", dependency["path"]]:
+        fail("Stylo libgcc relocation receipt does not attest the fixed command")
+    sqlite = receipt.get("sqlite")
+    sqlite_keys = {"NUDOX_BUILD_SQLITE_WORKER_ID", "NUDOX_BUILD_SQLITE_BASIS_JSON"}
+    if sqlite is None:
+        if sqlite_keys.intersection(env):
+            fail("SQLite owner anchors have no phase receipt")
+    else:
+        import sqlite_linux_development as sqlite_phase
+        if not isinstance(sqlite, dict) or sqlite.get("schema") != sqlite_phase.SCHEMA:
+            fail("invalid SQLite phase receipt")
+        if sqlite.get("source", {}).get("commit") != source[0] or sqlite.get("source", {}).get("tree") != source[1]:
+            fail("SQLite phase source differs from owner")
+        if sqlite.get("owner_environment") != {key: env.get(key) for key in sqlite_keys}:
+            fail("SQLite phase does not match the owner build environment")
+        expected_command = ["cargo", "build", "--manifest-path", str(Path(source_path) / "frontends/sqlite/Cargo.toml"), "--release", "--locked", "--offline", "--bin", "sqlite-worker", "--example", "installed_basis_observer"]
+        if sqlite.get("command") != expected_command or sqlite.get("environment") != receipt["observer_environment"]:
+            fail("SQLite phase differs from its fixed source build recipe")
+        if sqlite.get("owner_environment") != {"NUDOX_BUILD_SQLITE_WORKER_ID": sqlite.get("artifact_identity"), "NUDOX_BUILD_SQLITE_BASIS_JSON": sqlite.get("basis_json")}:
+            fail("SQLite compiled basis differs from its observation")
+        for tool in ("patchelf", "readelf"):
+            if sqlite.get("tools", {}).get(tool, {}).get("sha256") != transform["tool_sha256"][tool]:
+                fail("SQLite relocation tool differs from owner admission")
+        if sqlite.get("tools", {}).get("loader", {}).get("sha256") != loader["sha256"]:
+            fail("SQLite source loader differs from owner admission")
+        if type(sqlite.get("execution", {}).get("exit")) is not int or sqlite["execution"]["exit"] != 0 or sqlite["execution"].get("process_group_retired") is not True:
+            fail("SQLite phase build did not complete")
+        if (sqlite.get("dependency", {}).get("bytes"), sqlite.get("dependency", {}).get("sha256")) != (dependency["bytes"], dependency["sha256"]):
+            fail("SQLite and Stylo have different private libgcc bytes")
+        sqlite_phase.verify_after_owner(sqlite, source=Path(source_path), env=receipt["observer_environment"], deadline=time.monotonic() + 30)
+    desktop = receipt.get("desktop")
+    if desktop is not None:
+        if sqlite is None or not isinstance(desktop, dict) or desktop.get("argv") != ["cargo", "build", "--release", "--locked", "-p", "backend-desktop", "--bin", "backend-desktop"] or type(desktop.get("execution", {}).get("exit")) is not int or desktop["execution"]["exit"] != 0 or desktop["execution"].get("process_group_retired") is not True:
+            fail("desktop companion build recipe is invalid")
+        image = desktop.get("artifact")
+        if not isinstance(image, dict) or image.get("path") != str(Path(env["CARGO_TARGET_DIR"]) / TARGET / "release/backend-desktop") or image.get("architecture") != "x86_64" or admit_file_digest(Path(image["path"]), MAX_BINARY_BYTES) != (image.get("bytes"), image.get("sha256")):
+            fail("desktop companion artifact differs from its build receipt")
+        reject_private_paths(Path(image["path"]), private_paths + worker_private_paths, "companion desktop")
+        if admit_file_digest(Path(image["path"]), MAX_BINARY_BYTES) != (image["bytes"], image["sha256"]):
+            fail("desktop companion changed during privacy scan")
+    forbidden_paths = private_paths + worker_private_paths
+    reject_private_paths(Path(owner["path"]), forbidden_paths, "Stylo owner")
+    reject_private_paths(Path(relocated["path"]), forbidden_paths, "relocated Stylo worker")
+    reject_private_paths(Path(dependency["path"]), forbidden_paths, "relocated Stylo dependency")
+    if admit_file_digest(Path(owner["path"]), MAX_BINARY_BYTES) != (owner["bytes"], owner["sha256"]):
+        fail("Stylo owner changed during its privacy scan")
+    return receipt, hashlib.sha256(raw).hexdigest()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True, type=Path, help="successful source-bound Linux build manifest")
@@ -433,18 +659,29 @@ def main() -> int:
     parser.add_argument("--typescript-sdk-receipt", type=Path, help="exact source-bound optional SDK receipt; requires --typescript-sdk-directory")
     parser.add_argument("--embedding-helper", type=Path, help="optional receipted CPU Candle helper")
     parser.add_argument("--embedding-helper-receipt", type=Path, help="exact successful helper build receipt")
+    parser.add_argument("--stylo-worker", type=Path, help="optional source-receipted Stylo worker; installed authority requires a separately anchored owner")
+    parser.add_argument("--stylo-worker-receipt", type=Path, help="exact successful Stylo worker build receipt")
+    parser.add_argument("--stylo-owner-receipt", type=Path, help="optional two-phase source-bound owner receipt for the final relocated worker")
     parser.add_argument("--include-desktop", action="store_true", help="opt in to a hash-receipted fourth backend-desktop executable and schema-2 desktop bundle")
     parser.add_argument("--release-tag", help="immutable checkpoint tag; defaults to today's UTC date and source revision")
     args = parser.parse_args()
     if (args.typescript_sdk_directory is None) != (args.typescript_sdk_receipt is None):
         fail("TypeScript SDK directory and its receipt must be provided together")
+    if (args.stylo_worker is None) != (args.stylo_worker_receipt is None):
+        fail("Stylo worker and its build receipt must be provided together")
+    if args.stylo_owner_receipt is not None and args.stylo_worker is None:
+        fail("a Stylo owner receipt requires the worker and its build receipt")
 
     manifest_path = args.manifest.resolve(strict=True)
     build_bytes = read_regular_bytes(manifest_path, 16 * 1024 * 1024, "build manifest")
     build = parse_json_bytes(build_bytes, "build manifest")
     binaries = (*BINARIES, DESKTOP_ROLE["executable"]) if args.include_desktop else BINARIES
     receipt = admit_receipt(build, include_desktop=args.include_desktop)
-    revision, tree, lock_sha, version = check_source(args.source, build, receipt)
+    if args.stylo_worker is not None:
+        with clean_git_environment():
+            revision, tree, lock_sha, version = check_source(args.source, build, receipt)
+    else:
+        revision, tree, lock_sha, version = check_source(args.source, build, receipt)
     release_tag = args.release_tag or f"checkpoint-{dt.datetime.now(dt.timezone.utc):%Y%m%d}-{revision[:10]}-linux-x64"
     if not TAG_RE.fullmatch(release_tag) or not release_tag.endswith("-" + revision[:10] + "-linux-x64"):
         fail("release tag must be checkpoint-YYYYMMDD-<source-10>-linux-x64 for the receipted source")
@@ -509,6 +746,47 @@ def main() -> int:
         admitted_lengths["backend-embedding-candle"] = helper_record["bytes"]
         (root / "share/nudox/embedding/bin").mkdir(mode=0o700, parents=True)
 
+    stylo_receipt_digest = None
+    stylo_owner = None
+    stylo_owner_digest = None
+    if args.stylo_worker is not None:
+        worker_record, stylo_receipt_digest = admit_stylo_worker(args.stylo_worker, args.stylo_worker_receipt, revision, tree, lock_sha)
+        raw_stylo_receipt_bytes = read_regular_bytes(args.stylo_worker_receipt, 65536, "Stylo worker build receipt")
+        if hashlib.sha256(raw_stylo_receipt_bytes).hexdigest() != stylo_receipt_digest:
+            fail("Stylo worker receipt changed during input admission")
+        raw_stylo_receipt = parse_json_bytes(raw_stylo_receipt_bytes, "Stylo worker build receipt")
+        worker_private_paths = [raw_stylo_receipt["source_path"], *[raw_stylo_receipt["environment"][key] for key in ("CARGO_HOME", "CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR")]]
+        sources["backend-stylo-worker"] = args.stylo_worker.resolve(strict=True)
+        admitted_digests["backend-stylo-worker"] = worker_record["sha256"]
+        admitted_lengths["backend-stylo-worker"] = worker_record["bytes"]
+        if args.stylo_owner_receipt is not None:
+            stylo_owner, stylo_owner_digest = admit_stylo_bound_owner(
+                args.stylo_owner_receipt, source=(revision, tree, lock_sha),
+                cli_record=artifact_records["backend-cli"],
+                cli_manifest_sha=hashlib.sha256(build_bytes).hexdigest(),
+                raw_worker=worker_record, worker_receipt_sha=stylo_receipt_digest,
+                worker_private_paths=worker_private_paths)
+            sources["backend-locald"] = Path(stylo_owner["owner"]["path"])
+            admitted_digests["backend-locald"] = stylo_owner["owner"]["sha256"]
+            admitted_lengths["backend-locald"] = stylo_owner["owner"]["bytes"]
+            sources["backend-stylo-worker"] = Path(stylo_owner["worker"]["path"])
+            admitted_digests["backend-stylo-worker"] = stylo_owner["worker"]["sha256"]
+            admitted_lengths["backend-stylo-worker"] = stylo_owner["worker"]["bytes"]
+            if stylo_owner.get("sqlite") is not None:
+                sqlite = stylo_owner["sqlite"]
+                if args.include_desktop:
+                    desktop = stylo_owner.get("desktop")
+                    if desktop is None:
+                        fail("SQLite desktop package requires a desktop built with the same basis")
+                    sources["backend-desktop"] = Path(desktop["artifact"]["path"])
+                    admitted_digests["backend-desktop"] = desktop["artifact"]["sha256"]
+                    admitted_lengths["backend-desktop"] = desktop["artifact"]["bytes"]
+                sources["backend-sqlite-worker"] = Path(sqlite["worker"]["path"])
+                admitted_digests["backend-sqlite-worker"] = sqlite["worker"]["sha256"]
+                admitted_lengths["backend-sqlite-worker"] = sqlite["worker"]["bytes"]
+                if (sqlite["dependency_source"]["bytes"], sqlite["dependency_source"]["sha256"]) != (stylo_owner["dependency_source"]["bytes"], stylo_owner["dependency_source"]["sha256"]):
+                    fail("SQLite and Stylo source libgcc differ")
+
     library_total_bytes = 0
     executables: list[dict] = []
     for name, source_binary in sources.items():
@@ -520,7 +798,24 @@ def main() -> int:
         if not original["interpreter"]:
             fail(f"{name} has no ELF interpreter")
         packaged.chmod(0o755)
-        linkage = run([str(ldd), str(packaged)])
+        # A pre-relocated worker is kept byte-for-byte; resolve its original
+        # NEEDED set against the raw source image before the package lib/ is built.
+        if name == "backend-stylo-worker" and stylo_owner is not None:
+            from record_stylo_owner_build import bounded_process
+            loader = stylo_owner["transformation"]["before"]["interpreter"]
+            clean_env = {key: value for key, value in os.environ.items() if key not in {"LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT", "NIX_LD", "NIX_LD_LIBRARY_PATH"}}
+            linkage = bounded_process([loader, "--list", str(args.stylo_worker)], time.monotonic() + 30, clean_env).decode("utf-8")
+            loader_record = stylo_owner["source_loader"]
+            resolved_loader = Path(loader).resolve(strict=True)
+            if str(resolved_loader) != loader_record["path"] or admit_file_digest(resolved_loader, MAX_BINARY_BYTES) != (loader_record["bytes"], loader_record["sha256"]):
+                fail("Stylo source loader changed during package dependency resolution")
+        elif name == "backend-sqlite-worker":
+            from record_stylo_owner_build import bounded_process
+            sqlite = stylo_owner["sqlite"]
+            clean_env = stylo_owner["observer_environment"]
+            linkage = bounded_process([sqlite["tools"]["loader"]["path"], "--list", sqlite["worker_raw"]["path"]], time.monotonic() + 30, clean_env).decode("utf-8")
+        else:
+            linkage = run([str(ldd), str(packaged)])
         (output / f"{name}.ldd.txt").write_text(linkage + "\n")
         for soname, raw_path in ldd_dependencies(linkage):
             if soname in glibc_family:
@@ -542,22 +837,38 @@ def main() -> int:
             if previous is None:
                 library_total_bytes += library_bytes
             libraries.setdefault(soname, {"source_path": dependency, "source_sha256": digest, "source_bytes": library_bytes})
-        run([str(patchelf), "--set-interpreter", INTERPRETER, "--set-rpath", runtime_search, str(packaged)])
+        if not (name == "backend-stylo-worker" and stylo_owner is not None or name == "backend-sqlite-worker"):
+            run([str(patchelf), "--set-interpreter", INTERPRETER, "--set-rpath", runtime_search, str(packaged)])
         patched = elf_info(readelf, packaged)
         if patched["interpreter"] != INTERPRETER or patched["needed"] != original["needed"]:
             fail(f"patchelf changed the wrong ELF contract for {name}")
         if run([str(patchelf), "--print-rpath", str(packaged)]) != runtime_search:
             fail(f"{name} retains an unexpected runtime search path")
+        if name == "backend-stylo-worker" and stylo_owner is not None and (patched != stylo_owner["transformation"]["after"] or sha256(packaged) != stylo_owner["worker"]["sha256"]):
+            fail("pre-relocated Stylo worker changed during package assembly")
+        if name == "backend-sqlite-worker" and (patched != stylo_owner["sqlite"]["worker_transformation"]["after"] or sha256(packaged) != stylo_owner["sqlite"]["worker"]["sha256"]):
+            fail("pre-relocated SQLite worker changed during package assembly")
         executables.append({"name": name, "original_sha256": admitted_digests[name], "packaged_path": packaged_relative, "packaged_sha256": sha256(packaged), "packaged_bytes": packaged.stat().st_size, "original_elf": {"needed": original["needed"], "interpreter_present": bool(original["interpreter"]), "required_glibc_versions": original["required_glibc_versions"]}, "packaged_elf": patched})
 
     for soname, record in libraries.items():
         packaged = root / "lib" / soname
-        copy_admitted_file(record["source_path"], packaged, record["source_sha256"], record["source_bytes"], 96 * 1024 * 1024)
+        bound_dependency = stylo_owner is not None and soname == "libgcc_s.so.1"
+        if bound_dependency:
+            source = stylo_owner["dependency_source"]
+            if (record["source_bytes"], record["source_sha256"]) != (source["bytes"], source["sha256"]):
+                fail("package libgcc differs from the worker's observed source library")
+            dependency = stylo_owner["dependency"]
+            copy_admitted_file(Path(dependency["path"]), packaged, dependency["sha256"], dependency["bytes"], MAX_STYLO_LIBGCC_BYTES)
+        else:
+            copy_admitted_file(record["source_path"], packaged, record["source_sha256"], record["source_bytes"], 96 * 1024 * 1024)
         packaged.chmod(0o755)
-        run([str(patchelf), "--set-rpath", "$ORIGIN", str(packaged)])
+        if not bound_dependency:
+            run([str(patchelf), "--set-rpath", "$ORIGIN", str(packaged)])
         if run([str(patchelf), "--print-rpath", str(packaged)]) != "$ORIGIN":
             fail(f"{soname} retains an unexpected runtime search path")
         info = elf_info(readelf, packaged)
+        if bound_dependency and (info != stylo_owner["dependency_transformation"]["after"] or sha256(packaged) != stylo_owner["dependency"]["sha256"]):
+            fail("pre-relocated Stylo libgcc changed during package assembly")
         record.update({"packaged_path": f"lib/{soname}", "packaged_sha256": sha256(packaged), "packaged_bytes": packaged.stat().st_size, "needed": info["needed"], "required_glibc_versions": info["required_glibc_versions"]})
         record.pop("source_path")
 
@@ -602,7 +913,77 @@ def main() -> int:
             "source_receipt_sha256": sdk_receipt_digest,
             "files": sdk_files,
         }
-    executables = [record for record in executables if record["name"] not in {"typescript-node", "backend-embedding-candle"}]
+    stylo_worker = None
+    if stylo_receipt_digest is not None:
+        worker = next(record for record in executables if record["name"] == "backend-stylo-worker")
+        reject_private_paths(root / "bin/backend-stylo-worker", worker_private_paths, "packaged Stylo worker")
+        if sha256(root / "bin/backend-stylo-worker") != worker["packaged_sha256"]:
+            fail("packaged Stylo worker changed during its privacy scan")
+        receipt_bytes = read_regular_bytes(args.stylo_worker_receipt, 65536, "Stylo worker build receipt")
+        if hashlib.sha256(receipt_bytes).hexdigest() != stylo_receipt_digest:
+            fail("Stylo worker build receipt changed before package publication")
+        raw_worker_receipt = parse_json_bytes(receipt_bytes, "Stylo worker build receipt")
+        # Keep provenance but never ship builder-local paths or tool environments.
+        public_worker_receipt = {
+            "schema": raw_worker_receipt["schema"], "remap_schema": raw_worker_receipt["remap_schema"], "source": raw_worker_receipt["source"],
+            "argv": raw_worker_receipt["argv"], "exit": raw_worker_receipt["exit"],
+            "execution": {key: raw_worker_receipt["execution"][key] for key in ("exit", "process_group_retired")},
+            "toolchain": {"unchanged": raw_worker_receipt["toolchain"]["unchanged"]},
+            "environment": {key: raw_worker_receipt["environment"][key] for key in ("CARGO_BUILD_TARGET", "CARGO_NET_OFFLINE")},
+            "artifact": {key: raw_worker_receipt["artifact"][key] for key in ("bytes", "sha256", "architecture")},
+        }
+        public_bytes = (json.dumps(public_worker_receipt, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        evidence_dir = root / "share/nudox/stylo"
+        evidence_dir.mkdir(mode=0o700, parents=True)
+        (evidence_dir / "build-receipt.json").write_bytes(public_bytes)
+        stylo_worker = {"path": "bin/backend-stylo-worker", "sha256": worker["packaged_sha256"],
+                        "size_bytes": worker["packaged_bytes"], "source_sha256": worker_record["sha256"],
+                        "original_elf": stylo_owner["transformation"]["before"] if stylo_owner is not None else worker["original_elf"], "packaged_elf": worker["packaged_elf"],
+                        "build_receipt": "share/nudox/stylo/build-receipt.json", "build_receipt_sha256": hashlib.sha256(public_bytes).hexdigest(),
+                        "original_build_receipt_sha256": stylo_receipt_digest}
+        if stylo_owner is not None:
+            if hashlib.sha256(read_regular_bytes(args.stylo_owner_receipt, 65536, "Stylo owner receipt")).hexdigest() != stylo_owner_digest:
+                fail("Stylo owner receipt changed before package publication")
+            # Public release evidence deliberately omits builder-local paths and environment.
+            stylo_worker["bound_owner"] = {"schema": stylo_owner["schema"], "receipt_sha256": stylo_owner_digest,
+                "owner_source_sha256": stylo_owner["owner"]["sha256"], "worker_anchor": stylo_owner["worker_anchor"],
+                "cli_build_manifest_sha256": stylo_owner["cli_build_manifest_sha256"],
+                "remap_schema": stylo_owner["remap_schema"], "c_remap_schema": stylo_owner["c_remap_schema"], "relocation_tool_sha256": stylo_owner["transformation"]["tool_sha256"],
+                "closure_policy": "linux-libgcc-single-v1", "runpath_kind": "DT_RUNPATH",
+                "source_loader_sha256": stylo_owner["source_loader"]["sha256"], "dependency_source_sha256": stylo_owner["dependency_source"]["sha256"],
+                "dependency_path": "lib/libgcc_s.so.1", "dependency_sha256": stylo_owner["dependency"]["sha256"],
+                "dependency_bytes": stylo_owner["dependency"]["bytes"]}
+            from record_stylo_owner_build import observe, require_runpath
+            clean_env = {key: value for key, value in os.environ.items() if key not in {"LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT", "NIX_LD", "NIX_LD_LIBRARY_PATH"}}
+            require_runpath(readelf, root / stylo_worker["path"], "$ORIGIN/../lib", time.monotonic() + 30, clean_env)
+            require_runpath(readelf, root / "lib/libgcc_s.so.1", "$ORIGIN", time.monotonic() + 30, clean_env)
+            if observe(Path(stylo_owner["observer"]["path"]), root / stylo_worker["path"], root / "lib/libgcc_s.so.1", time.monotonic() + 30, clean_env) != stylo_owner["worker_anchor"]:
+                fail("packaged Stylo worker differs from the compiled owner anchor")
+            if admit_file_digest(Path(stylo_owner["observer"]["path"]), MAX_BINARY_BYTES) != (stylo_owner["observer"]["bytes"], stylo_owner["observer"]["sha256"]):
+                fail("Stylo identity observer changed during package observation")
+            if sha256(root / stylo_worker["path"]) != stylo_worker["sha256"] or sha256(root / "lib/libgcc_s.so.1") != stylo_owner["dependency"]["sha256"] or sha256(root / "bin/backend-locald") != next(item["packaged_sha256"] for item in executables if item["name"] == "backend-locald"):
+                fail("packaged Stylo worker or owner changed during final observation")
+    sqlite_worker = None
+    if stylo_owner is not None and stylo_owner.get("sqlite") is not None:
+        import sqlite_macos_development as sqlite_common
+        from record_stylo_owner_build import bounded_process, require_runpath
+        sqlite = stylo_owner["sqlite"]
+        worker_path = root / "bin/backend-sqlite-worker"
+        library_path = root / "lib/libgcc_s.so.1"
+        observer = Path(sqlite["observer"]["path"])
+        env = stylo_owner["observer_environment"]
+        require_runpath(readelf, worker_path, "$ORIGIN/../lib", time.monotonic() + 30, env)
+        raw = bounded_process([str(observer), str(worker_path), str(library_path)], time.monotonic() + 30, env, sqlite_common.MAX_BASIS_BYTES)
+        if sqlite_common.validate_observation(json.loads(raw), sqlite["sqlite_lock_sha256"]) != (sqlite["artifact_identity"], sqlite["basis_json"]):
+            fail("packaged SQLite closure differs from compiled owner basis")
+        if admit_file_digest(observer, MAX_BINARY_BYTES) != (sqlite["observer"]["bytes"], sqlite["observer"]["sha256"]) or sha256(worker_path) != sqlite["worker"]["sha256"] or sha256(library_path) != sqlite["dependency"]["sha256"] or sha256(root / "bin/backend-locald") != next(item["packaged_sha256"] for item in executables if item["name"] == "backend-locald") or hashlib.sha256(read_regular_bytes(args.stylo_owner_receipt, 65536, "owner receipt")).hexdigest() != stylo_owner_digest:
+            fail("SQLite closure, owner, or receipt changed during package observation")
+        sqlite_worker = {"path": "bin/backend-sqlite-worker", "sha256": sqlite["worker"]["sha256"],
+                         "bytes": sqlite["worker"]["bytes"], "dependency_path": "lib/libgcc_s.so.1",
+                         "dependency_sha256": sqlite["dependency"]["sha256"], "dependency_bytes": sqlite["dependency"]["bytes"],
+                         "owner_source_sha256": stylo_owner["owner"]["sha256"], "owner_receipt_sha256": stylo_owner_digest,
+                         "artifact_identity": sqlite["artifact_identity"], "sqlite_lock_sha256": sqlite["sqlite_lock_sha256"]}
+    executables = [record for record in executables if record["name"] not in {"typescript-node", "backend-embedding-candle", "backend-stylo-worker", "backend-sqlite-worker"}]
 
     embedding_setup = None
     if embedding_receipt_digest is not None:
@@ -613,7 +994,8 @@ def main() -> int:
         helper_build_bytes = read_regular_bytes(args.embedding_helper_receipt, 65536, "embedding build receipt")
         if hashlib.sha256(helper_build_bytes).hexdigest() != embedding_receipt_digest:
             fail("embedding build receipt changed before package publication")
-        lock_bytes = subprocess.check_output(["git", "-C", str(args.source), "show", f"{revision}:Cargo.lock"])
+        with clean_git_environment():
+            lock_bytes = subprocess.check_output(["git", "-C", str(args.source), "show", f"{revision}:Cargo.lock"])
         if hashlib.sha256(lock_bytes).hexdigest() != lock_sha:
             fail("selected Cargo.lock changed before embedding receipt publication")
         (root / "share/nudox/embedding/build-receipt.json").write_bytes(helper_build_bytes)
@@ -656,7 +1038,7 @@ def main() -> int:
     package = {
         "schema": "nudox.linux-portable-package.v1",
         "release_tag": release_tag,
-        "source": build["source"],
+        "source": {**build["source"], "cargo_lock_sha256": lock_sha} if stylo_worker is not None else build["source"],
         "original_build_manifest_sha256": hashlib.sha256(build_bytes).hexdigest(),
         "build_manifest_sha256": sha256(root / "build-manifest.json"),
         "system_sonames_sha256": hashlib.sha256(LINUX_SYSTEM_SONAMES_BYTES).hexdigest(),
@@ -676,6 +1058,8 @@ def main() -> int:
         "libraries": libraries,
         "typescript_sdk": sdk,
         "embedding_setup": embedding_setup,
+        "stylo_worker": stylo_worker,
+        "sqlite_worker": sqlite_worker,
         "glibc_libraries_bundled": False,
         "runtime_acceptance": "external_native_qa_record_required",
         "checkpoint_shell_asset": "install-linux-x64.sh",

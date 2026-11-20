@@ -4132,7 +4132,7 @@ mod transit_tests {
         let (_, focused) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
         let row_id = focused.expect("j focuses a row").to_string();
         let row = before.targets.iter().find(|(key, _)| *key == row_id).map(|(_, at)| *at).expect("the row is drawn");
-        let shots = film(&mut rig, |rig| rig.cx.simulate_keystrokes("enter"), 400);
+        let shots = film(&mut rig, |rig| rig.native_press("enter"), 400);
         assert!(matches!(rig.route(), Route::Symbol(_)), "enter opened a page");
         rig.settle();
         // The symbol page paints its words itself too (its crumb names the
@@ -4507,7 +4507,7 @@ mod transit_tests {
         let mut rig = start(cx);
         open_first_module(&mut rig);
         rig.keys("j");
-        let mut shots = film(&mut rig, |rig| rig.cx.simulate_keystrokes("enter"), 112);
+        let mut shots = film(&mut rig, |rig| rig.native_press("enter"), 112);
         let before = shots.last().and_then(|shot| shot.p).expect("opening");
         assert!(before > 0.6 && before < 0.8, "p(112) = {before}");
         rig.cx.simulate_keystrokes("secondary-[");

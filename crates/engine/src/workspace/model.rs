@@ -11,6 +11,18 @@ pub trait WorkspaceModel: Send + Sync + 'static {
     /// Planner/recovery error.
     type Error: std::error::Error + Send + Sync + 'static;
 
+    /// Bind optional model recovery context to the actual leased owner and
+    /// opened store before any persisted transition is admitted. The default
+    /// model has no owner-specific context.
+    ///
+    /// # Errors
+    /// Returns an error when the model's configured context does not match the owner.
+    fn bind_owner_context(
+        &self,
+        _owner: &super::WorkspaceDirectoryAdmission,
+        _store: &FileStore,
+    ) -> Result<(), Self::Error> { Ok(()) }
+
     /// Returns a stable canonical request identity.
     fn request_id(&self, intent: &Self::Intent) -> [u8; 32];
 

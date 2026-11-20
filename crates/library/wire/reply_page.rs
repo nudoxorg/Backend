@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProjectionPageWire {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) graph_alias_witness: Option<super::reply_content::DocumentWire>,
     pub(crate) snapshot: SnapshotWire,
     pub(crate) terminal: PageTerminalWire,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -41,6 +43,7 @@ pub(crate) fn page_from_wire<A: CoverageAdmission>(
     certificate: &WireCertificate,
     admission: &A,
 ) -> Result<ProjectionPage, String> {
+    let graph_alias_witness = value.graph_alias_witness.map(|document| super::reply_content::document_from_wire_with_admission(document, certificate, admission)).transpose()?;
     let snapshot = snapshot_from_wire_with_admission(value.snapshot, certificate, admission)?;
     let terminal = match value.terminal {
         PageTerminalWire::Complete(_) if snapshot.next.is_none() => PageTerminal::Complete,
@@ -70,5 +73,5 @@ pub(crate) fn page_from_wire<A: CoverageAdmission>(
             .collect::<Result<Vec<_>, _>>()?;
         crate::OutlinePageOrder::new(order.start, symbols)
     }).transpose()?;
-    Ok(ProjectionPage { snapshot, terminal, outline_order })
+    Ok(ProjectionPage { snapshot, terminal, outline_order, graph_alias_witness })
 }

@@ -234,6 +234,32 @@ fn a_tree_is_known_as_its_release_and_a_release_as_its_tree() {
 }
 
 #[test]
+fn a_registry_directory_does_not_override_its_changed_manifest_identity() {
+    let home = scratch("changed-manifest");
+    let expected = release("tiny-crate", "1.2.3");
+    let tree = home.join("registry/src/index.crates.io-test").join(expected.stem());
+    std::fs::create_dir_all(&tree).expect("private fixture tree");
+    let manifest = tree.join("Cargo.toml");
+    std::fs::write(&manifest, "[package]\nname = \"tiny-crate\"\nversion = \"1.2.3\"\n")
+        .expect("matching manifest");
+    let source = CargoCache::at(home.clone(), scratch("changed-manifest-unpacked"));
+    assert_eq!(source.release_of(&tree), Some(expected.clone()));
+    assert!(source.package_identity_of(&tree).is_some());
+    for contents in [
+        "[package]\nname = \"my-project\"\nversion = \"1.2.3\"\n",
+        "[package]\nname = \"tiny-crate\"\nversion = \"2.0.0\"\n",
+        "not a manifest",
+    ] {
+        std::fs::write(&manifest, contents).expect("replace private fixture manifest");
+        assert_eq!(source.release_of(&tree), None, "layout alone cannot identify this manifest");
+        assert!(source.package_identity_of(&tree).is_none());
+    }
+    std::fs::remove_file(&manifest).expect("remove private manifest");
+    assert_eq!(source.release_of(&tree), None);
+    std::fs::remove_dir_all(home).expect("remove only private fixture");
+}
+
+#[test]
 fn repeated_release_trees_are_not_chosen_by_directory_order() {
     let home = scratch("ambiguous-home");
     let release = release("tiny-crate", "1.2.3");

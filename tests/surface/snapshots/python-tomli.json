@@ -51,7 +51,7 @@
           "schema": 3,
           "sequence": 2,
           "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-          "source_root": "4dba3e54a20c616f3e303a1c98c1baa365da8651c8716b9d141b2302eb30aad4"
+          "source_root": "9e38640b2ffe0a49b00b413a6b8618c1dbdbd4c3e26a2e06e3ec4aa9ea7ee177"
         },
         "roots": [
           {
@@ -1175,7 +1175,7 @@
           }
         ],
         "readiness": "ready",
-        "revision": "4dba3e54",
+        "revision": "9e38640b",
         "rows": 311
       }
     },
@@ -1959,8 +1959,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 5639,
-                "normalizedFrameBytesExcludingCounters": 22556,
+                "normalizedEstimatedTokensExcludingCounters": 5655,
+                "normalizedFrameBytesExcludingCounters": 22618,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -1969,7 +1969,7 @@
             },
             "content": [
               {
-                "text": "# project\n`/tmp/nudox-surface/python-tomli/project`\n\n\u25c6 Flags  `src/tomli/_parser.py:213 \u203a Flags`\n  \u0192 __init__  `src/tomli/_parser.py:222 \u203a __init__`\n    \u25ab __init__  `__init__`\n  \u0192 is_  `src/tomli/_parser.py:253 \u203a is_`\n    \u25ab key  `key`\n    \u25ab flag  `flag`\n    \u25ab is_  `is_`\n  \u0192 set  `src/tomli/_parser.py:242 \u203a set`\n    \u25ab key  `key`\n    \u25ab recursive  `recursive`\n    \u25ab flag  `flag`\n    \u25ab set  `set`\n  \u0192 unset_all  `src/tomli/_parser.py:234 \u203a unset_all`\n    \u25ab key  `key`\n    \u25ab unset_all  `unset_all`\n  \u0192 add_pending  `src/tomli/_parser.py:226 \u203a add_pending`\n    \u25ab add_pending  `add_pending`\n    \u25ab flag  `flag`\n    \u25ab key  `key`\n  \u0192 finalize_pending  `src/tomli/_parser.py:229 \u203a finalize_pending`\n    \u25ab finalize_pending  `finalize_pending`\n  \u00b7 FROZEN  `src/tomli/_parser.py:217 \u203a FROZEN`\n  \u00b7 EXPLICIT_NEST  `src/tomli/_parser.py:220 \u203a EXPLICIT_NEST`\n\u25c6 NestedDict  `src/tomli/_parser.py:271 \u203a NestedDict`\n  \u0192 append_nest_to_list  `src/tomli/_parser.py:293 \u203a append_nest_to_list`\n    \u25ab append_nest_to_list  `append_nest_to_list`\n    \u25ab key  `key`\n  \u0192 __init__  `src/tomli/_parser.py:272 \u203a __init__`\n    \u25ab __init__  `__init__`\n  \u0192 get_or_create_nest  `src/tomli/_parser.py:276 \u203a get_or_create_nest`\n    \u25ab access_lists  `access_lists`\n    \u25ab get_or_create_nest  `get_or_create_nest`\n    \u25ab key  `key`\n\u25c6 Output  `src/tomli/_parser.py:305 \u203a Output`\n  \u00b7 flags  `src/tomli/_parser.py:307 \u203a flags`\n  \u00b7 data  `src/tomli/_parser.py:306 \u203a data`\n\u25c6 TOMLDecodeError  `src/tomli/_parser.py:71 \u203a TOMLDecodeError`\n  \u0192 __init__  `src/tomli/_parser.py:82 \u203a __init__`\n    \u25ab doc  `doc`\n    \u25ab pos  `pos`\n    \u25ab args  `args`\n    \u25ab msg  `msg`\n\u25c6 DEPRECATED_DEFAULT  `src/tomli/_parser.py:66 \u203a DEPRECATED_DEFAULT`\n\u25aa BASIC_STR_ESCAPE_REPLACEMENTS  `src/tomli/_parser.py:53 \u203a BASIC_STR_ESCAPE_REPLACEMENTS`\n\u0192 skip_chars  `src/tomli/_parser.py:310 \u203a skip_chars`\n  \u25ab chars  `chars`\n  \u25ab src  `src`\n  \u25ab skip_chars  `skip_chars`\n  \u25ab pos  `pos`\n\u25aa BARE_KEY_CHARS  `src/tomli/_parser.py:49 \u203a BARE_KEY_CHARS`\n50 declaration(s) \u00b7 truncated\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 50 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/python-tomli/project\",\"limit\":50,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
+                "text": "# project\n`/tmp/nudox-surface/python-tomli/project`\n\n\u25c6 Flags  `src/tomli/_parser.py:213 \u203a Flags`\n  \u0192 __init__  `src/tomli/_parser.py:222 \u203a __init__`\n    \u25ab __init__  `__init__`\n  \u0192 is_  `src/tomli/_parser.py:253 \u203a is_`\n    \u25ab key  `key`\n    \u25ab flag  `flag`\n    \u25ab is_  `is_`\n  \u0192 set  `src/tomli/_parser.py:242 \u203a set`\n    \u25ab key  `key`\n    \u25ab recursive  `recursive`\n    \u25ab flag  `flag`\n    \u25ab set  `set`\n  \u0192 unset_all  `src/tomli/_parser.py:234 \u203a unset_all`\n    \u25ab key  `key`\n    \u25ab unset_all  `unset_all`\n  \u0192 add_pending  `src/tomli/_parser.py:226 \u203a add_pending`\n    \u25ab add_pending  `add_pending`\n    \u25ab flag  `flag`\n    \u25ab key  `key`\n  \u0192 finalize_pending  `src/tomli/_parser.py:229 \u203a finalize_pending`\n    \u25ab finalize_pending  `finalize_pending`\n  \u00b7 FROZEN  `src/tomli/_parser.py:217 \u203a FROZEN`\n  \u00b7 EXPLICIT_NEST  `src/tomli/_parser.py:220 \u203a EXPLICIT_NEST`\n\u25c6 NestedDict  `src/tomli/_parser.py:271 \u203a NestedDict`\n  \u0192 append_nest_to_list  `src/tomli/_parser.py:293 \u203a append_nest_to_list`\n    \u25ab append_nest_to_list  `append_nest_to_list`\n    \u25ab key  `key`\n  \u0192 __init__  `src/tomli/_parser.py:272 \u203a __init__`\n    \u25ab __init__  `__init__`\n  \u0192 get_or_create_nest  `src/tomli/_parser.py:276 \u203a get_or_create_nest`\n    \u25ab access_lists  `access_lists`\n    \u25ab get_or_create_nest  `get_or_create_nest`\n    \u25ab key  `key`\n\u25c6 Output  `src/tomli/_parser.py:305 \u203a Output`\n  \u00b7 flags  `src/tomli/_parser.py:307 \u203a flags`\n  \u00b7 data  `src/tomli/_parser.py:306 \u203a data`\n\u25c6 TOMLDecodeError  `src/tomli/_parser.py:71 \u203a TOMLDecodeError`\n  \u0192 __init__  `src/tomli/_parser.py:82 \u203a __init__`\n    \u25ab doc  `doc`\n    \u25ab pos  `pos`\n    \u25ab args  `args`\n    \u25ab msg  `msg`\n\u25c6 DEPRECATED_DEFAULT  `src/tomli/_parser.py:66 \u203a DEPRECATED_DEFAULT`\n\u25aa BASIC_STR_ESCAPE_REPLACEMENTS  `src/tomli/_parser.py:53 \u203a BASIC_STR_ESCAPE_REPLACEMENTS`\n\u0192 skip_chars  `src/tomli/_parser.py:310 \u203a skip_chars`\n  \u25ab chars  `chars`\n  \u25ab src  `src`\n  \u25ab skip_chars  `skip_chars`\n  \u25ab pos  `pos`\n\u25aa BARE_KEY_CHARS  `src/tomli/_parser.py:49 \u203a BARE_KEY_CHARS`\n50 declaration(s) \u00b7 truncated (outline pagination only; analysis coverage is not certified)\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 50 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/python-tomli/project\",\"limit\":50,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
                 "type": "text"
               }
             ],
@@ -2020,7 +2020,7 @@
                 "schema": 3,
                 "sequence": 2,
                 "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-                "source_root": "4dba3e54a20c616f3e303a1c98c1baa365da8651c8716b9d141b2302eb30aad4"
+                "source_root": "9e38640b2ffe0a49b00b413a6b8618c1dbdbd4c3e26a2e06e3ec4aa9ea7ee177"
               },
               "roots": [
                 {
@@ -4228,6 +4228,7 @@
         "backend.resolve",
         "backend.search",
         "backend.source",
+        "backend.sql_query",
         "backend.status"
       ]
     }

@@ -555,7 +555,7 @@ fn compact_view_event_is_delta_sized_and_replays_against_the_retained_root() {
         .prepare(ViewDelta::Upsert { row }, capability(basis.object))
         .expect("prepare");
     let (target, delta) = base.clone().commit(prepared).expect("commit");
-    let certificate = WireCertificate::new()
+    let event_certificate = WireCertificate::new()
         .with_claim(WireClaim::Delta {
             schema: WireSchema::ViewRelation,
             id: encode_id(delta.id().as_bytes()),
@@ -569,7 +569,7 @@ fn compact_view_event_is_delta_sized_and_replays_against_the_retained_root() {
             value: "pkg::Thing".to_owned(),
         });
     let cursor = Cursor::for_view_root(&target);
-    let encoded = crate::encode_compact_view_event(cursor, &delta, certificate)
+    let encoded = crate::encode_compact_view_event(cursor, &delta, event_certificate)
         .expect("encode compact event");
     assert!(encoded.len() < 16 * 1024);
     let (decoded_cursor, decoded) =
@@ -578,6 +578,36 @@ fn compact_view_event_is_delta_sized_and_replays_against_the_retained_root() {
     assert_eq!(decoded_cursor, cursor);
     assert_eq!(decoded.target_root(), target.root());
     assert_eq!(decoded.target_view(), &target);
+    let grammar = crate::JournalViewGrammarV3::from_checked_container(3).expect("journal grammar");
+    let snapshot = ViewDto::new(7, ViewSnapshot { root: target.clone(), freshness: Freshness::Current, next: None, graph_relations: None, rich_graph: None })
+        .with_certificate(certificate(&target).with_claim(WireClaim::Key { schema: WireSchema::Symbol, id: encode_id(symbol_key("pkg::Thing").as_bytes()), value: "pkg::Thing".to_owned() }));
+    let snapshot_bytes = serde_json::to_vec(&snapshot).expect("nonempty certified snapshot");
+    for version in [35, 39, 40] {
+        // Synthetic envelopes use the actual certified compact event payload;
+        // the decoder must not mutate the retained bytes or admit live old DTOs.
+        let mut envelope: serde_json::Value = serde_json::from_slice(&encoded).expect("event JSON");
+        envelope["version"] = serde_json::json!(version);
+        let historical = serde_json::to_vec(&envelope).expect("event bytes");
+        let retained = historical.clone();
+        let (replayed_cursor, replayed) = grammar.decode_event(&historical, Cursor::for_view_root(&base), &base).expect("checked historical event");
+        assert_eq!(historical, retained);
+        assert_eq!(replayed_cursor, cursor);
+        assert_eq!(replayed.target_view(), &target);
+        if version != DTO_VERSION {
+            assert!(crate::decode_compact_view_event(&historical, Cursor::for_view_root(&base), &base).is_err());
+        }
+        envelope["unknown_persisted_field"] = serde_json::json!(true);
+        assert!(grammar.decode_event(&serde_json::to_vec(&envelope).expect("invalid event"), Cursor::for_view_root(&base), &base).is_err());
+        let mut snapshot_value: serde_json::Value = serde_json::from_slice(&snapshot_bytes).expect("snapshot JSON");
+        snapshot_value["version"] = serde_json::json!(version);
+        let retained_snapshot = serde_json::to_vec(&snapshot_value).expect("snapshot bytes");
+        let snapshot_before = retained_snapshot.clone();
+        let restored = grammar.decode_snapshot(&retained_snapshot, capability(basis.object)).expect("checked nonempty historical snapshot");
+        assert_eq!(restored.snapshot.root, target);
+        assert_eq!(retained_snapshot, snapshot_before);
+        snapshot_value["unexpected_persisted_field"] = serde_json::json!(true);
+        assert!(grammar.decode_snapshot(&serde_json::to_vec(&snapshot_value).expect("invalid snapshot"), capability(basis.object)).is_err());
+    }
 }
 
 #[test]
@@ -854,6 +884,7 @@ fn command_dto_round_trips_every_command_variant() {
             symbol: crate::SymbolAddress::canonical(symbol),
             basis: basis.into(),
             source: None,
+            source_range: None,
         }),
         Command::Show { symbol },
         Command::Outline(OutlineQuery {
@@ -1182,7 +1213,7 @@ fn reply_round_trip_fixtures() -> (Basis, ViewStateRoot, Vec<CommandReply>) {
     let intent = crate::intent_id("add", b"pkg");
     let replies = [
         CommandReply::Packages(snapshot.clone()),
-        CommandReply::ProjectionPage(crate::ProjectionPage {
+        CommandReply::ProjectionPage(crate::ProjectionPage { graph_alias_witness: None,
             outline_order: None,
             snapshot: snapshot.clone(),
             terminal: crate::PageTerminal::Complete,
@@ -1841,7 +1872,7 @@ fn dto_versions_and_outer_fields_are_strict() {
 
 #[test]
 fn compiler_outcome_selector_cutover_refuses_dto32_before_payload_shape() {
-    assert_eq!(DTO_VERSION, 39);
+    assert_eq!(DTO_VERSION, 40);
     let command = CommandDto::new(
         1,
         Command::Surface(crate::SurfaceCommand::PackageProfile {
@@ -1859,7 +1890,7 @@ fn compiler_outcome_selector_cutover_refuses_dto32_before_payload_shape() {
     assert!(
         super::codec::check_version_header_against(&bytes, "command", 32)
             .expect_err("old peer rejects before decoding new field")
-            .contains("command DTO version 39")
+            .contains("command DTO version 40")
     );
     value["version"] = serde_json::json!(32);
     let error = crate::decode_command_body(&serde_json::to_vec(&value).expect("old envelope"))
@@ -1876,7 +1907,7 @@ fn compiler_outcome_selector_cutover_refuses_dto32_before_payload_shape() {
 
 #[test]
 fn published_package_coverage_refuses_dto37_before_payload_admission() {
-    assert_eq!(DTO_VERSION, 39);
+    assert_eq!(DTO_VERSION, 40);
     let request = CommandDto::new(
         73,
         Command::Surface(crate::SurfaceCommand::PackageCoverageCurrent {
@@ -1889,7 +1920,7 @@ fn published_package_coverage_refuses_dto37_before_payload_admission() {
     let current = serde_json::to_vec(&value).expect("current encoding");
     let old_peer = super::codec::check_version_header_against(&current, "command", 37)
         .expect_err("DTO37 peer refuses the owner-bound coverage command");
-    assert!(old_peer.contains("command DTO version 39"));
+    assert!(old_peer.contains("command DTO version 40"));
     assert!(old_peer.contains("this build supports 37"));
 
     value["version"] = serde_json::json!(37);
@@ -1898,7 +1929,7 @@ fn published_package_coverage_refuses_dto37_before_payload_admission() {
     let error = crate::decode_command_body(&old)
         .expect_err("current client rejects DTO37 before the unknown payload shape");
     assert!(error.contains("command DTO version 37"));
-    assert!(error.contains("this build supports 39"));
+    assert!(error.contains("this build supports 40"));
     assert!(!error.contains("new_coverage_shape"));
 }
 
@@ -1920,6 +1951,7 @@ fn usability_batch_read_wire_extent_is_versioned_and_older_records_stay_honest()
         DeclarationReadExtent::Truncated,
     ] {
         let record = DeclarationRecord {
+            source_policy: crate::SourcePolicyQualification::Unknown,
             label: ProductText::new("WeekService").expect("label"),
             stable_id: Some([8; 32]),
             signature: Some(ProductText::new("class WeekService {").expect("source")),
@@ -1943,7 +1975,7 @@ fn usability_batch_read_wire_extent_is_versioned_and_older_records_stay_honest()
         assert!(error.contains(&format!("this build supports {DTO_VERSION}")));
     }
     let grammar = crate::JournalViewGrammarV3::from_checked_container(3).expect("checked grammar");
-    for historical in 21..=38 {
+    for historical in 21..=39 {
         grammar
             .check_envelope_version(historical)
             .expect("maintained journal law");
@@ -1995,6 +2027,7 @@ fn usability_batch_read_wire_extent_is_versioned_and_older_records_stay_honest()
         (Some([8; 32]), None),
     ] {
         let invalid = SurfaceReply::Read(Box::new([DeclarationRecord {
+            source_policy: crate::SourcePolicyQualification::Unknown,
             label: ProductText::new("WeekService").expect("label"),
             stable_id,
             signature,
@@ -2826,7 +2859,7 @@ fn native_worker_refusal_wire_cutover_checks_version_before_payload_variants()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::interface::TypeScriptAuthorityFailureKind as F;
     assert_eq!(
-        DTO_VERSION, 39,
+        DTO_VERSION, 40,
         "current matched cohort retains catalog windows, admission details and worker refusal"
     );
     let kind = F::NativeCheckerWorkerPoolUnavailable;
@@ -2928,7 +2961,7 @@ fn windowed_catalog_admission_checks_actual_delivery_offset_and_predecessor_span
     ] {
         let reply = |snapshot: ViewSnapshot| match &command {
             Command::Name(_) => CommandReply::Names(snapshot),
-            _ => CommandReply::ProjectionPage(crate::ProjectionPage {
+            _ => CommandReply::ProjectionPage(crate::ProjectionPage { graph_alias_witness: None,
                 outline_order: None,
                 terminal: snapshot
                     .next
@@ -2973,7 +3006,7 @@ fn windowed_catalog_admission_checks_actual_delivery_offset_and_predecessor_span
 
 #[test]
 fn catalog_window_current_cohort_refuses_dto29_and_keeps_owner_journal_grammar() {
-    assert_eq!(DTO_VERSION, 39);
+    assert_eq!(DTO_VERSION, 40);
     let issued = QueryLimit::new(4).expect("issued");
     let fixed = CommandDto::new(
         1,
@@ -3329,7 +3362,7 @@ fn borrowed_catalog_wire_keeps_real_producer_certificate_and_graph_sidecars() {
 
 #[test]
 fn settled_gap_current_cohort_rejects_old30_before_payload_and_requires_a_matched_cohort() {
-    assert_eq!(DTO_VERSION, 39);
+    assert_eq!(DTO_VERSION, 40);
     // Use the real strict coverage projection, rather than a hand-written field.
     let coverage = super::reply_coverage::coverage_to_wire(crate::Coverage::Gapped {
         lane: crate::Lane::Semantic,
@@ -3342,14 +3375,14 @@ fn settled_gap_current_cohort_rejects_old30_before_payload_and_requires_a_matche
     .expect("cohort envelope");
     let old_peer = super::codec::check_version_header_against(&current, "reply", 30)
         .expect_err("old peer stops before decoding a gapped variant");
-    assert!(old_peer.contains("reply DTO version 39"));
+    assert!(old_peer.contains("reply DTO version 40"));
     assert!(old_peer.contains("same build"));
     assert!(!old_peer.contains("unknown variant"));
     // A mutation under the previous cohort is refused before its nested shape.
     let old_mutation = br#"{"version":30,"request_id":1,"command":{"index_operation_start":{"unknown_future_field":true}}}"#;
     let error = crate::decode_command_body(old_mutation).expect_err("old live mutation refused");
     assert!(error.contains("command DTO version 30"));
-    assert!(error.contains("this build supports 39"));
+    assert!(error.contains("this build supports 40"));
     assert!(!error.contains("unknown field"));
     let grammar = crate::JournalViewGrammarV3::from_checked_container(3).expect("same container");
     for version in 21..=37 {
@@ -3407,7 +3440,7 @@ fn settled_gap_snapshot_rechecks_its_actual_root_and_certificate_in_the_same_jou
     );
     // DTO32 changes live refusals only. This synthetic historical envelope
     // retains the exact Gapped root/certificate; it is not an old-build capture.
-    for version in [31, 35] {
+    for version in [31, 35, 39] {
         let mut historical: serde_json::Value = serde_json::from_slice(&bytes).expect("wire");
         historical["version"] = serde_json::json!(version);
         let historical = serde_json::to_vec(&historical).expect("historical envelope");
@@ -3502,6 +3535,32 @@ fn graph_confidence_versions_round_trip_without_promoting_legacy_or_conflicting_
             .edges[0]
             .provenance
             .confidence,
+        Some(crate::SemanticConfidence::Syntactic)
+    );
+
+    let mut incomplete = snapshot.clone();
+    incomplete
+        .rich_graph
+        .as_mut()
+        .expect("rich graph")
+        .availability =
+        crate::GraphAvailability::unavailable("TSX profile partial").expect("bounded reason");
+    let reply = ReplyDto::new(91, CommandReply::Graph(incomplete)).with_certificate(proof.clone());
+    let bytes = crate::encode_reply_body_bounded(&reply)?;
+    let decoded = ReplyDto::decode_with_certificate(&bytes, Some(capability(basis.object)))
+        .map_err(std::io::Error::other)?;
+    let query = GraphNeighborhoodQuery::new(symbol_key(labels[0]), basis.root);
+    let request = CommandDto::new(91, Command::Graph(query)).with_certificate(proof.clone());
+    admit_reply_with_capability(&request, &decoded, Some(capability(basis.object)))?;
+    let CommandReply::Graph(graph) = decoded.reply else {
+        return Err(std::io::Error::other("wrong graph reply").into());
+    };
+    assert!(
+        matches!(graph.rich_graph.as_ref().map(|rich| &rich.availability),
+        Some(crate::GraphAvailability::Unavailable(reason)) if reason.as_str() == "TSX profile partial")
+    );
+    assert_eq!(
+        graph.graph_relations.as_ref().expect("retained relation")[0].confidence,
         Some(crate::SemanticConfidence::Syntactic)
     );
 

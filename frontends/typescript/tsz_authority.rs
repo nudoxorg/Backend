@@ -4206,6 +4206,83 @@ mod tests {
         Ok(())
     }
 
+    /// The per-file slices decide which files are gaps, never the order in which
+    /// concurrent workers happen to charge the shared program checkpoint. Run the
+    /// same program with every worker count and with the one expensive file at the
+    /// front, in the middle and at the back of the path order (so the partitions
+    /// that contain it, and the order in which workers reach it, all differ).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn file_work_gaps_do_not_depend_on_worker_count_or_the_position_of_the_hot_file() -> Result<(), TestFailure> {
+        use std::num::NonZeroUsize;
+        let hot_source = (0..20_000)
+            .map(|n| format!("export const v{n}: number = {n};"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut observed = BTreeSet::new();
+        for hot_path in ["src/a-hot.ts", "src/m-hot.ts", "src/z-hot.ts"] {
+            for workers in 1..=4 {
+                let mut sources = (0..9)
+                    .map(|n| {
+                        input(
+                            &format!("src/f{n}.ts"),
+                            &format!("export const f{n}: number = {n}; export const bad{n}: string = {n};"),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                sources.push(input(hot_path, &hot_source));
+                // The arrival order of the inputs must not matter either.
+                if workers % 2 == 0 {
+                    sources.reverse();
+                }
+                let cancelled = AtomicBool::new(false);
+                // Far above anything the files can spend: only the slices can refuse.
+                let budget = execution_budget(&cancelled, 4_000_000_000);
+                let mut authority = TszProjectAuthority::new();
+                let report = authority
+                    .update_with_checker_execution_and_file_work(
+                        sources,
+                        options(),
+                        &[],
+                        TszProjectCheckerExecution {
+                            checkpoint: &budget,
+                            workers: NonZeroUsize::new(workers).test_value()?,
+                        },
+                        &TszFileWorkPolicy {
+                            allowance: 5_000,
+                            skipped: BTreeSet::new(),
+                            max_retries: 2,
+                            check_declaration_files: true,
+                        },
+                    )
+                    .test_value()?;
+                assert_eq!(budget.stop_reason(), None, "{hot_path} with {workers} workers");
+                assert_eq!(report.file_work_retries, 1, "{hot_path} with {workers} workers");
+                let project = authority.project().test_value()?;
+                let skipped = project.file_work_skipped().iter().cloned().collect::<Vec<_>>();
+                assert_eq!(skipped, [hot_path.to_owned()], "{workers} workers");
+                let mut diagnostics = project
+                    .check_result()
+                    .file_results
+                    .iter()
+                    .filter(|file| file.file_name != hot_path)
+                    .map(|file| {
+                        (
+                            file.file_name.clone(),
+                            file.diagnostics.iter().map(|diagnostic| diagnostic.code).collect::<Vec<_>>(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                diagnostics.sort();
+                assert_eq!(diagnostics.len(), 9);
+                assert!(diagnostics.iter().all(|(_, codes)| codes.contains(&2322)), "{diagnostics:?}");
+                observed.insert(diagnostics);
+            }
+        }
+        assert_eq!(observed.len(), 1, "every worker count and hot-file position yields the same facts");
+        Ok(())
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn file_work_policy_can_skip_declaration_diagnostics_without_changing_application_facts() -> Result<(), TestFailure> {

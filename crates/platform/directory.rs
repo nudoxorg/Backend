@@ -1591,6 +1591,21 @@ impl OwnedWorkspaceDirectory {
         self.directory.validate_private()?;
         self.directory.verify_path(&self.path)
     }
+
+    /// Compares an already-open Unix directory descriptor with this held
+    /// workspace directory, without resolving either pathname.
+    #[cfg(unix)]
+    pub fn matches_open_directory(&self, file: &File) -> io::Result<bool> {
+        if !file.metadata()?.is_dir() { return Ok(false); }
+        Ok(FileIdentity::of_file(self.directory.handle.as_ref())? == FileIdentity::of_file(file)?)
+    }
+
+    /// Compare an already held directory object with this pinned workspace
+    /// directory after verifying that its path still names the original object.
+    pub fn is_same_directory(&self, other: &DirectoryCapability) -> io::Result<bool> {
+        self.verify_path()?;
+        self.directory.is_same_source_directory(other)
+    }
 }
 
 #[cfg(unix)]

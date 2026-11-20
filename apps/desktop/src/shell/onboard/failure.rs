@@ -307,8 +307,15 @@ pub(super) fn act(
         source: None,
     });
     let focus = ctx.native_handle(&SharedString::from(id.clone()), cx);
+    // An accessibility client addresses a control by its element id. Stopping
+    // is bound to one unsent first send, so the id names that send: a node an
+    // assistive tool read before a retry cannot reach the replacement's Stop.
+    let element_id = match pending_revision {
+        Some(revision) if command == ProjectCommand::StopPending => format!("{id}-{revision:?}"),
+        _ => id.clone(),
+    };
     let mut control = button(
-        gpui::SharedString::from(id.clone()),
+        gpui::SharedString::from(element_id),
         command.label(),
         &ctx.measure,
     )

@@ -1675,6 +1675,41 @@ mod tests {
     }
 
     #[test]
+    fn repeated_osv_archive_preserves_distinct_observation_generations() {
+        let directory = private_tempdir();
+        let path = directory.path().join("authority.json");
+        let root = AdvisoryAuthority::osv_snapshot_root(&path);
+        let scope = OsvFeedScope::Ecosystem(OsvEcosystem::Cargo);
+        let bytes = osv_for("OSV-REPEAT", "Cargo");
+        let digest = *blake3::hash(&bytes).as_bytes();
+        let stage = |time| {
+            let advisory = super::super::parse_osv(&bytes, time).expect("parse OSV");
+            let mut builder =
+                super::super::OsvSnapshotBuilder::create(&root, scope, 10, 10, 10, 1024 * 1024)
+                    .expect("builder");
+            builder.push(&advisory).expect("stage advisory");
+            builder.finish(digest).expect("seal repeated archive")
+        };
+        let mut authority = AdvisoryAuthority::new(100);
+        authority.configure_sources([AdvisorySource::Osv]);
+        authority.configure_osv_scope(Some(scope));
+        authority
+            .apply(AuthorityFeed::from_osv_snapshot(stage(10), 10, None, None))
+            .expect("first");
+        authority.persist(&path).expect("persist first");
+        authority
+            .apply(AuthorityFeed::from_osv_snapshot(stage(11), 11, None, None))
+            .expect("second");
+        authority.persist(&path).expect("persist second");
+        let reopened = AdvisoryAuthority::open(&path, 100).expect("reopen");
+        let package = super::super::normalize_package("cargo", "demo").expect("package");
+        let result = reopened.observe(&package, "1.0.0", false, false, 11, false);
+        assert_eq!(result.coverage, AdvisoryCoverage::Complete);
+        assert_eq!(result.advisories.len(), 1);
+        assert_eq!(result.advisories[0].evidence.observed_at, 11);
+    }
+
+    #[test]
     fn snapshot_retention_keeps_selected_previous_and_live_readers_only() {
         fn stage(root: &Path, scope: OsvFeedScope, id: &str) -> (AuthorityFeed, String) {
             let advisory = super::super::parse_osv(&osv_for(id, "Cargo"), 10).expect("OSV object");

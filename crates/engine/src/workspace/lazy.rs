@@ -14,6 +14,7 @@ use backend_version::{
 };
 use std::fmt;
 use std::ops::ControlFlow;
+use std::cell::RefCell;
 use std::sync::Arc;
 
 /// The canonical relation a rejected node belongs to.
@@ -305,6 +306,116 @@ pub struct WorkspaceRelationHandle<R: CanonicalRelation> {
     root: PersistedTreeRoot<R>,
 }
 
+/// Selected relation pointer whose nodes are opened only through an explicit
+/// per-node preflight. It does not itself admit the pointed root.
+pub struct WorkspacePreflightRelationHandle<R: CanonicalRelation> {
+    store: Arc<FileStore>,
+    root: UntrustedId<R>,
+}
+
+struct PreflightLoader<'a, P> {
+    store: &'a FileStore,
+    preflight: RefCell<&'a mut P>,
+}
+
+impl<R, P> backend_version::TreeNodeLoader<R> for PreflightLoader<'_, P>
+where
+    R: CanonicalRelation,
+    P: for<'a> FnMut(&backend_version::CanonicalNodeView<'a>) -> Result<(), StoreError>,
+{
+    type Error = StoreError;
+    fn load(&self, claim: UntrustedId<R>) -> Result<backend_version::CheckedCanonicalRoot<R>, StoreError> {
+        self.store.read_relation_node_claim_preflight(claim, |node| (self.preflight.borrow_mut())(node))
+    }
+}
+
+impl<R: CanonicalRelation> WorkspacePreflightRelationHandle<R> {
+    /// Fixed envelope and hashing scratch, reserved before any store read.
+    pub const ENVELOPE_SCRATCH: usize = 256 * 1024;
+    pub(crate) fn new(store: Arc<FileStore>, root: [u8; 32]) -> Result<Self, WorkspaceRelationError> {
+        let root = UntrustedId::from_wire(&root, IdContext::relation::<R>())
+            .map_err(|_| WorkspaceRelationError::InvalidRoot)?;
+        Ok(Self { store, root })
+    }
+
+    /// Looks up one row, invoking preflight on the root and every loaded node
+    /// before typed decoding. The callback must reserve whole-node decoding,
+    /// branch/path work, and retained result/clones against the same budget.
+    /// Callback charges are not refunded by this method.
+    pub fn lookup<P>(&self, key: &R::Key, max_depth: usize, budget: &mut usize, preflight: &mut P) -> Result<Option<R::Value>, WorkspaceRelationError>
+    where P: for<'a> FnMut(&backend_version::CanonicalNodeView<'a>, &mut usize) -> Result<(), StoreError> {
+        if max_depth == 0 || max_depth > 32 { return Err(WorkspaceRelationError::Store(StoreError::Bounds)); }
+        *budget = budget.checked_sub(Self::ENVELOPE_SCRATCH).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
+        let result = {
+            let mut gate = |node: &backend_version::CanonicalNodeView<'_>| preflight(node, budget);
+            let loader = PreflightLoader { store: &self.store, preflight: RefCell::new(&mut gate) };
+            let tree = LazyTree::open(&loader, self.root).map_err(|error| map_tree_error::<R>(error, None))?;
+            tree.lookup_streaming_with_depth_limit(key, max_depth)
+                .map_err(|error| map_tree_error::<R>(error, Some(RelationKeyPrefix::of::<R>(key))))?
+        };
+        *budget = budget.checked_add(Self::ENVELOPE_SCRATCH).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
+        Ok(result)
+    }
+
+    /// Reads at most one row with the same preflight and depth guarantees.
+    pub fn page_one<P>(&self, after: Option<&R::Key>, max_depth: usize, budget: &mut usize, preflight: &mut P) -> Result<LazyTreePage<R>, WorkspaceRelationError>
+    where P: for<'a> FnMut(&backend_version::CanonicalNodeView<'a>, &mut usize) -> Result<(), StoreError> {
+        self.page(after, 1, max_depth, budget, preflight)
+    }
+
+    /// Reads up to 64 rows with precharged output slots and per-node gates.
+    /// The callback must include every returned row's cloned heap in its
+    /// retained charge; slot and callback charges remain consumed on return.
+    pub fn page<P>(&self, after: Option<&R::Key>, limit: usize, max_depth: usize, budget: &mut usize, preflight: &mut P) -> Result<LazyTreePage<R>, WorkspaceRelationError>
+    where P: for<'a> FnMut(&backend_version::CanonicalNodeView<'a>, &mut usize) -> Result<(), StoreError> {
+        if limit == 0 || limit > 64 || max_depth == 0 || max_depth > 32 { return Err(WorkspaceRelationError::Store(StoreError::Bounds)); }
+        let slots = limit.checked_mul(std::mem::size_of::<(R::Key, R::Value)>())
+            .and_then(|n| n.checked_add(64)).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
+        let reserve = Self::ENVELOPE_SCRATCH.checked_add(slots).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
+        *budget = budget.checked_sub(reserve).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
+        let result = {
+            let mut gate = |node: &backend_version::CanonicalNodeView<'_>| preflight(node, budget);
+            let loader = PreflightLoader { store: &self.store, preflight: RefCell::new(&mut gate) };
+            let tree = LazyTree::open(&loader, self.root).map_err(|error| map_tree_error::<R>(error, None))?;
+            tree.page_with_depth_limit(after, limit, max_depth).map_err(|error| map_tree_error::<R>(error, None))?
+        };
+        *budget = budget.checked_add(Self::ENVELOPE_SCRATCH).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
+        Ok(result)
+    }
+
+    /// Streams at most 64 owned rows without allocating a sibling/result Vec.
+    /// The preflight charge remains held while `visit` transfers each row;
+    /// `visit` must charge any retained ownership before storing it. A caller
+    /// must discard partial results on error and may refund temporary gate
+    /// charges only after this method returns and all node buffers are gone.
+    pub fn visit<P, V>(&self, after: Option<&R::Key>, limit: usize, max_depth: usize, budget: &mut usize, preflight: &mut P, visit: &mut V) -> Result<Option<R::Key>, WorkspaceRelationError>
+    where
+        P: for<'a> FnMut(&backend_version::CanonicalNodeView<'a>, &mut usize) -> Result<(), StoreError>,
+        V: FnMut(&R::Key, R::Value, &mut usize) -> Result<(), StoreError>,
+    {
+        if limit == 0 || limit > 64 || max_depth == 0 || max_depth > 32 { return Err(WorkspaceRelationError::Store(StoreError::Bounds)); }
+        let stack = std::mem::size_of::<arrayvec::ArrayVec<backend_version::CommittedChild<R>, 32>>();
+        if stack > 64 * 1024 { return Err(WorkspaceRelationError::Store(StoreError::Bounds)); }
+        let reserve = Self::ENVELOPE_SCRATCH.checked_add(stack).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
+        *budget = budget.checked_sub(reserve).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
+        let result = {
+            let shared = RefCell::new(&mut *budget);
+            let mut gate = |node: &backend_version::CanonicalNodeView<'_>| {
+                let mut budget = shared.borrow_mut();
+                preflight(node, &mut **budget)
+            };
+            let loader = PreflightLoader { store: &self.store, preflight: RefCell::new(&mut gate) };
+            let tree = LazyTree::open(&loader, self.root).map_err(|error| map_tree_error::<R>(error, None))?;
+            tree.visit_streaming_with_depth_limit(after, limit, max_depth, |key, value| {
+                let mut budget = shared.borrow_mut();
+                visit(key, value, &mut **budget)
+            }).map_err(|error| map_tree_error::<R>(error, None))?
+        };
+        *budget = budget.checked_add(reserve).ok_or(WorkspaceRelationError::Store(StoreError::Bounds))?;
+        Ok(result)
+    }
+}
+
 impl<R: CanonicalRelation> Clone for WorkspaceRelationHandle<R> {
     fn clone(&self) -> Self {
         Self {
@@ -469,6 +580,11 @@ impl<R: CanonicalRelation> WorkspaceRelationHandle<R> {
     #[must_use]
     pub fn root(&self) -> StateRoot<R> {
         self.root.root()
+    }
+
+    /// Returns the admitted root node level without cloning its encoded bytes.
+    pub fn root_level(&self) -> u16 {
+        self.root.evidence().node().level()
     }
 
     /// Returns an O(1) cloneable handoff of the authenticated root evidence.
@@ -689,6 +805,21 @@ impl<R: CanonicalRelation> WorkspaceRelationHandle<R> {
             .map_err(|error| map_tree_error::<R>(error, None))
     }
 
+    /// Looks up a row while bounding traversal depth and validating child summaries.
+    pub fn lookup_with_depth_limit(&self, key: &R::Key, max_depth: usize) -> Result<Option<R::Value>, WorkspaceRelationError> {
+        self.tree().lookup_with_depth_limit(key, max_depth)
+            .map_err(|error| map_tree_error::<R>(error, Some(RelationKeyPrefix::of::<R>(key))))
+    }
+
+    /// Reads one row with a caller-supplied traversal depth limit.
+    /// The caller must reserve scratch and retained allocations before calling.
+    pub fn page_one_with_depth_limit(
+        &self, after: Option<&R::Key>, max_depth: usize,
+    ) -> Result<LazyTreePage<R>, WorkspaceRelationError> {
+        self.tree().page_one_with_depth_limit(after, max_depth)
+            .map_err(|error| map_tree_error::<R>(error, None))
+    }
+
     /// Reads one bounded page in canonical key order.
     /// # Errors
     ///
@@ -791,6 +922,18 @@ impl<R: CanonicalRelation> WorkspaceRelationHandle<R> {
             .map_err(|error| map_tree_error::<R>(error, Some(RelationKeyPrefix::of::<R>(key))))
     }
 
+    /// Prepares a delta under the caller's explicit metadata envelope.
+    pub fn prepare_update_bounded(
+        &self, changes: &[TreeChange<R>], budget: backend_version::LazyTreeUpdateBudget,
+    ) -> Result<LazyPreparedUpdate<R>, WorkspaceRelationError>
+    where R: backend_version::BoundedCanonicalRelation {
+        if budget.max_metadata_bytes < R::NODE_DECODE_SCRATCH {
+            return Err(map_tree_error::<R>(LazyTreeError::MetadataBudgetExceeded { required_bytes: R::NODE_DECODE_SCRATCH, max_bytes: budget.max_metadata_bytes }, None));
+        }
+        self.tree().prepare_update_decoded_bounded(changes, budget)
+            .map_err(|error| refine_rejection::<R>(map_tree_error::<R>(error, None), changes))
+    }
+
     /// Prepares one canonical multi-key delta while loading only affected
     /// paths and retaining a checked in-memory overlay for the evolving
     /// frontier.
@@ -805,5 +948,69 @@ impl<R: CanonicalRelation> WorkspaceRelationHandle<R> {
         self.tree()
             .prepare_update(changes)
             .map_err(|error| refine_rejection::<R>(map_tree_error::<R>(error, None), changes))
+    }
+}
+
+#[cfg(test)]
+mod preflight_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static VALUE_DECODES: AtomicUsize = AtomicUsize::new(0);
+    struct CountingRelation;
+    impl Relation for CountingRelation {
+        const DOMAIN: u8 = 0xf6;
+        const TYPE: u16 = 0x5106;
+        type Key = [u8; 32];
+        type Value = Vec<u8>;
+        fn encode_key(value: &Self::Key, out: &mut Vec<u8>) { out.extend_from_slice(value); }
+        fn encode_value(value: &Self::Value, out: &mut Vec<u8>) { out.extend_from_slice(value); }
+    }
+    impl CanonicalRelation for CountingRelation {
+        fn decode_key(bytes: &[u8]) -> Result<Self::Key, backend_version::RelationDecodeError> {
+            bytes.try_into().map_err(|_| backend_version::RelationDecodeError::Malformed)
+        }
+        fn decode_value(bytes: &[u8]) -> Result<Self::Value, backend_version::RelationDecodeError> {
+            VALUE_DECODES.fetch_add(1, Ordering::Relaxed);
+            Ok(bytes.to_vec())
+        }
+    }
+
+    #[test]
+    fn preflight_child_denial_precedes_sibling_value_decode() {
+        use backend_store::RelationAdmissionRegistry;
+        use backend_version::{CoverageWitness, RelationState, ScopeRoot, UntrustedCoverageScope};
+        let dir = tempfile::tempdir().unwrap();
+        let registry = RelationAdmissionRegistry::new().with_relation::<CountingRelation>().unwrap();
+        let store = FileStore::open_with_registry(dir.path(), 1024 * 1024, registry).unwrap();
+        let rows = (0..200u16).map(|i| { let mut key=[0;32]; key[..2].copy_from_slice(&i.to_be_bytes()); (key, vec![7;4096]) }).collect::<Vec<_>>();
+        let coverage = CoverageWitness::Partial(UntrustedCoverageScope::from_scope_root(ScopeRoot::from_u64(1)));
+        let state = RelationState::<CountingRelation>::from_entries(rows.clone(), coverage).unwrap();
+        store.write_relation_state(&state).unwrap();
+        let handle = WorkspacePreflightRelationHandle::<CountingRelation>::new(Arc::new(store), *state.root().as_bytes()).unwrap();
+        VALUE_DECODES.store(0, Ordering::Relaxed);
+        let mut budget = 16 * 1024 * 1024;
+        let branch_seen = std::cell::Cell::new(false);
+        let mut gate = |node: &backend_version::CanonicalNodeView<'_>, _: &mut usize| {
+            if node.is_leaf() { return Err(StoreError::Bounds); }
+            branch_seen.set(true);
+            Ok(())
+        };
+        let error = handle.lookup(&rows[0].0, 32, &mut budget, &mut gate);
+        assert!(matches!(error, Err(WorkspaceRelationError::Store(StoreError::Bounds))));
+        assert!(branch_seen.get());
+        assert_eq!(VALUE_DECODES.load(Ordering::Relaxed), 0);
+        // A branch root with depth credit one must not load or decode a leaf.
+        let leaf_seen = std::cell::Cell::new(false);
+        let mut depth_gate = |node: &backend_version::CanonicalNodeView<'_>, _: &mut usize| {
+            if node.is_leaf() { leaf_seen.set(true); }
+            Ok(())
+        };
+        let mut budget = 16 * 1024 * 1024;
+        assert!(handle.lookup(&rows[0].0, 1, &mut budget, &mut depth_gate).is_err());
+        assert!(!leaf_seen.get());
+        assert_eq!(VALUE_DECODES.load(Ordering::Relaxed), 0);
+        let mut budget = 16 * 1024 * 1024;
+        assert_eq!(handle.lookup(&rows[0].0, 2, &mut budget, &mut depth_gate).unwrap(), Some(rows[0].1.clone()));
+        assert!(leaf_seen.get());
     }
 }

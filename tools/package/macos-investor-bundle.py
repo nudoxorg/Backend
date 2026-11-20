@@ -56,6 +56,10 @@ FONT_LICENSES = (
     "Newsreader-OFL.txt",
 )
 EXECUTABLES = ("backend-desktop", "backend-mcp", "backend-locald", "backend-cli")
+STYLO_NOTICES = {
+    "Stylo-MPL-2.0.txt": "vendor/stylo-native/LICENSE",
+    "Selectors-MPL-2.0.txt": "vendor/selectors-native/LICENSE",
+}
 HELPER_EXECUTABLES = {
     "go_oracle": "go/oracle",
     "pyrefly": "python/pyrefly",
@@ -1645,6 +1649,10 @@ def main() -> int:
     parser.add_argument("--expected-managed-plan-sha256", help="external selected plan pin required for managed-native-host builds")
     parser.add_argument("--artifact-dir", required=True, type=Path, help="directory containing the three admitted application binaries")
     parser.add_argument("--build-receipt", required=True, type=Path, help="Root-produced application build receipt JSON")
+    parser.add_argument("--stylo-bound-receipt", type=Path, help="exact-source signed Stylo worker and anchored-owner receipt")
+    parser.add_argument("--expected-stylo-receipt-sha256", help="external pin for the Stylo bound-owner receipt")
+    parser.add_argument("--expected-stylo-actor-sha256", help="external pin for the Stylo build actor")
+    parser.add_argument("--expected-stylo-team-id", help="expected Developer ID signing team for the worker")
     parser.add_argument("--sdk-only", action="store_true", help="bundle only genuine Node/TypeScript; no legacy language-helper claims or overrides")
     parser.add_argument("--defer-sdk-runtime-probes", action="store_true", help="SDK release driver will probe after inner Developer ID signing, before the outer app seal")
     parser.add_argument("--dotnet-root", type=Path, help="real macOS .NET runtime installation root")
@@ -1704,6 +1712,26 @@ def main() -> int:
     app_receipt, binaries = validate_app_build(
         args.build_receipt.resolve(strict=True), artifact_dir, source, args.target, args.expected_runner_sha256, args.expected_managed_plan_sha256
     )
+    root_binaries = dict(binaries)
+    stylo_values = (args.stylo_bound_receipt, args.expected_stylo_receipt_sha256,
+                    args.expected_stylo_actor_sha256, args.expected_stylo_team_id)
+    stylo_receipt = None
+    stylo_receipt_sha = None
+    if any(value is not None for value in stylo_values):
+        if not all(value is not None for value in stylo_values):
+            fail("all signed Stylo receipt, actor, and team pins are required together")
+        if args.expected_managed_plan_sha256 is not None or args.relocation_plan is not None:
+            fail("signed Stylo companion currently requires the direct, non-relocating app path")
+        import macos_stylo_companion as stylo
+        try:
+            stylo_receipt, stylo_receipt_sha = stylo.admit_bound_owner(
+                args.stylo_bound_receipt, source_root, source, args.target,
+                args.expected_stylo_receipt_sha256, args.expected_stylo_actor_sha256,
+                args.expected_stylo_team_id,
+            )
+        except (ValueError, OSError, subprocess.SubprocessError) as error:
+            fail(f"signed Stylo companion refused: {error}")
+        binaries['backend-locald'] = Path(stylo_receipt['owner']['path'])
     helpers_receipt, helper_files = validate_helper_payload(
         args.helpers_receipt.resolve(strict=True), helpers_dir, source_root, source, args.target, sdk_only=args.sdk_only
     )
@@ -1798,8 +1826,18 @@ def main() -> int:
         for name, source_binary in binaries.items():
             destination_name = "backend-desktop" if name == "backend-desktop" else name
             destination = macos / destination_name
-            shutil.copy2(source_binary, destination)
+            if stylo_receipt is not None and name == 'backend-locald':
+                stylo.copy_admitted(source_binary, destination, stylo_receipt['owner']['bytes'], stylo_receipt['owner']['sha256'])
+            else:
+                shutil.copy2(source_binary, destination)
             destination.chmod(0o755)
+
+        if stylo_receipt is not None:
+            stylo_worker_path = macos / 'backend-stylo-worker'
+            stylo.copy_admitted(Path(stylo_receipt['worker']['path']), stylo_worker_path, stylo_receipt['worker']['bytes'], stylo_receipt['worker']['sha256'])
+            stylo_worker_path.chmod(0o755)
+            if sha256(stylo_worker_path) != stylo_receipt['worker']['sha256']:
+                fail("signed Stylo worker changed while staging")
 
         write_application_launcher(macos, sdk_only=args.sdk_only)
 
@@ -1838,6 +1876,17 @@ def main() -> int:
                 fail(f"required embedded-font license is missing from source: {source_license}")
             shutil.copy2(source_license, licenses / name)
 
+        stylo_notices = {}
+        if stylo_receipt is not None:
+            notice_dir = resources / 'Stylo Licenses'
+            notice_dir.mkdir(mode=0o755)
+            for name, relative in STYLO_NOTICES.items():
+                notice = source_root / relative
+                size, digest = stylo.digest_regular(notice, 1024 * 1024)
+                stylo.copy_admitted(notice, notice_dir / name, size, digest, 1024 * 1024)
+                (notice_dir / name).chmod(0o644)
+                stylo_notices[name] = digest
+
         provenance = resources / "Build Evidence"
         provenance.mkdir()
         shutil.copy2(args.build_receipt, provenance / "application-build-receipt.json")
@@ -1852,6 +1901,8 @@ def main() -> int:
         if "OK" not in info:
             fail("Info.plist did not pass plutil validation")
         required_images = {f"Contents/MacOS/{name}" for name in EXECUTABLES}
+        if stylo_receipt is not None:
+            required_images.add("Contents/MacOS/backend-stylo-worker")
         required_images.add("Contents/Resources/Helpers/typescript/node/bin/node")
         if not args.sdk_only:
             required_images.add("Contents/Resources/dotnet/dotnet")
@@ -1871,6 +1922,15 @@ def main() -> int:
                 args.relocation_plan.resolve(strict=True),
                 provenance / "macho-relocation-plan.json",
             )
+        if stylo_receipt is not None:
+            try:
+                staged_worker = stylo.inspect_signed_worker(stylo_worker_path, args.target, args.expected_stylo_team_id)
+            except (ValueError, OSError, subprocess.SubprocessError) as error:
+                fail(f"staged signed Stylo worker refused: {error}")
+            if staged_worker['sha256'] != stylo_receipt['worker']['sha256']:
+                fail("bundle assembly changed the anchored Stylo worker")
+            if sha256(macos / 'backend-locald') != stylo_receipt['owner']['sha256']:
+                fail("bundle assembly changed the bound Stylo owner")
         macho_records = inspect_macho_tree(
             staging,
             target_arch,
@@ -1909,7 +1969,7 @@ def main() -> int:
                 "cargo_runner": app_receipt["cargo_runner_before"],
                 "cargo_runner_unchanged": app_receipt["cargo_runner_unchanged"],
                 "cargo_provenance": app_receipt["cargo_provenance"],
-                "executables": {name: sha256(path) for name, path in binaries.items()},
+                "executables": {name: sha256(path) for name, path in root_binaries.items()},
             },
             "compiler_helpers": {
                 "receipt_sha256": sha256(bundle_helper_receipt_path),
@@ -1931,6 +1991,14 @@ def main() -> int:
             "files": file_inventory(staging),
             "distribution_status": f"app bundle {bundle_signature}; notarization not performed; native QA pending",
         }
+        if stylo_receipt is not None:
+            manifest['stylo_companion'] = {
+                'schema': 'nudox.macos-stylo-companion.v1', 'receipt_sha256': stylo_receipt_sha,
+                'actor_sha256': args.expected_stylo_actor_sha256, 'worker_sha256': stylo_receipt['worker']['sha256'],
+                'owner_source_sha256': stylo_receipt['owner']['sha256'], 'worker_anchor': stylo_receipt['worker_anchor'],
+                'team_id': args.expected_stylo_team_id, 'signature_requirement': stylo_receipt['worker']['signature_requirement'],
+                'notices': stylo_notices,
+            }
         if not args.sdk_only:
             manifest["roslyn_build"] = {
                 "receipt_sha256": sha256(args.roslyn_receipt),

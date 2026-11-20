@@ -45,11 +45,11 @@ struct Counter {
 }
 impl Counter {
     fn load() -> Result<Self, Cl100kError> {
-        if VOCABULARY.get(..8) != Some(b"CL100K\x01\x00") {
+        if VOCABULARY.get(..8) != Some(&b"CL100K\x01\x00"[..]) {
             return Err(Cl100kError::InvalidEncoding);
         }
         let mut offset = 12;
-        if VOCABULARY.get(8..12) != Some(&100_256_u32.to_le_bytes()) {
+        if VOCABULARY.get(8..12) != Some(&100_256_u32.to_le_bytes()[..]) {
             return Err(Cl100kError::InvalidEncoding);
         }
         let mut ranks = HashMap::with_capacity(100_256);

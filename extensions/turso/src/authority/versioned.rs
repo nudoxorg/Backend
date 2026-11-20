@@ -1,6 +1,9 @@
 //! Canonical metadata linking storage-neutral semantic segment identities to
 //! the physical objects admitted in one compiler publication closure.
 
+#[path = "borrowed_versioned.rs"]
+pub(super) mod borrowed_versioned;
+
 use backend_semantic::ir::{
     GenerationId, SemanticManifestError, SemanticManifestRoot, SemanticPlaneCatalog,
     SemanticPlaneCatalogEntry, SemanticPlaneCatalogRoot, SemanticPlaneImageKey,
@@ -113,11 +116,12 @@ impl VersionedPlaneArtifactMetadata {
         manifest_bytes: &[u8],
         mut members: Vec<VersionedPlaneMember>,
     ) -> Result<Self, VersionedPlaneError> {
-        let manifest_object = manifest_object(manifest_bytes);
+        let manifest_id = backend_store::untrusted_object_id_for_encoded_value(VERSIONED_PLANE_MANIFEST_SCHEMA, manifest_bytes)
+            .map_err(|_| VersionedPlaneError::ManifestObject)?;
         Self::from_parts(
             artifact_ordinal,
             manifest_bytes,
-            *manifest_object.id().as_bytes(),
+            *manifest_id.as_bytes(),
             &mut members,
         )
     }
@@ -159,8 +163,10 @@ impl VersionedPlaneArtifactMetadata {
     ) -> Result<Self, VersionedPlaneError> {
         let manifest = decode_manifest(manifest_bytes)?;
         let mut expected = Vec::new();
+        expected.try_reserve_exact(members.len()).map_err(|_| VersionedPlaneError::Allocation)?;
         for plane in manifest.planes() {
             for segment in plane.segments() {
+                if expected.len() == members.len() { return Err(VersionedPlaneError::MemberCount); }
                 expected.push((segment.id_claim(), segment.byte_length()));
             }
         }
@@ -350,6 +356,29 @@ impl VersionedPlaneMetadata {
         if artifact_count == 0 || artifact_count > MAX_ARTIFACTS {
             return Err(VersionedPlaneError::ArtifactCount);
         }
+        // Each artifact has a fixed header, at least one manifest byte, and
+        // at least one fixed-size member. Check framing before reserving rows.
+        let minimum = artifact_count.checked_mul(4 + 32 * 3 + 4 + 1 + 4 + 72).ok_or(VersionedPlaneError::Truncated)?;
+        if decoder.bytes.len().saturating_sub(decoder.offset) < minimum { return Err(VersionedPlaneError::Truncated); }
+        // Borrowed first pass proves all variable extents and aggregate counts
+        // before allocating any artifact or segment vector.
+        let mut scan = Decoder { bytes: decoder.bytes, offset: decoder.offset };
+        let mut manifest_total = 0usize;
+        let mut member_total = artifact_count;
+        for _ in 0..artifact_count {
+            scan.take(4 + 32 * 3)?;
+            let manifest_len = scan.u32()? as usize;
+            if manifest_len == 0 || manifest_len > MAX_MANIFEST_BYTES { return Err(VersionedPlaneError::ManifestLength); }
+            manifest_total = manifest_total.checked_add(manifest_len).ok_or(VersionedPlaneError::ManifestLength)?;
+            if manifest_total > MAX_TOTAL_MANIFEST_BYTES { return Err(VersionedPlaneError::ManifestLength); }
+            scan.take(manifest_len)?;
+            let members = scan.u32()? as usize;
+            if members == 0 || members > MAX_SEGMENTS { return Err(VersionedPlaneError::MemberCount); }
+            member_total = member_total.checked_add(members).ok_or(VersionedPlaneError::MemberCount)?;
+            if member_total > MAX_SEGMENTS { return Err(VersionedPlaneError::MemberCount); }
+            scan.take(members.checked_mul(72).ok_or(VersionedPlaneError::Truncated)?)?;
+        }
+        if !scan.is_empty() { return Err(VersionedPlaneError::TrailingBytes); }
         let mut artifacts = Vec::new();
         artifacts
             .try_reserve_exact(artifact_count)
@@ -374,7 +403,7 @@ impl VersionedPlaneMetadata {
             if total_manifest_bytes > MAX_TOTAL_MANIFEST_BYTES {
                 return Err(VersionedPlaneError::ManifestLength);
             }
-            let manifest_bytes = decoder.take(manifest_length)?.to_vec();
+            let manifest_bytes = decoder.take(manifest_length)?;
             let member_count =
                 usize::try_from(decoder.u32()?).map_err(|_| VersionedPlaneError::MemberCount)?;
             if member_count == 0 || member_count > MAX_SEGMENTS {
@@ -389,6 +418,8 @@ impl VersionedPlaneMetadata {
             if total_segments > MAX_SEGMENTS || total_output_members > MAX_SEGMENTS {
                 return Err(VersionedPlaneError::MemberCount);
             }
+            let required = member_count.checked_mul(72).ok_or(VersionedPlaneError::Truncated)?;
+            if decoder.bytes.len().saturating_sub(decoder.offset) < required { return Err(VersionedPlaneError::Truncated); }
             let mut members = Vec::new();
             members
                 .try_reserve_exact(member_count)
@@ -412,7 +443,7 @@ impl VersionedPlaneMetadata {
                 }
                 members.push(member);
             }
-            let artifact = VersionedPlaneArtifactMetadata::new(ordinal, &manifest_bytes, members)?;
+            let artifact = VersionedPlaneArtifactMetadata::new(ordinal, manifest_bytes, members)?;
             if artifact.image.semantic_generation() != generation
                 || artifact.manifest_root() != manifest_root
             {
@@ -804,6 +835,68 @@ impl fmt::Display for VersionedPlaneError {
 
 impl std::error::Error for VersionedPlaneError {}
 
+/// Sum of requested owned and temporary allocations in the versioned decode
+/// path. Caller separately charges the input wire and outer metadata output.
+pub(super) fn versioned_decode_allocation_bound(bytes: &[u8]) -> Result<(usize, usize), VersionedPlaneError> {
+    preflight_versioned_framing(bytes)?;
+    let mut scan = Decoder::new(bytes);
+    scan.take(MAGIC.len() + 2 + 32)?;
+    let artifacts = scan.u32()? as usize;
+    let mut bound = bytes.len(); // final versioned canonical encoding
+    let mut physical_slots = artifacts;
+    let mut add = |amount: usize| -> Result<(), VersionedPlaneError> {
+        bound = bound.checked_add(amount).ok_or(VersionedPlaneError::Allocation)?; Ok(())
+    };
+    add(artifacts.checked_mul(std::mem::size_of::<VersionedPlaneArtifactMetadata>()).ok_or(VersionedPlaneError::Allocation)?)?;
+    add(artifacts.checked_mul(std::mem::size_of::<SemanticPlaneCatalogEntry>()).ok_or(VersionedPlaneError::Allocation)?)?;
+    // Outer metadata construction also sorts/deduplicates these physical IDs.
+    add(artifacts.checked_mul(32).ok_or(VersionedPlaneError::Allocation)?)?;
+    let catalog = artifacts.checked_mul(4 + 32 + 32 + 4).and_then(|n| n.checked_add(7 + 4)).ok_or(VersionedPlaneError::Allocation)?;
+    add(catalog.checked_mul(2).ok_or(VersionedPlaneError::Allocation)?)?; // construction + retained canonical catalog
+    for _ in 0..artifacts {
+        scan.take(4 + 32 * 3)?;
+        let len = scan.u32()? as usize;
+        let manifest = scan.take(len)?;
+        let members = scan.u32()? as usize;
+        physical_slots = physical_slots.checked_add(members).ok_or(VersionedPlaneError::Allocation)?;
+        scan.take(members.checked_mul(MEMBER_BYTES).ok_or(VersionedPlaneError::Allocation)?)?;
+        add(len)?; // retained canonical manifest
+        add(len)?; // semantic manifest canonical comparison
+        add(SemanticPlaneManifest::decode_allocation_bound(manifest)?)?;
+        add(members.checked_mul(std::mem::size_of::<VersionedPlaneMember>()).ok_or(VersionedPlaneError::Allocation)?)?;
+        add(members.checked_mul(32).ok_or(VersionedPlaneError::Allocation)?)?;
+        add(members.checked_mul(std::mem::size_of::<(UntrustedSemanticSegmentId, u64)>()).ok_or(VersionedPlaneError::Allocation)?)?;
+    }
+    Ok((bound, physical_slots))
+}
+
+/// Checks all variable framing and count geometry without allocating rows.
+pub(super) fn preflight_versioned_framing(bytes: &[u8]) -> Result<(), VersionedPlaneError> {
+    let mut scan = Decoder::new(bytes);
+    if scan.take(MAGIC.len())? != MAGIC { return Err(VersionedPlaneError::Magic); }
+    if scan.u16()? != VERSION { return Err(VersionedPlaneError::Version); }
+    scan.take(32)?;
+    let artifacts = scan.u32()? as usize;
+    if artifacts == 0 || artifacts > MAX_ARTIFACTS { return Err(VersionedPlaneError::ArtifactCount); }
+    let mut manifest_total = 0usize;
+    let mut member_total = artifacts;
+    for _ in 0..artifacts {
+        scan.take(4 + 32 * 3)?;
+        let manifest_len = scan.u32()? as usize;
+        if manifest_len == 0 || manifest_len > MAX_MANIFEST_BYTES { return Err(VersionedPlaneError::ManifestLength); }
+        manifest_total = manifest_total.checked_add(manifest_len).ok_or(VersionedPlaneError::ManifestLength)?;
+        if manifest_total > MAX_TOTAL_MANIFEST_BYTES { return Err(VersionedPlaneError::ManifestLength); }
+        scan.take(manifest_len)?;
+        let members = scan.u32()? as usize;
+        if members == 0 || members > MAX_SEGMENTS { return Err(VersionedPlaneError::MemberCount); }
+        member_total = member_total.checked_add(members).ok_or(VersionedPlaneError::MemberCount)?;
+        if member_total > MAX_SEGMENTS { return Err(VersionedPlaneError::MemberCount); }
+        scan.take(members.checked_mul(MEMBER_BYTES).ok_or(VersionedPlaneError::Truncated)?)?;
+    }
+    if !scan.is_empty() { return Err(VersionedPlaneError::TrailingBytes); }
+    Ok(())
+}
+
 struct Decoder<'a> {
     bytes: &'a [u8],
     offset: usize,
@@ -865,6 +958,16 @@ impl<'a> Decoder<'a> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, clippy::panic)]
+    #[test]
+    fn truncated_artifact_count_refuses_before_count_sized_allocation() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(super::MAGIC);
+        bytes.extend_from_slice(&super::VERSION.to_le_bytes());
+        bytes.extend_from_slice(&[0; 32]);
+        bytes.extend_from_slice(&(super::MAX_ARTIFACTS as u32).to_le_bytes());
+        let measured = allocation_counter::measure(|| assert!(matches!(super::VersionedPlaneMetadata::decode(&bytes), Err(super::VersionedPlaneError::Truncated))));
+        assert!(measured.bytes_max < 32 * 1024, "versioned preflight: {measured:?}");
+    }
 
     use super::*;
     use backend_semantic::ir::{
@@ -937,6 +1040,74 @@ mod tests {
             ),
         ];
         (manifest_bytes, payloads)
+    }
+
+    #[test]
+    fn borrowed_versioned_metadata_matches_owned_and_rejects_corruption() {
+        let (manifest_bytes, payloads) = manifest_and_payloads();
+        let source = payloads.iter().map(|(id, bytes)| (*id, bytes.as_slice())).collect::<Vec<_>>();
+        let publication = VersionedPlanePublication::from_payloads(&manifest_bytes, source).unwrap();
+        let bytes = publication.metadata().canonical_bytes();
+        let mut bitmap = [0u8; 64];
+        let mut view = None;
+        let peak = allocation_counter::measure(|| {
+            view = Some(borrowed_versioned::BorrowedVersionedMetadata::parse(&bytes, &mut bitmap, &mut |_| Ok::<(), ()>(())).unwrap());
+        });
+        assert_eq!(peak.bytes_max, 0);
+        let view = view.unwrap();
+        assert_eq!(view.catalog_root(), publication.metadata().catalog_root());
+        assert_eq!(view.artifact_count(), 1);
+        assert_eq!(view.segment_count(), publication.metadata().segment_count());
+        let mut count = 0;
+        view.visit_physical(&mut |_| Ok::<(), ()>(()), &mut |_| { count += 1; Ok(()) }).unwrap();
+        assert_eq!(count, 1 + publication.metadata().segment_count());
+        assert!(borrowed_versioned::BorrowedVersionedMetadata::parse(&bytes[..bytes.len()-1], &mut bitmap, &mut |_| Ok::<(), ()>(())).is_err());
+        let mut bad = bytes.clone(); bad[10] ^= 1;
+        assert!(borrowed_versioned::BorrowedVersionedMetadata::parse(&bad, &mut bitmap, &mut |_| Ok::<(), ()>(())).is_err());
+        let mut calls = 0;
+        let stopped = borrowed_versioned::BorrowedVersionedMetadata::parse(&bytes, &mut bitmap, &mut |_| {calls += 1; if calls == 2 { Err(()) } else { Ok(()) }});
+        assert!(matches!(stopped, Err(borrowed_versioned::BorrowedVersionedError::Stopped(()))));
+    }
+
+    #[test]
+    fn borrowed_two_artifacts_share_physical_refs_and_reject_mutations() {
+        let (manifest_bytes, payloads) = manifest_and_payloads();
+        let source = payloads.iter().map(|(id, bytes)| (*id, bytes.as_slice())).collect::<Vec<_>>();
+        let publication = VersionedPlanePublication::from_payloads(&manifest_bytes, source).unwrap();
+        let first = publication.metadata().artifacts()[0].clone();
+        let second = VersionedPlaneArtifactMetadata::new(1, first.manifest_bytes(), first.members().to_vec()).unwrap();
+        let metadata = VersionedPlaneMetadata::from_artifacts(vec![first, second]).unwrap();
+        let wire = metadata.canonical_bytes();
+        let mut bitmap = [0u8; 64];
+        let view = borrowed_versioned::BorrowedVersionedMetadata::parse(&wire, &mut bitmap, &mut |_| Ok::<(), ()>(())).unwrap();
+        assert_eq!(view.artifact_count(), 2);
+        assert_eq!(view.segment_count(), metadata.segment_count());
+        assert_eq!(view.catalog_root(), metadata.catalog_root());
+        let mut ids = Vec::new();
+        view.visit_physical(&mut |_| Ok::<(), ()>(()), &mut |id| { ids.push(id); Ok(()) }).unwrap();
+        let mut unique = ids.clone(); unique.sort_unstable(); unique.dedup();
+        assert!(unique.len() < ids.len(), "fixture must exercise shared physical IDs");
+        assert_eq!(unique, metadata.object_ids());
+        // Mutate catalog root, per-artifact root, logical segment ID and
+        // segment extent in the real canonical wire; all must fail closed.
+        let first_artifact = MAGIC.len() + 2 + 32 + 4;
+        let manifest_len_at = first_artifact + 4 + 32 * 3;
+        let manifest_len = u32::from_le_bytes(wire[manifest_len_at..manifest_len_at+4].try_into().unwrap()) as usize;
+        let member_count_at = manifest_len_at + 4 + manifest_len;
+        let first_member = member_count_at + 4;
+        assert_eq!(u32::from_le_bytes(wire[member_count_at..member_count_at+4].try_into().unwrap()), 2);
+        for at in [MAGIC.len()+2, first_artifact+4+32, first_member, first_member+64] {
+            let mut bad = wire.clone(); bad[at] ^= 0x80;
+            assert!(borrowed_versioned::BorrowedVersionedMetadata::parse(&bad, &mut bitmap, &mut |_| Ok::<(), ()>(())).is_err());
+            assert!(VersionedPlaneMetadata::decode(&bad).is_err());
+        }
+        let mut duplicate = wire.clone();
+        let first_id: [u8;32] = duplicate[first_member..first_member+32].try_into().unwrap();
+        duplicate[first_member+MEMBER_BYTES..first_member+MEMBER_BYTES+32].copy_from_slice(&first_id);
+        assert!(borrowed_versioned::BorrowedVersionedMetadata::parse(&duplicate, &mut bitmap, &mut |_| Ok::<(), ()>(())).is_err());
+        assert!(VersionedPlaneMetadata::decode(&duplicate).is_err());
+        let mut short_bitmap = [];
+        assert!(borrowed_versioned::BorrowedVersionedMetadata::parse(&wire, &mut short_bitmap, &mut |_| Ok::<(), ()>(())).is_err());
     }
 
     #[test]

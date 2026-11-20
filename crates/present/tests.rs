@@ -6,6 +6,8 @@
 
 use super::*;
 mod external_identity_tests;
+mod stylo_transport_tests;
+mod sql_transport_tests;
 #[path = "signature/display_tests.rs"]
 mod signature_display_tests;
 use backend_library::{
@@ -17,6 +19,38 @@ use backend_library::{
 
 const PROJECT: &str = "/abs/polyglot";
 const DECLARATION: &str = "/abs/polyglot::src/lib.rs:2::ferris";
+
+#[test]
+fn unversioned_registry_operand_offers_discovery_without_selecting_a_version() {
+    for (operand, query) in [
+        ("pkg:npm/fixture", "fixture"),
+        ("pkg:npm/@scope/widget", "widget"),
+    ] {
+        for command in ["package", "package-versions"] {
+            let mut invocation = Invocation::new(grammar_for(command).expect("grammar"));
+            invocation.push(operand);
+            let fault = lower(&invocation, PROJECT).expect_err("version is required");
+            assert_eq!(fault.operand().render(), operand);
+            assert!(fault.cause().sentence().contains("exact version"));
+            assert_eq!(
+                fault.affordance().tool_call(),
+                Some(serde_json::json!({
+                    "name": "backend.index_search", "arguments": {"query": query}
+                }))
+            );
+        }
+    }
+    let mut malformed = Invocation::new(grammar_for("package").expect("grammar"));
+    malformed.push("pkg:npm/fixture@");
+    let fault = lower(&malformed, PROJECT).expect_err("malformed pinned coordinate");
+    assert_eq!(
+        fault.cause().sentence(),
+        "package reference is not canonical"
+    );
+    let mut pinned = Invocation::new(grammar_for("package").expect("grammar"));
+    pinned.push("pkg:npm/fixture@1.0.0");
+    assert!(lower(&pinned, PROJECT).is_ok());
+}
 
 #[test]
 fn search_requires_nonempty_query_and_preserves_nonempty_literal_text() {
@@ -84,6 +118,8 @@ fn page_limit_domains_preserve_defaults_and_admit_exact_engine_boundaries() {
                         backend_library::QueryLimit::MAX,
                         backend_library::DEFAULT_SEMANTIC_VERSIONS_LIMIT,
                     ),
+                    "stylo-query" | "sql-query" => (128, 20),
+                    "impact" => (200, 40),
                     _ => (200, DEFAULT_LIMIT),
                 };
                 assert_eq!(
@@ -438,7 +474,7 @@ fn selected_symbol_operand_uses_retained_row_bytes_and_preserves_key_families() 
         assert_eq!(
             identity["semantic_data"],
             serde_json::json!({
-                "kind":"selected-symbol-id", "value":key.as_bytes(),
+                "kind":"selected-symbol-id", "value":backend_library::encode_id(key.as_bytes()),
             })
         );
         assert_ne!(
@@ -798,6 +834,30 @@ fn declaration_row() -> backend_library::Row {
         )
         .expect("bounded excerpt"),
     )
+}
+
+#[test]
+fn document_kind_uses_only_its_admitted_graph_center_when_members_are_unavailable() {
+    let own = declaration_row();
+    let other = backend_library::Row::in_package(
+        RowId::Symbol(symbol_key("other")), basis(), package_key(PROJECT), "other",
+    ).with_kind(DeclarationKind::Class);
+    let document = Document::new(symbol_key(DECLARATION), view_state_root(&[]), []);
+    let page = page_from_document(DECLARATION, &document, &[], &[other.clone(), own], Vec::new());
+    assert_eq!(page.kind(), Some(DeclarationKind::Function));
+    let missing = page_from_document(DECLARATION, &document, &[], &[other], Vec::new());
+    assert_eq!(missing.kind(), None);
+}
+
+#[test]
+fn stale_file_never_renders_captured_excerpt_as_current_source() {
+    let document = Document::new(symbol_key(DECLARATION), view_state_root(&[]), [])
+        .with_location(SourceAvailability::stale_file("src/lib.rs").expect("stale path"))
+        .with_excerpt(SourceExcerpt::captured("old source", SourceExcerptExtent::Complete).expect("excerpt"));
+    let page = page_from_document(DECLARATION, &document, &[], &[], Vec::new());
+    let fault = page.source().fault().expect("stale source warning");
+    assert!(fault.cause().sentence().contains("stale"));
+    assert!(!markdown::page(&page).contains("old source"));
 }
 
 #[test]
@@ -1963,7 +2023,10 @@ fn the_status_summary_replaces_the_capability_dump() {
 fn a_references_reply_renders_sites_with_their_provenance() {
     let reply = backend_library::SurfaceReply::References {
         target: backend_library::ProductText::new("pkg::semantic::callee").expect("target text"),
+        coverage: backend_library::ReferenceCoverage::default(),
         references: Box::new([backend_library::ReferenceRecord {
+                site_symbol: None,
+                source_policy: Default::default(),
             site: backend_library::ProductText::new("pkg::semantic::caller").expect("site text"),
             target: backend_library::SemanticLinkTarget::Local {
                 declaration: backend_library::SemanticDeclarationIdentity {
@@ -2002,6 +2065,7 @@ fn empty_references_result_does_not_claim_target_absence_or_reference_completene
     let reply = backend_library::SurfaceReply::References {
         target: backend_library::ProductText::new("pkg::semantic::callee")
             .expect("reference target"),
+        coverage: backend_library::ReferenceCoverage::default(),
         references: Box::new([]),
     };
     let view = product_view(&reply);
@@ -2027,7 +2091,7 @@ fn advisory_reply_renders_typed_coverage_and_decision() {
     let view = product_view(&reply);
     assert_eq!(view.heading(), "advisory");
     let summary = view.records().first().expect("decision summary");
-    assert!(summary.tags().iter().any(|tag| tag.contains("Unknown")));
+    assert!(summary.tags().iter().any(|tag| tag == "coverage: unknown"));
     assert!(summary.tags().iter().any(|tag| tag.contains("warn")));
     assert!(!summary.tags().iter().any(|tag| tag.contains("deny")));
 }
@@ -2593,13 +2657,13 @@ fn outline_projection_preserves_exact_selectors_for_colliding_coordinates() {
         assert_eq!(
             root["semantic_data"],
             serde_json::json!({
-                "kind": "selected-symbol-id", "value": first.as_bytes(),
+                "kind": "selected-symbol-id", "value": backend_library::encode_id(first.as_bytes()),
             })
         );
         assert_eq!(
             child["semantic_data"],
             serde_json::json!({
-                "kind": "selected-symbol-id", "value": second.as_bytes(),
+                "kind": "selected-symbol-id", "value": backend_library::encode_id(second.as_bytes()),
             })
         );
         assert_ne!(root["semantic_data"], child["semantic_data"]);
@@ -2631,4 +2695,105 @@ fn legacy_outline_node_decodes_without_inventing_a_selector() {
     assert!(node.semantic_data.is_none());
     let value = serde_json::to_value(node).expect("legacy node JSON");
     assert!(value.get("semantic_data").is_none());
+}
+
+#[test]
+fn related_paging_lowers_distinct_edge_request_and_preserves_cursor() {
+    let grammar = grammar_for("related").expect("related grammar");
+    let mut invocation = Invocation::new(grammar);
+    invocation.push(DECLARATION);
+    invocation.set("limit", "7");
+    invocation.set("cursor", "re1-opaque");
+    assert!(matches!(lower(&invocation, PROJECT), Ok(Request::RelatedPage {
+        selector: backend_library::DeclarationSelector::Coordinate(coordinate), limit: 7, cursor: Some(cursor)
+    }) if coordinate == DECLARATION && cursor == "re1-opaque"));
+    invocation.set("cursor", "");
+    assert!(lower(&invocation, PROJECT).is_err());
+}
+
+#[test]
+fn related_paging_keeps_selected_identity_and_coordinate_assertion() {
+    let grammar = grammar_for("related").expect("related grammar");
+    let mut invocation = Invocation::new(grammar);
+    invocation.push("@/src/main.ts:1::main");
+    invocation.set("selected-id", "53".repeat(32));
+    invocation.set("limit", "11");
+    assert!(matches!(lower(&invocation, PROJECT), Ok(Request::RelatedPage {
+        selector: backend_library::DeclarationSelector::SelectedAt { coordinate, .. }, limit: 11, cursor: None
+    }) if coordinate == "@/src/main.ts:1::main"));
+}
+
+#[test]
+fn declarations_only_and_outline_kind_options_reach_the_request() {
+    let mut search = Invocation::new(grammar_for("search").expect("search grammar"));
+    search.push("request");
+    assert!(matches!(
+        lower(&search, PROJECT).expect("plain search"),
+        Request::Search { declarations_only: false, .. }
+    ));
+    search.raise("declarations-only");
+    assert!(matches!(
+        lower(&search, PROJECT).expect("declarations-only search"),
+        Request::Search { declarations_only: true, .. }
+    ));
+    // The MCP spelling reaches the same flag.
+    let grammar = grammar_for("search").expect("search grammar");
+    let json = serde_json::json!({"query": "request", "declarations_only": true});
+    let invocation = Invocation::from_json(grammar, json.as_object().expect("arguments"))
+        .expect("declarations_only is an accepted MCP argument");
+    assert!(matches!(
+        lower(&invocation, PROJECT).expect("lowers"),
+        Request::Search { declarations_only: true, .. }
+    ));
+
+    let mut outline = Invocation::new(grammar_for("outline").expect("outline grammar"));
+    assert!(matches!(lower(&outline, PROJECT).expect("bare outline"), Request::Outline(_)));
+    outline.set("exclude-kind", "variable");
+    let Request::OutlinePage { kinds, .. } = lower(&outline, PROJECT).expect("filtered outline") else {
+        panic!("a kind filter selects the bounded outline page");
+    };
+    assert!(!kinds.is_empty());
+    outline.set("kind", "klass");
+    assert_eq!(
+        lower(&outline, PROJECT).expect_err("unknown kind").slug(),
+        FaultSlug::Usage
+    );
+}
+
+#[test]
+fn selected_symbol_ids_and_site_symbols_are_hex_and_old_arrays_still_read() {
+    // Every row identity carried a 32-integer array.
+    let id = backend_library::SelectedSymbolId::new([0xab; 32]).expect("nonzero");
+    let encoded = serde_json::to_value(IdentitySemanticData::SelectedSymbolId(id)).expect("encode");
+    assert_eq!(
+        encoded,
+        serde_json::json!({"kind":"selected-symbol-id","value":"ab".repeat(32)})
+    );
+    assert!(serde_json::to_vec(&encoded).expect("bytes").len() < 110);
+    for spelling in [
+        encoded.clone(),
+        serde_json::json!({"kind":"selected-symbol-id","value":vec![0xab_u8; 32]}),
+    ] {
+        let decoded: IdentitySemanticData = serde_json::from_value(spelling).expect("both spellings read");
+        let IdentitySemanticData::SelectedSymbolId(decoded) = decoded;
+        assert_eq!(decoded.bytes(), id.bytes());
+    }
+    assert!(serde_json::from_value::<IdentitySemanticData>(
+        serde_json::json!({"kind":"selected-symbol-id","value":"00".repeat(32)})
+    )
+    .is_err(), "an all-zero id is refused in either spelling");
+
+    let record = ProductRecordDto {
+        site_symbol: Some([0x5a; 32]),
+        ..serde_json::from_value(serde_json::json!({"title":"t","tags":[]})).expect("sparse record")
+    };
+    let value = serde_json::to_value(&record).expect("encode");
+    assert_eq!(value["site_symbol"], serde_json::json!("5a".repeat(32)));
+    let again: ProductRecordDto = serde_json::from_value(value).expect("hex site symbol decodes");
+    assert_eq!(again.site_symbol, Some([0x5a; 32]));
+    let legacy: ProductRecordDto = serde_json::from_value(
+        serde_json::json!({"title":"t","tags":[],"site_symbol":vec![0x5a_u8; 32]}),
+    )
+    .expect("array site symbol decodes");
+    assert_eq!(legacy.site_symbol, Some([0x5a; 32]));
 }

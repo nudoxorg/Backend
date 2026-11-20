@@ -784,6 +784,9 @@ pub fn parse_pypi_project_metadata(
         } else {
             DiscoveryFacet::Unknown
         };
+        if is_latest && latest_advisories.is_some() {
+            metadata.advisory_release_scope = Some(version.to_owned());
+        }
         metadata.downloads = DiscoveryFacet::Absent;
         metadata.admit()?;
         let proof = hash_typed_json(files)?;
@@ -2645,6 +2648,7 @@ mod tests {
         assert_eq!(old.standing, DiscoveryStanding::Yanked);
         assert_eq!(old.source_event_time, None);
         assert_eq!(old.metadata.advisories, DiscoveryFacet::Unknown);
+        assert_eq!(old.metadata.advisory_release_scope, None);
         assert_eq!(
             old.metadata.published_at,
             DiscoveryFacet::Known("2025-01-01T00:00:00Z".to_owned())
@@ -2655,6 +2659,10 @@ mod tests {
             .find(|release| release.coordinate.as_str() == "pkg:pypi/my-pkg@2.0")
             .expect("latest release");
         assert_eq!(latest.standing, DiscoveryStanding::Published);
+        assert_eq!(
+            latest.metadata.advisory_release_scope.as_deref(),
+            Some("2.0")
+        );
         assert_eq!(latest.source_event_time, None);
         assert_eq!(
             latest.metadata.description,

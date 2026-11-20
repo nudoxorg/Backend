@@ -1602,7 +1602,7 @@ impl<'work> ParserStateCore<'work> {
         let node = match self.token() {
             SyntaxKind::FunctionKeyword => {
                 let modifiers = Some(Self::make_node_list(vec![declare_modifier]));
-                self.parse_function_declaration_with_async(false, modifiers)
+                self.parse_function_declaration_with_async(None, modifiers)
             }
             SyntaxKind::ClassKeyword => self.parse_declare_class(start_pos, declare_modifier),
             SyntaxKind::AbstractKeyword => {
@@ -1776,7 +1776,7 @@ impl<'work> ParserStateCore<'work> {
                         node
                     }
                     SyntaxKind::FunctionKeyword => {
-                        self.parse_function_declaration_with_async(false, Some(modifiers))
+                        self.parse_function_declaration_with_async(None, Some(modifiers))
                     }
                     SyntaxKind::ClassKeyword => {
                         self.parse_declare_class(start_pos, declare_modifier)
@@ -1955,9 +1955,10 @@ impl<'work> ParserStateCore<'work> {
                     );
                 }
                 // Pass the declare modifier to the function
+                let async_start = self.token_pos();
                 self.parse_expected(SyntaxKind::AsyncKeyword);
                 let modifiers = Some(Self::make_node_list(vec![declare_modifier]));
-                self.parse_function_declaration_with_async(true, modifiers)
+                self.parse_function_declaration_with_async(Some(async_start), modifiers)
             }
             _ => {
                 self.error_declaration_expected();

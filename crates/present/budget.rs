@@ -128,6 +128,56 @@ pub fn oversized_fault(error: BudgetExceeded) -> Fault {
     )
 }
 
+/// Which of a tool's own arguments could make a refused response fit.
+///
+/// The generic refusal cannot know what the tool accepts, so the caller that
+/// does know names only those arguments.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OversizeAdvice {
+    limit: bool,
+    summary: bool,
+}
+
+impl OversizeAdvice {
+    /// The advice that applies to `tool` when it answered at `detail`.
+    #[must_use]
+    pub fn for_tool(tool: &str, detail: Detail) -> Self {
+        Self {
+            limit: crate::grammar_for_tool(tool)
+                .is_some_and(|grammar| grammar.options().iter().any(|option| option.name() == "limit")),
+            summary: detail != Detail::Summary,
+        }
+    }
+
+    const fn sentence(self) -> &'static str {
+        match (self.limit, self.summary) {
+            (true, true) => "; lower `limit` or request detail=summary",
+            (true, false) => "; lower `limit`",
+            (false, true) => "; request detail=summary",
+            (false, false) => "",
+        }
+    }
+}
+
+/// Like [`oversized_fault`], advising only arguments the tool has.
+#[must_use]
+pub fn oversized_fault_advising(error: BudgetExceeded, advice: OversizeAdvice) -> Fault {
+    Fault::new(
+        FaultSlug::Transport,
+        Operand::Argument("response".to_owned()),
+        Cause::new(
+            CauseSlug::Oversized,
+            format!(
+                "response is {} bytes, above the {} byte budget{}",
+                error.bytes,
+                error.budget,
+                advice.sentence()
+            ),
+        ),
+        Affordance::None,
+    )
+}
+
 /// Estimates tokens from bytes using the fixed repository ratio.
 #[must_use]
 pub const fn estimate_tokens(bytes: usize) -> usize {
@@ -250,10 +300,17 @@ pub fn encode_answer_with_call(
                     records: SummaryRecords(list.records()),
                     more: list.has_more(),
                     empty_reason: list.empty_reason(),
+                    graph_gap: list.graph_gap(),
+                    graph_center: list.graph_center(),
+                    graph_edges: list.graph_edges(),
+                    related_edges: list.related_edges(),
+                    related_evidence_withheld: list.related_withheld(),
+                    graph_source_policies: list.graph_source_policies(),
                     semantic_search: list.coverage().semantic_search_status(),
                     search_scope: list.coverage().published_names().map(|_| "published_names_only"),
                     full_search: list.coverage().published_names().map(|readiness| readiness.full_search),
                     semantic_preparation: list.coverage().published_names().map(|readiness| readiness.semantic),
+                    hidden_non_declarations: list.hidden_non_declarations(),
                 },
                 budget,
                 continuation_call,
@@ -270,6 +327,8 @@ pub fn encode_answer_with_call(
                             rows: project.rows,
                             declarations: project.declarations,
                             partial_lanes: project.partial_lanes,
+                            languages: project.languages,
+                            source_profiles: project.source_profiles,
                             fault: project.fault,
                         }
                     })
@@ -302,6 +361,8 @@ pub fn encode_answer_with_call(
                         declarations: outline.declarations,
                         unnamed: outline.unnamed,
                         page: outline.page,
+                        filtered_out: outline.filtered_out,
+                        locals_hidden: outline.locals_hidden,
                     },
                     budget,
                     continuation_call,
@@ -314,7 +375,9 @@ pub fn encode_answer_with_call(
                     detail,
                     next_cursor,
                     SummaryStatusDto {
+                        sql_analysis: status.sql_analysis,
                         source_selection: status.source_selection,
+                        source_selection_scope: status.source_selection_scope,
                         availability: status.availability,
                         publication: status.publication,
                         readiness: status.readiness,
@@ -341,6 +404,8 @@ pub fn encode_answer_with_call(
                         records: product.records,
                         note: product.note,
                         fault: product.fault,
+                        partial_publication_warning: product.partial_publication_warning,
+                        declaration_source_range: product.declaration_source_range,
                         index_search_page: product.index_search_page,
                         index_job: product.index_job,
                         index_operation: product.index_operation,
@@ -352,6 +417,7 @@ pub fn encode_answer_with_call(
                         semantic_data: product.semantic_data,
                         semantic_versions_summary: product.semantic_versions_summary,
                         package_discovery: product.package_discovery,
+                        references_page: product.references_page,
                     },
                     budget,
                     continuation_call,
@@ -360,14 +426,20 @@ pub fn encode_answer_with_call(
         };
     }
     match answer {
-        Answer::Page(page) => encode_typed_with_call(
-            answer.kind(),
-            detail,
-            next_cursor,
-            PageDto::from_projection(&PageProjection::new(page, detail)),
-            budget,
-            continuation_call,
-        ),
+        Answer::Page(page) => {
+            let mut projection = PageDto::from_projection(&PageProjection::new(page, detail));
+            if detail == Detail::Standard {
+                projection.tokens.clear();
+            }
+            encode_typed_with_call(
+                answer.kind(),
+                detail,
+                next_cursor,
+                projection,
+                budget,
+                continuation_call,
+            )
+        }
         Answer::Records(list) => encode_typed_with_call(
             answer.kind(),
             detail,
@@ -637,6 +709,8 @@ struct SummaryPageDto<'a> {
     signature: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     source_fault: Option<FaultDto>,
+    #[serde(skip_serializing_if = "backend_library::SourcePolicyQualification::is_unknown")]
+    source_policy: &'a backend_library::SourcePolicyQualification,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     notes: Vec<FaultDto>,
 }
@@ -650,6 +724,7 @@ impl<'a> SummaryPageDto<'a> {
             language: page.language().name(),
             signature: page.signature().map(crate::signature::Signature::text),
             source_fault: page.source_fault().map(FaultDto::new),
+            source_policy: page.source_policy(),
             notes: page.notes().iter().map(FaultDto::new).collect(),
         }
     }
@@ -744,6 +819,18 @@ struct SummaryRecordsDto<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     empty_reason: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    graph_gap: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    graph_center: Option<backend_library::GraphNodeId>,
+    #[serde(skip_serializing_if = "<[backend_library::RichGraphEdge]>::is_empty")]
+    graph_edges: &'a [backend_library::RichGraphEdge],
+    #[serde(skip_serializing_if = "<[crate::RelatedEdge]>::is_empty")]
+    related_edges: &'a [crate::RelatedEdge],
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    related_evidence_withheld: bool,
+    #[serde(skip_serializing_if = "<[crate::GraphSourcePolicy]>::is_empty")]
+    graph_source_policies: &'a [crate::GraphSourcePolicy],
+    #[serde(skip_serializing_if = "Option::is_none")]
     semantic_search: Option<backend_library::SemanticSearchStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     search_scope: Option<&'static str>,
@@ -751,6 +838,12 @@ struct SummaryRecordsDto<'a> {
     full_search: Option<backend_library::FullSearchReadiness>,
     #[serde(skip_serializing_if = "Option::is_none")]
     semantic_preparation: Option<backend_library::PublishedSemanticReadiness>,
+    #[serde(skip_serializing_if = "is_zero")]
+    hidden_non_declarations: usize,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 #[derive(Serialize)]
@@ -762,6 +855,10 @@ struct SummaryShelfEntryDto {
     declarations: Option<u64>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     partial_lanes: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    languages: Vec<crate::dto::LanguageCountDto>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    source_profiles: Vec<crate::dto::SourceProfileDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fault: Option<FaultDto>,
 }
@@ -785,12 +882,20 @@ struct SummaryOutlineDto {
     unnamed: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     page: Option<crate::dto::OutlinePageDto>,
+    #[serde(skip_serializing_if = "is_zero")]
+    filtered_out: usize,
+    #[serde(skip_serializing_if = "is_zero")]
+    locals_hidden: usize,
 }
 
 #[derive(Serialize)]
 struct SummaryStatusDto {
     #[serde(skip_serializing_if = "Option::is_none")]
+    sql_analysis: Option<backend_library::SqlAnalysisProgress>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     source_selection: Option<backend_library::SourceSelectionObservation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_selection_scope: Option<backend_library::SourceSelectionScopeCoverage>,
     availability: String,
     publication: String,
     readiness: String,
@@ -814,6 +919,10 @@ struct SummaryProductDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     fault: Option<FaultDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    partial_publication_warning: Option<crate::PartialPublicationWarning>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    declaration_source_range: Option<crate::DeclarationSourceRange>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     index_search_page: Option<ProductIndexSearchPageDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
     index_job: Option<crate::product::IndexJobProjection>,
@@ -835,6 +944,8 @@ struct SummaryProductDto {
     package_discovery: Option<crate::product::PackageDiscoveryProjection>,
     #[serde(skip_serializing_if = "Option::is_none")]
     package_graph_page: Option<backend_library::PackageGraphPage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    references_page: Option<crate::ReferencePageInfo>,
 }
 
 /// Native graph rows have only readable identities; all canonical fields
@@ -1466,8 +1577,8 @@ mod tests {
         let worst_answer = Answer::Records(Box::new(worst.clone()));
         let worst = encode_answer(&worst_answer, Detail::Full, None, 256 * 1024)
             .expect("worst typed page fits hard cap");
-        assert_eq!(worst.bytes.len(), 134_052);
-        assert_eq!(worst.budget.estimated_tokens, 33_513);
+        assert_eq!(worst.bytes.len(), 124_225);
+        assert_eq!(worst.budget.estimated_tokens, 31_057);
         assert_eq!(
             worst.bytes.as_ref(),
             include_bytes!("fixtures/worst-200-full-records-selected-id.json")
@@ -1500,7 +1611,7 @@ mod tests {
                 selected,
                 serde_json::json!({
                     "kind": "selected-symbol-id",
-                    "value": backend_library::symbol_key(&format!("typed-budget-{index}")).to_bytes(),
+                    "value": backend_library::encode_id(&backend_library::symbol_key(&format!("typed-budget-{index}")).to_bytes()),
                 })
             );
         }
@@ -1512,7 +1623,7 @@ mod tests {
         let refused = encode_answer(&worst_answer, Detail::Full, None, 48 * 1024)
             .expect_err("an oversized complete page is refused before allocation");
         assert_eq!(refused.budget, 48 * 1024);
-        assert_eq!(refused.bytes, 134_052);
+        assert_eq!(refused.bytes, 124_225);
     }
 
     #[test]
@@ -1801,7 +1912,7 @@ mod tests {
                         .expect("typed worst fixture fits"),
                 );
             });
-            assert_eq!(result.expect("encoded result").bytes.len(), 134_052);
+            assert_eq!(result.expect("encoded result").bytes.len(), 124_225);
             timings.push(start.elapsed().as_nanos());
             allocations.push(info.bytes_total);
         }

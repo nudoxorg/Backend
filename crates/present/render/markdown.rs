@@ -32,6 +32,8 @@ use crate::shelf::Shelf;
 use crate::status::Status;
 use crate::{Detail, MAX_PREVIEW_TEXT_BYTES, PageProjection, bounded_text};
 
+const GRAPH_POLICY_PREVIEW_NOTE: &str = "Graph edges and per-result claims: see structuredContent.graph_edges and graph_source_policies; effective ignore-policy stability unknown where claimed.";
+
 /// Renders one `~lanes` coverage statement.
 #[must_use]
 pub fn coverage(line: CoverageLine) -> String {
@@ -109,6 +111,12 @@ pub fn summary_with_cursor(
     if list.is_empty() {
         let mut lines = Lines::new();
         lines.push(coverage(list.coverage()));
+        if let Some(gap) = list.graph_gap() {
+            lines.push(format!("graph relations incomplete: {gap}"));
+        }
+        if !list.graph_source_policies().is_empty() || !list.graph_edges().is_empty() {
+            lines.push(GRAPH_POLICY_PREVIEW_NOTE);
+        }
         lines.push(list.empty_explanation());
         if let Some(note) = summary_continuation(list, cursor, target) {
             lines.push(note);
@@ -116,7 +124,23 @@ pub fn summary_with_cursor(
         return bounded_text(&lines.finish());
     }
 
-    let coverage_line = coverage(list.coverage());
+    let mut coverage_line = list.graph_gap().map_or_else(
+        || coverage(list.coverage()),
+        |gap| {
+            format!(
+                "{}\ngraph relations incomplete: {}",
+                coverage(list.coverage()),
+                gap.chars()
+                    .take(400)
+                    .collect::<String>()
+                    .replace(['\n', '\r'], " ")
+            )
+        },
+    );
+    if !list.graph_source_policies().is_empty() || !list.graph_edges().is_empty() {
+        coverage_line.push('\n');
+        coverage_line.push_str(GRAPH_POLICY_PREVIEW_NOTE);
+    }
     let total = list.records().len();
     let mut footer = summary_continuation(list, cursor, target);
     // Reserve the longest possible count line before adding records. Both
@@ -132,7 +156,7 @@ pub fn summary_with_cursor(
         line.len().saturating_add(1) > MAX_PREVIEW_TEXT_BYTES.saturating_sub(heading_bytes)
     }) {
         footer = if list.has_more()
-            && (list.continuation().is_some()
+            && ((list.continuation().is_some() || list.related_continuation().is_some())
                 || (cursor.is_some() && matches!(target, ContinuationTarget::McpInvocation(_))))
         {
             Some(match target {
@@ -245,7 +269,21 @@ impl<'a> RecordPreviewText<'a> {
         if !coverage.starts_with('~') || text.len() > MAX_PREVIEW_TEXT_BYTES {
             return None;
         }
-        let header = &text[..coverage.len() + 1];
+        let mut header_len = coverage.len() + 1;
+        if rest.starts_with("graph relations incomplete: ") {
+            let (gap, remaining) = rest.split_once('\n')?;
+            header_len += gap.len() + 1;
+            rest = remaining;
+        }
+        if rest.starts_with(GRAPH_POLICY_PREVIEW_NOTE) {
+            let (note, remaining) = rest.split_once('\n')?;
+            if note != GRAPH_POLICY_PREVIEW_NOTE {
+                return None;
+            }
+            header_len += note.len() + 1;
+            rest = remaining;
+        }
+        let header = &text[..header_len];
         let mut rows = Vec::new();
         while rest.starts_with("• ") {
             // Work and borrowed row indexes are bounded by the shared preview
@@ -323,7 +361,7 @@ fn summary_continuation(
     // A caller can supply the exact executable surface cursor separately
     // from the native page value. Rendering it never admits native authority.
     if list.has_more()
-        && (list.continuation().is_some()
+        && ((list.continuation().is_some() || list.related_continuation().is_some())
             || (cursor.is_some() && matches!(target, ContinuationTarget::McpInvocation(_))))
     {
         Some(cursor.map_or_else(
@@ -535,6 +573,13 @@ pub fn page_projection(page: &PageProjection<'_>) -> String {
         lines.blank();
         lines.push(fault(reason));
     }
+    if !page.source_policy().is_unknown() {
+        lines.blank();
+        lines.push(
+            "Unverified captured-source claim; effective ignore-policy stability unknown."
+                .to_owned(),
+        );
+    }
     push_notes(&mut lines, page.notes());
     if let Some(window) = page.section_page() {
         lines.blank();
@@ -670,25 +715,46 @@ fn records_with_cursor(
 ) -> String {
     let mut lines = Lines::new();
     lines.push(coverage(list.coverage()));
-    let cursor_note = if list.has_more() && list.continuation().is_some() {
+    if list.hidden_non_declarations() > 0 {
+        lines.push(format!("{} import/external row(s) on this page left out by declarations_only", list.hidden_non_declarations()));
+    }
+    if let Some(gap) = list.graph_gap() {
+        lines.push(format!("graph relations incomplete: {gap}"));
+    }
+    if !list.graph_source_policies().is_empty() || list.graph_edges().iter().any(|edge| !edge.source_policy.is_unknown()) {
+        lines.push("Unverified captured-source claims; effective ignore-policy stability unknown.".to_owned());
+    }
+    for edge in list.related_edges() {
+        lines.push(format!("related {} -> {}; relation {:?}; confidence {:?}", edge.from, edge.to, edge.relation, edge.confidence));
+    }
+    let cursor_note = if list.has_more() && (list.continuation().is_some() || list.related_continuation().is_some()) {
         cursor.map(|cursor| continuation_note(target, cursor))
     } else {
         None
     };
     if let Some(note) = &cursor_note {
         lines.push(note);
-    } else if list.has_more() && list.continuation().is_some() {
+    } else if list.has_more() && (list.continuation().is_some() || list.related_continuation().is_some()) {
         lines.push("… more rows; this rendering does not include the continuation token");
     }
-    if list.has_more() && list.continuation().is_none() {
+    if list.has_more() && (list.continuation().is_none() && list.related_continuation().is_none()) {
         lines.push("… more rows at this revision; raise `limit` to see them");
     }
     if list.is_empty() {
         lines.push(list.empty_explanation());
-        return lines.finish();
     }
     for record in list.records() {
         push_record(&mut lines, record, within);
+    }
+    for edge in list.graph_edges().iter().filter(|_| list.related_edges().is_empty()) {
+        lines.push(format!(
+            "graph edge {} -> {}; relation {:?}; confidence {:?}; availability {:?}",
+            list.graph_label(edge.from),
+            list.graph_label(edge.to),
+            edge.kind,
+            edge.provenance.confidence,
+            edge.availability,
+        ));
     }
     lines.finish()
 }
@@ -744,6 +810,9 @@ pub fn shelf(shelf: &Shelf) -> String {
                 language.declarations().get()
             );
         }
+        for profile in entry.profiles() {
+            let _ = write!(head, " · {}", profile.phrase());
+        }
         lines.push(head);
         lines.push(format!("`{}`", entry.identity().coordinate()));
         if let Some(reason) = entry.readiness().fault() {
@@ -781,8 +850,19 @@ pub fn outline(tree: &OutlineTree) -> String {
         tree.count(),
         tree.truncation().name()
     );
+    summary.push_str(" (outline pagination only; analysis coverage is not certified)");
     if tree.unresolved() > 0 {
         let _ = write!(summary, " · {} unnamed", tree.unresolved());
+    }
+    if tree.filtered_out() > 0 {
+        let _ = write!(summary, " · {} left out by the kind filter", tree.filtered_out());
+    }
+    if tree.locals_hidden() > 0 {
+        let _ = write!(
+            summary,
+            " · {} anonymous or function-local left out (omit top_level to list them)",
+            tree.locals_hidden()
+        );
     }
     lines.push(summary);
     if let Some(page) = tree.page().filter(|page| page.continuation.is_some()) {
@@ -817,7 +897,7 @@ fn push_outline_entry(
 pub fn status(status: &Status) -> String {
     let mut lines = Lines::new();
     lines.push(format!(
-        "owner {} · publication {} · lanes {} · {} row(s) · revision {} · source {} · sequence {}",
+        "owner {} · publication {} · lanes {} · {} row(s) · revision {} · store layout {} · sequence {}",
         status.availability(),
         status.publication_state().name(),
         status.readiness(),
@@ -835,7 +915,12 @@ pub fn status(status: &Status) -> String {
         lines.push("Observed failed compiler attempt (served coverage above is unchanged):");
         lines.push(fault(cause));
     }
-    if let Some(observation) = status.source_selection() {
+    if let Some(sql) = status.sql_analysis() {
+        lines.push(sql.render());
+    }
+    if let Some(scope) = status.source_selection_scope() {
+        lines.push(scope.render());
+    } else if let Some(observation) = status.source_selection() {
         lines.push(observation.render());
     }
     lines.finish()
@@ -858,6 +943,25 @@ fn product_projection(
     detail: Option<Detail>,
     target: Option<ContinuationTarget<'_>>,
 ) -> String {
+    if let Some(range) = view.declaration_source_range() {
+        let mut output = range.source.text.clone();
+        output.push_str("\n\n");
+        output.push_str(range.source.scope.description());
+        output.push_str("\n\n");
+        output.push_str(match (range.source.source_policy.is_unknown(), range.verified_at_read) {
+            (false, true) => "Source bytes match the indexed capture; unverified policy claim; ignore-policy stability unknown.",
+            (false, false) => "Unverified captured-source claim; ignore-policy stability unknown.",
+            (true, true) => "Source bytes match the indexed capture; effective ignore-policy stability is not established.",
+            (true, false) => "Effective ignore-policy stability is not established.",
+        });
+        if let Some(cursor) = &range.next_cursor {
+            output.push_str(
+                "\n\nMore source: repeat this source --byte-range command with --cursor ",
+            );
+            output.push_str(cursor);
+        }
+        return output;
+    }
     let mut lines = Lines::new();
     lines.push(format!("# {}", view.heading()));
     if detail == Some(Detail::Summary)
@@ -870,6 +974,12 @@ fn product_projection(
             "For native source references, request --detail full (fresh discovery).".to_owned(),
         );
     }
+    if let Some(warning) = view.partial_publication_warning() {
+        lines.push(format!("Warning: {}", warning.detail));
+        if let Some(call) = &warning.call {
+            lines.push(format!("→ `{}`", tool_call_text(call)));
+        }
+    }
     if let Some(reason) = view.fault() {
         lines.push(fault(reason));
         if view.records().is_empty() {
@@ -877,9 +987,12 @@ fn product_projection(
             return lines.finish();
         }
     }
-    if let Some(note) = view.note() {
-        lines.push(note);
+    if let Some(note) = view.note_for(detail) {
+        lines.push(note.into_owned());
         if view.records().is_empty() {
+            if view.is_references_result() {
+                lines.push("no reference records captured at this revision".to_owned());
+            }
             semantic_source_footer(view, &mut lines, target);
             index_search_page_footer(view, &mut lines, target);
             index_job_footer(view, detail, &mut lines);
@@ -907,10 +1020,13 @@ fn product_projection(
     let mut shown_coverage_continuation = false;
     for record in readable_records.as_ref() {
         let mut head = record.title().to_owned();
-        if !record.tags().is_empty() {
-            let _ = write!(head, "  ·  {}", record.tags().join(" · "));
+        if !record.tags_for(detail).is_empty() {
+            let _ = write!(head, "  ·  {}", record.tags_for(detail).join(" · "));
         }
         lines.push(head);
+        if let Some(note) = crate::product::source_policy_note(record.source_policy()) {
+            lines.push(format!("  {note}"));
+        }
         if let Some(operand) = record.operand() {
             let repeated_coverage_continuation = coverage_continuation
                 .as_deref()
@@ -942,10 +1058,18 @@ fn product_projection(
         lines.push(format!("Continue: `{command}`"));
     }
     if matches!(target, None | Some(ContinuationTarget::CliOption))
-        && let Some(command) = view.semantic_versions_cli_continuation(detail.unwrap_or(Detail::Standard)) {
+        && let Some(command) =
+            view.semantic_versions_cli_continuation(detail.unwrap_or(Detail::Standard))
+    {
         lines.push(format!("Continue: `{command}`"));
     }
     index_search_page_footer(view, &mut lines, target);
+    if let Some(cursor) = view.reference_cursor() {
+        lines.push(continuation_note(
+            target.unwrap_or(ContinuationTarget::CliOption),
+            cursor.token(),
+        ));
+    }
     index_job_footer(view, detail, &mut lines);
     lines.finish()
 }

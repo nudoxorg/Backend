@@ -59,7 +59,7 @@ impl HttpForgeTransport {
     }
 
     fn get(&self, url: &str, maximum: usize) -> Result<Vec<u8>, ForgeTransportError> {
-        let mut request = self.agent.get(url).header("accept-encoding", "identity");
+        let mut request = self.agent.get(url).header("accept-encoding", "identity").header("user-agent", "Nudox-Code-Intelligence");
         if let Some(token) = &self.token {
             request = request.header("authorization", &format!("Bearer {}", token.0));
         }
@@ -74,7 +74,7 @@ impl HttpForgeTransport {
             return Err(ForgeTransportError::RetryAfter(1_000));
         }
         if !(200..300).contains(&status) {
-            return Err(ForgeTransportError::Protocol);
+            return Err(ForgeTransportError::HttpStatus(status));
         }
         let mut bytes = Vec::new();
         response
@@ -90,7 +90,7 @@ impl HttpForgeTransport {
     }
 
     fn get_reader(&self, url: &str) -> Result<Box<dyn Read>, ForgeTransportError> {
-        let mut request = self.agent.get(url).header("accept-encoding", "identity");
+        let mut request = self.agent.get(url).header("accept-encoding", "identity").header("user-agent", "Nudox-Code-Intelligence");
         if let Some(token) = &self.token {
             request = request.header("authorization", &format!("Bearer {}", token.0));
         }
@@ -105,7 +105,7 @@ impl HttpForgeTransport {
             return Err(ForgeTransportError::RetryAfter(1_000));
         }
         if !(200..300).contains(&status) {
-            return Err(ForgeTransportError::Protocol);
+            return Err(ForgeTransportError::HttpStatus(status));
         }
         Ok(Box::new(response.into_body().into_reader()))
     }
@@ -276,4 +276,37 @@ fn host_root(url: &str) -> &str {
     };
     rest.find('/')
         .map_or(url, |slash| &url[..scheme.len() + 3 + slash])
+}
+
+#[cfg(test)]
+mod request_tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    fn provider_requests_identify_client_and_keep_http_status() {
+        for status in [200, 301, 401, 403, 503] {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+            let address = listener.local_addr().unwrap();
+            let worker = std::thread::spawn(move || {
+                use std::io::Write as _;
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                    assert!(request.len() < 16 * 1024);
+                }
+                write!(stream, "HTTP/1.1 {status} Test\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}").unwrap();
+                String::from_utf8(request).unwrap().to_ascii_lowercase()
+            });
+            let transport = HttpForgeTransport::new(ForgeAcquisitionLimits::default(), None).unwrap();
+            let result = transport.get(&format!("http://{address}/fixture"), 1024);
+            if status == 200 { assert_eq!(result.unwrap(), b"{}"); }
+            else { assert_eq!(result.unwrap_err(), ForgeTransportError::HttpStatus(status)); }
+            assert!(worker.join().unwrap().contains("user-agent: nudox-code-intelligence\r\n"));
+        }
+    }
 }

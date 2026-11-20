@@ -137,6 +137,18 @@ impl Writer {
     }
 }
 
+/// Prepares this build's writer identity for a test and fails with the reason
+/// when it cannot be had: the fingerprint refuses an executable over 512 MiB, and
+/// an unstripped debug test binary is larger than that.
+#[cfg(test)]
+pub(crate) fn prepare_writer_for_tests() {
+    Writer::prepare_this_build();
+    assert!(
+        Writer::this_build().executable.is_some(),
+        "the running test executable could not be fingerprinted (it is refused above 512 MiB; strip -S -x the test binary)"
+    );
+}
+
 fn fingerprint_running_executable(anchor: fn()) -> io::Result<Digest> {
     let mut executable = backend_platform::executable_identity::open_running_executable(anchor)?;
     executable.with_verified_read(fingerprint_file)

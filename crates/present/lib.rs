@@ -72,6 +72,8 @@ mod outline;
 #[cfg(test)]
 mod owner_recovery_tests;
 mod package_graph;
+#[cfg(test)]
+mod package_summary_tests;
 mod page;
 mod document_sections;
 pub use document_sections::{DocumentContinuation, DocumentSectionPage};
@@ -87,12 +89,17 @@ mod readiness_agreement_tests;
 #[cfg(test)]
 mod readiness_tests;
 mod record;
+mod reference_page;
 mod render;
 mod sections;
 mod shelf;
 mod shell;
 mod signature;
 mod source_membership;
+#[cfg(test)]
+mod source_scope_tests;
+#[cfg(test)]
+mod source_policy_projection_tests;
 mod startup_recovery;
 mod status;
 mod token_count;
@@ -115,7 +122,7 @@ pub use budget::{
     BudgetExceeded, DEFAULT_RESPONSE_BUDGET_BYTES, DEFAULT_RESPONSE_TOKEN_BUDGET, Detail,
     ESTIMATED_BYTES_PER_TOKEN, EncodedPayload, MAX_PREVIEW_TEXT_BYTES, MAX_RESPONSE_BUDGET_BYTES,
     PayloadBudget, bounded_text, encode_answer, encode_answer_with_call, encode_package_graph_json,
-    encode_serializable, encode_value, estimate_tokens, oversized_fault,
+    encode_serializable, encode_value, estimate_tokens, oversized_fault, oversized_fault_advising, OversizeAdvice,
 };
 pub use call::{
     DEFAULT_LIMIT, Invocation, Request, SURFACE_VERB, declaration_selector,
@@ -127,7 +134,7 @@ pub use coverage::{
 };
 pub use drive::{
     Answer, ContinuationCursor, Engine, Probe, answer, answer_paged, catalog_page_answer,
-    probe_fault, resolve_declaration,
+    graph_page_records, related_edge_records, probe_fault, resolve_declaration,
 };
 pub use dto::{
     CapabilitiesDto, CompilerToolRequirementDto, CoverageDto, FaultDto, IdentityDto,
@@ -149,27 +156,29 @@ pub use identity::{
 };
 pub use language::Language;
 pub use mcp_invocation::{MCP_REGISTERED_CALL_TOOL, McpExecutableCall, McpExposure, McpInvocation};
-pub use outline::{OutlineEntry, OutlineTree, row_resolver};
+pub use outline::{KindFilter, OutlineEntry, OutlineTree, row_resolver};
 pub use package_graph::{PackageGraphPageSelection, package_graph_json_alternative};
 pub use page::{
     Member, MemberGroup, Page, Prose, Relation, RelationGroup, Source, SourceLine, SourceSite,
     Truncation,
 };
 pub use product::{
-    CursorProjection, CursorTarget, IndexJobProjection, IndexSearchPageInfo, ProductRecord,
-    ProductSemanticData, ProductSemanticHistoryProofSummary, ProductSemanticHistoryStatus,
-    ProductView, index_profile_progress_text, index_stage_name, package_graph_markdown,
+    CursorProjection, CursorTarget, DeclarationSourceRange, IndexJobProjection, IndexSearchPageInfo,
+    PartialPublicationWarning, ProductRecord, ProductSemanticData, ProductSemanticHistoryProofSummary, ReferenceDetails,
+    ProductSemanticHistoryStatus,
+    ProductView, ReferencePageInfo, index_profile_progress_text, index_stage_name, package_graph_markdown,
     product_view, product_view_for_command, product_view_for_owned_command,
 };
+pub use reference_page::is_reference_cursor;
 pub use projection::{PageProjection, PageSection};
 pub use readiness::{PublishedFacts, ReadinessState};
-pub use record::{Record, RecordList, RecordState, Score};
+pub use record::{GraphSourcePolicy, Record, RecordList, RecordState, RelatedEdge, Score};
 pub use render::{
     Colour, ContinuationTarget, Style, Theme, Width, continuation_note, display_width, markdown,
     text,
 };
 pub use sections::{LineRole, SectionKind, SectionReader};
-pub use shelf::{LanguageCount, Readiness, RowCount, Shelf, ShelfEntry};
+pub use shelf::{LanguageCount, ProfileFiles, ProfileSemantic, Readiness, RowCount, Shelf, ShelfEntry};
 pub use signature::{Resolved, Signature, Target, Token, TokenKind};
 pub use source_membership::PackageSourceMembershipSelection;
 pub use status::{

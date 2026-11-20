@@ -18,6 +18,7 @@ pub(crate) mod hand;
 pub(crate) mod indexed_world;
 pub(crate) mod graph_focus;
 pub(crate) mod liveness;
+pub(crate) mod native_reads;
 pub mod mailbox;
 pub mod mapping;
 pub(crate) mod offload;
@@ -40,6 +41,8 @@ pub mod wiring;
 mod acquire_tests;
 #[cfg(test)]
 mod frame_tests;
+#[cfg(test)]
+mod source_journey_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

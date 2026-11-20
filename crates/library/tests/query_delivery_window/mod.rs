@@ -185,26 +185,19 @@ fn catalog_window_predecessor_span_credit_family_and_fixed_routes_are_checked_na
     );
     let fixed = PageRequest::new(library.revision_root(), selected.issued())
         .with_continuation(PageContinuation::from_cursor(next));
-    for page in [
-        fixed,
-        PageRequest::new(library.revision_root(), selected.issued())
-            .with_window(selected)
-            .expect("window"),
-    ] {
+    let windowed = PageRequest::new(library.revision_root(), selected.issued())
+        .with_window(selected)
+        .expect("window");
+    // The package page is a fixed route: typed admission and the library both
+    // refuse a catalog position and a window.
+    for page in [fixed, windowed] {
         assert!(library.packages_page(page).is_err());
-        assert!(library.outline_page(package_key("window"), page).is_err());
         assert!(admit_request(&CommandDto::new(1, Command::PackagePage(page))).is_err());
-        assert!(
-            admit_request(&CommandDto::new(
-                1,
-                Command::OutlinePage {
-                    package: package_key("window"),
-                    page
-                }
-            ))
-            .is_err()
-        );
     }
+    // The outline is a windowed route, because the owner rehydrates its own
+    // outline cursors through it, so typed admission leaves the position to the
+    // library, which never resumes an outline from a name-search position.
+    assert!(library.outline_page(package_key("window"), fixed).is_err());
 }
 
 #[test]

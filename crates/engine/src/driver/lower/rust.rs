@@ -493,6 +493,11 @@ enum TraitBoundTarget {
     Foreign,
     /// The written bound did not resolve to a trait definition at all.
     Unresolved,
+    /// A trait of this source with no lane row: declared by a macro
+    /// invocation (`declare_error_trait!`, which `serde_core` uses for its
+    /// `Error` trait) or in a function body. It is not external, and no
+    /// ordinal can name it.
+    LocalWithoutRow,
 }
 
 /// The two-pass Rust semantic emitter over one borrowed authority.
@@ -771,16 +776,24 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 .scoped_names
                 .insert((scope, declaration.kind as u8, key));
             if !admitted {
-                // A written implementation the HIR module-scope walk below
-                // can independently rediscover (unlike an ordinary named
-                // item, which that walk never re-enumerates once the
-                // written-syntax pass has cast it) must still be marked
-                // covered here, or the twin this gate just dropped comes
-                // back as a second, byte-identical admission and the image
-                // build honestly — but wrongly — rejects it as a
-                // `DuplicateDeclarationIdentity` collision with itself.
-                if let RustDefinition::Implementation(implementation) = &declaration.definition {
-                    self.covered_impls.push(*implementation);
+                // The HIR module-scope walk below can independently
+                // rediscover the definition of a twin this gate just dropped
+                // (an implementation, or a function behind an unevaluated
+                // `#[rustversion::...]` branch: both branches are HIR items).
+                // Mark it covered exactly as an admitted declaration is, or
+                // the twin comes back as a second, byte-identical admission
+                // and the image build honestly — but wrongly — rejects it as
+                // a `DuplicateDeclarationIdentity` collision with itself.
+                match &declaration.definition {
+                    RustDefinition::Field(field) => self.covered_fields.push(*field),
+                    RustDefinition::Implementation(implementation) => {
+                        self.covered_impls.push(*implementation);
+                    }
+                    other => {
+                        if let Some(definition) = module_def(other) {
+                            self.covered_defs.push(definition);
+                        }
+                    }
                 }
                 continue;
             }
@@ -1314,6 +1327,9 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                     spelling,
                 )))
             }
+            // An implementation of a local trait that no ordinal names would
+            // read as an implementation of a foreign one: an exact terminal.
+            TraitBoundTarget::LocalWithoutRow => Err(unsupported_generic()),
         }
     }
 
@@ -1392,6 +1408,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         }
         let mut parameter_ordinals = Vec::new();
         let mut signature_children = Vec::new();
+        let mut parameter_names: Vec<&'source [u8]> = Vec::new();
 
         if let Some(receiver) = function.self_param(self.database) {
             let semantic = receiver.ty(self.database);
@@ -1419,6 +1436,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             let lowered = self.lower_pending_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
             let ownership = parameter_ownership(self.database, &semantic);
             let wildcard = name == b"_";
+            parameter_names.push(name);
             let ordinal =
                 self.push_parameter(name, lowered, ownership, wildcard.then_some(position))?;
             parameter_ordinals.push(ordinal);
@@ -1431,16 +1449,21 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             .and_then(|item| item.ret_type())
             .and_then(|ret| ret.ty());
         let lowered = self.lower_pending_type(&returns, result_anchor.as_ref(), MAX_TYPE_DEPTH)?;
-        let mut fact = SemanticFact::new(
-            EntityKind::Parameter,
-            self.name_of(declaration)?,
-            LEAF_PRODUCT,
-        )
-        .with_visibility(self.declaration_visibility(declaration))
-        .typed(lowered.record)
-        .with_extension(EmissionExtension::Rust(
-            self.empty_extension(RustOwnership::Value)?,
-        ));
+        let function_name = self.name_of(declaration)?;
+        let mut fact = SemanticFact::new(EntityKind::Parameter, function_name, LEAF_PRODUCT)
+            .with_visibility(self.declaration_visibility(declaration))
+            .typed(lowered.record)
+            .with_extension(EmissionExtension::Rust(
+                self.empty_extension(RustOwnership::Value)?,
+            ));
+        // The result row carries the function's own name. A parameter spelled
+        // the same (`fn advice(self, advice: Affordance) -> Affordance`) with
+        // the result's type would mint a byte-identical sibling, so only that
+        // case gets a result discriminator; every other function keeps the
+        // identity it has always had.
+        if parameter_names.contains(&function_name) {
+            fact = fact.with_identity_discriminator(result_row_discriminator());
+        }
         for target in lowered.children {
             fact = fact.type_child(target, None, 0);
         }
@@ -2043,12 +2066,23 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             // A `where` predicate whose subject is not a declared parameter
             // (`Vec<T>: Clone`, `T::Item: Clone`, `Self: Sized`) lowers its
             // subject type and ordered bound into the free-predicate lane. A
-            // lifetime subject has no subject type row and stays an exact
-            // terminal rather than being erased.
-            let Some(ty) = where_bound.ty.clone() else {
-                return Err(unsupported_generic());
+            // lifetime subject (`'a: 'b` where `'a` belongs to an enclosing
+            // impl or trait) has no subject type row, so it keeps its exact
+            // written spelling as an honest `NoIrRepresentation` unknown, the
+            // same way every other subject without a declared-parameter row
+            // does, rather than being erased or refusing the whole file.
+            let subject = match where_bound.ty.clone() {
+                Some(ty) => self.free_subject_target(&ty)?,
+                None => self
+                    .host(
+                        Lowered::leaf(unknown_record(
+                            TypeReason::NoIrRepresentation,
+                            Some(where_bound.subject),
+                        )),
+                        None,
+                    )?
+                    .ok_or_else(admission)?,
             };
-            let subject = self.free_subject_target(&ty)?;
             let bound = self.staged_bound(&where_bound.bound)?;
             self.facts
                 .push_free_predicate(subject, &[bound])
@@ -2179,14 +2213,15 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         }
         // Every lane-admissible local trait is a reserved type root before any
         // bound resolves, so a local lookup failure means the trait has no
-        // lane row at all (e.g. declared in a function body). That cannot be
-        // downgraded to an external symbol, so it stays an exact terminal.
+        // lane row at all (declared by a macro invocation or in a function
+        // body). That cannot be downgraded to an external symbol; each caller
+        // says what it can honestly keep.
         if self
             .authority
             .definition_origin(trait_, SemanticKind::Trait)
             .is_local()
         {
-            return Err(unsupported_generic());
+            return Ok(TraitBoundTarget::LocalWithoutRow);
         }
         Ok(TraitBoundTarget::Foreign)
     }
@@ -2250,7 +2285,10 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                     .host(Lowered::leaf(record), Some(bound))?
                     .ok_or_else(unsupported_generic);
             }
-            TraitBoundTarget::Unresolved => {}
+            // A bound on a trait that has no row keeps its exact written
+            // spelling as an explicit `NoIrRepresentation` unknown: the bound
+            // is stated, and nothing claims it resolves to anything.
+            TraitBoundTarget::Unresolved | TraitBoundTarget::LocalWithoutRow => {}
         }
         let spelling = self.bytes_of_node(bound.syntax())?;
         self.host(
@@ -4200,6 +4238,16 @@ fn written_trait_bounds(anchor: Option<&ast::Type>) -> Vec<ast::TypeBound> {
             .unwrap_or_default(),
         _ => Vec::new(),
     }
+}
+
+/// Keeps a function's result row distinct from a parameter that shares the
+/// function's name and the result's type.
+fn result_row_discriminator() -> [u8; 16] {
+    let mut hash = Sha256::new();
+    hash.update(b"compiler.rust.result-row-named-like-parameter.v1\0");
+    let mut discriminator = [0_u8; 16];
+    discriminator.copy_from_slice(&hash.finalize()[..16]);
+    discriminator
 }
 
 /// Keeps repeated wildcard parameters distinct while their display name stays `_`.
@@ -6317,6 +6365,125 @@ mod tests {
         Ok(())
     }
 
+    /// `where 'a: 'b` on a method whose `'a` belongs to the enclosing impl is
+    /// ordinary Rust (serde-style borrowing APIs write it). The predicate has
+    /// no subject type row, so it keeps the subject's written spelling in the
+    /// free-predicate lane instead of refusing the whole file.
+    #[test]
+    fn an_outer_lifetime_outlives_predicate_keeps_its_written_subject() -> Result<(), TestError> {
+        let view = lower(
+            "pub struct Holder<'a>(&'a u8);\nimpl<'a> Holder<'a> {\n    pub fn narrow<'b>(self, other: &'b u8) -> Holder<'b>\n    where\n        'a: 'b,\n    {\n        Holder(other)\n    }\n}\n",
+        )?;
+        let rows = rows(&view)?;
+        let subject = rows
+            .iter()
+            .filter(|row| {
+                row.record.tag == SemanticTypeTag::Unknown
+                    && row.record.text == Some(b"'a".as_slice())
+            })
+            .count();
+        if subject == 0 {
+            return Err(TestError::Missing(
+                "the outer lifetime subject keeps its written spelling",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Two same-name functions on branches of an unevaluated tool attribute
+    /// (`#[rustversion::nightly]`, which `anyhow`'s own tests use) are cfg
+    /// twins. The first is committed and the later one stays out; the
+    /// module-scope walk must not hand the dropped twin back as a second,
+    /// byte-identical declaration the image build rejects.
+    #[test]
+    fn a_function_twin_behind_an_unevaluated_tool_attribute_is_not_admitted_twice()
+    -> Result<(), TestError> {
+        let source = "#[rustversion::not(nightly)]\n#[ignore = \"requires nightly\"]\n#[test]\nfn probe() {}\n\n#[rustversion::nightly]\n#[test]\nfn probe() {\n    let _ = 1;\n}\n";
+        // The image build is what rejects a duplicate declaration identity.
+        owned_ir(source)?;
+        let view = lower(source)?;
+        let mut functions = 0;
+        for entity in view.entities() {
+            if entity.kind != EntityKind::Function {
+                continue;
+            }
+            let atom = usize::try_from(entity.name.raw)?;
+            let Some(atom) = view.atoms().nth(atom) else {
+                return Err(TestError::Missing("entity atom"));
+            };
+            if atom.bytes == b"probe" {
+                functions += 1;
+            }
+        }
+        if functions != 1 {
+            return Err(TestError::Missing("exactly one `probe` function"));
+        }
+        Ok(())
+    }
+
+    /// A bound on a trait declared by a macro invocation names a local trait
+    /// with no lane row (`serde_core` declares its `Error` trait this way, with
+    /// supertraits the macro takes as arguments, and bounds `type Error: Error`
+    /// on it). The bound keeps its written spelling instead of refusing the
+    /// whole file.
+    #[test]
+    fn a_bound_on_a_macro_declared_trait_with_no_lane_row_does_not_refuse_the_file() -> Result<(), TestError> {
+        let source = "macro_rules! declare_trait {\n    ($name:ident: Sized $(+ $($supertrait:ident)::+)*) => {\n        pub trait $name: Sized $(+ $($supertrait)::+)* {}\n    };\n}\n\ndeclare_trait!(Failure: Sized + Debug + Display);\n\npub fn explain<E: Failure>(_: E) {}\n\npub trait Source {\n    type Error: Failure;\n}\n";
+        // The image build is what rejects an inconsistent declaration set.
+        owned_ir(source)?;
+        let view = lower(source)?;
+        fact_of(&view, b"explain", EntityKind::Function)?;
+        fact_of(&view, b"Source", EntityKind::Trait)?;
+        Ok(())
+    }
+
+    /// A function named like its own parameter, returning that parameter's type
+    /// (`fn advice(self, advice: Kind) -> Kind`), has a result row and a
+    /// parameter row with the same name and type. Both rows survive with their
+    /// own identity instead of the whole file being refused as a duplicate.
+    #[test]
+    fn a_function_named_like_its_parameter_keeps_both_rows() -> Result<(), TestError> {
+        let view = lower(
+            "pub enum Kind { A }\npub struct Holder;\nimpl Holder {\n    pub fn advice(self, advice: Kind) -> Kind {\n        match (self, advice) {\n            (_, advice) => advice,\n        }\n    }\n}\npub fn value(value: u32) -> u32 { value }\n",
+        )?;
+        let parameters_named = |name: &[u8]| -> Result<usize, TestError> {
+            let mut count = 0;
+            for entity in view.entities() {
+                if entity.kind != EntityKind::Parameter {
+                    continue;
+                }
+                let atom = usize::try_from(entity.name.raw)?;
+                let Some(atom) = view.atoms().nth(atom) else {
+                    return Err(TestError::Missing("entity atom"));
+                };
+                if atom.bytes == name {
+                    count += 1;
+                }
+            }
+            Ok(count)
+        };
+        // The parameter and the result row of each function, side by side.
+        if parameters_named(b"advice")? != 2 {
+            return Err(TestError::Missing("`advice` parameter and its result row"));
+        }
+        if parameters_named(b"value")? != 2 {
+            return Err(TestError::Missing("`value` parameter and its result row"));
+        }
+        fact_of(&view, b"advice", EntityKind::Function)?;
+        fact_of(&view, b"value", EntityKind::Function)?;
+        Ok(())
+    }
+
+    /// Every other lifetime predicate shape the lane already admitted still
+    /// lowers: a declared subject, a type subject and `Self: Sized`.
+    #[test]
+    fn declared_and_type_subject_predicates_still_lower() -> Result<(), TestError> {
+        lower("pub fn pick<'a, 'b>(x: &'a u8, _y: &'b u8) -> &'a u8 where 'b: 'a { x }\n")?;
+        lower("pub trait Probe { fn once(&self) where Self: Sized; }\n")?;
+        lower("pub trait Owned: for<'de> Parse<'de> {}\npub trait Parse<'de>: Sized {}\nimpl<T> Owned for T where T: for<'de> Parse<'de> {}\n")?;
+        Ok(())
+    }
+
     /// `Iterator<Item = u8>` and `Iterator<Item = String>` are different
     /// bounds, and `Foo<false>` is not `Foo<true>`.
     #[test]
@@ -6440,7 +6607,7 @@ mod tests {
             };
             let start = usize::try_from(site.start())?;
             let end = usize::try_from(site.end())?;
-            if source.as_bytes().get(start..end) != Some(b"score") {
+            if source.as_bytes().get(start..end) != Some(&b"score"[..]) {
                 continue;
             }
             verified = true;

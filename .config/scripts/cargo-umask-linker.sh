@@ -1,6 +1,9 @@
 #!/bin/sh
 set -eu
 
+# Keep this entry point LF: rustc executes its shebang directly, including on
+# WSL checkouts created by Windows Git (enforced by .gitattributes).
+
 # Cargo invokes this as rustc's configured linker. Preserve a caller's stricter
 # permissions while preventing the shared-group umask from making executables
 # writable by the group or world.

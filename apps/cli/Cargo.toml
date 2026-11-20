@@ -24,12 +24,13 @@ backend-present = { path = "../../crates/present" }
 backend-replication = { path = "../../crates/replication" }
 backend-runtime = { path = "../../crates/runtime" }
 backend-semantic = { path = "../../crates/semantic" }
+base64.workspace = true
+blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
-blake3.workspace = true
 tempfile.workspace = true
 
 # The FIFO-refusal test (Linux only) makes its FIFO with mkfifoat.

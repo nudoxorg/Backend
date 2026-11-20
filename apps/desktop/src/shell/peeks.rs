@@ -89,7 +89,7 @@ fn package_peek(label: &SharedString, dossier: Option<&crate::model::pages::Pack
 fn registry_of(record: &PackageRecord) -> SharedString {
     match record.source {
         RecordSource::LocalManifest => "your project".into(),
-        RecordSource::Registry => record.ecosystem.known().map_or_else(SharedString::default, |ecosystem| ecosystem.to_string().into()),
+        RecordSource::Registry | RecordSource::PublishedSource => record.ecosystem.known().map_or_else(SharedString::default, |ecosystem| ecosystem.to_string().into()),
     }
 }
 

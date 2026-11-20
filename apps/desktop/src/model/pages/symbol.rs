@@ -1,6 +1,6 @@
 //! The Page board's read model: one declaration and everything it touches.
 
-use super::common::{ByteSpan, DeclRef, Known, LineSpan, PackageRef, Provenance, SymbolRef};
+use super::common::{ByteSpan, DeclRef, Gap, Known, LineSpan, PackageRef, Provenance, SymbolRef};
 use backend_library::{SemanticConfidence, SemanticLinkKind};
 use std::sync::Arc;
 
@@ -28,6 +28,9 @@ pub struct SymbolPage {
     pub rose: Rose,
     /// Use sites of this declaration.
     pub references: Known<Arc<[ReferenceSite]>>,
+    /// Coverage gap accompanying any retained reference sites.
+    #[serde(default)]
+    pub references_gap: Option<Gap>,
     /// The lines your workspace uses it on, read with the page (never guessed).
     #[serde(default)]
     pub workspace: Arc<[super::UseLine]>,
@@ -363,6 +366,9 @@ pub struct Relation {
 /// containment (`down`) but not typed edges, and says so per direction.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Rose {
+    /// Missing relation evidence alongside any retained positive edges.
+    #[serde(default)]
+    pub relations_gap: Option<Gap>,
     /// Up, "is": implements, inherits, overrides, supertraits.
     pub up: Known<Arc<[Relation]>>,
     /// Down, "made of": contained declarations.

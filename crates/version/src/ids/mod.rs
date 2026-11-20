@@ -27,7 +27,7 @@ pub use hash::{
     admit_state_root_bytes, object_version_digest, state_root_digest,
 };
 pub use identity::{CommitId, DeltaId, ObjectKey, ObjectVersion, StateRoot, WorkspaceRoot};
-pub use schema::{CanonicalRelation, Relation, RelationDecodeError, Schema};
+pub use schema::{BoundedCanonicalRelation, CanonicalRelation, Relation, RelationDecodeError, Schema};
 pub use wire::{IdAdmissionError, IdDecodeError, UntrustedId, WireId};
 
 pub(crate) use hash::{

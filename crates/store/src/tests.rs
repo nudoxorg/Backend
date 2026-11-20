@@ -418,6 +418,121 @@ fn weak_root_handle_expires_with_its_map_generation() {
 }
 
 #[test]
+fn exact_zeroed_u32_cells_precharge_and_preserve_capacity() {
+    let count = 1_000_000usize;
+    let bytes = count * std::mem::size_of::<u32>();
+    let mut short=bytes-1;
+    let peak=allocation_counter::measure(|| assert!(matches!(try_allocate_exact_zeroed_u32_budgeted(count,&mut short),Err(StoreError::Bounds))));
+    assert_eq!(peak.bytes_max,0); assert_eq!(short,bytes-1);
+    let mut exact=bytes; let mut values=None;
+    let peak=allocation_counter::measure(|| values=Some(must(try_allocate_exact_zeroed_u32_budgeted(count,&mut exact))));
+    assert_eq!(peak.bytes_max,bytes as u64); assert_eq!(exact,0);
+    let values=values.unwrap(); assert_eq!(values.len(),count); assert_eq!(values.capacity(),count); assert!(values.iter().all(|v|*v==0));
+    let mut credit=usize::MAX; assert!(matches!(try_allocate_exact_zeroed_u32_budgeted(usize::MAX,&mut credit),Err(StoreError::Bounds))); assert_eq!(credit,usize::MAX);
+}
+
+#[test]
+fn exact_zeroed_scratch_charges_before_allocation() {
+    const LEN: usize = 1_048_577;
+    let mut short = LEN - 1;
+    let allocation = allocation_counter::measure(|| {
+        assert!(matches!(try_allocate_exact_zeroed_bytes_budgeted(LEN, &mut short), Err(StoreError::Bounds)));
+    });
+    assert_eq!(short, LEN - 1);
+    assert_eq!(allocation.bytes_max, 0);
+    let mut exact = LEN;
+    let mut buffer = None;
+    let allocation = allocation_counter::measure(|| {
+        buffer = Some(must(try_allocate_exact_zeroed_bytes_budgeted(LEN, &mut exact)));
+    });
+    assert_eq!(exact, 0);
+    assert_eq!(allocation.bytes_max, LEN as u64);
+    let buffer = buffer.unwrap();
+    assert_eq!(buffer.len(), LEN);
+    assert!(buffer.iter().all(|b| *b == 0));
+    let mut credit = usize::MAX;
+    let before = credit;
+    assert!(matches!(try_allocate_exact_zeroed_bytes_budgeted(usize::MAX, &mut credit), Err(StoreError::Bounds)));
+    assert_eq!(credit, before);
+}
+
+#[test]
+fn bounded_closure_membership_preflights_path_and_denies_zero_credit() {
+    use std::cell::Cell;
+    let mut objects = (0u64..1024).map(|value| {
+        let key = backend_version::ObjectKey::<TestCoverageSchema>::from_value(&value);
+        TypedObject::from_value(&key, &value)
+    }).collect::<Vec<_>>();
+    let target = UntrustedObjectId::from_bytes(*objects[500].id().as_bytes());
+    objects.sort_by_key(|object| (object.schema(), *object.key(), *object.version()));
+    let manifest = must(ClosureManifest::new(objects));
+    let path = std::env::temp_dir().join(format!("backend-store-bounded-manifest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&path);
+    let store = must(FileStore::open(&path, 16 * 1024 * 1024));
+    let id = must(store.write_closure(&manifest));
+    let mut pin_credit = 0;
+    assert!(matches!(store.pin_garbage_collection_bounded(&mut pin_credit, |_| Ok(())), Err(StoreError::Bounds)));
+    pin_credit = 4096;
+    let pin_attempts = Cell::new(0);
+    assert!(must(store.try_with_gc_exclusive_lease(|| {
+        let result = store.pin_garbage_collection_bounded(&mut pin_credit, |_| {
+            pin_attempts.set(pin_attempts.get() + 1);
+            if pin_attempts.get() == 5 { Err(StoreError::Bounds) } else { Ok(()) }
+        });
+        assert!(matches!(result, Err(StoreError::Bounds)));
+        Ok(())
+    })).is_some());
+    assert_eq!(pin_attempts.get(), 5);
+    pin_credit = 4096;
+    let mut pin = None;
+    let pin_alloc = allocation_counter::measure(|| {
+        pin = Some(must(store.pin_garbage_collection_bounded(&mut pin_credit, |_| Ok(()))));
+    });
+    assert_eq!(pin_alloc.bytes_max, 0);
+    let pin = pin.expect("bounded pin");
+    assert!(must(store.try_with_gc_exclusive_lease(|| Ok(()))).is_none());
+    let calls = Cell::new(0usize);
+    let mut credit = 0usize;
+    assert!(matches!(store.contains_closure_member_bounded(&pin, id, target, 32, &mut credit,
+        |_| { calls.set(calls.get()+1); Ok(()) }, |_,_| Ok(())), Err(StoreError::Bounds)));
+    assert_eq!(calls.get(), 0);
+    credit = 2 * 1024 * 1024;
+    assert!(matches!(store.contains_closure_member_bounded(&pin, id, target, 32, &mut credit,
+        |_| { calls.set(calls.get()+1); if calls.get() == 3 { Err(StoreError::Bounds) } else { Ok(()) } },
+        |_,_| panic!("cancellation must precede node admission")), Err(StoreError::Bounds)));
+    assert_eq!(calls.get(), 3);
+    calls.set(0);
+    credit = 2 * 1024 * 1024;
+    let work_calls = Cell::new(0usize);
+    let measured = allocation_counter::measure(|| {
+        assert_eq!(must(store.contains_closure_member_bounded(&pin, id, target, 32, &mut credit,
+            |budget| { work_calls.set(work_calls.get()+1); *budget = budget.checked_sub(1).ok_or(StoreError::Bounds)?; Ok(()) },
+            |node, budget| { calls.set(calls.get()+1); *budget = budget.checked_sub(2 * node.encoded_len() + 512).ok_or(StoreError::Bounds)?; Ok(()) })), (true, 1024));
+    });
+    let required_work = work_calls.get();
+    for (work, expect_ok) in [(required_work, true), (required_work - 1, false)] {
+        let mut remaining = work;
+        let mut credit = 2 * 1024 * 1024;
+        let result = store.contains_closure_member_bounded(&pin, id, target, 32, &mut credit,
+            |_| { remaining = remaining.checked_sub(1).ok_or(StoreError::Bounds)?; Ok(()) }, |_,_| Ok(()));
+        assert_eq!(result.is_ok(), expect_ok);
+        if !expect_ok { assert!(matches!(result, Err(StoreError::Bounds))); }
+    }
+    assert!(calls.get() >= 2, "fixture must traverse a child");
+    assert!(usize::try_from(measured.bytes_max).unwrap() <= (2 * 1024 * 1024 - credit) + 256 * 1024);
+    credit = 2 * 1024 * 1024;
+    assert_eq!(must(store.contains_closure_member_bounded(&pin, id, UntrustedObjectId::from_bytes([0xff;32]), 32, &mut credit,
+        |_| Ok(()), |_,_| Ok(()))), (false, 1024));
+    credit = 2 * 1024 * 1024;
+    let gates = Cell::new(0);
+    assert!(matches!(store.contains_closure_member_bounded(&pin, id, target, 32, &mut credit,
+        |_| Ok(()), |_,_| { gates.set(gates.get()+1); if gates.get() == 2 { Err(StoreError::Bounds) } else { Ok(()) } }), Err(StoreError::Bounds)));
+    assert_eq!(gates.get(), 2);
+    drop(pin);
+    let _ = std::fs::remove_dir_all(path);
+}
+
+#[test]
 fn lazy_closure_open_lookup_and_pages_are_bounded() {
     const OBJECT_COUNT: u64 = 1_024;
     let object_count = usize::try_from(OBJECT_COUNT).unwrap_or_default();
@@ -2206,5 +2321,183 @@ fn checked_workspace_publication_binds_manifest_refs_and_typed_root() {
             .find_map(Result::ok)
             .is_some()
     );
+    must(std::fs::remove_dir_all(path));
+}
+
+#[test]
+fn selected_ancestor_requires_current_head_exact_history_and_a_scan_budget() {
+    let path = std::env::temp_dir().join(format!(
+        "backend-store-selected-ancestor-{}-{}",
+        std::process::id(),
+        state_byte(41)
+    ));
+    let _ = std::fs::remove_dir_all(&path);
+    let store = must(FileStore::open(&path, 8_192));
+    let authority_value = 7u64;
+    let authority_key =
+        backend_version::ObjectKey::<TestCoverageSchema>::from_value(&authority_value);
+    let authority_version =
+        backend_version::ObjectVersion::<TestCoverageSchema>::from_value(&authority_value);
+    let manifest = must(backend_version::CheckedWorkspaceManifest::from_versions(
+        1,
+        Vec::new(),
+        Vec::new(),
+        authority_version,
+        coverage(),
+    ));
+    let closure = must(ClosureManifest::new(vec![TypedObject::from_value(
+        &authority_key,
+        &authority_value,
+    )]));
+    let layout = LayoutId::derive(b"selected-ancestor");
+    let pack = must(encode_pack(
+        &checked_map([(b"pack".to_vec(), v(1))]),
+        layout,
+        8_192,
+    ));
+    let pack_id = must(store.write_pack(&pack));
+    let authority = must(store.acquire_publication_authority());
+    let publish = |base| {
+        let publication =
+            CheckedWorkspacePublication::new(&manifest, closure.clone(), layout, pack_id, base);
+        must(
+            must(must(store.prepare_checked_workspace_publication(publication)).durable())
+                .publish_with_authority(&authority),
+        )
+    };
+    drop(publish(None));
+    let first = present(must(store.head()));
+    drop(publish(Some(first.as_base())));
+    let current = present(must(store.head()));
+    let root = manifest.root().to_bytes();
+    let found = must(store.workspace_selected_ancestor(
+        root,
+        current.generation(),
+        root,
+        first.generation(),
+        1_000_000,
+    ));
+    assert_eq!(found, first);
+    assert!(matches!(
+        store.workspace_selected_ancestor(
+            root,
+            current.generation(),
+            [0x55; 32],
+            first.generation(),
+            1_000_000
+        ),
+        Err(StoreError::Corrupt)
+    ));
+    assert!(matches!(
+        store.workspace_selected_ancestor(
+            root,
+            current.generation(),
+            root,
+            current.generation() + 1,
+            1_000_000
+        ),
+        Err(StoreError::Corrupt)
+    ));
+    assert!(matches!(
+        store.workspace_selected_ancestor(
+            root,
+            first.generation(),
+            root,
+            first.generation(),
+            1_000_000
+        ),
+        Err(StoreError::Corrupt)
+    ));
+    assert!(matches!(
+        store.workspace_selected_ancestor(
+            [0x55; 32],
+            current.generation(),
+            root,
+            first.generation(),
+            1_000_000
+        ),
+        Err(StoreError::Corrupt)
+    ));
+    assert!(matches!(
+        store.workspace_selected_ancestor(root, current.generation(), root, 0, 1_000_000),
+        Err(StoreError::Corrupt)
+    ));
+    assert!(matches!(
+        store.workspace_selected_ancestor(root, current.generation(), root, first.generation(), 0),
+        Err(StoreError::Bounds)
+    ));
+    drop(authority);
+    drop(store);
+    let reopened = must(FileStore::open(&path, 8_192));
+    assert_eq!(
+        must(reopened.workspace_selected_ancestor(
+            root,
+            current.generation(),
+            root,
+            first.generation(),
+            1_000_000
+        )),
+        first
+    );
+    drop(reopened);
+    must(std::fs::remove_dir_all(path));
+
+    let raw_path = std::env::temp_dir().join(format!(
+        "backend-store-raw-ancestor-{}", std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&raw_path);
+    let raw_store = must(FileStore::open(&raw_path, 8_192));
+    must(raw_store.publish(
+        &checked_map([(b"raw".to_vec(), v(1))]),
+        LayoutId::derive(b"non-workspace-ancestor"),
+    ));
+    let raw_head = present(must(raw_store.head()));
+    assert!(matches!(
+        raw_store.workspace_selected_ancestor(
+            raw_head.descriptor().target(), raw_head.generation(),
+            raw_head.descriptor().target(), raw_head.generation(), 1_000_000,
+        ),
+        Err(StoreError::Corrupt)
+    ));
+    drop(raw_store);
+    must(std::fs::remove_dir_all(raw_path));
+}
+
+#[test]
+fn workspace_history_is_bounded_selected_and_never_promotes_prepared() {
+    use std::sync::atomic::AtomicBool;
+    let path = std::env::temp_dir().join(format!("backend-store-history-{}-{}", std::process::id(), state_byte(47)));
+    let _ = std::fs::remove_dir_all(&path);
+    let store = must(FileStore::open(&path, 8192));
+    let authority_version = backend_version::ObjectVersion::<TestCoverageSchema>::from_value(&7);
+    let manifest = must(backend_version::CheckedWorkspaceManifest::from_versions(1, Vec::new(), Vec::new(), authority_version, coverage()));
+    let object = TypedObject::from_value(&backend_version::ObjectKey::<TestCoverageSchema>::from_value(&7), &7);
+    let closure = must(ClosureManifest::new(vec![object]));
+    let layout = LayoutId::derive(b"bounded-history");
+    let pack = must(encode_pack(&checked_map([(b"pack".to_vec(), v(1))]), layout, 8192));
+    let pack = must(store.write_pack(&pack));
+    let authority = must(store.acquire_publication_authority());
+    let first = CheckedWorkspacePublication::new(&manifest, closure.clone(), layout, pack, None);
+    must(must(must(store.prepare_checked_workspace_publication(first)).durable()).publish_with_authority(&authority));
+    let first_head = present(must(store.head()));
+    let second = CheckedWorkspacePublication::new(&manifest, closure.clone(), layout, pack, Some(first_head.as_base()));
+    must(must(must(store.prepare_checked_workspace_publication(second)).durable()).publish_with_authority(&authority));
+    let selected = present(must(store.head()));
+    let pending = CheckedWorkspacePublication::new(&manifest, closure, layout, pack, Some(selected.as_base()));
+    let _prepared_only = must(must(store.prepare_checked_workspace_publication(pending)).durable());
+    let cancelled = AtomicBool::new(false);
+    let history = must(store.selected_workspace_history(selected, &[1, 2], 100, &cancelled));
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0], first_head);
+    assert_eq!(history[1], selected);
+    assert!(matches!(store.selected_workspace_history(selected, &[3], 100, &cancelled), Err(WorkspaceHistoryError::Missing)));
+    assert!(matches!(store.selected_workspace_history(first_head, &[1], 100, &cancelled), Err(WorkspaceHistoryError::Store(StoreError::WrongBase))));
+    assert!(matches!(store.selected_workspace_history(selected, &[1], 1, &cancelled), Err(WorkspaceHistoryError::Limit)));
+    assert!(matches!(store.selected_workspace_history(selected, &[2, 1], 100, &cancelled), Err(WorkspaceHistoryError::Limit)));
+    cancelled.store(true, std::sync::atomic::Ordering::Release);
+    assert!(matches!(store.selected_workspace_history(selected, &[1], 100, &cancelled), Err(WorkspaceHistoryError::Cancelled)));
+    drop(_prepared_only);
+    drop(authority);
+    drop(store);
     must(std::fs::remove_dir_all(path));
 }

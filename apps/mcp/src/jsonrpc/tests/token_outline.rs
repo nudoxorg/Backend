@@ -287,6 +287,7 @@ fn outline_selector_bytes_shrink_native_first_page_and_preserve_complete_ids() {
         &Request::OutlinePage {
             path: PROJECT.to_owned(),
             limit: 200,
+            kinds: Default::default(),
         },
         None,
     )
@@ -365,13 +366,8 @@ fn outline_selector_bytes_shrink_native_first_page_and_preserve_complete_ids() {
             for node in nodes {
                 assert_eq!(node["coordinate"], coordinate);
                 assert_eq!(node["semantic_data"]["kind"], "selected-symbol-id");
-                let bytes: [u8; 32] =
-                    serde_json::from_value(node["semantic_data"]["value"].clone())
-                        .expect("exact selected ID");
-                assert!(
-                    ids.insert(backend_library::encode_id(&bytes)),
-                    "no exact ID repeated"
-                );
+                let id = selected_id_hex(&node["semantic_data"]["value"]);
+                assert!(ids.insert(id), "no exact ID repeated");
             }
             pages += 1;
             assert!(pages <= symbols.len(), "bounded progress");
@@ -439,7 +435,7 @@ fn late_token_dense_outline_continuations_shrink_delivery_keep_credit_and_preser
     assert_eq!(dense.snapshot.root.row_count(), 50);
     assert_eq!(dense.outline_order.as_ref().expect("actual later-page order").symbols(),
         &ids[50..100], "the real continuation must select all 50 dense IDs");
-    let dense_answer = backend_present::catalog_page_answer(&Request::OutlinePage { path: PROJECT.to_owned(), limit: 50 },
+    let dense_answer = backend_present::catalog_page_answer(&Request::OutlinePage { path: PROJECT.to_owned(), limit: 50, kinds: Default::default() },
         ReplyDto::new(1, CommandReply::ProjectionPage(dense))).expect("real admitted projection");
     let encoded = encode_answer(&dense_answer, Detail::Full, None, DEFAULT_RESPONSE_BUDGET_BYTES).expect("complete native DTO fits byte policy");
     let structured: Value = serde_json::from_slice(&encoded.bytes).expect("typed JSON");
@@ -481,9 +477,8 @@ fn late_token_dense_outline_continuations_shrink_delivery_keep_credit_and_preser
             let mut pending = value["roots"].as_array().expect("roots").iter().collect::<Vec<_>>();
             let mut count = 0_usize;
             while let Some(node) = pending.pop() {
-                let id: [u8; 32] = serde_json::from_value(node["semantic_data"]["value"].clone()).expect("complete 32-byte selected ID");
+                let id = selected_id_hex(&node["semantic_data"]["value"]);
                 assert_eq!(node["semantic_data"]["kind"], "selected-symbol-id");
-                let id = backend_library::encode_id(&id);
                 assert_eq!(node["key"], &id[..8]);
                 assert!(selected.insert(id), "no selectable identity repeated");
                 assert!(node["coordinate"].as_str().expect("whole coordinate").starts_with(PROJECT));

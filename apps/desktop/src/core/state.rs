@@ -337,14 +337,14 @@ mod tests {
 
     #[test]
     fn owner_image_update_stays_typed_and_does_not_claim_same_version_wire_change() {
-        let build = ErrorValue::owner_update(39, 39, "installed owner image changed");
+        let build = ErrorValue::owner_update(40, 40, "installed owner image changed");
         assert_eq!(build.code(), FaultCode::OwnerUpdate);
         assert!(build.message().contains("owner build update"));
-        assert!(!build.message().contains("version 39 → 39"));
-        let wire = ErrorValue::owner_update(38, 39, "old wire owner");
-        assert!(wire.message().contains("version 38 → 39"));
+        assert!(!build.message().contains("version 40 → 40"));
+        let wire = ErrorValue::owner_update(39, 40, "old wire owner");
+        assert!(wire.message().contains("version 39 → 40"));
         assert!(!wire.message().contains("build update"));
-        let bounded = ErrorValue::owner_update(39, 39, &"\n証明".repeat(1000));
+        let bounded = ErrorValue::owner_update(40, 40, &"\n証明".repeat(1000));
         assert!(bounded.message().len() <= 512);
     }
 

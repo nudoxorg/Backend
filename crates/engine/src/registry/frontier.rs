@@ -557,6 +557,22 @@ mod forge_frontier_tests {
         }
     }
 
+    #[test]
+    fn legacy_advisory_bytes_preserve_published_package_identity() {
+        const LEGACY: &[u8] = br#"{"schema":1,"advisories":[],"coverage":"unknown","freshness":"unknown","malware":"NotCovered","yanked":false,"unlisted":false,"decision":{"Warn":["IncompleteCoverage","StaleEvidence"]},"reasons":["IncompleteCoverage","StaleEvidence"]}"#;
+        let mut original = minimal_published_package(test_coordinate(1), test_artifact(1));
+        original.advisory = serde_json::from_slice(LEGACY).expect("legacy advisory");
+        assert_eq!(original.advisory.registry_standing_observed, None);
+        assert_eq!(serde_json::to_vec(&original.advisory).expect("encode"), LEGACY);
+        let facts = package_facts_digest(&original);
+        let metadata = super::super::wire::metadata_evidence_digest(&original);
+        let mut replayed = original.clone();
+        replayed.advisory = serde_json::from_slice(&serde_json::to_vec(&original.advisory).expect("encode"))
+            .expect("replay");
+        assert_eq!(package_facts_digest(&replayed), facts);
+        assert_eq!(super::super::wire::metadata_evidence_digest(&replayed), metadata);
+    }
+
     fn minimal_remote_package(coordinate: PackageCoordinate) -> RemotePackage {
         RemotePackage {
             coordinate,

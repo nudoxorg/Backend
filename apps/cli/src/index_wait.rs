@@ -120,7 +120,7 @@ pub(crate) fn finish_with_recovery(
     })?))
 }
 
-fn project_result(result: IndexOperationWaitResult) -> (Answer, Option<u8>) {
+pub(crate) fn project_result(result: IndexOperationWaitResult) -> (Answer, Option<u8>) {
     let (observation, stop) = match result {
         IndexOperationWaitResult::Terminal(observation) => (observation, None),
         IndexOperationWaitResult::Stopped {

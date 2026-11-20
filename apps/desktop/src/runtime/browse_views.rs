@@ -80,6 +80,27 @@ mod tests {
     }
 
     #[test]
+    fn compare_preserves_stale_and_partial_advisory_evidence() {
+        use backend_library::{AdvisoryCoverage, FreshnessState};
+        let mut dossier = crate::shell::tests::dossier();
+        let Known::Known(record) = &mut dossier.record else { panic!("fixture record") };
+        record.advisory = Known::Known(crate::model::pages::AdvisorySummary {
+            advisories: 0, worst: None, decision: Arc::from("allow"),
+            coverage: AdvisoryCoverage::Complete, freshness: FreshnessState::Stale,
+        });
+        let model = prepare_compare(&[dossier.clone()], &[]);
+        assert!(model.candidates[0].facts.iter().any(|(_, text)| text.contains("feed data is stale")));
+        let Known::Known(record) = &mut dossier.record else { panic!("fixture record") };
+        let Known::Known(advisory) = &mut record.advisory else { panic!("fixture advisory") };
+        advisory.coverage = AdvisoryCoverage::Partial;
+        advisory.advisories = 2;
+        advisory.freshness = FreshnessState::Unknown;
+        let model = prepare_compare(&[dossier], &[]);
+        assert!(model.candidates[0].facts.iter().any(|(_, text)|
+            text.contains("2 matching") && text.contains("partial feed coverage") && text.contains("feed age is unknown")));
+    }
+
+    #[test]
     fn catalog_hit_is_not_indexed_evidence_and_compare_names_exact_recovery() {
         let package = PackageRef::parse("pkg:cargo/thiserror@2.0.0").expect("exact Cargo release");
         let release = Release::new("thiserror", "2.0.0").expect("release");
@@ -180,14 +201,19 @@ fn record_facts(record: &PackageRecord) -> Vec<(SharedString, SharedString)> {
     if let Some(standing) = record.standing.known() { facts.push(("Release standing".into(), standing.name().into())); }
     if let Some(bytes) = record.bytes.known() { facts.push(("Package archive".into(), format!("{bytes} bytes").into())); }
     if let Some(advisory) = record.advisory.known() {
-        use backend_library::AdvisoryCoverage;
+        use backend_library::{AdvisoryCoverage, FreshnessState};
+        let age = match advisory.freshness {
+            FreshnessState::Fresh | FreshnessState::NotModified => "feed data is up to date",
+            FreshnessState::Stale => "feed data is stale",
+            FreshnessState::Unknown => "feed age is unknown",
+        };
         let (label, detail) = match advisory.coverage {
-            AdvisoryCoverage::Complete => ("Advisories in the configured authority", format!("{} matching this release; complete coverage", advisory.advisories)),
-            AdvisoryCoverage::Partial => ("Advisories in the configured authority", format!("{} matching in partial coverage", advisory.advisories)),
+            AdvisoryCoverage::Complete => ("Advisories in the configured authority", format!("{} matching this release; complete feed coverage; {age}", advisory.advisories)),
+            AdvisoryCoverage::Partial => ("Advisories in the configured authority", format!("{} matching in partial feed coverage; {age}", advisory.advisories)),
             AdvisoryCoverage::Unknown | AdvisoryCoverage::Unavailable if advisory.advisories == 0 =>
                 ("Advisory coverage", "No advisory feed coverage is established for this release".to_owned()),
             AdvisoryCoverage::Unknown | AdvisoryCoverage::Unavailable =>
-                ("Advisories in the configured authority", format!("{} matching; coverage is not established", advisory.advisories)),
+                ("Advisories in the configured authority", format!("{} matching; coverage is not established; {age}", advisory.advisories)),
         };
         facts.push((label.into(), detail.into()));
     }

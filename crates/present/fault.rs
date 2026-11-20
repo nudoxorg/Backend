@@ -661,6 +661,25 @@ fn tool_arguments(name: &str, args: &[String]) -> serde_json::Value {
     )
 }
 
+/// Replaces each whole-word `--name` in `text` with `json_name`.
+fn swap_option_spelling(text: &str, name: &str, json_name: &str) -> String {
+    let flag = format!("--{name}");
+    let joins = |character: char| character.is_ascii_alphanumeric() || character == '-' || character == '_';
+    let mut out = String::with_capacity(text.len());
+    let mut from = 0;
+    while let Some(found) = text[from..].find(&flag) {
+        let at = from + found;
+        let end = at + flag.len();
+        let whole = !text[..at].chars().next_back().is_some_and(joins)
+            && !text[end..].chars().next().is_some_and(joins);
+        out.push_str(&text[from..at]);
+        out.push_str(if whole { json_name } else { &flag });
+        from = end;
+    }
+    out.push_str(&text[from..]);
+    out
+}
+
 /// One typed failure, complete enough to render on any surface.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Fault {
@@ -845,6 +864,33 @@ impl Fault {
         self
     }
 
+    /// Names the arguments of an MCP call the way that call spells them.
+    ///
+    /// Usage sentences are written once for the CLI (`--custom-property`). The JSON input
+    /// of the same operand is `custom_property`, so a fault raised for `grammar`'s tool
+    /// swaps each of its option spellings, in the sentence and in the operand.
+    #[must_use]
+    pub fn with_mcp_argument_names(mut self, grammar: crate::grammar::CommandGrammar) -> Self {
+        let mut specs = grammar
+            .positional()
+            .iter()
+            .chain(grammar.options())
+            .chain(grammar.cli_options())
+            .copied()
+            .collect::<Vec<_>>();
+        // `--a-b` must be swapped before `--a`.
+        specs.sort_by_key(|spec| std::cmp::Reverse(spec.name().len()));
+        for spec in &specs {
+            self.cause.sentence = swap_option_spelling(&self.cause.sentence, spec.name(), spec.json_name());
+        }
+        if let Operand::Argument(name) = &self.operand
+            && let Some(spec) = specs.iter().find(|spec| spec.name() == name)
+        {
+            self.operand = Operand::Argument(spec.json_name().to_owned());
+        }
+        self
+    }
+
     /// Returns a fault whose operand names the coordinate the caller supplied.
     #[must_use]
     pub fn about(mut self, operand: Operand) -> Self {
@@ -960,8 +1006,8 @@ impl Fault {
                 Affordance::None,
             ),
             SourceAvailability::StaleFile { .. } => (
-                CauseSlug::NotCaptured,
-                "the compiled line is no longer that file's line",
+                CauseSlug::Moved,
+                "the indexed source location is stale or does not match the current file; reindex before relying on it",
                 Affordance::None,
             ),
         };
@@ -1102,6 +1148,27 @@ impl Fault {
                     tool.executable(),
                 )
             }
+        } else if let Some(host) = failure.csharp_host_format_failure() {
+            // The configured dotnet is a wrapper script: name the file kind and the one fix.
+            format!("{}; {}", failure.detail(), host.advice())
+        } else if let Some(reference) = failure.csharp_unresolved_reference() {
+            // Roslyn named the first reference it could not bind: say which, and where,
+            // instead of a general instruction to check every reference.
+            format!("{}; {}", failure.detail(), reference.advice())
+        } else if failure.relative_path().ends_with(".cs") && failure.detail().contains("authority fault") {
+            // The producer's own diagnostics stay local, so say what a reader can do about
+            // a refused C# compilation without guessing beyond that.
+            if failure.phase() == PackageCompilerFailurePhase::Setup {
+                format!(
+                    "{}; the C# compiler stage could not be set up: set NUDOX_ROSLYN_HELPER to the Roslyn helper assembly (oracle.dll) and NUDOX_DOTNET to the dotnet executable, then retry",
+                    failure.detail()
+                )
+            } else {
+                format!(
+                    "{}; the C# compiler refused this project's inputs: confirm dotnet and the Roslyn helper are available (NUDOX_DOTNET, NUDOX_ROSLYN_HELPER) and that every project, framework and package reference resolves, as unresolved references are refused rather than indexed partially",
+                    failure.detail()
+                )
+            }
         } else {
             failure.detail().to_owned()
         };
@@ -1221,9 +1288,7 @@ impl Fault {
             ClientError::MutationOutcomeUnknown(kind) => (
                 FaultSlug::Endpoint,
                 CauseSlug::Unreachable,
-                format!(
-                    "the endpoint closed while a mutation was in flight ({kind}); its outcome is unknown. Inspect owner state before deciding whether to submit it again"
-                ),
+                mutation_outcome_unknown_detail(*kind),
                 Affordance::None,
             ),
             ClientError::Io(detail) => (
@@ -1528,5 +1593,97 @@ mod owner_image_update_tests {
         );
         assert!(wire.cause().sentence().contains("version 38 → 39"));
         assert_eq!(wire.affordance(), &Affordance::Retry);
+    }
+}
+
+/// Words for a change whose reply never arrived. A deadline that expired and a connection
+/// that was torn down are different facts for the reader: after the first the owner is
+/// still there and may well finish the work, after the second the owner may have exited.
+fn mutation_outcome_unknown_detail(kind: std::io::ErrorKind) -> String {
+    use std::io::ErrorKind;
+    match kind {
+        ErrorKind::WouldBlock | ErrorKind::TimedOut => format!(
+            "the owner did not acknowledge this change before the client deadline ({kind}); it may still be applying the change, so its outcome is unknown. Check `nudox health` or the index operation's progress before submitting it again; an identical active index request is observed rather than duplicated"
+        ),
+        _ => format!(
+            "the connection to the owner was lost while a change was in flight ({kind}); its outcome is unknown. Inspect owner state (`nudox health` shows whether the same owner is still running) before deciding whether to submit it again"
+        ),
+    }
+}
+
+#[cfg(test)]
+mod mutation_outcome_wording_tests {
+    use super::mutation_outcome_unknown_detail;
+    use std::io::ErrorKind;
+
+    #[test]
+    fn a_deadline_is_not_described_as_a_closed_endpoint() {
+        for kind in [ErrorKind::WouldBlock, ErrorKind::TimedOut] {
+            let text = mutation_outcome_unknown_detail(kind);
+            assert!(text.contains("did not acknowledge"), "{text}");
+            assert!(!text.contains("closed"), "{text}");
+            assert!(text.contains("outcome is unknown"), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_lost_connection_points_at_the_owner_state() {
+        let text = mutation_outcome_unknown_detail(ErrorKind::BrokenPipe);
+        assert!(text.contains("connection to the owner was lost"), "{text}");
+        assert!(text.contains("nudox health"), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod mcp_argument_names {
+    use super::{Fault, Operand};
+
+    fn stylo() -> crate::grammar::CommandGrammar {
+        crate::grammar_for("stylo-query").expect("stylo-query grammar")
+    }
+
+    #[test]
+    fn a_usage_sentence_names_the_json_arguments_of_the_tool() {
+        let fault = Fault::usage("class", "supply exactly one of --class or --custom-property")
+            .with_mcp_argument_names(stylo());
+        assert_eq!(
+            fault.cause().sentence(),
+            "supply exactly one of class or custom_property"
+        );
+    }
+
+    #[test]
+    fn the_operand_takes_its_json_spelling_and_longer_names_win() {
+        let fault = Fault::usage("custom-property", "--custom-property needs a value, not --class")
+            .with_mcp_argument_names(stylo());
+        assert_eq!(fault.operand(), &Operand::Argument("custom_property".to_owned()));
+        assert_eq!(fault.cause().sentence(), "custom_property needs a value, not class");
+    }
+
+    #[test]
+    fn only_whole_option_spellings_are_swapped() {
+        let fault = Fault::usage("class", "--classify is not an option, nor is --class-name or ---class")
+            .with_mcp_argument_names(stylo());
+        assert_eq!(
+            fault.cause().sentence(),
+            "--classify is not an option, nor is --class-name or ---class"
+        );
+    }
+
+    #[test]
+    fn every_option_of_every_command_is_swapped_by_its_own_json_name() {
+        for grammar in crate::GRAMMARS {
+            for spec in grammar.options() {
+                let fault = Fault::usage(spec.name(), format!("pass --{} again", spec.name()))
+                    .with_mcp_argument_names(grammar);
+                assert_eq!(
+                    fault.cause().sentence(),
+                    format!("pass {} again", spec.json_name()),
+                    "{} {}",
+                    grammar.name(),
+                    spec.name()
+                );
+            }
+        }
     }
 }

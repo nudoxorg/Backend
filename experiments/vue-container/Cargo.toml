@@ -1,0 +1,13 @@
+[package]
+name = "nudox-vue-container-proof"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+verter_core = { version = "=0.0.1-beta.1", default-features = false }
+# beta.6 changes its OXC span dependency and breaks verter_core beta.1.
+verter_span = "=0.0.1-beta.1"
+tsz-parser = { path = "../../third_party/tsz/crates/tsz-parser" }

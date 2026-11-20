@@ -7,6 +7,10 @@ use super::{ClosureId, FileStore, GcRoot, GcRoots, StoreError};
 pub(crate) struct ClosureMembershipLease {
     #[cfg(unix)]
     _file: std::fs::File,
+    #[cfg(unix)]
+    directory: std::fs::File,
+    #[cfg(unix)]
+    name: String,
 }
 
 #[cfg(unix)]
@@ -131,7 +135,7 @@ mod platform {
             directory
                 .sync_all()
                 .map_err(|e| super::super::io_error(&e))?;
-            return Ok(ClosureMembershipLease { _file: file });
+            return Ok(ClosureMembershipLease { _file: file, directory, name });
         }
         Err(StoreError::Bounds)
     }
@@ -143,20 +147,27 @@ mod platform {
         // Collection holds the exclusive global admission barrier. New
         // leases cannot appear while this bounded root snapshot is taken.
         names(&directory, |name| {
-            let fd = openat(
+            let fd = match openat(
                 &directory,
                 name,
                 OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 Mode::empty(),
-            )
-            .map_err(error)?;
+            ) {
+                Ok(fd) => fd,
+                // A reader may release its lease after directory enumeration.
+                Err(Errno::NOENT) => return Ok(()),
+                Err(other) => return Err(error(other)),
+            };
             let mut file = File::from(fd);
             validate(&file)?;
             match file.try_lock() {
                 Ok(()) => {
                     // A dead process or dropped reader owns no reachability.
                     // Only its lease metadata is removed; normal GC owns CAS.
-                    unlinkat(&directory, name, AtFlags::empty()).map_err(error)?;
+                    match unlinkat(&directory, name, AtFlags::empty()) {
+                        Ok(()) | Err(Errno::NOENT) => {}
+                        Err(other) => return Err(error(other)),
+                    }
                 }
                 Err(TryLockError::WouldBlock) => {
                     let mut id = [0_u8; 32];
@@ -179,6 +190,16 @@ mod platform {
             Ok(())
         })?;
         directory.sync_all().map_err(|e| super::super::io_error(&e))
+    }
+
+    impl Drop for ClosureMembershipLease {
+        fn drop(&mut self) {
+            // Unlink while the lock is still held. A collector that already
+            // opened the file sees the lock; one that has only enumerated it
+            // tolerates its disappearance. Failed cleanup remains safe and
+            // is retried by the next collector.
+            let _ = unlinkat(&self.directory, self.name.as_str(), AtFlags::empty());
+        }
     }
 }
 

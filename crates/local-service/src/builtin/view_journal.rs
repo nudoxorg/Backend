@@ -698,6 +698,22 @@ impl ViewPersistence for ViewJournal {
     }
 }
 
+// The live transport cohort can change without rewriting the durable view
+// snapshot and compact-event envelope grammar.
+const JOURNAL_ENVELOPE_VERSION: u16 = 35;
+
+fn journal_wire_value(bytes: &[u8]) -> Result<serde_json::Value, String> {
+    let mut value: serde_json::Value = serde_json::from_slice(bytes).map_err(json_error)?;
+    let object = value.as_object_mut().ok_or("journal wire value is not an object")?;
+    if object.get("version").and_then(serde_json::Value::as_u64)
+        != Some(u64::from(backend_library::DTO_VERSION))
+    {
+        return Err("journal wire value has an unexpected live version".to_owned());
+    }
+    object.insert("version".to_owned(), serde_json::json!(JOURNAL_ENVELOPE_VERSION));
+    Ok(value)
+}
+
 fn encode_envelope(
     workspace_root: WorkspaceRoot,
     cursor: Cursor,
@@ -708,7 +724,7 @@ fn encode_envelope(
         .is_none()
         .then(|| encode_view(view))
         .transpose()?
-        .map(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).map_err(json_error))
+        .map(|bytes| journal_wire_value(&bytes))
         .transpose()?;
     let descriptor = backend_engine::encode_view_root_descriptor(&view.descriptor())?;
     let event = event
@@ -724,7 +740,7 @@ fn encode_envelope(
             backend_engine::encode_compact_view_event(cursor, delta, certificate)
         })
         .transpose()?
-        .map(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).map_err(json_error))
+        .map(|bytes| journal_wire_value(&bytes))
         .transpose()?;
     serde_json::to_vec(&serde_json::json!({
         "version": VERSION,

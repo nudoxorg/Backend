@@ -745,6 +745,19 @@ impl RegistrySource for CargoCache {
         let root = root.canonicalize().ok()?;
         let stem = root.file_name()?.to_str()?;
         let release = Release::from_stem(stem)?;
+        // Cache layout identifies a candidate, not the tree's current package.
+        // A replaced/edited manifest must not turn a local project into a
+        // published release or grant its registry-only removal affordance.
+        let bytes = backend_platform::durable::read_regular_bounded(
+            &root.join("Cargo.toml"), 1024 * 1024,
+        ).ok()?;
+        let manifest = std::str::from_utf8(&bytes).ok()?.parse::<toml::Table>().ok()?;
+        let package = manifest.get("package")?.as_table()?;
+        if package.get("name")?.as_str()? != release.name.as_str()
+            || package.get("version")?.as_str()? != release.version.as_str()
+        {
+            return None;
+        }
         match self.locate(&release) {
             Availability::Unpacked(tree) if tree.canonicalize().is_ok_and(|tree| tree == root) => {
                 Some(release)

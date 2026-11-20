@@ -35,6 +35,8 @@ extended-journeys = [
     "dep:tokio",
 ]
 gui = ["dep:backend-desktop", "dep:backend-gui-harness"]
+# The CSS acceptance journey needs binaries staged by scripts/stage-css-journey.sh.
+css-journey = []
 
 [dependencies]
 backend-library = { path = "../../crates/library" }
@@ -100,6 +102,11 @@ path = "src/bin/mcp.rs"
 name = "backend-journey-gui"
 path = "src/bin/gui.rs"
 required-features = ["gui"]
+
+[[test]]
+name = "css_impact_journey"
+path = "tests/css_impact_journey.rs"
+required-features = ["css-journey"]
 
 [[test]]
 name = "cutover_e2e"

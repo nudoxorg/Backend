@@ -178,20 +178,32 @@ fn records_with_cursor(
 ) -> String {
     let mut lines = Lines::new();
     lines.push(coverage(list.coverage(), theme));
-    let cursor_note = if list.has_more() && list.continuation().is_some() {
+    if list.hidden_non_declarations() > 0 {
+        lines.push(format!("{} import/external row(s) on this page left out by --declarations-only", list.hidden_non_declarations()));
+    }
+    if let Some(gap) = list.graph_gap() {
+        lines.push(format!("graph relations incomplete: {gap}"));
+    }
+    if !list.graph_source_policies().is_empty() || list.graph_edges().iter().any(|edge| !edge.source_policy.is_unknown()) {
+        lines.push("Unverified captured-source claims; effective ignore-policy stability unknown.".to_owned());
+    }
+    for edge in list.related_edges() {
+        lines.push(format!("related {} -> {}; relation {:?}; confidence {:?}", edge.from, edge.to, edge.relation, edge.confidence));
+    }
+    let cursor_note = if list.has_more() && (list.continuation().is_some() || list.related_continuation().is_some()) {
         cursor.map(|cursor| continuation_note(target, cursor))
     } else {
         None
     };
     if let Some(note) = &cursor_note {
         lines.push(theme.paint(Style::Dim, note));
-    } else if list.has_more() && list.continuation().is_some() {
+    } else if list.has_more() && (list.continuation().is_some() || list.related_continuation().is_some()) {
         lines.push(theme.paint(
             Style::Dim,
             "… more rows; this rendering does not include the continuation token",
         ));
     }
-    if list.has_more() && list.continuation().is_none() {
+    if list.has_more() && (list.continuation().is_none() && list.related_continuation().is_none()) {
         lines.push(theme.paint(
             Style::Dim,
             "… more rows at this revision; raise --limit to see them",
@@ -199,10 +211,19 @@ fn records_with_cursor(
     }
     if list.is_empty() {
         lines.push(list.empty_explanation());
-        return lines.finish();
     }
     for record in list.records() {
         push_record(&mut lines, record, within, theme);
+    }
+    for edge in list.graph_edges().iter().filter(|_| list.related_edges().is_empty()) {
+        lines.push(format!(
+            "graph edge {} -> {}; relation {:?}; confidence {:?}; availability {:?}",
+            list.graph_label(edge.from),
+            list.graph_label(edge.to),
+            edge.kind,
+            edge.provenance.confidence,
+            edge.availability,
+        ));
     }
     lines.finish()
 }
@@ -287,6 +308,13 @@ pub fn page_projection(page: &PageProjection<'_>, theme: Theme) -> String {
     } else if let Some(reason) = page.source_fault() {
         lines.blank();
         lines.push(fault(reason, theme));
+    }
+    if !page.source_policy().is_unknown() {
+        lines.blank();
+        lines.push(
+            "Unverified captured-source claim; effective ignore-policy stability unknown."
+                .to_owned(),
+        );
     }
     push_notes(&mut lines, page.notes(), theme);
     if let Some(window) = page.section_page() {
@@ -482,6 +510,7 @@ fn push_shelf_entry(lines: &mut Lines, entry: &ShelfEntry, theme: Theme) {
             language.declarations().get()
         ));
     }
+    tags.extend(entry.profiles().iter().map(|profile| profile.phrase()));
     let _ = write!(head, "  {}", theme.paint(Style::Dim, &tags.join(" · ")));
     lines.push(head);
     lines.push(format!(
@@ -511,8 +540,19 @@ pub fn outline(tree: &OutlineTree, theme: Theme) -> String {
         tree.count(),
         tree.truncation().name()
     );
+    summary.push_str(" (outline pagination only; analysis coverage is not certified)");
     if tree.unresolved() > 0 {
         let _ = write!(summary, " · {} unnamed", tree.unresolved());
+    }
+    if tree.filtered_out() > 0 {
+        let _ = write!(summary, " · {} left out by the kind filter", tree.filtered_out());
+    }
+    if tree.locals_hidden() > 0 {
+        let _ = write!(
+            summary,
+            " · {} anonymous or function-local left out (omit top_level to list them)",
+            tree.locals_hidden()
+        );
     }
     lines.push(theme.paint(Style::Dim, &summary));
     if let Some(page) = tree.page().filter(|page| page.continuation.is_some()) {
@@ -563,7 +603,7 @@ pub fn status(status: &Status, theme: Theme) -> String {
         theme.paint(
             Style::Dim,
             &format!(
-                "· {} row(s) · revision {} · source {} · sequence {}",
+                "· {} row(s) · revision {} · store layout {} · sequence {}",
                 status.rows(),
                 status.revision(),
                 status.source(),
@@ -584,7 +624,12 @@ pub fn status(status: &Status, theme: Theme) -> String {
         lines.push("observed failed compiler attempt (served coverage above is unchanged)");
         lines.push(fault(cause, theme));
     }
-    if let Some(observation) = status.source_selection() {
+    if let Some(sql) = status.sql_analysis() {
+        lines.push(sql.render());
+    }
+    if let Some(scope) = status.source_selection_scope() {
+        lines.push(scope.render());
+    } else if let Some(observation) = status.source_selection() {
         lines.push(observation.render());
     }
     lines.finish()
@@ -597,6 +642,25 @@ pub fn product(view: &ProductView, theme: Theme) -> String {
 }
 
 fn product_projection(view: &ProductView, theme: Theme, detail: Detail) -> String {
+    if let Some(range) = view.declaration_source_range() {
+        let mut output = range.source.text.clone();
+        output.push_str("\n\n");
+        output.push_str(range.source.scope.description());
+        output.push_str("\n\n");
+        output.push_str(match (range.source.source_policy.is_unknown(), range.verified_at_read) {
+            (false, true) => "Source bytes match the indexed capture; unverified policy claim; ignore-policy stability unknown.",
+            (false, false) => "Unverified captured-source claim; ignore-policy stability unknown.",
+            (true, true) => "Source bytes match the indexed capture; effective ignore-policy stability is not established.",
+            (true, false) => "Effective ignore-policy stability is not established.",
+        });
+        if let Some(cursor) = &range.next_cursor {
+            output.push_str(
+                "\n\nMore source: repeat this source --byte-range command with --cursor ",
+            );
+            output.push_str(cursor);
+        }
+        return output;
+    }
     let mut lines = Lines::new();
     lines.push(theme.paint(Style::Heading, view.heading()));
     if detail == Detail::Summary
@@ -609,6 +673,12 @@ fn product_projection(view: &ProductView, theme: Theme, detail: Detail) -> Strin
             "For native source references, request --detail full (fresh discovery).".to_owned(),
         );
     }
+    if let Some(warning) = view.partial_publication_warning() {
+        lines.push(format!("Warning: {}", warning.detail));
+        if let Some(shell) = &warning.shell {
+            lines.push(format!("  → {shell}"));
+        }
+    }
     if let Some(reason) = view.fault() {
         lines.push(fault(reason, theme));
         if view.records().is_empty() {
@@ -616,9 +686,15 @@ fn product_projection(view: &ProductView, theme: Theme, detail: Detail) -> Strin
             return lines.finish();
         }
     }
-    if let Some(note) = view.note() {
+    if let Some(note) = view.note_for(Some(detail)) {
         lines.push(format!("  {note}"));
         if view.records().is_empty() {
+            if view.is_references_result() {
+                lines.push(theme.paint(
+                    Style::Dim,
+                    "  no reference records captured at this revision",
+                ));
+            }
             index_search_page_footer(view, &mut lines);
             index_job_footer(view, &mut lines, theme);
             return lines.finish();
@@ -642,14 +718,17 @@ fn product_projection(view: &ProductView, theme: Theme, detail: Detail) -> Strin
             theme.paint(Style::Ready, "●"),
             theme.paint(Style::Name, record.title())
         );
-        if !record.tags().is_empty() {
+        if !record.tags_for(Some(detail)).is_empty() {
             let _ = write!(
                 head,
                 "  {}",
-                theme.paint(Style::Dim, &record.tags().join(" · "))
+                theme.paint(Style::Dim, &record.tags_for(Some(detail)).join(" · "))
             );
         }
         lines.push(head);
+        if let Some(note) = crate::product::source_policy_note(record.source_policy()) {
+            lines.push(format!("  {note}"));
+        }
         if let Some(operand) = record.operand() {
             lines.push(format!("  {}", theme.paint(Style::Coordinate, operand)));
         }
@@ -668,6 +747,9 @@ fn product_projection(view: &ProductView, theme: Theme, detail: Detail) -> Strin
         lines.push(format!("Continue: {command}"));
     }
     index_search_page_footer(view, &mut lines);
+    if let Some(cursor) = view.reference_cursor() {
+        lines.push(format!("  next cursor (pass --cursor): {}", cursor.token()));
+    }
     index_job_footer(view, &mut lines, theme);
     lines.finish()
 }

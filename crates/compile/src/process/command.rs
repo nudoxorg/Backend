@@ -10,7 +10,6 @@ use crate::{
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
-    sync::atomic::AtomicBool,
     time::Duration,
 };
 
@@ -241,11 +240,15 @@ impl SupervisedCommand {
         Ok(command)
     }
 
+    /// Constructs an artifact-bound command while observing cancellation and an absolute deadline.
+    ///
+    /// # Errors
+    /// Returns a process error when cancellation, deadline, validation, or executable identity checks fail.
     #[allow(
         clippy::too_many_arguments,
         reason = "the native command boundary keeps every authority input explicit"
     )]
-    pub(crate) fn for_authority_with_artifact_until(
+    pub fn for_authority_with_artifact_until<C: CancellationObserver + ?Sized>(
         program: PathBuf,
         args: Vec<String>,
         environment: ProcessEnvironment,
@@ -255,7 +258,7 @@ impl SupervisedCommand {
         session_key: Option<SessionKey>,
         protocol: ProtocolDescriptor,
         limits: ProcessLimits,
-        cancellation: &AtomicBool,
+        cancellation: &C,
         deadline: std::time::Instant,
     ) -> Result<Self, ProcessError> {
         let mut command =

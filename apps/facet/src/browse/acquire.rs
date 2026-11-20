@@ -21,7 +21,7 @@ use crate::icons::{Icon, IconSize, ui};
 use crate::measure::{Control, Measure, Space};
 use crate::theme::ActiveFacet;
 use crate::tokens::ty;
-use gpui::{AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, Window, div};
+use gpui::{AnyElement, App, ElementId, FocusHandle, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, div};
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -180,8 +180,30 @@ pub fn add_control(id: impl Into<ElementId>, offer: &Offer, actions: &AddActions
 }
 
 /// The same owner-backed acquisition control, inert while its evidence is pending.
-pub fn add_control_enabled(id: impl Into<ElementId>, offer: &Offer, actions: &AddActions, measure: &Measure, enabled: bool, cx: &mut App) -> AnyElement {
-    let id: ElementId = id.into();
+pub fn add_control_enabled(id: impl Into<ElementId>, offer: &Offer, actions: &AddActions, measure: &Measure, enabled: bool, _cx: &mut App) -> AnyElement {
+    AddControl { id: id.into(), offer: offer.clone(), actions: actions.clone(), measure: *measure, enabled }.into_any_element()
+}
+
+/// One control whose face changes with the work: Add becomes the seam, then
+/// Open or Try again. Keyboard focus belongs to the control, not to one face,
+/// so a person who pressed Add keeps their place as its state changes.
+#[derive(IntoElement)]
+struct AddControl {
+    id: ElementId,
+    offer: Offer,
+    actions: AddActions,
+    measure: Measure,
+    enabled: bool,
+}
+
+impl RenderOnce for AddControl {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let focus = window.use_keyed_state(child(&self.id, "focus"), cx, |_, cx| cx.focus_handle().tab_stop(true)).read(cx).clone();
+        draw(self.id, &self.offer, &self.actions, &self.measure, self.enabled, &focus, cx)
+    }
+}
+
+fn draw(id: ElementId, offer: &Offer, actions: &AddActions, measure: &Measure, enabled: bool, focus: &FocusHandle, cx: &mut App) -> AnyElement {
     let palette = cx.palette();
     let state = match ((actions.state)(&offer.release, cx), &offer.library) {
         (Adding::Idle, Some(page)) => Adding::Added { open: page.clone() },
@@ -199,30 +221,36 @@ pub fn add_control_enabled(id: impl Into<ElementId>, offer: &Offer, actions: &Ad
                 .size(Control::Small)
                 .glyph(Glyph::Plus)
                 .disabled(!enabled || !offer.place.addable())
+                .focus_handle(focus.clone())
                 .on_click(move |window, cx| add(release.clone(), window, cx));
             row.child(button).child(caption("where", format!("{} · {}", offer.label, offer.place.words()).into())).into_any_element()
         }
-        Adding::Working(step) => div()
-            .flex()
-            .flex_col()
-            .gap(measure.space(Space::Tight))
-            .child({
-                let mut status = row.child(caption("step", format!("{} · {}", step.words(), offer.label).into()));
-                if let Some(cancel) = &actions.cancel {
-                    let cancel = Rc::clone(cancel);
-                    let release = offer.release.clone();
-                    status = status.child(
-                        button(child(&id, "cancel"), "Cancel", measure)
-                .aria_label(format!("Cancel adding {}", offer.label)).disabled(!enabled)
-                            .ghost()
-                            .size(Control::Small)
-                            .on_click(move |window, cx| cancel(release.clone(), window, cx)),
-                    );
-                }
-                status
-            })
-            .child(div().w_full().child(seam(child(&id, "seam"), seam_stages(&offer.place, step), measure)))
-            .into_any_element(),
+        Adding::Working(step) => {
+            let mut status = row.child(caption("step", format!("{} · {}", step.words(), offer.label).into()));
+            let cancellable = actions.cancel.is_some();
+            if let Some(cancel) = &actions.cancel {
+                let cancel = Rc::clone(cancel);
+                let release = offer.release.clone();
+                status = status.child(
+                    button(child(&id, "cancel"), "Cancel", measure)
+                        .aria_label(format!("Cancel adding {}", offer.label)).disabled(!enabled)
+                        .ghost()
+                        .size(Control::Small)
+                        .focus_handle(focus.clone())
+                        .on_click(move |window, cx| cancel(release.clone(), window, cx)),
+                );
+            }
+            let work = div()
+                .id(child(&id, "work"))
+                .flex()
+                .flex_col()
+                .gap(measure.space(Space::Tight))
+                .child(status)
+                .child(div().w_full().child(seam(child(&id, "seam"), seam_stages(&offer.place, step), measure)));
+            // With nothing to press, the work itself holds focus until its
+            // outcome's button takes it back.
+            if cancellable { work.into_any_element() } else { work.track_focus(focus).into_any_element() }
+        }
         Adding::Added { open: target } => {
             let open = Rc::clone(&actions.open);
             let button = button(child(&id, "open"), "Open", measure)
@@ -230,6 +258,7 @@ pub fn add_control_enabled(id: impl Into<ElementId>, offer: &Offer, actions: &Ad
                 .ghost()
                 .size(Control::Small)
                 .icon(Icon::Package)
+                .focus_handle(focus.clone())
                 .on_click(move |window, cx| open(target.clone(), window, cx));
             row.child(ui(Icon::ShieldCheck, IconSize::S18, palette.mint.base))
                 .child(words(child(&id, "added"), format!("{} is in your library", offer.label), ty::SMALL, palette.ink1, measure))
@@ -245,6 +274,7 @@ pub fn add_control_enabled(id: impl Into<ElementId>, offer: &Offer, actions: &Ad
                 .size(Control::Small)
                 .glyph(Glyph::Plus)
                 .disabled(!enabled || !offer.place.addable())
+                .focus_handle(focus.clone())
                 .on_click(move |window, cx| add(release.clone(), window, cx));
             div()
                 .flex()

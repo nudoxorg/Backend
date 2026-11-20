@@ -581,6 +581,9 @@ pub(super) fn describe(route: &Route) -> String {
         Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::Compare(selection))) => format!(
             "compare {}", selection.packages().iter().map(|package| package.as_str()).collect::<Vec<_>>().join(" "),
         ),
+        Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::Sql(subject))) => format!("sql {}", subject.written()),
+        Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::Css(subject))) => format!("css {}", subject.written()),
+        Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::Impact(route))) => format!("impact {}", route.subject.written()),
         Route::World => "world".to_owned(),
         Route::Package(package) => format!(
             "package {}{}{}",

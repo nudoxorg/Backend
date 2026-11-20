@@ -5,7 +5,7 @@
 //! and generic constraints without JSON reconstruction.
 //! Rejects malformed image coordinates before they can enter canonical facts.
 //!
-//! Wire layout (version 4): a fixed 256-byte header — magic `NCAI`, version,
+//! Wire layout (versions 4 and 5): a fixed 256-byte header — magic `NCAI`, version,
 //! header length, body length, the SHA-256 of the bound source, a section
 //! count, and a fixed eleven-entry section directory — followed by the
 //! canonical body sections in directory order. A domain-separated SHA-256
@@ -13,6 +13,10 @@
 //! Version 4 extends the version-3 declaration rows with the trailing
 //! declaration-end coordinate (`decl_end`), so occurrence spans can be
 //! contained honestly; every earlier rejection stays typed.
+//! Version 5 reserves the reference-owner sentinel for a Roslyn-proved
+//! synthesized top-level file context. Version 4 continues to reject it.
+//! Its header also retains the saturated number of Roslyn compilation errors;
+//! zero does not prove complete project input or reference coverage.
 //!
 //! Error laws: the crate's image-fault lattice is frozen at seven variants,
 //! so every version-4 fault reuses a variant whose operands name the
@@ -33,6 +37,7 @@ use thiserror::Error;
 
 const MAGIC: [u8; 4] = *b"NCAI";
 const VERSION: u16 = 4;
+const TOP_LEVEL_VERSION: u16 = 5;
 const SOURCE_DIGEST_OFFSET: usize = 12;
 const DIRECTORY_OFFSET: usize = 48;
 const DIRECTORY_ENTRY_BYTES: usize = 16;
@@ -41,7 +46,11 @@ const DIRECTORY_BYTES: usize = DIRECTORY_ENTRY_BYTES * SECTION_COUNT;
 const IMAGE_DIGEST_OFFSET: usize = DIRECTORY_OFFSET + DIRECTORY_BYTES;
 const HEADER_BYTES: usize = IMAGE_DIGEST_OFFSET + 32;
 const ABSENT: u32 = u32::MAX;
+const FOREIGN_SOURCE_BIT: u32 = 0x8000_0000;
 const DIGEST_DOMAIN: &[u8] = b"nudox.csharp.authority.image.sha256.v4\0";
+const TOP_LEVEL_DIGEST_DOMAIN: &[u8] = b"nudox.csharp.authority.image.sha256.v5\0";
+/// Reference owner identifying Roslyn's synthesized top-level file context in v5.
+pub const TOP_LEVEL_CONTEXT: u32 = u32::MAX;
 
 /// A fixed image section in canonical directory order.
 #[repr(u16)]
@@ -651,6 +660,8 @@ pub struct ResolvedReference<'image> {
     pub owner: u32,
     /// The resolved declaration row, when the target is inside the assembly.
     pub target: Option<u32>,
+    /// Compiler-resolved target in another captured source, still an untrusted claim.
+    pub foreign_source: Option<ForeignSourceTarget<'image>>,
     /// The written target spelling for foreign targets.
     pub spelling: Atom<'image>,
     /// The source file path as the producer saw it.
@@ -661,6 +672,115 @@ pub struct ResolvedReference<'image> {
     pub end: u32,
     /// The closed reference class.
     pub kind: ReferenceTag,
+}
+
+/// A Roslyn-resolved method declaration in a different captured source.
+/// Its bytes and selected program membership require independent admission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ForeignSourceTarget<'image> {
+    path_hex: &'image str,
+    documentation_id_hex: &'image str,
+    /// SHA-256 of the exact target source bytes.
+    pub source_sha256: [u8; 32],
+    /// Half-open UTF-8 byte extent of the method declaration.
+    pub declaration_start: u32,
+    /// Exclusive UTF-8 declaration end.
+    pub declaration_end: u32,
+    /// Inclusive UTF-8 identifier start.
+    pub name_start: u32,
+    /// Exclusive UTF-8 identifier end.
+    pub name_end: u32,
+}
+impl ForeignSourceTarget<'_> {
+    /// Decodes the bounded canonical package-relative path.
+    #[must_use]
+    pub fn path(&self) -> Option<String> {
+        String::from_utf8(decode_lower_hex(self.path_hex, 4096)?).ok()
+    }
+    /// Decodes the compiler's bounded method documentation ID.
+    #[must_use]
+    pub fn documentation_id(&self) -> Option<String> {
+        String::from_utf8(decode_lower_hex(self.documentation_id_hex, 4096)?).ok()
+    }
+}
+
+fn decode_lower_hex(value: &str, maximum: usize) -> Option<Vec<u8>> {
+    if value.is_empty() || value.len() % 2 != 0 || value.len() / 2 > maximum {
+        return None;
+    }
+    let mut output = Vec::with_capacity(value.len() / 2);
+    fn nibble(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            _ => None,
+        }
+    }
+    for pair in value.as_bytes().chunks_exact(2) {
+        output.push((nibble(pair[0])? << 4) | nibble(pair[1])?);
+    }
+    Some(output)
+}
+fn parse_foreign_source(atom: Atom<'_>) -> Option<ForeignSourceTarget<'_>> {
+    parse_foreign_source_claim(str::from_utf8(atom.bytes).ok()?)
+}
+
+/// Parses a bounded, untrusted Roslyn source coordinate; selection is separate.
+pub fn parse_foreign_source_claim(text: &str) -> Option<ForeignSourceTarget<'_>> {
+    let mut parts = text.split('|');
+    if parts.next()? != "csharp-source-v1" {
+        return None;
+    }
+    let path_hex = parts.next()?;
+    let path = String::from_utf8(decode_lower_hex(path_hex, 4096)?).ok()?;
+    if path.starts_with('/')
+        || (path.as_bytes().get(1) == Some(&b':') && path.as_bytes()[0].is_ascii_alphabetic())
+        || path.contains('\\')
+        || path.bytes().any(|b| b.is_ascii_control())
+        || path
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+        || !path.to_ascii_lowercase().ends_with(".cs")
+    {
+        return None;
+    }
+    let source_sha256: [u8; 32] = decode_lower_hex(parts.next()?, 32)?.try_into().ok()?;
+    fn number(value: &str) -> Option<u32> {
+        if value.is_empty()
+            || (value.len() > 1 && value.starts_with('0'))
+            || !value.bytes().all(|b| b.is_ascii_digit())
+        {
+            return None;
+        }
+        value.parse().ok()
+    }
+    let declaration_start = number(parts.next()?)?;
+    let declaration_end = number(parts.next()?)?;
+    let name_start = number(parts.next()?)?;
+    let name_end = number(parts.next()?)?;
+    let documentation_id_hex = parts.next()?;
+    let doc = String::from_utf8(decode_lower_hex(documentation_id_hex, 4096)?).ok()?;
+    if parts.next().is_some()
+        || source_sha256 == [0; 32]
+        || doc.len() <= 2
+        || doc.bytes().any(|b| b.is_ascii_control())
+        || !doc.starts_with("M:")
+        || declaration_start > name_start
+        || name_start >= name_end
+        || name_end > declaration_end
+        || declaration_end > 16 * 1024 * 1024
+    {
+        return None;
+    }
+    Some(ForeignSourceTarget {
+        path_hex,
+        documentation_id_hex,
+        source_sha256,
+        declaration_start,
+        declaration_end,
+        name_start,
+        name_end,
+    })
 }
 
 /// One borrowed declaration row with closed attributes and typed coordinates.
@@ -839,6 +959,8 @@ struct SectionBounds {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CSharpImage<'image> {
     bytes: &'image [u8],
+    version: u16,
+    compilation_errors: u16,
     sections: [SectionBounds; SECTION_COUNT],
     source_digest: [u8; 32],
 }
@@ -859,7 +981,7 @@ impl<'image> CSharpImage<'image> {
             }));
         }
         let version = u16_at(bytes, 4);
-        if version != VERSION {
+        if version != VERSION && version != TOP_LEVEL_VERSION {
             return Err(ImageError::Header(HeaderError::Version { found: version }));
         }
         let header_bytes = usize::from(u16_at(bytes, 6));
@@ -874,7 +996,7 @@ impl<'image> CSharpImage<'image> {
                 found: section_count,
             }));
         }
-        if bytes[46..DIRECTORY_OFFSET] != [0; 2] {
+        if version == VERSION && bytes[46..DIRECTORY_OFFSET] != [0; 2] {
             return Err(ImageError::Header(HeaderError::Reserved));
         }
         let body_bytes = usize::try_from(u32_at(bytes, 8)).map_err(|_| {
@@ -894,6 +1016,8 @@ impl<'image> CSharpImage<'image> {
         source_digest.copy_from_slice(&bytes[SOURCE_DIGEST_OFFSET..SOURCE_DIGEST_OFFSET + 32]);
         let image = Self {
             bytes,
+            version,
+            compilation_errors: u16_at(bytes, 46),
             sections,
             source_digest,
         };
@@ -915,6 +1039,12 @@ impl<'image> CSharpImage<'image> {
     #[must_use]
     pub const fn source_digest(self) -> [u8; 32] {
         self.source_digest
+    }
+
+    /// Saturated compiler error count. Zero is not a completeness guarantee.
+    #[must_use]
+    pub const fn compilation_errors(self) -> u16 {
+        self.compilation_errors
     }
 
     /// Iterates all declarations attributed to the source-binding file.
@@ -1074,7 +1204,11 @@ impl<'image> CSharpImage<'image> {
 
     fn validate_digest(self) -> Result<(), ImageError> {
         let mut digest = Sha256::new();
-        digest.update(DIGEST_DOMAIN);
+        digest.update(if self.version == TOP_LEVEL_VERSION {
+            TOP_LEVEL_DIGEST_DOMAIN
+        } else {
+            DIGEST_DOMAIN
+        });
         digest.update(&self.bytes[..IMAGE_DIGEST_OFFSET]);
         digest.update(&self.bytes[HEADER_BYTES..]);
         if digest.finalize().as_slice()
@@ -1298,15 +1432,37 @@ impl<'image> CSharpImage<'image> {
     fn validate_references(self) -> Result<(), ImageError> {
         for index in 0..self.section(Section::References).count {
             let row = self.row(Section::References, index);
-            self.coordinate(
-                u32_at(row, 0),
-                Section::Declarations,
-                self.section(Section::Declarations).count,
-            )?;
-            self.optional_coordinate(u32_at(row, 4), Section::Declarations)?;
+            if self.version != TOP_LEVEL_VERSION || u32_at(row, 0) != TOP_LEVEL_CONTEXT {
+                self.coordinate(
+                    u32_at(row, 0),
+                    Section::Declarations,
+                    self.section(Section::Declarations).count,
+                )?;
+            }
+            let raw_target = u32_at(row, 4);
+            if raw_target != ABSENT && raw_target & FOREIGN_SOURCE_BIT != 0 {
+                if self.version != TOP_LEVEL_VERSION
+                    || row[24] != ReferenceTag::Invocation as u8
+                    || parse_foreign_source(self.atom(raw_target & !FOREIGN_SOURCE_BIT)?).is_none()
+                {
+                    return Err(ImageError::DeclarationReserved {
+                        index,
+                        plane: Section::References,
+                    });
+                }
+            } else {
+                self.optional_coordinate(raw_target, Section::Declarations)?;
+            }
             self.atom(u32_at(row, 8))?;
             self.atom(u32_at(row, 12))?;
             if ReferenceTag::decode(row[24]).is_none() || row[25..28] != [0; 3] {
+                return Err(ImageError::DeclarationKind {
+                    index,
+                    found: row[24],
+                    plane: Section::References,
+                });
+            }
+            if u32_at(row, 0) == TOP_LEVEL_CONTEXT && row[24] != ReferenceTag::Invocation as u8 {
                 return Err(ImageError::DeclarationKind {
                     index,
                     found: row[24],
@@ -1592,33 +1748,45 @@ impl<'image> Iterator for ReferenceIter<'image> {
         let row = image.row(Section::References, self.next);
         self.next += 1;
         Some(
-            image
-                .coordinate(
+            (if image.version == TOP_LEVEL_VERSION && u32_at(row, 0) == TOP_LEVEL_CONTEXT {
+                Ok(TOP_LEVEL_CONTEXT as usize)
+            } else {
+                image.coordinate(
                     u32_at(row, 0),
                     Section::Declarations,
                     image.section(Section::Declarations).count,
                 )
-                .and_then(|owner| {
-                    let target =
-                        image.optional_coordinate(u32_at(row, 4), Section::Declarations)?;
-                    let spelling = image.atom(u32_at(row, 8))?;
-                    let file = image.atom(u32_at(row, 12))?;
-                    let kind =
-                        ReferenceTag::decode(row[24]).ok_or(ImageError::DeclarationKind {
-                            index: owner,
-                            found: row[24],
-                            plane: Section::References,
-                        })?;
-                    Ok(ResolvedReference {
-                        owner: u32::try_from(owner).unwrap_or(u32::MAX),
-                        target,
-                        spelling,
-                        file,
-                        start: u32_at(row, 16),
-                        end: u32_at(row, 20),
-                        kind,
-                    })
-                }),
+            })
+            .and_then(|owner| {
+                let raw_target = u32_at(row, 4);
+                let (target, foreign_source) =
+                    if raw_target != ABSENT && raw_target & FOREIGN_SOURCE_BIT != 0 {
+                        let atom = image.atom(raw_target & !FOREIGN_SOURCE_BIT)?;
+                        (None, parse_foreign_source(atom))
+                    } else {
+                        (
+                            image.optional_coordinate(raw_target, Section::Declarations)?,
+                            None,
+                        )
+                    };
+                let spelling = image.atom(u32_at(row, 8))?;
+                let file = image.atom(u32_at(row, 12))?;
+                let kind = ReferenceTag::decode(row[24]).ok_or(ImageError::DeclarationKind {
+                    index: owner,
+                    found: row[24],
+                    plane: Section::References,
+                })?;
+                Ok(ResolvedReference {
+                    owner: u32::try_from(owner).unwrap_or(u32::MAX),
+                    target,
+                    foreign_source,
+                    spelling,
+                    file,
+                    start: u32_at(row, 16),
+                    end: u32_at(row, 20),
+                    kind,
+                })
+            }),
         )
     }
 

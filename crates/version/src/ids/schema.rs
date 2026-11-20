@@ -72,6 +72,16 @@ pub trait CanonicalRelation: Relation {
     /// not expose a decoder, or [`RelationDecodeError::Malformed`] when the
     /// body cannot be decoded as one value.
     fn decode_value(bytes: &[u8]) -> Result<Self::Value, RelationDecodeError>;
+    /// Checks whether an admitted value re-encodes to these exact canonical
+    /// bytes. Relations may override this with an allocation-free streaming
+    /// comparison; the default preserves the existing encoder comparison.
+    /// An override must return true if and only if the exact bytes emitted by
+    /// `encode_value` equal `bytes`; an approximation weakens admission.
+    fn canonical_value_matches(value: &Self::Value, bytes: &[u8]) -> bool {
+        let mut encoded = Vec::new();
+        Self::encode_value(value, &mut encoded);
+        encoded == bytes
+    }
     /// Writes a key whose byte order is exactly the relation's key order.
     ///
     /// Replication compares keys as raw bytes: a Merkle page must list its
@@ -85,6 +95,16 @@ pub trait CanonicalRelation: Relation {
         Self::encode_key(key, output);
     }
 }
+/// Explicit contract for relations whose decoder preflights lengths/counts
+/// before allocation and whose retained key/value heap is bounded by encoded
+/// bytes plus fixed per-row overhead already included in tree metadata charges.
+/// Implementors must also bound temporary whole-node decoding and encoding by
+/// `NODE_DECODE_SCRATCH` for a canonical node under the standard cut policy.
+pub trait BoundedCanonicalRelation: CanonicalRelation {
+    /// Conservative temporary bytes for one bounded canonical node decode.
+    const NODE_DECODE_SCRATCH: usize;
+}
+
 use core::fmt;
 
 use super::CANONICAL_VERSION;

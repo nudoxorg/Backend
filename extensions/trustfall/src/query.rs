@@ -24,6 +24,12 @@ use trustfall::provider::{
 };
 use trustfall::{FieldValue, QueryResultStream, Schema};
 
+mod corpus_admission;
+pub use corpus_admission::{
+    SemanticQueryAdmissionBudget, semantic_query_corpus_admission_overhead,
+};
+use corpus_admission::{check_cancelled, identity_matches, lookup_id, sort_ids};
+
 const SCHEMA: &str = r"
 schema { query: Root }
 
@@ -125,6 +131,17 @@ impl PackageScopeEvidence {
     }
 }
 
+/// Qualification attached to compiler facts that are admitted into a query
+/// corpus. Observed facts are source-proven for the selected image but do not
+/// claim complete discovery or current policy eligibility.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompilerEvidenceAuthority {
+    /// The compiler publication is current and complete for its selected scope.
+    Current,
+    /// The image and source are proven, while discovery/policy completeness is unknown.
+    Observed,
+}
+
 /// Compiler-owned semantic authority retained for one declaration.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompilerSemanticEvidence {
@@ -134,6 +151,7 @@ pub struct CompilerSemanticEvidence {
     declaration: DeclarationIdentity,
     image: [u8; 32],
     facts: SemanticImageFacts,
+    authority: CompilerEvidenceAuthority,
 }
 
 impl CompilerSemanticEvidence {
@@ -154,7 +172,23 @@ impl CompilerSemanticEvidence {
             declaration,
             image,
             facts,
+            authority: CompilerEvidenceAuthority::Current,
         }
+    }
+
+    /// Retains a declaration from a source-proven observed native image.
+    #[must_use]
+    pub fn new_observed(
+        package: PackageKey,
+        coordinate: PackageUrl,
+        profile: LanguageProfile,
+        declaration: DeclarationIdentity,
+        image: [u8; 32],
+        facts: SemanticImageFacts,
+    ) -> Self {
+        let mut value = Self::new(package, coordinate, profile, declaration, image, facts);
+        value.authority = CompilerEvidenceAuthority::Observed;
+        value
     }
 
     /// Returns the package that owns the declaration.
@@ -193,6 +227,12 @@ impl CompilerSemanticEvidence {
         self.facts
     }
 
+    /// Returns whether this fact is complete current evidence or observed-only evidence.
+    #[must_use]
+    pub const fn authority(&self) -> CompilerEvidenceAuthority {
+        self.authority
+    }
+
     /// Returns the canonical package-and-declaration product row identity.
     #[must_use]
     pub fn row_id(&self) -> String {
@@ -212,6 +252,7 @@ pub struct CompilerExternalTargetEvidence {
     target: ExternalTargetIdentity,
     image: [u8; 32],
     facts: SemanticImageFacts,
+    authority: CompilerEvidenceAuthority,
 }
 
 impl CompilerExternalTargetEvidence {
@@ -232,7 +273,23 @@ impl CompilerExternalTargetEvidence {
             target,
             image,
             facts,
+            authority: CompilerEvidenceAuthority::Current,
         }
+    }
+
+    /// Retains an external endpoint from a source-proven observed native image.
+    #[must_use]
+    pub fn new_observed(
+        package: PackageKey,
+        coordinate: PackageUrl,
+        profile: LanguageProfile,
+        target: ExternalTargetIdentity,
+        image: [u8; 32],
+        facts: SemanticImageFacts,
+    ) -> Self {
+        let mut value = Self::new(package, coordinate, profile, target, image, facts);
+        value.authority = CompilerEvidenceAuthority::Observed;
+        value
     }
 
     /// Returns the package that owns this external reference.
@@ -269,6 +326,12 @@ impl CompilerExternalTargetEvidence {
     #[must_use]
     pub const fn facts(&self) -> SemanticImageFacts {
         self.facts
+    }
+
+    /// Returns the qualification carried by this endpoint's source image.
+    #[must_use]
+    pub const fn authority(&self) -> CompilerEvidenceAuthority {
+        self.authority
     }
 
     /// Returns the only product row identity admitted for this scoped target.
@@ -317,6 +380,55 @@ impl StructuralFallbackEvidence {
     }
 }
 
+/// A declaration projected from the selected SQL native relation. This is
+/// native outline evidence, not compiler-semantic or source-read authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SqlNativeQueryEvidence {
+    package: PackageKey,
+    selection_digest: [u8; 32],
+    inventory_digest: [u8; 32],
+    host: [u8; 32],
+    input: [u8; 32],
+    source: [u8; 32],
+    producer: [u8; 32],
+    settings: [u8; 32],
+    fact_digest: [u8; 32],
+    ordinal: u32,
+    identity_preimage: String,
+}
+
+impl SqlNativeQueryEvidence {
+    /// Retains the exact selected host basis and its declaration identity.
+    #[must_use]
+    pub fn new(
+        package: PackageKey,
+        selection_digest: [u8; 32],
+        inventory_digest: [u8; 32],
+        host: [u8; 32],
+        input: [u8; 32],
+        source: [u8; 32],
+        producer: [u8; 32],
+        settings: [u8; 32],
+        fact_digest: [u8; 32],
+        ordinal: u32,
+        identity_preimage: String,
+    ) -> Self {
+        Self {
+            package,
+            selection_digest,
+            inventory_digest,
+            host,
+            input,
+            source,
+            producer,
+            settings,
+            fact_digest,
+            ordinal,
+            identity_preimage,
+        }
+    }
+}
+
 /// Closed authority alternatives accepted by the graph extension.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SemanticQueryEvidence {
@@ -328,6 +440,8 @@ pub enum SemanticQueryEvidence {
     CompilerExternalTarget(CompilerExternalTargetEvidence),
     /// Explicitly non-semantic structural fallback facts.
     StructuralFallback(StructuralFallbackEvidence),
+    /// Selected SQL native declaration outline; no compiler claim.
+    SqlNative(SqlNativeQueryEvidence),
 }
 
 impl SemanticQueryEvidence {
@@ -337,15 +451,23 @@ impl SemanticQueryEvidence {
             Self::Compiler(value) => value.package(),
             Self::CompilerExternalTarget(value) => value.package(),
             Self::StructuralFallback(value) => value.package(),
+            Self::SqlNative(value) => value.package,
         }
     }
 
-    fn state(&self) -> &'static str {
+    pub(crate) fn state(&self) -> &'static str {
         match self {
             Self::Package(_) => "package_scope",
-            Self::Compiler(_) => "compiler_semantic",
-            Self::CompilerExternalTarget(_) => "compiler_external_target",
+            Self::Compiler(value) => match value.authority() {
+                CompilerEvidenceAuthority::Current => "compiler_semantic",
+                CompilerEvidenceAuthority::Observed => "compiler_observed",
+            },
+            Self::CompilerExternalTarget(value) => match value.authority() {
+                CompilerEvidenceAuthority::Current => "compiler_external_target",
+                CompilerEvidenceAuthority::Observed => "compiler_external_observed",
+            },
             Self::StructuralFallback(_) => "structural_fallback",
+            Self::SqlNative(_) => "sql_native",
         }
     }
 
@@ -355,6 +477,7 @@ impl SemanticQueryEvidence {
             Self::Compiler(value) => Some(value.profile()),
             Self::CompilerExternalTarget(value) => Some(value.profile()),
             Self::StructuralFallback(value) => Some(value.profile()),
+            Self::SqlNative(_) => None,
         }
     }
 
@@ -362,7 +485,7 @@ impl SemanticQueryEvidence {
         match self {
             Self::Compiler(value) => Some(value.coordinate().as_str()),
             Self::CompilerExternalTarget(value) => Some(value.coordinate().as_str()),
-            Self::Package(_) | Self::StructuralFallback(_) => None,
+            Self::Package(_) | Self::StructuralFallback(_) | Self::SqlNative(_) => None,
         }
     }
 }
@@ -441,7 +564,9 @@ impl SemanticQueryFact {
 pub struct SemanticQueryCorpus {
     workspace: WorkspaceRoot,
     evidence_digest: [u8; 32],
-    facts: Arc<[SemanticQueryFact]>,
+    // Move the existing Vec owner into one fixed Arc allocation. Converting
+    // Vec into Arc<[T]> instead would allocate and copy its entire row buffer.
+    facts: Arc<Vec<SemanticQueryFact>>,
     limits: crate::Limits,
 }
 
@@ -461,14 +586,65 @@ impl SemanticQueryCorpus {
         facts: Vec<SemanticQueryFact>,
         limits: crate::Limits,
     ) -> Result<Self, QueryError> {
+        Self::admit_controlled(workspace, facts, limits, None, &|| false)
+    }
+
+    /// Admits a corpus while bounding retained requested layouts and validation
+    /// scratch before allocating its exact identity index or shared Vec owner.
+    /// The cancellation observer is checked throughout measurement, indexing,
+    /// evidence/edge validation, and digest construction.
+    pub fn admit_with_budget_controlled(
+        workspace: WorkspaceRoot,
+        facts: Vec<SemanticQueryFact>,
+        limits: crate::Limits,
+        budget: SemanticQueryAdmissionBudget,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Self, QueryError> {
+        Self::admit_controlled(workspace, facts, limits, Some(budget), cancelled)
+    }
+
+    fn admit_controlled(
+        workspace: WorkspaceRoot,
+        facts: Vec<SemanticQueryFact>,
+        limits: crate::Limits,
+        budget: Option<SemanticQueryAdmissionBudget>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Self, QueryError> {
+        check_cancelled(cancelled)?;
         let limits = limits.validate().map_err(|_| QueryError::InvalidLimit)?;
         if facts.len() > limits.max_rows {
             return Err(QueryError::InvalidLimit);
         }
-        let mut ids = BTreeMap::<&str, usize>::new();
+        let extra = if let Some(budget) = budget {
+            let extra = semantic_query_corpus_admission_overhead(
+                facts.len(),
+                budget.allocation_quota_per_allocation,
+            )?;
+            let storage_limit = budget
+                .maximum_requested_bytes
+                .checked_sub(extra)
+                .ok_or(QueryError::InvalidLimit)?;
+            // This first pass only reads allocation layouts. It cannot create
+            // an Evidence String, even when the supplied presentation or alias
+            // evidence is malformed. Reserve the bounded error path first.
+            measure_semantic_query_storage_controlled(
+                &facts,
+                facts.capacity(),
+                crate::Limits {
+                    max_total_bytes: storage_limit,
+                    ..limits
+                },
+                budget.allocation_quota_per_allocation,
+                cancelled,
+            )?;
+            extra
+        } else {
+            0
+        };
         let mut admitted_bytes = 0_usize;
-        for (index, fact) in facts.iter().enumerate() {
-            admit_fact_envelope(fact, limits, &mut admitted_bytes)?;
+        for fact in &facts {
+            check_cancelled(cancelled)?;
+            admit_fact_envelope(fact, limits, &mut admitted_bytes, cancelled)?;
             let row = fact.presentation();
             if row.id.is_empty()
                 || row.kind.is_empty()
@@ -479,14 +655,46 @@ impl SemanticQueryCorpus {
                     "semantic presentation contains an empty required field".to_owned(),
                 ));
             }
-            if ids.insert(&row.id, index).is_some() {
+        }
+        if let Some(budget) = budget {
+            let retained = measure_semantic_query_facts_with_quota_controlled(
+                &facts,
+                facts.capacity(),
+                limits,
+                budget.allocation_quota_per_allocation,
+                cancelled,
+            )?;
+            if retained
+                .checked_add(extra)
+                .is_none_or(|bytes| bytes > budget.maximum_requested_bytes)
+            {
+                return Err(QueryError::InvalidLimit);
+            }
+        }
+        // bytemuck's safe pinned API requests Layout::array::<usize>(len)
+        // directly. The immutable facts remain in their original input order.
+        check_cancelled(cancelled)?;
+        let mut ids = bytemuck::allocation::try_zeroed_slice_box::<usize>(facts.len())
+            .map_err(|()| QueryError::InvalidLimit)?;
+        for (index, slot) in ids.iter_mut().enumerate() {
+            check_cancelled(cancelled)?;
+            *slot = index;
+        }
+        sort_ids(&mut ids, &facts, cancelled)?;
+        for pair in ids.windows(2) {
+            check_cancelled(cancelled)?;
+            if facts[pair[0]].presentation.id == facts[pair[1]].presentation.id {
                 return Err(QueryError::Evidence(
                     "semantic corpus contains a duplicate row identity".to_owned(),
                 ));
             }
+        }
+        for fact in &facts {
+            check_cancelled(cancelled)?;
+            let row = fact.presentation();
             match fact.evidence() {
-                SemanticQueryEvidence::Package(value) => {
-                    if row.project.is_some() || row.id != value.row_id() {
+                SemanticQueryEvidence::Package(_) => {
+                    if row.project.is_some() || !identity_matches(fact) {
                         return Err(QueryError::Evidence(
                             "package presentation differs from its typed identity".to_owned(),
                         ));
@@ -494,7 +702,7 @@ impl SemanticQueryCorpus {
                 }
                 SemanticQueryEvidence::Compiler(value) => {
                     admit_compiler_image(value.coordinate(), value.profile(), value.facts())?;
-                    if row.id != value.row_id() {
+                    if !identity_matches(fact) {
                         return Err(QueryError::Evidence(
                             "compiler declaration presentation differs from its typed identity"
                                 .to_owned(),
@@ -503,7 +711,7 @@ impl SemanticQueryCorpus {
                 }
                 SemanticQueryEvidence::CompilerExternalTarget(value) => {
                     admit_compiler_image(value.coordinate(), value.profile(), value.facts())?;
-                    if row.kind != "external" || row.id != value.row_id() {
+                    if row.kind != "external" || !identity_matches(fact) {
                         return Err(QueryError::Evidence(
                             "compiler external target presentation differs from its typed identity"
                                 .to_owned(),
@@ -517,12 +725,20 @@ impl SemanticQueryCorpus {
                     }
                 }
                 SemanticQueryEvidence::StructuralFallback(_) => {}
+                SemanticQueryEvidence::SqlNative(_) => {
+                    if !identity_matches(fact) || row.parent.is_some() || !row.related.is_empty() {
+                        return Err(QueryError::Evidence(
+                            "SQL native presentation differs from its typed identity".to_owned(),
+                        ));
+                    }
+                }
             }
         }
         for fact in &facts {
+            check_cancelled(cancelled)?;
             let row = fact.presentation();
             if let Some(project) = row.project.as_deref() {
-                let Some(project) = ids.get(project).map(|index| &facts[*index]) else {
+                let Some(project) = lookup_id(&ids, &facts, project) else {
                     return Err(QueryError::Evidence(
                         "semantic row refers to a missing project".to_owned(),
                     ));
@@ -540,7 +756,8 @@ impl SemanticQueryCorpus {
                 ));
             }
             for target in row.parent.iter().chain(row.related.iter()) {
-                let Some(target) = ids.get(target.as_str()).map(|index| &facts[*index]) else {
+                check_cancelled(cancelled)?;
+                let Some(target) = lookup_id(&ids, &facts, target) else {
                     return Err(QueryError::Evidence(
                         "semantic row refers to a missing graph target".to_owned(),
                     ));
@@ -561,19 +778,22 @@ impl SemanticQueryCorpus {
                         || source.profile() != external.profile()
                         || source.coordinate() != external.coordinate()
                         || source.facts() != external.facts()
+                        || source.authority() != external.authority()
                     {
                         return Err(QueryError::Evidence(
-                            "compiler external edge crossed its exact image authority".to_owned(),
+                            "compiler external edge crossed its exact image authority or qualification".to_owned(),
                         ));
                     }
                 }
             }
         }
-        let evidence_digest = digest_corpus(workspace, &facts);
+        let evidence_digest = digest_corpus_controlled(workspace, &facts, cancelled)?;
+        check_cancelled(cancelled)?;
+        drop(ids);
         Ok(Self {
             workspace,
             evidence_digest,
-            facts: facts.into(),
+            facts: Arc::new(facts),
             limits,
         })
     }
@@ -603,11 +823,219 @@ impl SemanticQueryCorpus {
     }
 }
 
+/// Measures retained query fact envelopes against the same limits used by
+/// corpus admission, without cloning them. This permits a producer to reserve
+/// the remaining shared budget before constructing additional facts.
+pub fn measure_semantic_query_facts(
+    facts: &[SemanticQueryFact],
+    reserved_rows: usize,
+    limits: crate::Limits,
+) -> Result<usize, QueryError> {
+    measure_semantic_query_facts_controlled(facts, reserved_rows, limits, &|| false)
+}
+
+/// Measures the same retained envelopes while observing caller cancellation
+/// throughout rows, related identities and bounded alias observations.
+pub fn measure_semantic_query_facts_controlled(
+    facts: &[SemanticQueryFact],
+    reserved_rows: usize,
+    limits: crate::Limits,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<usize, QueryError> {
+    measure_semantic_query_facts_with_quota_controlled(facts, reserved_rows, limits, 0, cancelled)
+}
+
+/// Measures wire envelopes and retained allocation layouts, plus an explicit
+/// policy credit per retained allocation owner. The fact Vec backing is one
+/// owner regardless of its capacity; its cells are charged by requested size.
+/// Each related/alias box, boxed text and nonempty-capacity String is counted
+/// once. No allocator metadata or RSS bound is inferred from this credit.
+pub fn measure_semantic_query_facts_with_quota_controlled(
+    facts: &[SemanticQueryFact],
+    reserved_rows: usize,
+    limits: crate::Limits,
+    allocation_quota_per_allocation: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<usize, QueryError> {
+    let mut bytes = measure_semantic_query_storage_controlled(
+        facts,
+        reserved_rows,
+        limits,
+        allocation_quota_per_allocation,
+        cancelled,
+    )?;
+    for fact in facts {
+        check_cancelled(cancelled)?;
+        // Keep the historical wire-envelope charge in addition to storage.
+        admit_fact_envelope(fact, limits, &mut bytes, cancelled)?;
+    }
+    Ok(bytes)
+}
+
+fn measure_semantic_query_storage_controlled(
+    facts: &[SemanticQueryFact],
+    reserved_rows: usize,
+    limits: crate::Limits,
+    allocation_quota_per_allocation: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<usize, QueryError> {
+    check_cancelled(cancelled)?;
+    if facts.len() > limits.max_rows || reserved_rows < facts.len() {
+        return Err(QueryError::InvalidLimit);
+    }
+    let buffer_bytes = reserved_rows
+        .checked_mul(std::mem::size_of::<SemanticQueryFact>())
+        .ok_or(QueryError::InvalidLimit)?;
+    let mut bytes = 0;
+    charge_retained_allocation(
+        buffer_bytes,
+        allocation_quota_per_allocation,
+        limits,
+        &mut bytes,
+    )?;
+    for fact in facts {
+        check_cancelled(cancelled)?;
+        let row = fact.presentation();
+        for capacity in [
+            row.id.capacity(),
+            row.kind.capacity(),
+            row.coordinate.capacity(),
+            row.name.capacity(),
+            row.documentation.capacity(),
+        ] {
+            charge_retained_allocation(
+                capacity,
+                allocation_quota_per_allocation,
+                limits,
+                &mut bytes,
+            )?;
+        }
+        for value in [
+            row.signature.as_ref(),
+            row.project.as_ref(),
+            row.parent.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            charge_retained_allocation(
+                value.capacity(),
+                allocation_quota_per_allocation,
+                limits,
+                &mut bytes,
+            )?;
+        }
+        charge_retained_allocation(
+            row.related
+                .len()
+                .checked_mul(std::mem::size_of::<String>())
+                .ok_or(QueryError::InvalidLimit)?,
+            allocation_quota_per_allocation,
+            limits,
+            &mut bytes,
+        )?;
+        for value in row.related.iter() {
+            check_cancelled(cancelled)?;
+            charge_retained_allocation(
+                value.capacity(),
+                allocation_quota_per_allocation,
+                limits,
+                &mut bytes,
+            )?;
+        }
+        match fact.evidence() {
+            SemanticQueryEvidence::Compiler(value) => charge_retained_allocation(
+                value.coordinate().as_str().len(),
+                allocation_quota_per_allocation,
+                limits,
+                &mut bytes,
+            )?,
+            SemanticQueryEvidence::CompilerExternalTarget(value) => charge_retained_allocation(
+                value.coordinate().as_str().len(),
+                allocation_quota_per_allocation,
+                limits,
+                &mut bytes,
+            )?,
+            SemanticQueryEvidence::SqlNative(value) => charge_retained_allocation(
+                value.identity_preimage.capacity(),
+                allocation_quota_per_allocation,
+                limits,
+                &mut bytes,
+            )?,
+            SemanticQueryEvidence::Package(value) => {
+                if let Some(aliases) = value.cargo_aliases() {
+                    let alias_cells = aliases
+                        .aliases()
+                        .len()
+                        .checked_mul(size_of::<backend_library::CargoPackageAliasV1>())
+                        .ok_or(QueryError::InvalidLimit)?;
+                    charge_retained_allocation(
+                        alias_cells,
+                        allocation_quota_per_allocation,
+                        limits,
+                        &mut bytes,
+                    )?;
+                    charge_retained_allocation(
+                        aliases
+                            .observations()
+                            .len()
+                            .checked_mul(std::mem::size_of::<
+                                backend_library::CargoPackageAliasObservationV1,
+                            >())
+                            .ok_or(QueryError::InvalidLimit)?,
+                        allocation_quota_per_allocation,
+                        limits,
+                        &mut bytes,
+                    )?;
+                    for alias in aliases.aliases() {
+                        check_cancelled(cancelled)?;
+                        charge_retained_allocation(
+                            alias.as_str().len(),
+                            allocation_quota_per_allocation,
+                            limits,
+                            &mut bytes,
+                        )?;
+                    }
+                    for observation in aliases.observations() {
+                        check_cancelled(cancelled)?;
+                        charge_retained_allocation(
+                            observation.alias_indices().len(),
+                            allocation_quota_per_allocation,
+                            limits,
+                            &mut bytes,
+                        )?;
+                    }
+                }
+            }
+            SemanticQueryEvidence::StructuralFallback(_) => {}
+        }
+    }
+    Ok(bytes)
+}
+
+fn charge_retained_allocation(
+    requested_bytes: usize,
+    allocation_quota_per_allocation: usize,
+    limits: crate::Limits,
+    bytes: &mut usize,
+) -> Result<(), QueryError> {
+    let charge = requested_bytes
+        .checked_add(if requested_bytes == 0 {
+            0
+        } else {
+            allocation_quota_per_allocation
+        })
+        .ok_or(QueryError::InvalidLimit)?;
+    charge_bytes(charge, limits, bytes)
+}
+
 fn admit_fact_envelope(
     fact: &SemanticQueryFact,
     limits: crate::Limits,
     admitted_bytes: &mut usize,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<(), QueryError> {
+    check_cancelled(cancelled)?;
     let row = fact.presentation();
     let alias_field_count = match fact.evidence() {
         SemanticQueryEvidence::Package(value) => value
@@ -642,6 +1070,7 @@ fn admit_fact_envelope(
         .chain(row.parent.iter())
         .chain(row.related.iter())
     {
+        check_cancelled(cancelled)?;
         admit_text(value, limits, admitted_bytes)?;
     }
     if row.score.is_some() {
@@ -716,6 +1145,10 @@ fn admit_fact_envelope(
             charge_bytes(252, limits, admitted_bytes)
         }
         SemanticQueryEvidence::StructuralFallback(_) => charge_bytes(98, limits, admitted_bytes),
+        SemanticQueryEvidence::SqlNative(value) => {
+            admit_text(&value.identity_preimage, limits, admitted_bytes)?;
+            charge_bytes(292, limits, admitted_bytes)
+        }
     }
 }
 
@@ -767,12 +1200,17 @@ fn admit_compiler_image(
     Ok(())
 }
 
-fn digest_corpus(workspace: WorkspaceRoot, facts: &[SemanticQueryFact]) -> [u8; 32] {
+fn digest_corpus_controlled(
+    workspace: WorkspaceRoot,
+    facts: &[SemanticQueryFact],
+    cancelled: &dyn Fn() -> bool,
+) -> Result<[u8; 32], QueryError> {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"backend.trustfall.semantic-corpus.v2\0");
     hasher.update(workspace.as_bytes());
     hash_count(&mut hasher, facts.len());
     for fact in facts {
+        check_cancelled(cancelled)?;
         let row = fact.presentation();
         hash_bytes(&mut hasher, 0, row.id.as_bytes());
         hash_bytes(&mut hasher, 1, row.kind.as_bytes());
@@ -786,6 +1224,7 @@ fn digest_corpus(workspace: WorkspaceRoot, facts: &[SemanticQueryFact]) -> [u8; 
         hasher.update(&[9]);
         hash_count(&mut hasher, row.related.len());
         for target in &row.related {
+            check_cancelled(cancelled)?;
             hash_unlabeled_bytes(&mut hasher, target.as_bytes());
         }
         match fact.evidence() {
@@ -804,6 +1243,10 @@ fn digest_corpus(workspace: WorkspaceRoot, facts: &[SemanticQueryFact]) -> [u8; 
                 hasher.update(value.declaration().family.as_bytes());
                 hasher.update(value.declaration().variant.as_bytes());
                 hasher.update(&value.image());
+                hasher.update(&[match value.authority() {
+                    CompilerEvidenceAuthority::Current => 0,
+                    CompilerEvidenceAuthority::Observed => 1,
+                }]);
                 hash_image_facts(&mut hasher, value.facts());
             }
             SemanticQueryEvidence::CompilerExternalTarget(value) => {
@@ -813,6 +1256,10 @@ fn digest_corpus(workspace: WorkspaceRoot, facts: &[SemanticQueryFact]) -> [u8; 
                 hasher.update(&<[u8; 2]>::from(value.profile()));
                 hasher.update(value.target().as_bytes());
                 hasher.update(&value.image());
+                hasher.update(&[match value.authority() {
+                    CompilerEvidenceAuthority::Current => 0,
+                    CompilerEvidenceAuthority::Observed => 1,
+                }]);
                 hash_image_facts(&mut hasher, value.facts());
             }
             SemanticQueryEvidence::StructuralFallback(value) => {
@@ -822,9 +1269,23 @@ fn digest_corpus(workspace: WorkspaceRoot, facts: &[SemanticQueryFact]) -> [u8; 
                 hasher.update(&value.content);
                 hasher.update(&value.producer);
             }
+            SemanticQueryEvidence::SqlNative(value) => {
+                hasher.update(&[4]);
+                hasher.update(value.package.as_bytes());
+                hasher.update(&value.selection_digest);
+                hasher.update(&value.inventory_digest);
+                hasher.update(&value.host);
+                hasher.update(&value.input);
+                hasher.update(&value.source);
+                hasher.update(&value.producer);
+                hasher.update(&value.settings);
+                hasher.update(&value.fact_digest);
+                hasher.update(&value.ordinal.to_le_bytes());
+                hash_unlabeled_bytes(&mut hasher, value.identity_preimage.as_bytes());
+            }
         }
     }
-    *hasher.finalize().as_bytes()
+    Ok(*hasher.finalize().as_bytes())
 }
 
 fn hash_bytes(hasher: &mut blake3::Hasher, tag: u8, bytes: &[u8]) {
@@ -1356,7 +1817,8 @@ impl SemanticGraph {
                     external_targets.push(index);
                 }
                 SemanticQueryEvidence::Compiler(_)
-                | SemanticQueryEvidence::StructuralFallback(_) => declarations.push(index),
+                | SemanticQueryEvidence::StructuralFallback(_)
+                | SemanticQueryEvidence::SqlNative(_) => declarations.push(index),
             }
             project_members
                 .entry(fact.evidence().package())

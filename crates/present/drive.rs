@@ -33,7 +33,7 @@ use crate::identity::{Coordinate, Identity, KeyTag};
 use crate::outline::OutlineTree;
 use crate::page::Page;
 use crate::product::{ProductRecord, ProductView};
-use crate::project_coverage::read_current_project_coverage;
+use crate::project_coverage::{read_current_project_coverage, read_current_project_profiles};
 use crate::record::RecordList;
 use crate::shelf::Shelf;
 use crate::status::Status;
@@ -57,6 +57,8 @@ pub enum ContinuationCursor {
     IndexSearch(IndexSearchCursor),
     /// Root-bound native compiler-generation discovery cursor.
     SemanticVersions(backend_library::SemanticVersionsCursor),
+    /// A window over a complete references reply, bound to that exact listing.
+    ReferencePage(String),
 }
 
 /// Rows fetched for one page's members and relations.
@@ -171,6 +173,19 @@ pub trait Engine {
     ) -> Result<ReplyDto, ClientError> {
         Err(ClientError::Protocol(
             "engine does not expose native graph delivery windows".to_owned(),
+        ))
+    }
+
+    /// Reads an owner-certified incoming and outgoing related-edge window.
+    /// The owner verifies the cursor and selected declaration on every call.
+    fn declaration_related_window(
+        &mut self,
+        _selector: &DeclarationSelector,
+        _window: backend_library::QueryWindow,
+        _continuation: Option<backend_library::RelatedPageCursor>,
+    ) -> Result<ReplyDto, ClientError> {
+        Err(ClientError::Protocol(
+            "engine does not expose related edge delivery windows".to_owned(),
         ))
     }
 
@@ -397,7 +412,11 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
             coordinate,
             incoming,
         } => neighbourhood(engine, coordinate, *incoming),
-        Request::Search { text, limit } => {
+        Request::Search {
+            text,
+            limit,
+            declarations_only,
+        } => {
             let reply = read(
                 engine,
                 Probe::Search {
@@ -406,7 +425,7 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
                 },
             )?;
             let (snapshot, semantic_search, published_names) = search_snapshot(reply, "search")?;
-            let list = record_list(text, &snapshot);
+            let list = search_view(record_list(text, &snapshot), *declarations_only);
             let list = if let Some(status) = semantic_search {
                 list.with_semantic_search_status(status)
             } else {
@@ -417,14 +436,11 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
             } else {
                 list
             };
-            let list = if list.is_empty() {
-                list.with_empty_reason(
-                    if published_names.is_some() {
-                        "no current declaration names matched; full lexical search has not been queried in this result stage"
-                    } else {
-                        "no indexed declarations matched this query text; try a declaration name, signature fragment, or documentation keyword"
-                    },
-                )
+            let list = if list.is_empty() && list.hidden_non_declarations() > 0 {
+                let reason = hidden_only_reason(list.hidden_non_declarations(), list.has_more());
+                list.with_empty_reason(reason)
+            } else if list.is_empty() {
+                list.with_empty_reason(empty_search_reason(published_names.is_some(), text))
             } else {
                 list
             };
@@ -439,14 +455,80 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
                 },
                 "resolve",
             )?;
-            Ok(Answer::Records(Box::new(record_list(text, &snapshot))))
+            Ok(Answer::Records(Box::new(record_list(text, &snapshot).resolution_view())))
         }
         Request::Outline(path) => outline(engine, path),
+        Request::RelatedPage { .. } => Err(Fault::usage(
+            "related", "related edge pages require a surface with bounded edge output admission",
+        )),
         Request::OutlinePage { .. } | Request::GraphPage { .. } => {
             answer_paged(engine, request, None)
         }
         Request::Surface(command) => surface(engine, command),
     }
+}
+
+/// Explains a page whose every row was an import or an external reference.
+fn hidden_only_reason(hidden: usize, more: bool) -> String {
+    let mut reason = format!(
+        "all {hidden} row(s) on this page were imports or external references, which declarations_only leaves out"
+    );
+    reason.push_str(if more {
+        "; later pages may hold declarations, so continue with the cursor, or drop declarations_only to see these rows"
+    } else {
+        "; drop declarations_only to see them"
+    });
+    reason
+}
+
+/// Applies the caller's `declarations_only` choice to one search page.
+fn search_view(list: RecordList, declarations_only: bool) -> RecordList {
+    if declarations_only {
+        list.declarations_only_view()
+    } else {
+        list
+    }
+}
+
+/// Explains an empty search without implying the project has no such text.
+///
+/// An empty answer is only about the published index: files edited on disk after the last
+/// index are not searchable, dependencies are indexed only when added, and a phrase is
+/// matched as one piece of text, not as words. The note about a file type is given only
+/// when the query itself names that type, so a project without it never reads about it.
+#[must_use]
+pub fn empty_search_reason(published_names_only: bool, text: &str) -> String {
+    let mut reason = if published_names_only {
+        "no current declaration names matched; full lexical search has not been queried in this result stage"
+    } else {
+        "no indexed declarations matched this query text; try a declaration name, signature fragment, or documentation keyword"
+    }
+    .to_owned();
+    if text.split_whitespace().nth(1).is_some() {
+        reason.push_str(
+            "; this text has several words and is matched as one phrase, so a distinctive single name works better (natural-language questions need semantic search, see the semantic_search status)",
+        );
+    }
+    reason.push_str(
+        "; the index reflects files as of the last index, so code edited or added on disk since then is not searchable until it is re-indexed (nudox add, backend.index). Dependencies (node_modules, registry packages) are not indexed unless added: acquire one release with `nudox add <pinned purl>` (backend.index with the pinned purl as path), and find its purl with `index-search <name>` (backend.index_search)",
+    );
+    let lowered = text.to_ascii_lowercase();
+    if text.starts_with(['.', '#']) || text.starts_with("--") || lowered.contains(".css") {
+        reason.push_str(
+            ". For CSS classes and custom properties, use stylo-query or backend.stylo_query with the indexed package",
+        );
+    }
+    if lowered.contains(".sql") {
+        reason.push_str(
+            ". For SQL objects and analysis gaps, use sql-query or backend.sql_query",
+        );
+    }
+    if lowered.contains(".vue") {
+        reason.push_str(
+            ". Inline script blocks in .vue single-file components have partial native syntax coverage; template, style, external script and complete Vue framework semantics are unavailable (`status` counts hosts with unavailable inline scripts)",
+        );
+    }
+    reason
 }
 
 /// Projects an already admitted native search/name/outline reply without another read.
@@ -456,9 +538,13 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
 /// Returns the existing catalog projection fault for a changed reply shape or failed command.
 pub fn catalog_page_answer(request: &Request, reply: ReplyDto) -> Result<Answer, Fault> {
     match request {
-        Request::Search { text, .. } => {
+        Request::Search {
+            text,
+            declarations_only,
+            ..
+        } => {
             let (snapshot, semantic_search, published_names) = search_snapshot(reply, "search")?;
-            let list = record_list(text, &snapshot);
+            let list = search_view(record_list(text, &snapshot), *declarations_only);
             let list = if let Some(status) = semantic_search {
                 list.with_semantic_search_status(status)
             } else {
@@ -469,10 +555,11 @@ pub fn catalog_page_answer(request: &Request, reply: ReplyDto) -> Result<Answer,
             } else {
                 list
             };
-            let list = if list.is_empty() {
-                list.with_empty_reason(if published_names.is_some() {
-                    "no current declaration names matched; full lexical search has not been queried in this result stage"
-                } else { "no indexed declarations matched this query text; try a declaration name, signature fragment, or documentation keyword" })
+            let list = if list.is_empty() && list.hidden_non_declarations() > 0 {
+                let reason = hidden_only_reason(list.hidden_non_declarations(), list.has_more());
+                list.with_empty_reason(reason)
+            } else if list.is_empty() {
+                list.with_empty_reason(empty_search_reason(published_names.is_some(), text))
             } else {
                 list
             };
@@ -482,7 +569,7 @@ pub fn catalog_page_answer(request: &Request, reply: ReplyDto) -> Result<Answer,
             let CommandReply::Names(snapshot) = reply.reply else {
                 return Err(shape("resolve"));
             };
-            Ok(Answer::Records(Box::new(record_list(text, &snapshot))))
+            Ok(Answer::Records(Box::new(record_list(text, &snapshot).resolution_view())))
         }
         Request::GraphPage { selector, .. } => {
             let CommandReply::ProjectionPage(page) = reply.reply else {
@@ -505,13 +592,14 @@ pub fn catalog_page_answer(request: &Request, reply: ReplyDto) -> Result<Answer,
                 } => value.clone(),
                 DeclarationSelector::Selected(id) => backend_library::encode_id(id.bytes()),
             };
-            let records = record_list(&heading, &page.snapshot);
+            // A completed row page does not certify complete relation evidence.
+            let records = graph_page_records(&heading, &page.snapshot);
             if records.page_basis().is_none() {
                 return Err(shape("graph-page source basis"));
             }
             Ok(Answer::Records(Box::new(records)))
         }
-        Request::OutlinePage { path, limit } => {
+        Request::OutlinePage { path, limit, kinds } => {
             let CommandReply::ProjectionPage(page) = reply.reply else {
                 return Err(shape("outline-page"));
             };
@@ -530,6 +618,7 @@ pub fn catalog_page_answer(request: &Request, reply: ReplyDto) -> Result<Answer,
                 .as_ref()
                 .ok_or_else(|| shape("outline-page order"))?;
             crate::outline::page_tree(path, &page.snapshot, *limit, order)
+                .map(|tree| tree.filtered(kinds))
                 .map(Box::new)
                 .map(Answer::Outline)
                 .map_err(|error| Fault::from_client_error(&error, Operand::Path(path.clone())))
@@ -546,7 +635,11 @@ pub fn answer_paged(
     continuation: Option<PageContinuation>,
 ) -> Result<Answer, Fault> {
     match request {
-        Request::Search { text, limit } => {
+        Request::Search {
+            text,
+            limit,
+            declarations_only,
+        } => {
             let reply = read_page(
                 engine,
                 Probe::Search {
@@ -556,7 +649,7 @@ pub fn answer_paged(
                 continuation,
             )?;
             let (snapshot, semantic_search, published_names) = search_snapshot(reply, "search")?;
-            let list = record_list(text, &snapshot);
+            let list = search_view(record_list(text, &snapshot), *declarations_only);
             let list = if let Some(status) = semantic_search {
                 list.with_semantic_search_status(status)
             } else {
@@ -567,14 +660,11 @@ pub fn answer_paged(
             } else {
                 list
             };
-            let list = if list.is_empty() {
-                list.with_empty_reason(
-                    if published_names.is_some() {
-                        "no current declaration names matched; full lexical search has not been queried in this result stage"
-                    } else {
-                        "no indexed declarations matched this query text; try a declaration name, signature fragment, or documentation keyword"
-                    },
-                )
+            let list = if list.is_empty() && list.hidden_non_declarations() > 0 {
+                let reason = hidden_only_reason(list.hidden_non_declarations(), list.has_more());
+                list.with_empty_reason(reason)
+            } else if list.is_empty() {
+                list.with_empty_reason(empty_search_reason(published_names.is_some(), text))
             } else {
                 list
             };
@@ -590,7 +680,7 @@ pub fn answer_paged(
                 continuation,
                 "resolve",
             )?;
-            Ok(Answer::Records(Box::new(record_list(text, &snapshot))))
+            Ok(Answer::Records(Box::new(record_list(text, &snapshot).resolution_view())))
         }
         Request::GraphPage { selector, limit } => {
             let selector = match selector {
@@ -624,7 +714,7 @@ pub fn answer_paged(
                 reply,
             )
         }
-        Request::OutlinePage { path, limit } => {
+        Request::OutlinePage { path, limit, .. } => {
             let reply = read_page(
                 engine,
                 Probe::OutlinePage {
@@ -661,7 +751,10 @@ fn shelf(engine: &mut dyn Engine) -> Result<Answer, Fault> {
     let shelf = match health.as_ref() {
         Some(health) => {
             let project_coverage = read_current_project_coverage(engine, &snapshot, health);
+            let profiles =
+                read_current_project_profiles(engine, &snapshot, health, &project_coverage);
             shelf_from_snapshot_with_project_coverage(&snapshot, tag, health, &project_coverage)
+                .with_profiles(&profiles)
         }
         None => shelf_from_snapshot(&snapshot, tag),
     };
@@ -786,6 +879,10 @@ pub fn resolve_declaration(
     )?;
     let mut exact = Vec::new();
     let mut folded = Vec::new();
+    // Same file and name, written with a line that no longer matches. An edit that
+    // moves lines must not turn a still-unique declaration into `not-found`.
+    let mut exact_moved = Vec::new();
+    let mut folded_moved = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for row in snapshot.root.rows() {
         let record = crate::record::Record::from_row(row);
@@ -799,16 +896,18 @@ pub fn resolve_declaration(
             continue;
         }
         if file_qualified
-            && (!identity.path().is_some_and(|path| {
+            && !identity.path().is_some_and(|path| {
                 path.as_str()
                     .strip_suffix(file)
                     .is_some_and(|prefix| prefix.is_empty() || prefix.ends_with('/'))
-            }) || line.is_some_and(|line| {
-                identity.line().map(crate::identity::LineNumber::get) != Some(line)
-            }))
+            })
         {
             continue;
         }
+        let line_moved = file_qualified
+            && line.is_some_and(|line| {
+                identity.line().map(crate::identity::LineNumber::get) != Some(line)
+            });
         let actual = if query.contains("::") {
             row.label
                 .rsplit_once("::")
@@ -818,13 +917,19 @@ pub fn resolve_declaration(
         };
         let exact_name =
             actual == query || (query.contains("::") && row.label.ends_with(&format!("::{query}")));
-        if exact_name {
-            exact.push(row.label.clone());
-        } else if actual.eq_ignore_ascii_case(query) {
-            folded.push(row.label.clone());
+        match (exact_name, line_moved) {
+            (true, false) => exact.push(row.label.clone()),
+            (true, true) => exact_moved.push(row.label.clone()),
+            (false, _) if actual.eq_ignore_ascii_case(query) => {
+                if line_moved { folded_moved.push(row.label.clone()) } else { folded.push(row.label.clone()) }
+            }
+            (false, _) => {}
         }
     }
-    let matches = if exact.is_empty() { folded } else { exact };
+    let matches = [exact, folded, exact_moved, folded_moved]
+        .into_iter()
+        .find(|candidates| !candidates.is_empty())
+        .unwrap_or_default();
     match matches.as_slice() {
         [only] if snapshot.next.is_none() => Ok(only.clone()),
         [] if snapshot.next.is_none() => Err(Fault::new(
@@ -917,6 +1022,7 @@ fn selected_declaration(
                         read: DeclarationRead::Related,
                     },
                     coordinate,
+                    &document,
                     &mut notes,
                 );
                 let members = probe_members(engine, coordinate, &document, &mut notes);
@@ -947,7 +1053,7 @@ fn selected_declaration(
             let CommandReply::Graph(snapshot) = reply.reply else {
                 return Err(shape("selected graph"));
             };
-            Ok(Answer::Records(Box::new(record_list(
+            Ok(Answer::Records(Box::new(graph_records(
                 &declaration_operand(selector),
                 &snapshot,
             ))))
@@ -963,7 +1069,7 @@ fn page(engine: &mut dyn Engine, text: &str, cursor: Option<&str>) -> Result<Pag
         return Err(shape("document"));
     };
     let mut notes = Vec::with_capacity(2);
-    let relation_rows = probe_rows(engine, coordinate, &mut notes);
+    let relation_rows = probe_rows(engine, coordinate, &document, &mut notes);
     let members = probe_members(engine, coordinate, &document, &mut notes);
     let page = page_from_document_with_graph_relations(
         coordinate,
@@ -1006,13 +1112,83 @@ fn neighbourhood(engine: &mut dyn Engine, text: &str, incoming: bool) -> Result<
     let CommandReply::Graph(snapshot) = reply.reply else {
         return Err(shape("graph"));
     };
-    let list = record_list(at, &snapshot);
-    let list = if list.is_empty() {
-        list.with_empty_reason("no graph edges at this coordinate; the authority recorded none")
+    Ok(Answer::Records(Box::new(graph_records(at, &snapshot))))
+}
+
+/// Maps coordinate and selected-symbol graph replies with identical coverage semantics.
+fn graph_records(at: &str, snapshot: &ViewSnapshot) -> RecordList {
+    let list = record_list(at, snapshot).with_graph_source_policies(snapshot.rich_graph.as_ref());
+    let gap = graph_relation_gap(snapshot);
+    let list = if let Some(gap) = gap {
+        list.with_graph_gap(gap)
     } else {
         list
     };
-    Ok(Answer::Records(Box::new(list)))
+    let list = if list.is_empty() {
+        let reason = if list.graph_gap().is_some() {
+            "no graph edges were returned; relation coverage is unknown"
+        } else {
+            "no graph edges at this coordinate; the authority recorded none"
+        };
+        list.with_empty_reason(reason)
+    } else {
+        list
+    };
+    list
+}
+
+fn graph_relation_gap(snapshot: &ViewSnapshot) -> Option<&str> {
+    if let Some(backend_library::GraphAvailability::Unavailable(reason)
+        | backend_library::GraphAvailability::Failed(reason)) =
+        snapshot.rich_graph.as_ref().map(|graph| &graph.availability)
+    {
+        return Some(reason.as_str());
+    }
+    if snapshot.graph_relations.is_none() {
+        return Some("No typed semantic relations were supplied; inspect package_profile");
+    }
+    match snapshot.rich_graph.as_ref().map(|rich| &rich.availability) {
+        Some(backend_library::GraphAvailability::Ready) => None,
+        Some(
+            backend_library::GraphAvailability::Unavailable(reason)
+            | backend_library::GraphAvailability::Failed(reason),
+        ) => Some(reason.as_str()),
+        Some(
+            backend_library::GraphAvailability::Partial { .. }
+            | backend_library::GraphAvailability::Loading,
+        ) => Some("Graph relation evidence is incomplete"),
+        None => {
+            Some("No complete semantic relation publication was supplied; inspect package_profile")
+        }
+    }
+}
+
+/// Projects a graph row page without treating completed pagination as relation coverage.
+#[must_use]
+pub fn graph_page_records(at: &str, snapshot: &ViewSnapshot) -> RecordList {
+    let gap = match snapshot.rich_graph.as_ref().map(|graph| &graph.availability) {
+        Some(backend_library::GraphAvailability::Unavailable(reason)
+            | backend_library::GraphAvailability::Failed(reason)) => reason.as_str(),
+        _ => "Graph relation coverage is not certified by this page; inspect package_profile and search source for additional relations",
+    };
+    record_list(at, snapshot)
+        .with_graph_source_policies(snapshot.rich_graph.as_ref())
+        .with_graph_gap(gap)
+}
+
+/// Render one admitted related-edge page without collapsing distinct kinds.
+pub fn related_edge_records(at: &str, page: &backend_library::RelatedEdgePage) -> Result<RecordList, Fault> {
+    let rows = page.snapshot.root.rows();
+    let mut edges = Vec::new();
+    for relation in page.snapshot.graph_relations.as_deref().ok_or_else(|| shape("related edges"))? {
+        let from = rows.iter().find(|row| row.id == relation.from).ok_or_else(|| shape("related source"))?;
+        let to = rows.iter().find(|row| row.id == relation.to).ok_or_else(|| shape("related target"))?;
+        edges.push(crate::RelatedEdge { from: from.label.clone(), to: to.label.clone(), relation: relation.relation, confidence: relation.confidence });
+    }
+    Ok(graph_page_records(at, &page.snapshot)
+        .with_related_edges(edges)
+        .with_related_withheld(page.withheld)
+        .with_more(matches!(page.terminal, backend_library::RelatedEdgeTerminal::More(_))))
 }
 
 fn outline(engine: &mut dyn Engine, path: &str) -> Result<Answer, Fault> {
@@ -1177,21 +1353,48 @@ struct RelationRows {
 
 /// Fetches graph rows and keeps the compiler-selected typed edge sidecar
 /// attached to the same response revision.
-fn probe_rows(engine: &mut dyn Engine, coordinate: &str, notes: &mut Vec<Fault>) -> RelationRows {
-    probe_relation_rows(engine, Probe::Related(coordinate), coordinate, notes)
+fn probe_rows(engine: &mut dyn Engine, coordinate: &str, document: &backend_library::Document, notes: &mut Vec<Fault>) -> RelationRows {
+    probe_relation_rows(engine, Probe::Related(coordinate), coordinate, document, notes)
 }
 
 fn probe_relation_rows(
     engine: &mut dyn Engine,
     probe: Probe<'_>,
     coordinate: &str,
+    document: &backend_library::Document,
     notes: &mut Vec<Fault>,
 ) -> RelationRows {
     match engine.probe(probe).map(|reply| reply.reply) {
-        Ok(CommandReply::Graph(snapshot)) => RelationRows {
-            rows: snapshot.root.rows().to_vec(),
-            graph_relations: snapshot.graph_relations,
-        },
+        Ok(CommandReply::Graph(snapshot)) => {
+            let basis = snapshot.root.basis();
+            if basis.root != document.basis || document.source_basis().is_some_and(|source| source != basis) {
+                notes.push(Fault::from_client_error(
+                    &ClientError::Protocol("related graph basis differs from the selected document".to_owned()),
+                    Operand::Coordinate(Coordinate::new(coordinate)),
+                ));
+                return RelationRows { rows: Vec::new(), graph_relations: None };
+            }
+            // A retained external target is navigation, not a local declaration:
+            // the local package's relation publication makes no claim about it,
+            // so a gap in that publication is not a failure of this page.
+            let reason = graph_relation_gap(&snapshot)
+                .filter(|_| !is_admitted_external_target(coordinate, document));
+            if let Some(reason) = reason {
+                notes.push(Fault::new(
+                    crate::FaultSlug::LaneUnavailable,
+                    Operand::Coordinate(Coordinate::new(coordinate)),
+                    crate::fault::Cause::new(crate::fault::CauseSlug::Unproven, reason),
+                    Affordance::UseCommand {
+                        name: "related",
+                        args: vec![coordinate.to_owned()].into_boxed_slice(),
+                    },
+                ));
+            }
+            RelationRows {
+                rows: snapshot.root.rows().to_vec(),
+                graph_relations: snapshot.graph_relations,
+            }
+        }
         Ok(_) => {
             notes.push(shape("related"));
             RelationRows {
@@ -1215,6 +1418,28 @@ fn probe_relation_rows(
     }
 }
 
+/// Whether `coordinate` is an external navigation target that the document's own
+/// selection proves, rather than a declaration of the local package named in its
+/// scoped display address.
+fn is_admitted_external_target(coordinate: &str, document: &backend_library::Document) -> bool {
+    let identity = Identity::parse(coordinate);
+    let Some(project) = identity.project() else {
+        return false;
+    };
+    identity.shape() == crate::identity::IdentityShape::External
+        && coordinate.starts_with(&format!(
+            "{}::external::{}::",
+            project.root(),
+            backend_library::RowId::Symbol(document.symbol).stable_key(),
+        ))
+        && document.selection.as_ref().is_some_and(|selection| {
+            selection.coordinate() == coordinate
+                && selection.symbol() == document.symbol
+                && selection.source().root == document.basis
+                && document.source_basis() == Some(selection.source())
+        })
+}
+
 /// Fetches the owning package's flat outline so members can be named.
 fn probe_members(
     engine: &mut dyn Engine,
@@ -1230,19 +1455,7 @@ fn probe_members(
     // ownership by the local package named in its scoped display address.
     // Its document selection proves the target; a local outline cannot prove
     // that foreign declaration's members or source availability.
-    if identity.shape() == crate::identity::IdentityShape::External
-        && coordinate.starts_with(&format!(
-            "{}::external::{}::",
-            project.root(),
-            backend_library::RowId::Symbol(document.symbol).stable_key(),
-        ))
-        && document.selection.as_ref().is_some_and(|selection| {
-            selection.coordinate() == coordinate
-                && selection.symbol() == document.symbol
-                && selection.source().root == document.basis
-                && document.source_basis() == Some(selection.source())
-        })
-    {
+    if is_admitted_external_target(coordinate, document) {
         return Vec::new();
     }
     match document_member_rows(engine, project.root(), document) {
@@ -1822,6 +2035,40 @@ mod document_member_paging_controls {
     }
 
     #[test]
+    fn document_graph_probe_rejects_foreign_root_and_foreign_source_object() {
+        struct GraphReader { snapshot: ViewSnapshot }
+        impl Engine for GraphReader {
+            fn revision(&mut self) -> Result<ViewStateRoot, ClientError> { Ok(self.snapshot.root.basis().root) }
+            fn health(&mut self) -> Result<HealthReport, ClientError> { Err(ClientError::Protocol("unused".to_owned())) }
+            fn surface(&mut self, _: SurfaceCommand) -> Result<SurfaceReply, ClientError> { Err(ClientError::Protocol("unused".to_owned())) }
+            fn probe(&mut self, _: Probe<'_>) -> Result<ReplyDto, ClientError> {
+                Ok(ReplyDto::new(1, CommandReply::Graph(self.snapshot.clone())))
+            }
+        }
+        let library = catalog(0);
+        let snapshot = library.graph(backend_library::GraphNeighborhoodQuery::selected(
+            symbol_key(OWNER), library.revision_root(),
+        )).expect("selected graph");
+        let basis = snapshot.root.basis();
+        let foreign_root = view_state_root(&[("foreign".to_owned(), "root".to_owned())]);
+        let different_object = Basis::new(basis.root, object_version(b"other source object"));
+        for document in [
+            Document::new(symbol_key(OWNER), foreign_root, []),
+            Document::new(symbol_key(OWNER), basis.root, []).with_source_basis(different_object),
+        ] {
+            let mut reader = GraphReader { snapshot: snapshot.clone() };
+            let mut notes = Vec::new();
+            let rows = probe_relation_rows(&mut reader, Probe::Related(OWNER), OWNER, &document, &mut notes);
+            assert!(rows.rows.is_empty());
+            assert!(rows.graph_relations.is_none());
+            assert_eq!(notes.len(), 1);
+            let page = page_from_document(OWNER, &document, &[], &rows.rows, notes);
+            assert_eq!(page.kind(), None);
+            assert!(page.relations().is_empty());
+        }
+    }
+
+    #[test]
     fn document_members_after_package_prefix_are_complete_without_unrelated_rows() {
         let mut reader = Reader::new(Disturbance::None);
         let document = reader.document();
@@ -1859,7 +2106,7 @@ mod document_member_paging_controls {
                 .filter(|row| row.parent == Some(document.symbol))
                 .map(|row| Identity::parse(&row.label).name().to_owned())
                 .collect::<std::collections::BTreeSet<_>>(),
-            NAMES.map(str::to_owned).into_iter().collect()
+            NAMES.map(str::to_owned).into_iter().collect::<std::collections::BTreeSet<_>>()
         );
         assert_eq!(reader.cursors[0], None);
         assert!(reader.cursors[1..].iter().all(Option::is_some));
@@ -2183,6 +2430,41 @@ mod declaration_resolution_controls {
         }
     }
     #[test]
+    fn rich_ready_does_not_certify_containment_without_relation_sidecar() {
+        let mut snapshot = reader(&[("api.go", 3, "Parse")], false).snapshot;
+        let center = snapshot.root.rows()[0].id;
+        let revision = backend_library::RichGraphRevision::new(
+            snapshot.root.root().to_bytes(),
+            backend_library::SemanticGenerationId::new([1; 32]),
+            [2; 32],
+        );
+        let center = backend_library::GraphNodeId::for_row(center);
+        let mut builder = backend_library::RichGraphBuilder::new(revision, center);
+        builder
+            .add_node(
+                backend_library::RichGraphNode::new(
+                    center,
+                    "Parse",
+                    None,
+                    None,
+                    backend_library::GraphAvailability::Ready,
+                    None,
+                )
+                .expect("node without fabricated provenance"),
+            )
+            .expect("admit node");
+        snapshot.rich_graph = Some(builder.finish().expect("checked rich graph"));
+        assert!(
+            graph_relation_gap(&snapshot).is_some(),
+            "containment is not a relation sidecar"
+        );
+        snapshot.graph_relations = Some(Box::new([]));
+        assert!(
+            graph_relation_gap(&snapshot).is_none(),
+            "a typed sidecar and Ready remain distinguishable"
+        );
+    }
+    #[test]
     fn every_coordinate_command_uses_the_same_unique_name_resolution() {
         for command in ["show", "source", "graph", "related", "references", "read"] {
             let mut reader = reader(&[("api.go", 3, "Parse")], false);
@@ -2212,6 +2494,140 @@ mod declaration_resolution_controls {
         );
     }
     #[test]
+    fn a_declaration_that_moved_lines_still_resolves_when_it_is_unique_in_its_file() {
+        // The caller wrote `Program.cs:95::Program`; two inserted lines moved it to 97.
+        let mut moved = reader(&[("src/main.go", 97, "Program"), ("src/other.go", 95, "Program")], false);
+        assert_eq!(
+            resolve_declaration(&mut moved, "main.go:95::Program", "source").expect("unique in the named file"),
+            "/workspace/go::src/main.go:97::Program"
+        );
+        // A line that is still right keeps priority over a moved sibling of the same name.
+        let mut twin = reader_two_same_file();
+        assert_eq!(
+            resolve_declaration(&mut twin, "api.go:3::Parse", "source").expect("exact line wins"),
+            "/workspace/go::api.go:3::Parse"
+        );
+        // Two same-named declarations in the file, neither at the stale line: still ambiguous.
+        assert_eq!(
+            resolve_declaration(&mut twin, "api.go:99::Parse", "source")
+                .expect_err("stale line cannot choose between two")
+                .slug(),
+            crate::FaultSlug::Ambiguous
+        );
+        // A different file never absorbs the stale coordinate.
+        let mut elsewhere = reader(&[("src/other.go", 95, "Program")], false);
+        assert_eq!(
+            resolve_declaration(&mut elsewhere, "main.go:95::Program", "source")
+                .expect_err("no such declaration in the named file")
+                .slug(),
+            crate::FaultSlug::NotFound
+        );
+    }
+    fn reader_two_same_file() -> Reader {
+        reader(&[("api.go", 3, "Parse"), ("api.go", 40, "Parse")], false)
+    }
+    #[test]
+    fn resolve_lists_declarations_not_the_imports_and_externals_that_share_their_name() {
+        let basis = Basis::new(view_state_root(&[]), object_version(b"resolve noise control"));
+        let package = package_key("/workspace/ts");
+        let label = |suffix: &str| format!("/workspace/ts::{suffix}");
+        let rows = vec![
+            Row::in_package(RowId::Symbol(symbol_key("decl")), basis, package, label("api.ts:3::request"))
+                .with_kind(DeclarationKind::Function)
+                .with_source(SourceLocation::new("api.ts", 3).expect("site")),
+            Row::in_package(RowId::Symbol(symbol_key("imp")), basis, package, label("page.tsx:1::request"))
+                .with_kind(DeclarationKind::Import)
+                .with_source(SourceLocation::new("page.tsx", 1).expect("site")),
+        ];
+        let root = ViewRoot::new_incomplete(
+            view_key(b"resolve noise"),
+            basis,
+            Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 1),
+            rows,
+            vec![],
+        )
+        .expect("rows");
+        let mut engine = Reader {
+            snapshot: ViewSnapshot { root, freshness: Freshness::Current, next: None, graph_relations: None, rich_graph: None },
+            calls: 0,
+        };
+        let Answer::Records(list) = answer(&mut engine, &Request::Resolve { text: "request".to_owned(), limit: 10 })
+            .expect("resolve answer")
+        else {
+            panic!("resolve answers with records");
+        };
+        let names: Vec<_> = list.records().iter().map(|record| (record.identity().name().to_owned(), record.kind())).collect();
+        assert_eq!(names, [("request".to_owned(), Some(DeclarationKind::Function))]);
+    }
+    fn search_page(labels: &[(&str, DeclarationKind)]) -> ReplyDto {
+        let basis = Basis::new(view_state_root(&[]), object_version(b"search noise control"));
+        let package = package_key("/workspace/ts");
+        let rows = labels
+            .iter()
+            .map(|(suffix, kind)| {
+                let label = format!("/workspace/ts::{suffix}");
+                Row::in_package(RowId::Symbol(symbol_key(&label)), basis, package, label)
+                    .with_kind(*kind)
+            })
+            .collect::<Vec<_>>();
+        let root = ViewRoot::new_incomplete(
+            view_key(b"search noise"),
+            basis,
+            Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 1),
+            rows,
+            vec![],
+        )
+        .expect("rows");
+        ReplyDto::new(
+            1,
+            CommandReply::Search(ViewSnapshot {
+                root,
+                freshness: Freshness::Current,
+                next: None,
+                graph_relations: None,
+                rich_graph: None,
+            }),
+        )
+    }
+    #[test]
+    fn declarations_only_search_leaves_out_imports_and_externals_and_counts_them() {
+        // A declarations-only search leaves imports and externals out, and the
+        // reply counts what it left out.
+        let rows = [
+            ("api.ts:3::request", DeclarationKind::Function),
+            ("page.tsx:1::request", DeclarationKind::Import),
+            ("external::lib.dom::request", DeclarationKind::Function),
+        ];
+        let search = |declarations_only| Request::Search {
+            text: "request".to_owned(),
+            limit: 10,
+            declarations_only,
+        };
+        let Answer::Records(all) = catalog_page_answer(&search(false), search_page(&rows)).expect("all rows") else {
+            panic!("records");
+        };
+        assert_eq!(all.records().len(), 3);
+        assert_eq!(all.hidden_non_declarations(), 0);
+        let Answer::Records(only) = catalog_page_answer(&search(true), search_page(&rows)).expect("filtered") else {
+            panic!("records");
+        };
+        let kept: Vec<_> = only.records().iter().map(|r| r.identity().name().to_owned()).collect();
+        assert_eq!(kept, ["request"], "only the declaration remains");
+        assert_eq!(only.records()[0].kind(), Some(DeclarationKind::Function));
+        assert_eq!(only.hidden_non_declarations(), 2);
+        let json = crate::dto::RecordListDto::new(&only);
+        assert_eq!(json.hidden_non_declarations, 2);
+
+        // A page made only of imports says why it is empty and where the rows went.
+        let only_imports = [("page.tsx:1::request", DeclarationKind::Import)];
+        let Answer::Records(empty) = catalog_page_answer(&search(true), search_page(&only_imports)).expect("filtered") else {
+            panic!("records");
+        };
+        assert!(empty.records().is_empty());
+        let reason = empty.empty_reason().expect("an explained empty page");
+        assert!(reason.contains("declarations_only") && reason.contains("1 row"), "{reason}");
+    }
+    #[test]
     fn a_continuation_prevents_a_false_unique_result() {
         let mut reader = reader(&[("api.go", 3, "Parse")], true);
         assert_eq!(
@@ -2230,5 +2646,53 @@ mod declaration_resolution_controls {
             coordinate
         );
         assert_eq!(reader.calls, 0);
+    }
+}
+
+#[cfg(test)]
+mod empty_search_reason_controls {
+    use super::empty_search_reason;
+
+    #[test]
+    fn an_empty_search_says_the_index_may_be_behind_the_disk() {
+        for published_only in [false, true] {
+            let reason = empty_search_reason(published_only, "brandNewHelper");
+            assert!(reason.contains("not searchable until it is re-indexed"), "{reason}");
+            assert!(reason.contains("nudox add"), "{reason}");
+            assert!(!reason.contains("several words"), "a single name needs no phrase advice: {reason}");
+        }
+    }
+
+    #[test]
+    fn an_empty_search_says_dependencies_are_not_indexed_and_how_to_add_one() {
+        let reason = empty_search_reason(false, "computeLayoutParams");
+        assert!(reason.contains("node_modules"), "{reason}");
+        assert!(reason.contains("not indexed unless added"), "{reason}");
+        assert!(reason.contains("nudox add <pinned purl>"), "{reason}");
+        assert!(reason.contains("backend.index"), "{reason}");
+        assert!(reason.contains("backend.index_search"), "{reason}");
+    }
+
+    #[test]
+    fn an_empty_search_names_a_file_type_only_when_the_query_names_it() {
+        let plain = empty_search_reason(false, "PageShell");
+        for absent in ["Vue", ".vue", "CSS", "SQL", "stylo"] {
+            assert!(!plain.contains(absent), "{absent} does not apply to a plain name: {plain}");
+        }
+        assert!(empty_search_reason(false, ".panel").contains("backend.stylo_query"));
+        assert!(empty_search_reason(false, "--accent").contains("backend.stylo_query"));
+        assert!(empty_search_reason(false, "schema.sql").contains("backend.sql_query"));
+        assert!(empty_search_reason(false, "App.vue").contains(".vue single-file components"));
+        assert!(
+            empty_search_reason(false, "plain").len() < 700,
+            "the unconditional message stays short"
+        );
+    }
+
+    #[test]
+    fn a_multiword_empty_search_explains_phrase_matching() {
+        let reason = empty_search_reason(false, "where is the balance validated");
+        assert!(reason.contains("several words"), "{reason}");
+        assert!(reason.contains("semantic_search"), "{reason}");
     }
 }

@@ -133,16 +133,32 @@ impl SourceSelectionObservation {
         }
     }
 
+    /// Fixed scope recorded by current discovery walks, including zero counts.
+    pub fn project_extensions(css: u64, sql: u64, vue: u64) -> Self {
+        Self {
+            observed_projects: 1,
+            unknown_projects: 0,
+            unsupported_extensions: [("css", css), ("sql", sql), ("vue", vue)]
+                .into_iter()
+                .map(|(extension, files)| SourceExtensionExclusion {
+                    extension: extension.into(),
+                    files,
+                })
+                .collect(),
+        }
+    }
+
     /// Shared wording for CLI, MCP, and desktop, independent of capability readiness.
     pub fn render(&self) -> String {
         let mut parts = self
             .unsupported_extensions
             .iter()
             .map(|row| {
-                format!(
-                    ".{}: {} excluded (unsupported extension)",
-                    row.extension, row.files
-                )
+                if row.extension == "vue" {
+                    format!(".vue: {} unavailable inline scripts", row.files)
+                } else {
+                    format!(".{}: {} excluded (unsupported extension)", row.extension, row.files)
+                }
             })
             .collect::<Vec<_>>();
         if self.unknown_projects != 0 {
@@ -156,6 +172,91 @@ impl SourceSelectionObservation {
             parts.join("; ")
         )
     }
+}
+
+/// Per-extension evidence across selected project rows. Missing rows are unknown.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceSelectionScopeCoverage {
+    /// Total selected project rows.
+    pub project_count: u64,
+    /// Canonical CSS, SQL, and Vue observation rows.
+    pub extensions: Box<[SourceSelectionExtensionCoverage]>,
+}
+
+/// Observed project count and known exclusions for one extension.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceSelectionExtensionCoverage {
+    /// Lowercase extension.
+    pub extension: String,
+    /// Projects carrying this extension row.
+    pub projects_observed: u64,
+    /// Projects lacking this extension row.
+    pub projects_unknown: u64,
+    /// Checked subtotal from observed projects.
+    pub excluded_files: u64,
+}
+
+impl SourceSelectionScopeCoverage {
+    /// Reject malformed and incomplete scope reports.
+    pub fn admit(&self) -> Result<(), String> {
+        if self.project_count == 0
+            || self.extensions.len() != 3
+            || self
+                .extensions
+                .iter()
+                .zip(["css", "sql", "vue"])
+                .any(|(r, name)| {
+                    r.extension != name
+                        || r.projects_observed.checked_add(r.projects_unknown)
+                            != Some(self.project_count)
+                        || (r.projects_observed == 0 && r.excluded_files != 0)
+                })
+        {
+            return Err("invalid source-selection scope coverage".into());
+        }
+        Ok(())
+    }
+
+    /// Human-readable known subtotals and observation scope.
+    pub fn render(&self) -> String {
+        let parts = self
+            .extensions
+            .iter()
+            .map(|r| {
+                format!(
+                    ".{}: {} known exclusions; observed in {}/{} projects, {} unknown",
+                    r.extension,
+                    r.excluded_files,
+                    r.projects_observed,
+                    self.project_count,
+                    r.projects_unknown
+                )
+            })
+            .collect::<Vec<_>>();
+        format!(
+            "source selection: {}; file/compiler totals cover supported extensions",
+            parts.join("; ")
+        )
+    }
+}
+
+fn check_selection_consistency(observation: &SourceSelectionObservation, scope: &SourceSelectionScopeCoverage) -> Result<(), String> {
+    if observation.observed_projects.checked_add(observation.unknown_projects) != Some(scope.project_count) {
+        return Err("source-selection project counts disagree".into());
+    }
+    for row in &scope.extensions {
+        if row.projects_observed > observation.observed_projects {
+            return Err("source-selection extension count exceeds observed projects".into());
+        }
+        if let Some(legacy) = observation.unsupported_extensions.iter().find(|legacy| legacy.extension == row.extension) {
+            if row.projects_observed != observation.observed_projects || row.excluded_files != legacy.files {
+                return Err("source-selection extension totals disagree".into());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Largest number of distinct languages one progress report may carry.
@@ -267,6 +368,82 @@ impl core::fmt::Display for ProgressError {
 
 impl core::error::Error for ProgressError {}
 
+/// Terminal outcomes for SQL files in the selected analysis snapshot.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SqlAnalysisProgress {
+    /// Files with admitted analysis.
+    pub analysed_files: u64,
+    /// Files whose selected attempt had no admitted worker.
+    pub no_worker_files: u64,
+    /// Files whose selected attempt had no supported dialect.
+    pub unsupported_dialect_files: u64,
+    /// Files rejected by the native parser.
+    pub rejected_files: u64,
+    /// Files unavailable for other recorded reasons.
+    pub other_unavailable_files: u64,
+    /// No `.nudox/sql.json` exists, so the selection is every `.sql` file of
+    /// the project with its dialect inferred from the file's own content. An
+    /// extension alone never chooses a dialect. Omitted from the wire when
+    /// false, which keeps declared selections byte-identical.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub implicit_selection: bool,
+}
+
+/// Example `.nudox/sql.json` shown to a project that has `.sql` files and no
+/// settings file.
+pub const SQL_SETTINGS_EXAMPLE: &str = r#"{"version":1,"sources":[{"path":"queries/a.sql","dialect":"sqlite","context":{"kind":"unavailable"}}]}"#;
+
+impl SqlAnalysisProgress {
+    /// Validates that the selected snapshot has a nonempty representable total.
+    pub fn admit(&self) -> Result<(), String> {
+        let total = [self.analysed_files, self.no_worker_files, self.unsupported_dialect_files, self.rejected_files, self.other_unavailable_files]
+            .into_iter().try_fold(0_u64, |sum, value| sum.checked_add(value))
+            .ok_or_else(|| "SQL analysis count overflow".to_owned())?;
+        if total == 0 { return Err("SQL analysis has no selected files".to_owned()); }
+        Ok(())
+    }
+
+    /// Files in the selected snapshot, whatever happened to them.
+    #[must_use]
+    pub fn total_files(&self) -> u64 {
+        self.analysed_files
+            .saturating_add(self.no_worker_files)
+            .saturating_add(self.unsupported_dialect_files)
+            .saturating_add(self.rejected_files)
+            .saturating_add(self.other_unavailable_files)
+    }
+
+    /// Describes selected outcomes without claiming current worker installation,
+    /// then says what a project can do about the outcomes it can act on.
+    #[must_use]
+    pub fn render(&self) -> String {
+        let mut text = format!("SQL selected analysis: {} analysed, {} without an admitted worker, {} unsupported dialect, {} rejected, {} otherwise unavailable; use sql-query --role gap for details", self.analysed_files, self.no_worker_files, self.unsupported_dialect_files, self.rejected_files, self.other_unavailable_files);
+        if self.implicit_selection {
+            text.push_str(&format!(
+                "\nSQL setup: {} .sql files found without .nudox/sql.json; declare their dialect in .nudox/sql.json (dialect is sqlite or postgres, paths are project-relative, sorted and unique), for example {SQL_SETTINGS_EXAMPLE}. Until then each file's dialect is inferred from its content, never from the extension.",
+                self.total_files()
+            ));
+        }
+        if self.no_worker_files > 0 {
+            text.push_str(&format!(
+                "\nSQL setup: {} SQLite file(s) have no admitted worker. The SQLite analysis worker is built separately (frontends/sqlite, binary sqlite-worker) and the owner admits only a worker whose executable identity was compiled in through NUDOX_BUILD_SQLITE_WORKER_ID; tools/package/run_sql_report_journeys.sh shows the build recipe.",
+                self.no_worker_files
+            ));
+        }
+        if self.unsupported_dialect_files > 0 {
+            text.push_str(&format!(
+                "\nSQL setup: {} file(s) use a dialect no admitted worker supports in this build (PostgreSQL analysis needs its own engine worker).",
+                self.unsupported_dialect_files
+            ));
+            if self.implicit_selection {
+                text.push_str(" Without .nudox/sql.json a file is labelled PostgreSQL by its own PostgreSQL-only syntax, and a file with no dialect signal inherits the dialect its project's other signalled files agree on; declare each file in .nudox/sql.json to choose exactly.");
+            }
+        }
+        text
+    }
+}
+
 /// Typed counts describing how far one revision's ingest got.
 ///
 /// An empty report is the honest description of a workspace that has indexed
@@ -281,15 +458,49 @@ pub struct IngestProgress {
     languages: Box<[LanguageRows]>,
     faults: Box<[FaultRows]>,
     source_selection: Option<SourceSelectionObservation>,
+    source_selection_scope: Option<SourceSelectionScopeCoverage>,
+    sql_analysis: Option<SqlAnalysisProgress>,
 }
 
 impl IngestProgress {
+    /// Attaches validated selected SQL analysis outcomes.
+    pub fn with_sql_analysis(mut self, summary: SqlAnalysisProgress) -> Result<Self, String> {
+        summary.admit()?;
+        self.sql_analysis = Some(summary);
+        Ok(self)
+    }
+
+    /// Returns selected SQL analysis outcomes when supplied by the owner.
+    #[must_use]
+    pub fn sql_analysis(&self) -> Option<&SqlAnalysisProgress> { self.sql_analysis.as_ref() }
+
+    /// Attaches checked per-extension project coverage.
+    pub fn with_source_selection_scope(
+        mut self,
+        scope: SourceSelectionScopeCoverage,
+    ) -> Result<Self, String> {
+        scope.admit()?;
+        if let Some(observation) = &self.source_selection {
+            check_selection_consistency(observation, &scope)?;
+        }
+        self.source_selection_scope = Some(scope);
+        Ok(self)
+    }
+
+    /// Recorded per-extension coverage, if available.
+    pub fn source_selection_scope(&self) -> Option<&SourceSelectionScopeCoverage> {
+        self.source_selection_scope.as_ref()
+    }
+
     /// Attaches discovery evidence without changing any supported-file total.
     pub fn with_source_selection(
         mut self,
         observation: SourceSelectionObservation,
     ) -> Result<Self, String> {
         observation.admit()?;
+        if let Some(scope) = &self.source_selection_scope {
+            check_selection_consistency(&observation, scope)?;
+        }
         self.source_selection = Some(observation);
         Ok(self)
     }
@@ -353,6 +564,8 @@ impl IngestProgress {
             languages: languages.into_boxed_slice(),
             faults: faults.into_boxed_slice(),
             source_selection: None,
+            source_selection_scope: None,
+            sql_analysis: None,
         })
     }
 

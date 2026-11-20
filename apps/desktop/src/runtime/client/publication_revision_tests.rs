@@ -76,11 +76,17 @@ fn publication_revision_reconnects_a_retired_command_stream_but_never_retries_pr
         std::fs::set_permissions(&endpoint.0, std::fs::Permissions::from_mode(0o600))?;
         listener.set_nonblocking(true)?;
         let (command, mut command_owner) = UnixStream::pair()?;
-        let server = std::thread::spawn(move || -> anyhow::Result<UnixListener> {
+        // An owner does not hang up the moment it has answered. macOS refuses
+        // the client's next socket option on a closed peer, which would turn
+        // the correlated reply into a transport break, so the answering ends
+        // stay open until the client has finished.
+        let server = std::thread::spawn(move || -> anyhow::Result<(UnixListener, Vec<UnixStream>)> {
+            let mut kept = Vec::new();
             let request = revision(&mut command_owner)?;
             if !retire_cached {
                 refuse(&mut command_owner, request, "cached protocol refusal")?;
-                return Ok(listener);
+                kept.push(command_owner);
+                return Ok((listener, kept));
             }
             // The owner retires only the cached socket, after reading the
             // request. Its independent endpoint remains available.
@@ -100,8 +106,9 @@ fn publication_revision_reconnects_a_retired_command_stream_but_never_retries_pr
                 stream.set_nonblocking(false)?;
                 let request = revision(&mut stream)?;
                 refuse(&mut stream, request, message)?;
+                kept.push(stream);
             }
-            Ok(listener)
+            Ok((listener, kept))
         });
 
         let view = super::super::owner::publication_tests::view();
@@ -137,7 +144,7 @@ fn publication_revision_reconnects_a_retired_command_stream_but_never_retries_pr
             basis,
             cancel: CancellationToken::new(),
         });
-        let listener = server
+        let (listener, _answering) = server
             .join()
             .map_err(|_| anyhow::anyhow!("bounded physical command owner panicked"))??;
         let expected = if retire_cached {
@@ -145,10 +152,11 @@ fn publication_revision_reconnects_a_retired_command_stream_but_never_retries_pr
         } else {
             "cached protocol refusal"
         };
+        let shown = format!("{result:?}");
         assert!(
             matches!(result, Err(EngineFault::Failed(error))
             if error.code() == FaultCode::Protocol && error.message().contains(expected)),
-            "the exact correlated terminal reply is retained"
+            "the exact correlated terminal reply is retained (case retire_cached={retire_cached}: expected {expected:?}, got {shown})"
         );
         assert_eq!(
             gate.ready_epoch(),
@@ -186,7 +194,7 @@ fn index_read_reconnects_once_with_original_context_and_preserves_correlated_own
     std::fs::set_permissions(&endpoint.0, std::fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
     let (command, mut command_owner) = UnixStream::pair()?;
-    let server = std::thread::spawn(move || -> anyhow::Result<UnixListener> {
+    let server = std::thread::spawn(move || -> anyhow::Result<(UnixListener, UnixStream)> {
         revision(&mut command_owner)?;
         drop(command_owner);
         let until = Instant::now() + Duration::from_secs(2);
@@ -203,7 +211,8 @@ fn index_read_reconnects_once_with_original_context_and_preserves_correlated_own
         fresh.set_nonblocking(false)?;
         let request = revision(&mut fresh)?;
         refuse(&mut fresh, request, "same owner answered index retry")?;
-        Ok(listener)
+        // The answering end stays open until the client has finished.
+        Ok((listener, fresh))
     });
     let view = super::super::owner::publication_tests::view();
     let cursor = backend_library::Cursor::for_view_root_at(&view, 0);
@@ -229,10 +238,12 @@ fn index_read_reconnects_once_with_original_context_and_preserves_correlated_own
         session.set_request_context(None)?;
         result
     });
-    let listener = server.join().map_err(|_| anyhow::anyhow!("physical index owner panicked"))??;
+    let (listener, _answering) = server.join().map_err(|_| anyhow::anyhow!("physical index owner panicked"))??;
     assert_eq!(attempts, 2);
+    let shown = format!("{:?}", result.as_ref().map(|_| "a revision"));
     assert!(matches!(result, Err(EngineFault::Failed(error))
-        if error.code() == FaultCode::Protocol && error.message().contains("same owner answered index retry")));
+        if error.code() == FaultCode::Protocol && error.message().contains("same owner answered index retry")),
+        "index retry result: {shown}");
     assert_eq!(context.read_deadline(Duration::from_secs(30))?, deadline);
     assert_eq!(gate.ready_epoch(), Some(attachment));
     assert!(matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
@@ -282,7 +293,7 @@ fn accepted_index_cancel_rechecks_exact_ticket_sends_once_and_never_restarts_wor
         stream.set_read_timeout(Some(Duration::from_secs(2)))?;
         stream.set_write_timeout(Some(Duration::from_secs(2)))?;
         let bytes = read_frame(stream, LocalControlLimits::default())
-            .map_err(|error| anyhow::anyhow!("cancel control read: {error:?}"))?;
+            .map_err(|error| anyhow::anyhow!("cancel control read: {error:?} (case {expected:?})"))?;
         let request = backend_library::decode_command_body(&bytes).map_err(anyhow::Error::msg)?;
         assert_eq!(request.command, backend_library::Command::Surface(expected), "no Start or unrelated ticket command");
         let reply = backend_library::ReplyDto::new(request.request_id, backend_library::CommandReply::Surface(reply));
@@ -311,7 +322,9 @@ fn accepted_index_cancel_rechecks_exact_ticket_sends_once_and_never_restarts_wor
         let (cached, mut cached_owner) = UnixStream::pair()?;
         let expected_operation = operation.clone();
         let expected_ticket = ticket.clone();
-        let server = std::thread::spawn(move || -> anyhow::Result<UnixListener> {
+        let server = std::thread::spawn(move || -> anyhow::Result<(UnixListener, Vec<UnixStream>)> {
+            // The answering ends stay open until the client has finished.
+            let mut kept = Vec::new();
             let active_ticket = if case == "replaced-ticket" {
                 IndexJobTicket::new(std::num::NonZeroU64::MIN, [8; 16], expected_operation.package.clone())
             } else { expected_ticket.clone() };
@@ -323,7 +336,8 @@ fn accepted_index_cancel_rechecks_exact_ticket_sends_once_and_never_restarts_wor
             };
             exchange(&mut cached_owner, SurfaceCommand::IndexOperationStatus { operation_key: expected_operation.key },
                 SurfaceReply::IndexOperationStatus(before))?;
-            if case == "replaced-ticket" || case == "already-published" { return Ok(listener); }
+            kept.push(cached_owner);
+            if case == "replaced-ticket" || case == "already-published" { return Ok((listener, kept)); }
             let until = Instant::now() + Duration::from_secs(2);
             let mut stream = loop {
                 match listener.accept() {
@@ -342,7 +356,7 @@ fn accepted_index_cancel_rechecks_exact_ticket_sends_once_and_never_restarts_wor
                 let request = backend_library::decode_command_body(&bytes).map_err(anyhow::Error::msg)?;
                 assert_eq!(request.command, backend_library::Command::Surface(SurfaceCommand::IndexCancel { ticket: expected_ticket }));
                 drop(stream);
-                return Ok(listener);
+                return Ok((listener, kept));
             }
             exchange(&mut stream, SurfaceCommand::IndexCancel { ticket: expected_ticket.clone() },
                 SurfaceReply::IndexCancellation(IndexCancelReceipt { ticket: expected_ticket, status: IndexCancelStatus::Requested }))?;
@@ -353,7 +367,8 @@ fn accepted_index_cancel_rechecks_exact_ticket_sends_once_and_never_restarts_wor
                     compiler_failure: None });
             exchange(&mut stream, SurfaceCommand::IndexOperationStatus { operation_key: expected_operation.key },
                 SurfaceReply::IndexOperationStatus(terminal))?;
-            Ok(listener)
+            kept.push(stream);
+            Ok((listener, kept))
         });
         let mut client = LocalEngineClient::gated(&endpoint.0, project.clone(), gate.clone());
         client.attached_epoch = Some(attachment);
@@ -362,7 +377,7 @@ fn accepted_index_cancel_rechecks_exact_ticket_sends_once_and_never_restarts_wor
             ticket, project, request: crate::navigation::RequestId::new(89), basis,
             cancel: CancellationToken::new() };
         let result = client.execute(&request);
-        let listener = server.join().map_err(|_| anyhow::anyhow!("cancel control owner panicked"))??;
+        let (listener, _answering) = server.join().map_err(|_| anyhow::anyhow!("cancel control owner panicked"))??;
         if case == "cancelled" {
             assert!(matches!(result, Ok(EngineDto::IndexOperation { observation: backend_library::IndexOperationObservation::Known(status), .. })
                 if matches!(status.state, IndexOperationState::Failed { reason: IndexOperationFailureReason::Cancelled, .. })));

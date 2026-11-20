@@ -1,0 +1,69 @@
+{
+  "cases": [
+    "typescript-query-core"
+  ],
+  "method": {
+    "baseline": "A probe T2 run at canonical (a01c2b0ce plus one comment-only commit) printed the same SURFACE-VIEW-ROW dump (3177 rows) and the same candidate snapshot as this change set (3382 rows). Both dumps were classified by kind, by external or local, and by name, and the leaf diff of the probe candidate against the committed snapshot was taken.",
+    "calibration": "The canonical candidate already differs from the committed snapshot, so the committed snapshot was stale before this change set: only cli outline page.source_root, cli packages revision and the MCP outline page.source_root, plus cli packages rows 3175 -> 3177. Every other leaf below is therefore caused by this change set.",
+    "snapshot_diff": "The harness prints its diff truncated at 20000 characters, so all 851 changed leaves were recomputed from the full candidate."
+  },
+  "changes": [
+    {
+      "class": "semantic lane coverage and readiness",
+      "detail": "Only the semantic lane moves complete -> partial (exact, names and graph stay complete) in the cli outline page, both cli searches, three MCP replies and the MCP outline page. cli packages readiness ready -> partial, and the project entry gains partial_lanes [\"semantic\"] while its own readiness stays ready. The MCP text renders the lane as partial.",
+      "verified": "SemanticTally::qualify_observed_native (crates/local-service/src/builtin/coverage.rs, 026308c43) marks the semantic lane gapped for a native TypeScript package with observed source evidence, pinned by observed_native_scope_is_gapped_without_changing_legacy_coverage; the case declares settled_gap_lanes [\"semantic\"] (750b18504); assemble.rs attaches the gapped lanes to the shelf entry."
+    },
+    {
+      "class": "declaration coordinates and shapes",
+      "detail": "Every declaration coordinate changes from <project>::<path>:<line>::<name> to <project>::semantic::<64 hex>::<name>; record identity shape declaration -> semantic. Name, key, semantic_data symbol id, path and line are unchanged for all 25 outline nodes and for every search record that appears in both answers.",
+      "verified": "Each new coordinate resolves, in the logged view dump, to the same file and line as the old coordinate for all 25 outline nodes (0 mismatches). The dump has 2531 local symbol rows, all semantic coordinates carrying a captured source location, and no path:line rows (canonical: 2027 path:line rows, 504 semantic rows, 319 local rows without any location; now 13). Native TypeScript admission requires an empty structural frontier (crates/local-service/src/builtin/native_ts_admission.rs, new in 026308c43) and native_ts_owner_journey_tests.rs asserts that a TS-native Project selects no structural File rows, while assert_legacy_coordinate_routes shows the old path:line spelling still resolves as an input alias. Lines come from the selected native line maps (4f05453b0, 02e3100bf)."
+    },
+    {
+      "class": "kind property -> field (445 rows in the view, 3 visible in the outline: hydration.ts queries, mutations, state)",
+      "detail": "Canonical: Property 445 and Field 77; now: Field 522 = 445 + 77. Matched by file, line and name, exactly 445 located local rows change kind, every one Property -> Field, and no other located local row changes kind (the per-kind totals of the rows without a location also agree).",
+      "verified": "The Property kind in canonical comes from the written (syntactic) twin of a declaration, which the structural lane supplied (kinds.rs: a paired declaration takes the kind its written twin gives); the compiler's own kind for a field is Field (identity.rs declaration_kind), which is what the 77 compiler-only rows already were. With no structural File rows for a native TypeScript Project (point above) there is no written twin and the compiler kind stands. kinds.rs and declaration_kind are unchanged since canonical, so no kind mapping changed.",
+      "unverified": "No test pins Field for a native TypeScript interface member specifically; the claim rests on the absence of structural rows and the unchanged mapping."
+    },
+    {
+      "class": "package rows 3175 -> 3382 (+207): +2 already present at canonical (3177) and +205 external symbol rows",
+      "detail": "Local rows are identical to canonical by kind and name: Variable 811, Constant 230, Method 242, Function 300, Interface 98, Type 80, Import 234, Class 14, one unnamed row, Property+Field 522. External rows (::external:: symbol rows) 645 -> 850 (+205) are the entire change. No external row of canonical is missing by name (0 lost), no duplicate coordinate exists, and the 205 added rows carry 95 distinct names, every one a symbol declared in the project (mostly across files: notifyManager 8, Subscribable 8, QueryClient 7, Query 6, QueryOptions 6, build 5, isServer 5, QueryObserver 4, ...).",
+      "partition": "Imports whose target is a project declaration, by target kind (imports / canonical external rows covering them / now): Type 69 / 69 / 69; Interface 64 / 0 / 64; Function 40 / 0 / 40; Class 39 / 0 / 39; Constant 20 / 0 / 20; Field+Function 2 / 0 / 2. So canonical gave an external target only to imports of type aliases and now every import of a project declaration has one: 165 of the 205 added rows. The other 40 are non-import names (member and call targets such as build 5, notify 4, get 2, defaultQueryOptions 3, remove 3). The 234 Import rows themselves are unchanged.",
+      "verified": "External rows are projected one per (image, external link target) of a declaration entity (view_build/semantic.rs, external_semantic_symbol/external_semantic_coordinate, unchanged since canonical), so the growth is in the number of external link targets the native images carry. Lowering turns a cross-file import or call occurrence into an exact foreign declaration target (pass_native_tsz_occurrences, native_tsz_import_declaration_coordinate, which handles class, interface, alias, enum, module, variable and function targets and is unchanged), and tests a6231d67d and 29a3954ff pin that a cross-file call keeps an exact foreign callee coordinate and caller. The arithmetic above is from the logged view dump, not from the fixture source.",
+      "unverified": "I did not trace why the canonical build stopped at type-alias imports (canonical lacks native_ts_admission.rs and the native evidence publication of 026308c43, whose admitted native Program is the only TypeScript source now). The attribution of the 205 rows to that publication is by exact count partition and by the absence of any other changed row class, not by a code path read end to end. An earlier hypothesis that the 208 anonymous callable rows explain the count was checked and rejected: anonymous callables exist in canonical's snapshot and code."
+    },
+    {
+      "class": "search QueryClient page composition",
+      "detail": "18 of 25 records are the same in the same relative order (class, 7 imports, QueryClientConfig, 9 content matches). The 7 dropped records (QueryDefaults 49, MutationDefaults 54, query x3, queryCache x2, all in src/queryClient.ts) matched only through the path inside the display coordinate; 9d165d0f4 stops treating that fallback coordinate as document prose. Added: client x3, #client x3, promise (types.ts:767). All old and new records exist in the view with the same kinds.",
+      "unverified": "Why promise matches the query could not be read without the fixture source."
+    },
+    {
+      "class": "imports language and location in search",
+      "detail": "The 7 QueryClient import records change language unknown -> typescript and gain path and line; their semantic ids and coordinates are unchanged."
+    },
+    {
+      "class": "observed native policy note",
+      "detail": "Every native record gains summary 'Source was observed at capture; discovery policy stability is unknown.' (semantic.rs NOTE, 026308c43)."
+    },
+    {
+      "class": "tool list, outline wording, wire counters",
+      "detail": "backend.sql_query is listed (19 tools); the outline summary gains ' (outline pagination only; analysis coverage is not certified)'. Same class as the earlier sql_query record."
+    },
+    {
+      "class": "budgets",
+      "detail": "Every byte budget moves by exactly the compact-JSON growth of its answer (outline +1149, packages +31, search CancelledError +275, search QueryClient +3389) and tokens equal ceil(bytes/4) everywhere. The largest MCP frame is 24375 bytes against the unchanged 49152 limit."
+    },
+    {
+      "class": "source_root and revision (747082aa -> 182a160c)",
+      "detail": "Derived root over changed content, and the native TypeScript authority also hashes Cargo.toml and Cargo.lock (see the earlier cargo-lock record). The root was moved by canonical itself in the probe run, and by this change set again. It was not recomputed."
+    }
+  ],
+  "performance": {
+    "action": "Reviewed performance object retained byte-for-byte; measurements from the candidate run were not adopted as baselines."
+  },
+  "required_before_merge": "Normal full T2 on the final exact head must reproduce these answers and pass every other correctness and performance check. If a reviewer wants the +205 external rows traced in code rather than partitioned by count, run the canonical and head builds on the pinned corpus and diff the logged external rows by owning file.",
+  "reviewer": "Claude Code / Sonnet 5.5, 2026-11-13",
+  "schema": 1,
+  "scope": "Answer-only update of the typescript-query-core snapshot; no tolerance, deadline, baseline or normalizer changed.",
+  "task": "Review the typescript-query-core T2 answer changes caused by native TypeScript source evidence",
+  "unchanged": "Source object, the 25 outline declarations (names, depth, keys, symbol ids, lines), CancelledError search records, and every reviewed declaration found in the view; coverage lanes exact, names and graph stay complete."
+}

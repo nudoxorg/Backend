@@ -8,6 +8,8 @@ use crate::core::LocalProjectId;
 use crate::model::pages::{PackageRef, SearchQuery};
 use std::sync::Arc;
 
+pub use super::native::{ImpactRoute, NativeSubject};
+
 /// A bounded, ordered set of distinct package identities to compare.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct CompareSet(Arc<[PackageRef]>);
@@ -58,6 +60,12 @@ pub enum BrowseRoute {
     Find(SearchQuery),
     /// Side-by-side evidence for two to four packages.
     Compare(CompareSet),
+    /// A SQL table or view: its columns, definition, migrations and uses.
+    Sql(NativeSubject),
+    /// A CSS class or custom property: its rules and the components that use it.
+    Css(NativeSubject),
+    /// What changing one thing affects.
+    Impact(ImpactRoute),
 }
 
 impl BrowseRoute {
@@ -69,6 +77,12 @@ impl BrowseRoute {
             Self::FindHome => (vec![], "find".to_owned()),
             Self::Find(query) => (vec![], format!("find?q={}", query_component(&query.text))),
             Self::Compare(selection) => (vec![], format!("compare?packages={}", selection.packages().iter().map(|package| query_component(package.as_str())).collect::<Vec<_>>().join(","))),
+            Self::Sql(subject) => (vec![subject.project_name()], format!("sql?{}={}", subject.kind.seed_kind(), query_component(&subject.name))),
+            Self::Css(subject) => (vec![subject.project_name()], format!("css?{}={}", subject.kind.seed_kind(), query_component(&subject.name))),
+            Self::Impact(route) => (
+                vec![route.subject.project_name()],
+                format!("impact?{}={}", route.subject.kind.wire(), query_component(&route.subject.name)),
+            ),
         }
     }
 
@@ -80,6 +94,9 @@ impl BrowseRoute {
             Self::FindHome => ("Find".to_owned(), "packages and possibilities"),
             Self::Find(query) => (query.text.to_string(), "find"),
             Self::Compare(_) => ("Packages".to_owned(), "compare"),
+            Self::Sql(subject) => (subject.written(), subject.kind.label()),
+            Self::Css(subject) => (subject.written(), subject.kind.label()),
+            Self::Impact(route) => (route.subject.written(), "what changes"),
         }
     }
 }

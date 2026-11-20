@@ -864,6 +864,7 @@ impl<'a> CheckerState<'a> {
                     cache_order: CacheRestoreOrder::BeforeWarm,
                     inherit_has_lib: false,
                     symbol_cache_capacity: None,
+                    preallocate_arena_caches: true,
                 },
             ),
         }

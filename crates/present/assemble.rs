@@ -76,7 +76,7 @@ pub fn page_from_document_with_graph_relations(
     // structural and compiler-backed rows. A repeated coordinate cannot
     // replace that identity or select another row's members and graph edges.
     let centre = document.symbol;
-    let own = members.iter().find(|row| row.id == RowId::Symbol(centre));
+    let own = members.iter().chain(relations).find(|row| row.id == RowId::Symbol(centre));
     let language = page_language(&identity, members, centre);
     let source = source_from(&identity, &document.location, &document.excerpt);
     let kind = own.and_then(|row| row.kind);
@@ -97,6 +97,7 @@ pub fn page_from_document_with_graph_relations(
         .with_prose(Prose::from_fragments(&document.fragments))
         .with_members(member_groups(members, centre))
         .with_relations(relation_groups(relations, centre, graph_relations))
+        .with_source_policy(document.source_policy.clone())
         .with_notes(notes);
     match signature {
         Some(value) => page.with_signature(value),
@@ -121,6 +122,12 @@ fn source_from(
     availability: &SourceAvailability,
     excerpt: &SourceExcerpt,
 ) -> Source {
+    if matches!(availability, SourceAvailability::StaleFile { .. }) {
+        let operand = crate::fault::Operand::Coordinate(identity.coordinate().clone());
+        if let Some(fault) = Fault::source(availability, operand) {
+            return Source::Absent { fault };
+        }
+    }
     let site = site_from(identity, availability);
     match (site, excerpt) {
         (Some(site), SourceExcerpt::Captured { text, extent }) => Source::Captured {
@@ -141,6 +148,29 @@ fn source_from(
                     fault,
                 },
             )
+        }
+        (None, _) if identity.shape() == crate::IdentityShape::External => {
+            // An external reference names a declaration of a dependency. Its
+            // source is not part of the project's index, and the way to read it
+            // is the dependency's own acquired release, not a retry.
+            Source::Absent {
+                fault: Fault::new(
+                    crate::fault::FaultSlug::SourceUnavailable,
+                    crate::fault::Operand::Coordinate(identity.coordinate().clone()),
+                    crate::fault::Cause::new(
+                        crate::fault::CauseSlug::NotCaptured,
+                        format!(
+                            "`{}` is an external reference: it belongs to a package this project depends on, and that package's source is not in the index. `index-search {}` finds the package, and `add <pinned purl>` acquires one exact release, after which its declarations are searchable and readable",
+                            identity.name(),
+                            identity.name(),
+                        ),
+                    ),
+                    crate::fault::Affordance::UseCommand {
+                        name: "index-search",
+                        args: Box::new([identity.name().to_owned()]),
+                    },
+                ),
+            }
         }
         (None, _) => {
             let operand = crate::fault::Operand::Coordinate(identity.coordinate().clone());

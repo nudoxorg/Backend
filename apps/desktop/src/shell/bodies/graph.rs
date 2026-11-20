@@ -306,12 +306,12 @@ impl Map {
                     cx.notify();
                 }
                 if event.is_branch(Branch::Owner) {
-                    // A replacement can serve the same immutable root. Its
-                    // retired scene and native actions cannot borrow the new
-                    // attachment merely because their resource stamps match.
-                    if map.links.store.read(cx).current_owner_attachment().is_some() {
-                        map.reset_indexed_world(cx);
-                    }
+                    // Pending opens belong to the old attachment even when
+                    // the renewed owner serves the same immutable root.
+                    map.invalidate_open();
+                    // request_world retains the scene for the same serving
+                    // key and resets it when authority or generation changes.
+                    // Painted resource actions still carry their attachment.
                     map.request_world(cx);
                     map.publish_focus(cx);
                     cx.notify();
@@ -466,7 +466,7 @@ impl Map {
         // repaint over an existing scene must not derive keys or touch Memo
         // while that producer is unavailable. A ready attachment can still
         // discover and replace a changed serving generation below.
-        if self.graph.is_some() && self.links.store.read(cx).current_owner_attachment().is_none() {
+        if self.links.store.read(cx).current_owner_attachment().is_none() {
             self.unavailable_world(cx);
             return;
         }

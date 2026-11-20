@@ -71,6 +71,28 @@ fn canonical_manifest_is_order_stable_and_uses_the_ir_manifest_identity() -> Res
 
     let mut reopened_facts = [None; 2];
     let reopened = CompilationManifestView::validate(first_manifest.as_ref(), &mut reopened_facts)?;
+    let mut work = 0usize;
+    let streamed = super::validate_manifest_facts_checkpointed(first_manifest.as_ref(), |amount| {
+        work += amount;
+        Ok::<(), ()>(())
+    })
+    .expect("streamed canonical manifest");
+    assert_eq!(streamed, *reopened);
+    assert!(work >= first_manifest.as_ref().len());
+    assert!(matches!(
+        super::validate_manifest_facts_checkpointed(first_manifest.as_ref(), |_| Err("cancelled")),
+        Err(super::CheckpointedManifestError::Stopped("cancelled"))
+    ));
+    let mut malformed = first_manifest.as_ref().to_vec();
+    malformed[10] = 1;
+    let mut bad_slots = [None; 2];
+    assert!(CompilationManifestView::validate(&malformed, &mut bad_slots).is_err());
+    assert!(matches!(
+        super::validate_manifest_facts_checkpointed(&malformed, |_| Ok::<(), ()>(())),
+        Err(super::CheckpointedManifestError::Invalid(
+            CompilationManifestError::HeaderReserved { .. }
+        ))
+    ));
     let first_entry = reopened
         .fragments()
         .next()
@@ -162,6 +184,36 @@ fn canonical_semantic_manifest_deduplicates_exact_pairs_and_preserves_distinct_i
             < entries[1].semantic_image.map(|fact| fact.identity)
     );
     let canonical_bytes = distinct_manifest.as_ref().to_vec();
+    let streamed =
+        super::validate_manifest_facts_checkpointed(&canonical_bytes, |_| Ok::<(), ()>(()))
+            .expect("semantic streamed facts");
+    assert_eq!(streamed, *distinct_manifest);
+    let mut calls = 0;
+    assert!(matches!(
+        super::validate_manifest_facts_checkpointed(&canonical_bytes, |_| {
+            calls += 1;
+            if calls == 3 {
+                Err("stop in entries")
+            } else {
+                Ok(())
+            }
+        }),
+        Err(super::CheckpointedManifestError::Stopped("stop in entries"))
+    ));
+    let mut calls = 0;
+    assert!(matches!(
+        super::validate_manifest_facts_checkpointed(&canonical_bytes, |_| {
+            calls += 1;
+            if calls == 4 {
+                Err("stop before hash")
+            } else {
+                Ok(())
+            }
+        }),
+        Err(super::CheckpointedManifestError::Stopped(
+            "stop before hash"
+        ))
+    ));
 
     // Older semantic grammar remains strict: changing only its version cannot
     // smuggle repeated content into a schema whose canonical key was compact-only.
@@ -181,6 +233,12 @@ fn canonical_semantic_manifest_deduplicates_exact_pairs_and_preserves_distinct_i
     assert!(matches!(
         CompilationManifestView::validate(&duplicate, &mut scratch),
         Err(CompilationManifestError::SemanticOrder { ordinal: 1, .. })
+    ));
+    assert!(matches!(
+        super::validate_manifest_facts_checkpointed(&duplicate, |_| Ok::<(), ()>(())),
+        Err(super::CheckpointedManifestError::Invalid(
+            CompilationManifestError::SemanticOrder { ordinal: 1, .. }
+        ))
     ));
     let mut reversed = canonical_bytes;
     let (first_region, second_region) = reversed[header..].split_at_mut(width);

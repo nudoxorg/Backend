@@ -364,6 +364,61 @@ impl ReplyDto {
         })
     }
 
+    /// Decode bounded claims using an independently authenticated local owner
+    /// channel. The resulting policy claim is not a native authority proof.
+    /// # Errors
+    /// Returns an error when the channel, certificate, or claim is invalid.
+    #[cfg(any(unix, windows))]
+    pub fn decode_with_local_source_policy(
+        bytes: &[u8],
+        channel: &backend_replication::AuthenticatedLocalPeer,
+    ) -> Result<Self, String> {
+        let envelope: ReplyEnvelope = super::codec::parse_reply_body(bytes)?;
+        ensure_version(envelope.version, "reply")?;
+        // Read and References records carry only bounded raw claims; unlike
+        // typed views they need no certificate to lower. The authenticated peer gates this
+        // path, and request correlation still runs after decoding.
+        let empty_certificate = WireCertificate::new();
+        let certificate = match envelope.certificate.as_ref() {
+            Some(certificate) => certificate,
+            None if matches!(&envelope.reply, super::reply::ReplyWire::Surface(crate::SurfaceReply::Read(_) | crate::SurfaceReply::References { .. })) => &empty_certificate,
+            None => return Err("reply omitted its producer certificate".to_owned()),
+        };
+        let reply = super::reply::reply_from_wire_with_local_policy(envelope.reply, certificate, channel)?;
+        if !super::reply::search_status_matches_reply(&reply, envelope.semantic_search) {
+            return Err(
+                "search readiness or semantic status contradicts its reply scope".to_owned(),
+            );
+        }
+        let health_cursor = envelope
+            .health_cursor
+            .as_ref()
+            .map(|cursor| cursor_from_wire(cursor, certificate))
+            .transpose()?;
+        if health_cursor.is_some() && !matches!(&reply, CommandReply::Health(_)) {
+            return Err("health cursor attached to a non-health reply".to_owned());
+        }
+        if matches!(&reply, CommandReply::Health(_)) && health_cursor.is_none() {
+            return Err("health reply omitted its exact owner cursor".to_owned());
+        }
+        if let Some(cursor) = health_cursor {
+            certificate.cursor_claim(cursor)?;
+        }
+        if let CommandReply::Health(root) = &reply {
+            let cursor = health_cursor
+                .ok_or_else(|| "health reply omitted its exact owner cursor".to_owned())?;
+            CompleteViewProjection::admit(root.clone(), cursor)
+                .map_err(|error| format!("health reply is not a complete projection: {error:?}"))?;
+        }
+        Ok(Self {
+            request_id: envelope.request_id,
+            reply,
+            certificate: envelope.certificate,
+            health_cursor,
+            semantic_search: envelope.semantic_search,
+        })
+    }
+
     /// Revalidates a successful health reply and returns its complete
     /// proof-bearing root/cursor projection.
     ///
@@ -603,6 +658,7 @@ enum CommandWire {
     Graph(GraphNeighborhoodQueryWire),
     Related(GraphNeighborhoodQueryWire),
     GraphPage(SymbolPageWire),
+    RelatedEdgePage(RelatedEdgePageWire),
     MembersPage(MembersPageWire),
     GraphQuery(GraphQueryRequestWire),
     SemanticShapes(SemanticShapeRequestWire),
@@ -649,6 +705,15 @@ struct DocumentQueryWire {
     symbol: SymbolAddressWire,
     basis: String,
     source: Option<super::BasisWire>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_range: Option<crate::SourceRangeRequest>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RelatedEdgePageWire {
+    symbol: SymbolAddressWire,
+    request: crate::RelatedPageRequest,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -869,6 +934,9 @@ fn command_to_wire(command: &Command) -> CommandWire {
             symbol: symbol_address_to_wire(*symbol),
             page: page_request_to_wire(*page),
         }),
+        Command::RelatedEdgePage { symbol, request } => CommandWire::RelatedEdgePage(RelatedEdgePageWire {
+            symbol: symbol_address_to_wire(*symbol), request: request.clone(),
+        }),
         Command::MembersPage { owner, page } => CommandWire::MembersPage(MembersPageWire {
             owner: document_query_to_wire(owner),
             page: page_request_to_wire(*page),
@@ -906,10 +974,15 @@ fn command_from_wire(
             package: required_certificate(certificate)?
                 .key_value::<PackageSchema>(WireSchema::Package, &value.package)?,
         }),
-        CommandWire::Document(value) => Ok(Command::Document(document_query_from_wire(
-            &value,
-            required_certificate(certificate)?,
-        )?)),
+        CommandWire::Document(value) => {
+            if value.source_range.is_some() {
+                return Err("source range requires a source command".to_owned());
+            }
+            Ok(Command::Document(document_query_from_wire(
+                &value,
+                required_certificate(certificate)?,
+            )?))
+        },
         CommandWire::Source(value) => Ok(Command::Source(document_query_from_wire(
             &value,
             required_certificate(certificate)?,
@@ -956,6 +1029,10 @@ fn command_from_wire(
         CommandWire::GraphPage(value) => Ok(Command::GraphPage {
             symbol: symbol_address_from_wire(&value.symbol, required_certificate(certificate)?)?,
             page: page_request_from_wire(value.page, required_certificate(certificate)?)?,
+        }),
+        CommandWire::RelatedEdgePage(value) => Ok(Command::RelatedEdgePage {
+            symbol: symbol_address_from_wire(&value.symbol, required_certificate(certificate)?)?,
+            request: value.request,
         }),
         CommandWire::MembersPage(value) => Ok(Command::MembersPage {
             owner: document_query_from_wire(&value.owner, required_certificate(certificate)?)?,
@@ -1093,6 +1170,7 @@ fn document_query_to_wire(query: &DocumentQuery) -> DocumentQueryWire {
         symbol: symbol_address_to_wire(query.symbol()),
         basis: encode_id(query.basis().as_bytes()),
         source: query.source_basis().map(super::basis_to_wire),
+        source_range: query.source_range(),
     }
 }
 
@@ -1109,10 +1187,14 @@ fn document_query_from_wire(
     if source.is_some_and(|source| !basis.matches(source.root)) {
         return Err("document query source basis does not match its root".to_owned());
     }
+    if value.source_range.is_some_and(|range| !range.valid()) {
+        return Err("invalid bounded source range".to_owned());
+    }
     Ok(DocumentQuery {
         symbol: symbol_address_from_wire(&value.symbol, certificate)?,
         basis,
         source,
+        source_range: value.source_range,
     })
 }
 

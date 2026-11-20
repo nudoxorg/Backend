@@ -37,7 +37,7 @@ pub use store::{API_KEY_ENV, KeySource, KeyStore, StoreError};
 pub const GATE_ENV: &str = "NUDOX_ACCOUNT_GATE";
 
 /// Where people create and copy their keys.
-pub const KEYS_URL: &str = "https://nudox.org/dashboard/keys";
+pub const KEYS_URL: &str = "https://dashboard.nudox.org/";
 
 /// Whether this build requires a signed-in account.
 ///

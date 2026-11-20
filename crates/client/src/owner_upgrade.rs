@@ -250,10 +250,10 @@ impl Session {
                     outline_witness_route,
                 );
             }
-            if passive
-                || attempt != 0
-                || (!same_version && (found, backend_library::DTO_VERSION) != (38, 39))
-            {
+            // A held executable identity does not prove an older owner's
+            // replacement speaks this live protocol. Refuse mixed-version
+            // automatic retirement before any signal or user command.
+            if passive || attempt != 0 || !same_version {
                 return Err(update_error(
                     found,
                     if same_version {
@@ -272,23 +272,16 @@ impl Session {
                     )
                 })?;
                 let retirement_deadline = deadline.min(Instant::now() + Duration::from_secs(15));
-                let retired = match intended_image.as_ref() {
-                    Some(image) => peer.retire_automatic_owner_for_image(
-                        &transport.stream,
-                        (paths.project(), paths.data(), paths.authority_secret()),
-                        image,
-                        retirement_deadline,
-                        || context.is_none_or(|c| c.check().is_ok()) && image.is_current(),
-                    ),
-                    None => peer.retire_automatic_owner(
-                        &transport.stream,
-                        paths.project(),
-                        paths.data(),
-                        paths.authority_secret(),
-                        retirement_deadline,
-                        || context.is_none_or(|c| c.check().is_ok()),
-                    ),
-                };
+                let image = intended_image.as_ref().ok_or_else(|| {
+                    update_error(found, "the intended owner image was not retained; no command was submitted")
+                })?;
+                let retired = peer.retire_automatic_owner_for_image(
+                    &transport.stream,
+                    (paths.project(), paths.data(), paths.authority_secret()),
+                    image,
+                    retirement_deadline,
+                    || context.is_none_or(|c| c.check().is_ok()) && image.is_current(),
+                );
                 if let Some(context) = context {
                     context.check()?;
                 }
@@ -370,8 +363,8 @@ mod tests {
             backend_library::DTO_VERSION,
             backend_library::DTO_VERSION
         )));
-        let wire = update_error(38, "old protocol").to_string();
-        assert!(wire.contains("version 38 → 39"));
+        let wire = update_error(39, "old protocol").to_string();
+        assert!(wire.contains("version 39 → 40"));
         assert!(!wire.contains("build update"));
     }
 
@@ -437,14 +430,14 @@ mod tests {
     #[test]
     fn incompatible_owner_has_typed_unsent_command_guidance() {
         let error = update_error(
-            38,
+            39,
             "restart the previous NuDox owner; no command was submitted",
         );
         assert!(matches!(
             error,
             ClientError::OwnerUpdate {
-                found: 38,
-                supported: 39,
+                found: 39,
+                supported: 40,
                 ..
             }
         ));

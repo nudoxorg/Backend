@@ -269,7 +269,7 @@ fn crest_warm(_: &mut Window, cx: &mut App) -> AnyView {
     stage(
         |measure, _, cx| {
             let m = measure.within(px(1336.0));
-            let adv = Advisories::Found { count: 2, worst: Some("high".into()), decision: "warn".into() };
+            let adv = Advisories::Found { count: 2, worst: Some("high".into()), decision: "warn".into(), note: "Complete feed coverage; up to date".into() };
             board("Package folio", vec![("Crest", crest_row(&m, "GPL-3.0-only", Pose::Live, adv))], measure, cx)
         },
         cx,

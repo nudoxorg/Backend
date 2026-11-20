@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::model::{
-    Advisory, AdvisoryCategory, AdvisoryStatus, AffectedRange, FreshnessState, NativeAdvisoryId,
-    MalwareCoverage, SeverityLevel,
+    Advisory, AdvisoryCategory, AdvisoryStatus, AffectedRange, FreshnessState, MalwareCoverage,
+    NativeAdvisoryId, SeverityLevel,
 };
 use super::policy::{
     AcquisitionDecision, AdvisoryCoverage, AdvisoryObservation, OverrideEvidence, PolicyReason,
@@ -148,6 +148,11 @@ pub struct AdvisoryPackageDto {
     pub yanked: bool,
     /// Registry publisher hides this exact version from listings.
     pub unlisted: bool,
+    /// Whether a registry source observed the two standing fields. Missing
+    /// means unverified, including in legacy records; a true positive flag
+    /// remains evidence even when the other standing flag is unverified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_standing_observed: Option<bool>,
     /// Typed acquisition decision made before archive staging.
     pub decision: AcquisitionDecision,
     /// Stable policy reasons retained for audit and display.
@@ -170,6 +175,7 @@ impl AdvisoryPackageDto {
             malware: MalwareCoverage::NotCovered,
             yanked: false,
             unlisted: false,
+            registry_standing_observed: None,
             decision: AcquisitionDecision::Warn(reasons.clone()),
             reasons,
         }
@@ -196,9 +202,60 @@ impl AdvisoryPackageDto {
             malware: observation.malware,
             yanked: observation.yanked,
             unlisted: observation.unlisted,
+            registry_standing_observed: None,
             decision,
             reasons,
         }
+    }
+
+    /// Qualifies an advisory-only policy result when registry standing was
+    /// not evaluated. Never converts a denial into a warning or an allow.
+    #[must_use]
+    pub fn without_registry_standing(mut self) -> Self {
+        self.registry_standing_observed = None;
+        let mut reasons = self.reasons.into_vec();
+        if !reasons.contains(&PolicyReason::RegistryStandingUnknown) {
+            reasons.push(PolicyReason::RegistryStandingUnknown);
+        }
+        let reasons = reasons.into_boxed_slice();
+        self.decision = match self.decision {
+            AcquisitionDecision::Deny(_) => AcquisitionDecision::Deny(reasons.clone()),
+            AcquisitionDecision::Allow | AcquisitionDecision::Warn(_) => {
+                AcquisitionDecision::Warn(reasons.clone())
+            }
+        };
+        self.reasons = reasons;
+        self
+    }
+
+    /// Applies a current complete registry standing observation to a live
+    /// projection, preserving other policy reasons and any existing denial.
+    #[must_use]
+    pub fn with_registry_standing(mut self, yanked: bool, unlisted: bool) -> Self {
+        self.registry_standing_observed = Some(true);
+        self.yanked = yanked;
+        self.unlisted = unlisted;
+        let denied = matches!(&self.decision, AcquisitionDecision::Deny(_));
+        let mut reasons = self.reasons.into_vec();
+        reasons.retain(|reason| *reason != PolicyReason::RegistryStandingUnknown);
+        for (present, status) in [
+            (yanked, AdvisoryStatus::Yanked),
+            (unlisted, AdvisoryStatus::Unlisted),
+        ] {
+            let reason = PolicyReason::Advisory(status);
+            if present && !reasons.contains(&reason) {
+                reasons.push(reason);
+            }
+        }
+        self.reasons = reasons.into_boxed_slice();
+        self.decision = if denied {
+            AcquisitionDecision::Deny(self.reasons.clone())
+        } else if self.reasons.is_empty() {
+            AcquisitionDecision::Allow
+        } else {
+            AcquisitionDecision::Warn(self.reasons.clone())
+        };
+        self
     }
 
     /// Applies a checked, auditable override to a persisted decision for a read-only product
@@ -211,8 +268,15 @@ impl AdvisoryPackageDto {
             && evidence.expires_at.is_none_or(|expiry| expiry >= now);
         if valid && matches!(self.decision, AcquisitionDecision::Deny(_)) {
             let reason = PolicyReason::OverrideAccepted(evidence);
-            self.decision = AcquisitionDecision::Warn(Box::new([reason.clone()]));
-            self.reasons = Box::new([reason]);
+            let mut reasons = vec![reason];
+            if self
+                .reasons
+                .contains(&PolicyReason::RegistryStandingUnknown)
+            {
+                reasons.push(PolicyReason::RegistryStandingUnknown);
+            }
+            self.reasons = reasons.into_boxed_slice();
+            self.decision = AcquisitionDecision::Warn(self.reasons.clone());
         }
         self
     }

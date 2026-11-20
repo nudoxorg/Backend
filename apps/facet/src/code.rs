@@ -23,7 +23,11 @@ use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::sync::Arc;
 
-/// The languages of the seven ecosystems.
+mod lexical;
+
+/// The languages the app colours. Seven ecosystems carry a bundled grammar;
+/// SQL and CSS are coloured lexically ([`lexical`]) because their meaning
+/// comes from the owner's native analyses, never from a grammar in the app.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum Lang {
     /// cargo.
@@ -45,6 +49,10 @@ pub enum Lang {
     C,
     /// Conan.
     Cpp,
+    /// SQL, in any dialect (coloured lexically, not parsed here).
+    Sql,
+    /// CSS (coloured lexically, not parsed here).
+    Css,
 }
 
 impl Lang {
@@ -61,14 +69,17 @@ impl Lang {
             "cs" | "csharp" | "c#" => Self::CSharp,
             "c" => Self::C,
             "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" | "h++" | "c++" => Self::Cpp,
+            "sql" => Self::Sql,
+            "css" => Self::Css,
             _ => return None,
         })
     }
 
-    /// The highlighter's language name.
+    /// The bundled highlighter's language name, or `None` for a language
+    /// coloured lexically.
     #[must_use]
-    pub const fn grammar(self) -> &'static str {
-        match self {
+    pub const fn grammar(self) -> Option<&'static str> {
+        Some(match self {
             Self::Rust => "rust",
             Self::TypeScript | Self::JavaScript => "typescript",
             Self::Python => "python",
@@ -77,7 +88,8 @@ impl Lang {
             Self::CSharp => "csharp",
             Self::C => "c",
             Self::Cpp => "cpp",
-        }
+            Self::Sql | Self::Css => return None,
+        })
     }
 }
 
@@ -216,11 +228,20 @@ pub fn highlight_now(lang: Lang, source: SharedString) -> Highlighted {
     Highlighted { lang, source, runs }
 }
 
-#[cfg(feature = "highlight")]
 fn runs(lang: Lang, source: &str) -> Vec<(Range<usize>, Role)> {
+    match lang {
+        Lang::Sql => lexical::sql(source),
+        Lang::Css => lexical::css(source),
+        _ => grammar_runs(lang, source),
+    }
+}
+
+#[cfg(feature = "highlight")]
+fn grammar_runs(lang: Lang, source: &str) -> Vec<(Range<usize>, Role)> {
     use gpui_component::Rope;
     use gpui_component::highlighter::SyntaxHighlighter;
-    let mut highlighter = SyntaxHighlighter::new(lang.grammar());
+    let Some(grammar) = lang.grammar() else { return Vec::new() };
+    let mut highlighter = SyntaxHighlighter::new(grammar);
     let rope = Rope::from_str(source);
     highlighter.update(None, &rope, None);
     // Later (inner) captures override earlier (outer) ones, byte by byte;
@@ -250,7 +271,7 @@ fn runs(lang: Lang, source: &str) -> Vec<(Range<usize>, Role)> {
 }
 
 #[cfg(not(feature = "highlight"))]
-fn runs(_lang: Lang, _source: &str) -> Vec<(Range<usize>, Role)> {
+fn grammar_runs(_lang: Lang, _source: &str) -> Vec<(Range<usize>, Role)> {
     Vec::new()
 }
 

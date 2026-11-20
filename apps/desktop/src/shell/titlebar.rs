@@ -638,7 +638,7 @@ impl Titlebar {
             here_name = facet::controls::button::capture_activation_admission(
                 facet::controls::button::native_button(
                     here_name.role(gpui::Role::Button).aria_label(format!("Show {} siblings", here.name)).cursor_pointer(),
-                    &focus, move |window, cx| act(window, cx),
+                    &focus, move |window, cx| { cx.stop_propagation(); act(window, cx); },
                 ),
                 Rc::new(move |cx| target_action.admits(cx)),
             );
@@ -673,13 +673,17 @@ impl Titlebar {
         }
         let target_action = jump_target_action(JumpAction::Ask, &self.links, &self.targets, cx);
         let ask = target_action.callback();
+        // The plate reads as a search field, so a pointer anywhere on it
+        // asks (as the Library's field does); its doors stop the click first.
+        let plate_ask = target_action.callback();
+        let plate_admission = target_action.clone();
         self.targets.push(Target { id: "here".into(), label: "Ask anything, or find a package".into(), action: target_action.clone(), peek: None, source: None });
         let focus = self.targets.native_handle(&"here".into(), cx);
         let face = facet::controls::button::capture_activation_admission(
             facet::controls::button::native_button(
                 div().id("here").role(gpui::Role::Button).aria_label("Ask anything, or find a package").cursor_pointer()
                     .child(icons::ui(Icon::Search, IconSize::S14, palette.ink4).size(measure.icon(14.0))),
-                &focus, move |window, cx| ask(window, cx),
+                &focus, move |window, cx| { cx.stop_propagation(); ask(window, cx); },
             ),
             Rc::new(move |cx| target_action.admits(cx)),
         );
@@ -693,6 +697,16 @@ impl Titlebar {
                 .graph_focus()
                 .map_or_else(|| jump::address_parts(snapshot).full(), crate::runtime::graph_focus::GraphFocus::status),
         );
+        // Over an auxiliary page (Settings, the inbox) the plate only names
+        // it; there the magnifier alone asks.
+        let plate = if snapshot.overlay().is_none() && snapshot.page_overlay().is_none() {
+            facet::controls::button::capture_activation_admission(
+                plate.id("jump-plate-face").cursor_pointer().on_click(move |_, window, cx| plate_ask(window, cx)),
+                Rc::new(move |cx| plate_admission.admits(cx)),
+            ).into_any_element()
+        } else {
+            plate.into_any_element()
+        };
         bar = bar.child(
                 div()
                     .id("jump-plate")
@@ -745,7 +759,7 @@ impl Titlebar {
                 div().id(id.clone()).role(role).aria_label(label).cursor_pointer().flex_none().h(side)
                     .flex().items_center().px(pad).mx(-pad)
                     .child(text(ty::SMALL, measure, palette.ink2).whitespace_nowrap().child(segment.name.clone())),
-                &focus, move |window, cx| act(window, cx),
+                &focus, move |window, cx| { cx.stop_propagation(); act(window, cx); },
             ),
             Rc::new(move |cx| target_action.admits(cx)),
         );

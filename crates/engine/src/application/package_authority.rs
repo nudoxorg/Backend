@@ -8,7 +8,7 @@
 
 use std::{
     path::{Component, Path},
-    sync::atomic::Ordering,
+    sync::{atomic::Ordering, Arc},
     time::Instant,
 };
 
@@ -20,7 +20,8 @@ use crate::driver::{
 use backend_frontend_clang::ClangAuthorityEnvironment;
 use backend_frontend_csharp::legacy::{
     CSharpAuthorityConfiguration, CSharpAuthorityControl, CSharpAuthorityError,
-    CSharpAuthorityRequest, CSharpOracle,
+    CSharpAuthorityRequest, CSharpCapturedConfig, CSharpCapturedSource, CSharpExecutionLease,
+    CSharpOracle,
 };
 use backend_frontend_go::legacy::oracle::{
     GoPackageAuthorityWitness, GoPackageAuthorityWitnessError,
@@ -34,7 +35,7 @@ use backend_frontend_python::legacy::checker::{
     PythonProjectReport, PythonProjectSource,
 };
 use backend_frontend_python::legacy::{
-    CheckerError as PyreflyError, CheckerReport as PythonReport, ExtractionError, Pyrefly, extract,
+    extract, CheckerError as PyreflyError, CheckerReport as PythonReport, ExtractionError, Pyrefly,
 };
 use backend_frontend_rust::legacy::{
     RustAnalysisControl, RustAuthorityError, RustCargoMetadataPolicy, RustFeatureControl,
@@ -104,6 +105,9 @@ pub struct CSharpPackageAuthorityConfiguration<'config> {
     pub producer: &'config CSharpOracle,
     /// Closed helper policy borrowed by each C# authority transaction.
     pub configuration: CSharpAuthorityConfiguration<'config>,
+    /// Resolver-selected references to clone into owner custody.
+    pub resolved_reference_snapshot:
+        Option<&'config backend_frontend_csharp::legacy::CSharpResolvedReferenceSnapshot>,
 }
 
 /// Explicit Rust project authority inputs that cannot be inferred from source
@@ -173,6 +177,10 @@ pub struct PackageAuthorityRequest<'request, 'config> {
     pub source: &'request [u8],
     /// Exact captured Java siblings available to javac without becoming explicit image inputs.
     pub java_sourcepath: &'request [JavaSource<'request>],
+    /// Captured members for one exact C# compilation unit.
+    pub csharp_sources: Option<&'request [CSharpCapturedSource<'request>]>,
+    /// Owner-captured C# project and configuration probes, if admitted.
+    pub csharp_config: Option<&'request [CSharpCapturedConfig<'request>]>,
     /// Exact native compilation unit selected by the admitted package target.
     pub unit_key: &'request CompilationUnitKeyV2,
     /// Closed language profile that determines the one allowed authority.
@@ -248,6 +256,15 @@ pub enum PackageAuthorityOwner<'workspace> {
         profile: LanguageProfile,
         /// Validated source-bound producer image bytes.
         image: Box<[u8]>,
+        /// Same-invocation evidence claim; not selected authority.
+        evidence: Option<Box<[u8]>>,
+        /// SDK resolver receipt retained with this exact invocation image.
+        resolver_receipt: Option<backend_frontend_csharp::legacy::CSharpResolverReceipt>,
+        /// Independently owned selected references for cold replay custody.
+        resolver_snapshot:
+            Option<Arc<backend_frontend_csharp::legacy::CSharpResolvedReferenceSnapshot>>,
+        /// Immutable private dotnet/helper/runtime custody for this attempt.
+        execution: CSharpExecutionLease,
     },
     /// Java authority image and its doclet session retained until lowering.
     Java {
@@ -328,6 +345,32 @@ impl PackageAuthorityOwner<'_> {
             | Self::CSharp { profile, .. }
             | Self::Java { profile, .. } => *profile,
             Self::TypeScript { profile, .. } => LanguageProfile::TypeScript(*profile),
+        }
+    }
+
+    /// Returns the same-attempt SDK resolver receipt retained with a C# image.
+    #[must_use]
+    pub fn csharp_resolver_receipt(
+        &self,
+    ) -> Option<&backend_frontend_csharp::legacy::CSharpResolverReceipt> {
+        match self {
+            Self::CSharp {
+                resolver_receipt, ..
+            } => resolver_receipt.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Returns independently owned selected-reference custody for C# replay.
+    #[must_use]
+    pub fn csharp_resolver_snapshot(
+        &self,
+    ) -> Option<&Arc<backend_frontend_csharp::legacy::CSharpResolvedReferenceSnapshot>> {
+        match self {
+            Self::CSharp {
+                resolver_snapshot, ..
+            } => resolver_snapshot.as_ref(),
+            _ => None,
         }
     }
 }
@@ -1053,25 +1096,48 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                         });
                     }
                 };
-                let image = configuration
-                    .producer
-                    .produce(CSharpAuthorityRequest {
-                        package_root: request.package_root,
-                        source_path: request.source_path,
-                        project_file: project_file.as_deref(),
-                        source: request.source,
-                        profile,
-                        native_tool: resolved.tool,
-                        toolchain: resolved.as_ref(),
-                        control: CSharpAuthorityControl {
-                            deadline: request.control.deadline,
-                            cancelled: request.control.cancelled,
-                        },
-                        configuration: configuration.configuration,
-                    })
+                let execution_closure =
+                    backend_frontend_csharp::legacy::CSharpExecutionClosure::capture(&[
+                        resolved.as_ref(),
+                        configuration.producer.oracle_path(),
+                    ])
                     .map_err(PackageAuthorityError::CSharp)?;
+                let csharp_request = CSharpAuthorityRequest {
+                    resolved_reference_snapshot: None,
+                    package_root: request.package_root,
+                    source_path: request.source_path,
+                    project_file: project_file.as_deref(),
+                    source: request.source,
+                    captured_sources: request.csharp_sources,
+                    captured_config: request.csharp_config,
+                    captured_project_graph: None,
+                    execution_closure: Some(&execution_closure),
+                    profile,
+                    native_tool: resolved.tool,
+                    toolchain: resolved.as_ref(),
+                    control: CSharpAuthorityControl {
+                        deadline: request.control.deadline,
+                        cancelled: request.control.cancelled,
+                    },
+                    configuration: configuration.configuration,
+                };
+                let image = match configuration.resolved_reference_snapshot {
+                    Some(snapshot) => configuration
+                        .producer
+                        .produce_with_owned_reference_snapshot(
+                            csharp_request,
+                            std::sync::Arc::new(snapshot.clone_owned().map_err(|_| {
+                                PackageAuthorityError::CSharp(CSharpAuthorityError::Configuration)
+                            })?),
+                        ),
+                    None => configuration.producer.produce(csharp_request),
+                }
+                .map_err(PackageAuthorityError::CSharp)?;
+                let resolver_snapshot = image.resolved_reference_snapshot().cloned();
+                let execution = image.execution_lease();
+                let (image, evidence, resolver_receipt) = image.into_parts_with_resolver_receipt();
                 let image = retain_image(
-                    image.into_bytes().into_vec(),
+                    image.into_vec(),
                     request.configuration.maximum_image_bytes,
                     request.profile,
                     PackageAuthorityStage::CSharpRoslyn,
@@ -1084,6 +1150,10 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                 PackageAuthorityOwner::CSharp {
                     profile: request.profile,
                     image,
+                    evidence,
+                    resolver_receipt,
+                    resolver_snapshot,
+                    execution,
                 }
             }
         };
@@ -1603,6 +1673,8 @@ mod tests {
             source_path: &source_path,
             source,
             java_sourcepath: &[],
+            csharp_sources: None,
+            csharp_config: None,
             unit_key: &CompilationUnitKeyV2::PackageRoot,
             profile: LanguageProfile::Go(GoVersion::Go125),
             toolchain: ToolchainSelection::ResolvedNative(go_toolchain()),
@@ -1642,6 +1714,8 @@ mod tests {
             source_path: &entry,
             source: b"int main(void) { return 0; }",
             java_sourcepath: &[],
+            csharp_sources: None,
+            csharp_config: None,
             unit_key: &CompilationUnitKeyV2::PackageRoot,
             profile: LanguageProfile::C(CStandard::C11),
             toolchain: ToolchainSelection::ResolvedNative(clang_toolchain()),
@@ -1671,6 +1745,8 @@ mod tests {
             source_path: Path::new("/packages/example/main.c"),
             source: b"int main(void) { return 0; }",
             java_sourcepath: &[],
+            csharp_sources: None,
+            csharp_config: None,
             unit_key: &CompilationUnitKeyV2::PackageRoot,
             profile: LanguageProfile::C(CStandard::C11),
             toolchain: ToolchainSelection::ResolvedNative(clang_toolchain()),
@@ -1701,6 +1777,8 @@ mod tests {
             source_path: Path::new("/packages/example/Library.cs"),
             source: b"public sealed class Library {}",
             java_sourcepath: &[],
+            csharp_sources: None,
+            csharp_config: None,
             unit_key: &CompilationUnitKeyV2::PackageRoot,
             profile: LanguageProfile::CSharp(CSharpVersion::CSharp14),
             toolchain: ToolchainSelection::ResolvedNative(csharp_toolchain()),

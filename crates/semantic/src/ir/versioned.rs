@@ -1158,9 +1158,45 @@ impl SemanticPlaneManifest {
         Ok(value)
     }
 
+    /// Preflights wire extents and returns the owned plane/segment allocation
+    /// required by `decode`, plus its one temporary coverage-scope encoding.
+    /// The input and any subsequent canonical re-encoding are separate charges.
+    pub fn decode_allocation_bound(bytes: &[u8]) -> Result<usize, SemanticManifestError> {
+        if bytes.len() > MAX_MANIFEST_BYTES {
+            return Err(SemanticManifestError::ManifestTooLarge { observed: bytes.len(), maximum: MAX_MANIFEST_BYTES });
+        }
+        let mut reader = Reader::new(bytes);
+        if reader.take(4)? != MAGIC.as_slice() { return Err(SemanticManifestError::BadMagic); }
+        let version = reader.u8()?;
+        if version != WIRE_VERSION { return Err(SemanticManifestError::UnsupportedVersion(version)); }
+        let _ = decode_build(&mut reader)?;
+        reader.take(32 * 3)?;
+        let _ = decode_coverage(&mut reader)?;
+        let planes = usize::from(reader.u16()?);
+        if planes > MAX_PLANES { return Err(SemanticManifestError::TooManyPlanes { observed: planes, maximum: MAX_PLANES }); }
+        let mut bytes_required = planes.checked_mul(std::mem::size_of::<SemanticPlane>()).ok_or(SemanticManifestError::CountOverflow)?;
+        for _ in 0..planes {
+            let _ = decode_plane_kind(&mut reader)?;
+            let _ = decode_coverage(&mut reader)?;
+            let segments = usize::try_from(reader.u32()?).map_err(|_| SemanticManifestError::CountOverflow)?;
+            if segments > MAX_SEGMENTS_PER_PLANE { return Err(SemanticManifestError::TooManySegments { observed: segments, maximum: MAX_SEGMENTS_PER_PLANE }); }
+            reader.take(segments.checked_mul(SEGMENT_WIRE_BYTES).ok_or(SemanticManifestError::CountOverflow)?)?;
+            bytes_required = bytes_required.checked_add(segments.checked_mul(std::mem::size_of::<SemanticPlaneSegment>()).ok_or(SemanticManifestError::CountOverflow)?).ok_or(SemanticManifestError::CountOverflow)?;
+        }
+        if !reader.is_empty() { return Err(SemanticManifestError::TrailingBytes(reader.remaining())); }
+        // Each plane derives its coverage scope from one 32-byte schema value;
+        // those temporary encodings occur sequentially, never concurrently.
+        bytes_required.checked_add(if planes == 0 { 0 } else { 32 }).ok_or(SemanticManifestError::CountOverflow)
+    }
+
     /// Reopens canonical bounded metadata. Coverage bytes remain claims only;
     /// callers must independently admit the exact witnesses before reuse.
     pub fn decode(bytes: &[u8]) -> Result<Self, SemanticManifestError> {
+        // Keep borrowed and owning admission on the same canonical validator.
+        BorrowedSemanticManifest::parse(bytes, &mut |_| Ok::<(), SemanticManifestError>(()))
+            .map_err(|error| match error {
+                BorrowedSemanticManifestError::Invalid(error) | BorrowedSemanticManifestError::Stopped(error) => error,
+            })?;
         if bytes.len() > MAX_MANIFEST_BYTES {
             return Err(SemanticManifestError::ManifestTooLarge {
                 observed: bytes.len(),
@@ -2200,17 +2236,25 @@ fn plane_root(kind: SemanticPlaneKind, segments: &[SemanticPlaneSegment]) -> Sem
     update_plane_kind_hash(&mut hasher, kind);
     hasher.update(&(segments.len() as u32).to_be_bytes());
     for segment in segments {
-        hasher.update(&segment.first_key);
-        hasher.update(&segment.last_key);
-        hasher.update(&segment.row_count.to_be_bytes());
-        hasher.update(&segment.byte_length.to_be_bytes());
-        hasher.update(segment.id_claim.as_bytes());
-        hasher.update(&segment.input.input_root);
-        hasher.update(segment.input.read_manifest.as_bytes());
-        update_coverage_hash(&mut hasher, segment.input.coverage);
+        update_plane_segment_hash(&mut hasher, segment);
     }
     SemanticPlaneRoot(*hasher.finalize().as_bytes())
 }
+
+fn update_plane_segment_hash(hasher: &mut blake3::Hasher, segment: &SemanticPlaneSegment) {
+    hasher.update(&segment.first_key);
+    hasher.update(&segment.last_key);
+    hasher.update(&segment.row_count.to_be_bytes());
+    hasher.update(&segment.byte_length.to_be_bytes());
+    hasher.update(segment.id_claim.as_bytes());
+    hasher.update(&segment.input.input_root);
+    hasher.update(segment.input.read_manifest.as_bytes());
+    update_coverage_hash(hasher, segment.input.coverage);
+}
+
+#[path = "versioned_borrowed.rs"]
+mod borrowed;
+pub use borrowed::{BorrowedSemanticCatalogHasher, BorrowedSemanticManifest, BorrowedSemanticManifestError};
 
 fn plane_coverage_scope(root: SemanticPlaneRoot) -> ScopeRoot {
     let version = ObjectVersion::<SemanticPlaneCoverageScope>::from_value(&root);
@@ -2222,10 +2266,14 @@ fn manifest_coverage_scope(root: SemanticManifestRoot) -> ScopeRoot {
     ScopeRoot::from_bytes(version.to_bytes())
 }
 
-fn manifest_identity(bytes: &[u8]) -> SemanticManifestRoot {
+fn manifest_hasher(length: usize) -> blake3::Hasher {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"backend.semantic.ir.manifest.v1\0");
-    hasher.update(&(bytes.len() as u64).to_be_bytes());
+    hasher.update(&(length as u64).to_be_bytes());
+    hasher
+}
+fn manifest_identity(bytes: &[u8]) -> SemanticManifestRoot {
+    let mut hasher = manifest_hasher(bytes.len());
     hasher.update(bytes);
     SemanticManifestRoot(*hasher.finalize().as_bytes())
 }
@@ -3061,6 +3109,66 @@ mod tests {
             planes,
         )
         .expect("canonical plane order")
+    }
+
+    #[test]
+    fn borrowed_semantic_manifest_matches_owned_and_cancels() {
+        let kind = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
+        let value = manifest(build(1), input(1), vec![plane(kind, vec![segment(kind, 1, b"x"), segment(kind, 2, b"y")])]);
+        let bytes = value.encode().unwrap();
+        let mut view = None;
+        let peak = allocation_counter::measure(|| {
+            view = Some(BorrowedSemanticManifest::parse(&bytes, &mut |_| Ok::<_, ()>(())).unwrap());
+        });
+        assert_eq!(peak.bytes_max, 0);
+        let view = view.unwrap();
+        assert_eq!(view.root(), value.root());
+        assert_eq!(view.semantic_generation(), value.semantic_generation());
+        assert_eq!(view.segment_count(), 2);
+        let mut seen = 0;
+        view.visit_segments(&mut |_| Ok::<_, ()>(()), &mut |observed, segment| {
+            assert_eq!(observed, kind);
+            assert_eq!(segment.id_claim(), value.planes()[0].segments()[seen].id_claim());
+            seen += 1;
+            Ok(())
+        }).unwrap();
+        assert_eq!(seen, 2);
+        assert!(BorrowedSemanticManifest::parse(&bytes[..bytes.len()-1], &mut |_| Ok::<_, ()>(())).is_err());
+        let mut calls = 0;
+        let result = BorrowedSemanticManifest::parse(&bytes, &mut |_| { calls += 1; if calls == 2 { Err(()) } else { Ok(()) } });
+        assert!(matches!(result, Err(BorrowedSemanticManifestError::Stopped(()))));
+    }
+
+    #[test]
+    fn semantic_plane_decode_allocation_bound_matches_measured_shape() {
+        let kind = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
+        let value = manifest(build(1), input(1), vec![plane(kind, vec![segment(kind, 1, b"x"), segment(kind, 2, b"y")])]);
+        let bytes = value.encode().unwrap();
+        let bound = SemanticPlaneManifest::decode_allocation_bound(&bytes).unwrap();
+        let mut decoded = None;
+        let peak = allocation_counter::measure(|| decoded = Some(SemanticPlaneManifest::decode(&bytes).unwrap()));
+        assert!(decoded.is_some());
+        assert!(peak.bytes_max as usize <= bound, "plane decode peak {peak:?}, bound {bound}");
+        assert!(SemanticPlaneManifest::decode_allocation_bound(&bytes[..bytes.len()-1]).is_err());
+    }
+
+    #[test]
+    fn dense_multiplane_decode_is_precharged_and_malformed_scan_allocates_nothing() {
+        let ir = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
+        let ext = SemanticPlaneKind::Ir(SemanticIrPlane::LanguageExtensions(LanguageProfile::Rust(RustEdition::Rust2024)));
+        let embed = SemanticPlaneKind::Embeddings(EmbeddingPlaneIdentity::new([20; 32], [21; 32], [24; 32], 768, EmbeddingNormalization::L2, [22; 32], [23; 32]).unwrap());
+        let mut planes = vec![plane(ir, (0..=255).map(|n| segment(ir, n, b"dense")).collect()),
+            plane(ext, vec![segment(ext, 1, b"extension")]), plane(embed, vec![segment(embed, 1, b"embedding")])];
+        planes.sort_unstable_by_key(|plane| plane.kind);
+        let bytes = manifest(build(1), input(1), planes).encode().unwrap();
+        let bound = SemanticPlaneManifest::decode_allocation_bound(&bytes).unwrap();
+        let mut decoded = None;
+        let peak = allocation_counter::measure(|| decoded = Some(SemanticPlaneManifest::decode(&bytes).unwrap()));
+        assert_eq!(decoded.unwrap().planes().len(), 3);
+        assert!(peak.bytes_max as usize <= bound, "dense decode peak {peak:?}, bound {bound}");
+        let malformed = &bytes[..bytes.len()-1];
+        let peak = allocation_counter::measure(|| assert!(SemanticPlaneManifest::decode_allocation_bound(malformed).is_err()));
+        assert_eq!(peak.bytes_max, 0, "borrowed malformed preflight allocated: {peak:?}");
     }
 
     #[test]

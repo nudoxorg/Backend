@@ -3133,6 +3133,10 @@ fn validate_view_binding(
     Ok(())
 }
 
+#[cfg(test)]
+pub(crate) static TEST_REPORT_UNJOINED_SEARCH_ROWS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 fn collect_selected_documents(
     workspace: WorkspaceRoot,
     view: &ViewRoot,
@@ -3234,6 +3238,13 @@ fn collect_selected_documents(
         }
     }
     left_out.rows_without_evidence = selected_rows.len();
+    #[cfg(test)]
+    if TEST_REPORT_UNJOINED_SEARCH_ROWS.load(std::sync::atomic::Ordering::Acquire) {
+        for row in view.row_refs().filter(|row| selected_rows.contains_key(&row.id.stable_key())).take(20) {
+            eprintln!("search unjoined row: id={:?} label={:?} kind={:?} source={:?}",
+                row.id, row.label.chars().take(200).collect::<String>(), row.kind, row.source);
+        }
+    }
     preparation_checkpoint(cancelled, "lexical-sort-entities")?;
     if cancelled.is_some() {
         super::controlled_sort::sort_unstable_in_place_checked(

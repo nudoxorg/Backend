@@ -238,7 +238,7 @@ impl<'work> ParserStateCore<'work> {
                         "Decorators are not valid here.",
                         diagnostic_codes::DECORATORS_ARE_NOT_VALID_HERE,
                     );
-                    self.parse_function_declaration_with_async_optional_name(false, None)
+                    self.parse_function_declaration_with_async_optional_name(None, None)
                 }
                 SyntaxKind::AsyncKeyword if self.look_ahead_is_async_function() => {
                     self.parse_error_at(
@@ -247,8 +247,9 @@ impl<'work> ParserStateCore<'work> {
                         "Decorators are not valid here.",
                         diagnostic_codes::DECORATORS_ARE_NOT_VALID_HERE,
                     );
+                    let async_start = self.token_pos();
                     self.next_token(); // consume 'async'
-                    self.parse_function_declaration_with_async_optional_name(true, None)
+                    self.parse_function_declaration_with_async_optional_name(Some(async_start), None)
                 }
                 SyntaxKind::InterfaceKeyword => {
                     self.parse_error_at(
@@ -395,11 +396,12 @@ impl<'work> ParserStateCore<'work> {
         //   export default function foo() {} // valid, named
         let expression = match self.token() {
             SyntaxKind::FunctionKeyword => {
-                self.parse_function_declaration_with_async_optional_name(false, None)
+                self.parse_function_declaration_with_async_optional_name(None, None)
             }
             SyntaxKind::AsyncKeyword if self.look_ahead_is_async_function() => {
+                let async_start = self.token_pos();
                 self.next_token(); // consume 'async'
-                self.parse_function_declaration_with_async_optional_name(true, None)
+                self.parse_function_declaration_with_async_optional_name(Some(async_start), None)
             }
             SyntaxKind::ClassKeyword => self.parse_class_declaration(),
             SyntaxKind::AbstractKeyword => {

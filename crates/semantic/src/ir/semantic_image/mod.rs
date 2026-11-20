@@ -22,9 +22,9 @@ pub use full::{
 };
 pub use full_wire::{
     FullSemanticImageError, FullSemanticImageFault, FullSemanticImageField,
-    FullSemanticImageIdentityField, PreparedFullSemanticImage, SemanticImageProofOwner,
-    SemanticImageView, encode_full_semantic_image, full_semantic_image_len,
-    reset_semantic_image_validations, semantic_image_validations,
+    FullSemanticImageIdentityField, PreparedFullSemanticImage, RetainedSemanticImage, SemanticImageProofOwner,
+    SemanticImageView, SemanticImageAdmissionMeter, encode_full_semantic_image, full_semantic_image_len,
+    reset_semantic_image_validations, semantic_image_admission_scratch, semantic_image_validations,
 };
 #[cfg(feature = "mmap")]
 pub use full_wire::{

@@ -123,7 +123,157 @@ fn account_manifest_node(
     Ok(())
 }
 
+#[cfg(unix)]
+fn bounded_manifest_ref(dirs: &super::super::artifact_fs::BoundedReadDirectories, schema: SchemaIdentity, version: &Hash, checkpoint: &mut dyn FnMut() -> Result<(), StoreError>) -> Result<ObjectId, StoreError> {
+    let mut file = dirs.relation_ref(schema, version, checkpoint)?;
+    let len = super::wire::relation_ref_encoded_len();
+    if usize::try_from(file.metadata().map_err(|e| io_error(&e))?.len()).map_err(|_| StoreError::Bounds)? != len { return Err(StoreError::Corrupt); }
+    let bytes = super::relation::read_relation_reference_checkpoint(&mut file, checkpoint)?;
+    super::wire::decode_relation_ref(&bytes[..len], schema, version)
+}
+
 impl FileStore {
+    /// Maximum encoded node bytes in one bounded manifest work token.
+    pub const BOUNDED_MANIFEST_WORK_NODE_BYTES: usize = backend_version::DEFAULT_CUT_POLICY.max_encoded_bytes();
+    /// Maximum physical object bytes, including its fixed envelope framing.
+    pub const BOUNDED_MANIFEST_WORK_OBJECT_BYTES: usize = Self::BOUNDED_MANIFEST_WORK_NODE_BYTES + super::super::OBJECT_MAGIC.len() + 32 + 1 + 2 + 1 + 32 + 32 + 8;
+    /// Fixed descriptor and reference buffers are each bounded to this size.
+    pub const BOUNDED_MANIFEST_WORK_FIXED_FRAME_BYTES: usize = 128;
+    /// Fixed-size relation-key, descriptor, and reference hashes are included
+    /// alongside the full-node hashes, with at most four per work token.
+    pub const BOUNDED_MANIFEST_WORK_FIXED_HASHES: usize = 4;
+    /// Physical hash, preflight root hash, and two hashes in each of two
+    /// typed admissions. Each hashes at most `BOUNDED_MANIFEST_WORK_NODE_BYTES`.
+    pub const BOUNDED_MANIFEST_WORK_HASH_PASSES: usize = 6;
+    /// Raw framing/order scan, two typed grammar scans, and streamed lookup.
+    pub const BOUNDED_MANIFEST_WORK_NODE_SCANS: usize = 4;
+    /// Upper bound per scan, including the rejected first over-limit entry.
+    pub const BOUNDED_MANIFEST_WORK_ENTRIES_PER_SCAN: usize = backend_version::DEFAULT_CUT_POLICY.max_entries as usize + 1;
+    /// Two typed admissions and the lookup root clone each copy at most one
+    /// node-sized wire payload.
+    pub const BOUNDED_MANIFEST_WORK_WIRE_COPIES: usize = 3;
+
+    /// Tests membership in a selected closure without materializing members.
+    ///
+    /// The Unix implementation debits fixed locator/envelope stack before
+    /// opening and node wire/key allocations before typed decode. Other
+    /// platforms fail closed. `before_read` must charge work and check cancellation
+    /// before each descriptor or relation-node read. `preflight` must charge
+    /// typed node admission and retained node copies before each decode. Each
+    /// `before_read` invocation must debit one worst-shape node-admission work
+    /// token (the named `BOUNDED_MANIFEST_WORK_*` bounds). A token covers the
+    /// indicated full-node hashes, scans, copies, and fixed-width key
+    /// roundtrip/order operations for each scan; malformed key bytes are
+    /// bounded by the node-byte limit. Every loaded node invokes this callback
+    /// before physical I/O and its authentication, so charging every callback
+    /// is deliberately conservative. Retry/open operations also consume one
+    /// token each. Work tokens bound operations, not CPU instructions or an
+    /// in-flight system call. The supplied credit remains debited; temporary reservations may be refunded
+    /// by the caller only after this operation returns. This admits one exact
+    /// selected path, not every member or an exported closure.
+    pub fn contains_closure_member_bounded<B, P>(
+        &self, pin: &super::super::GcPinGuard, closure: ClosureId, member: crate::UntrustedObjectId,
+        max_depth: usize, budget: &mut usize, mut before_read: B, preflight: P,
+    ) -> Result<(bool, u64), StoreError>
+    where
+        B: FnMut(&mut usize) -> Result<(), StoreError>,
+        P: for<'a> FnMut(&backend_version::CanonicalNodeView<'a>, &mut usize) -> Result<(), StoreError>,
+    {
+        use backend_version::{LazyTree, LazyTreeError, TreeNodeLoader};
+        use std::cell::RefCell;
+        use std::io::Read;
+        if max_depth == 0 || max_depth > 32 { return Err(StoreError::Bounds); }
+        // Fixed root path, locators, descriptor/reference buffers and the
+        // relation envelope are reserved before opening the selected closure.
+        const ENVELOPE: usize = backend_version::DEFAULT_CUT_POLICY.max_encoded_bytes() + super::super::OBJECT_MAGIC.len() + 32 + 1 + 2 + 1 + 32 + 32 + 8;
+        const STACK: usize = 4096 + 96 + 80 + 128 + 128 + ENVELOPE;
+        if cfg!(not(unix)) { return Err(StoreError::Bounds); }
+        *budget = budget.checked_sub(STACK).ok_or(StoreError::Bounds)?;
+        if !pin.covers_identity(self.gc_identity) { return Err(StoreError::Corrupt); }
+        before_read(budget)?;
+        #[cfg(unix)]
+        let dirs = super::super::artifact_fs::BoundedReadDirectories::open(self, &mut || before_read(budget))?;
+        #[cfg(unix)]
+        let mut file = dirs.closure(closure, &mut || before_read(budget))?;
+        #[cfg(not(unix))]
+        let mut file = super::super::artifact_fs::open_closure(self, closure)?;
+        let length = usize::try_from(file.metadata().map_err(|e| io_error(&e))?.len()).map_err(|_| StoreError::Bounds)?;
+        // Both supported fixed-size descriptor formats fit this stack buffer.
+        let mut bytes = [0u8; 128];
+        if length > bytes.len() { return Err(StoreError::Bounds); }
+        let mut at = 0;
+        while at < length {
+            before_read(budget)?;
+            match file.read(&mut bytes[at..length]) {
+                Ok(0) => return Err(StoreError::Corrupt),
+                Ok(n) => at += n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(io_error(&e)),
+            }
+        }
+        let mut trailing = [0u8; 1];
+        loop {
+            before_read(budget)?;
+            match file.read(&mut trailing) {
+                Ok(0) => break,
+                Ok(_) => return Err(StoreError::Corrupt),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(io_error(&e)),
+            }
+        }
+        let descriptor = super::wire::decode_manifest_descriptor(&bytes[..length], closure)?;
+        if descriptor.count.is_some_and(|n| n > NODE_MAX_COUNT) { return Err(StoreError::Bounds); }
+        before_read(budget)?;
+        let schema = SchemaIdentity::of_relation::<ManifestRelation>();
+        #[cfg(unix)]
+        let root_object = bounded_manifest_ref(&dirs, schema, closure.as_bytes(), &mut || before_read(budget))?;
+        #[cfg(not(unix))]
+        let root_object = self.read_relation_ref(schema, closure.as_bytes())?;
+        if root_object != descriptor.root { return Err(StoreError::Corrupt); }
+        struct Loader<'a, B, P> { store: &'a FileStore, #[cfg(unix)] dirs: &'a super::super::artifact_fs::BoundedReadDirectories, state: RefCell<(&'a mut usize, B, P)> }
+        impl<B, P> TreeNodeLoader<ManifestRelation> for Loader<'_, B, P>
+        where B: FnMut(&mut usize) -> Result<(), StoreError>,
+              P: for<'a> FnMut(&backend_version::CanonicalNodeView<'a>, &mut usize) -> Result<(), StoreError> {
+            type Error = StoreError;
+            fn load(&self, claim: UntrustedId<ManifestRelation>) -> Result<CheckedCanonicalRoot<ManifestRelation>, StoreError> {
+                let mut state = self.state.borrow_mut();
+                let (budget, before, gate) = &mut *state;
+                before(budget)?;
+                #[cfg(not(unix))]
+                { self.store.read_relation_node_claim_preflight(claim, |view| gate(view, budget)) }
+                #[cfg(unix)]
+                {
+                    let schema = SchemaIdentity::of_relation::<ManifestRelation>();
+                    let object = bounded_manifest_ref(self.dirs, schema, claim.as_bytes(), &mut || before(budget))?;
+                    let file = self.dirs.object(object, &mut || before(budget))?;
+                    let callbacks = RefCell::new((budget, before, gate));
+                    self.store.with_relation_object_preflight_file_checkpoint(file, crate::UntrustedObjectId::from_bytes(*object.as_bytes()),
+                        &mut || { let mut state = callbacks.borrow_mut(); let (budget, before, _) = &mut *state; before(budget) },
+                        |object| {
+                            if object.schema() != schema || object.version() != claim.as_bytes() || object.key() != &crate::closure::relation_key(schema) { return Err(StoreError::Corrupt); }
+                            backend_version::StateRoot::<ManifestRelation>::admit_canonical_bytes(claim, object.bytes()).map_err(|_| StoreError::Corrupt)?;
+                            let view = backend_version::CanonicalNodeView::parse(object.bytes(), schema).map_err(|_| StoreError::Corrupt)?;
+                            // Each admitted node has an exact-length wire copy;
+                            // reserve two copies plus the single 32-byte key encoder.
+                            let node_charge = view.encoded_len().checked_mul(2).and_then(|n| n.checked_add(32)).ok_or(StoreError::Bounds)?;
+                            let mut state = callbacks.borrow_mut();
+                            let (budget, _, gate) = &mut *state;
+                            ***budget = (***budget).checked_sub(node_charge).ok_or(StoreError::Bounds)?;
+                            gate(&view, budget)
+                        },
+                        |object| backend_version::admit_canonical_root_claim(claim, object.bytes()).map_err(|_| StoreError::Corrupt))
+                }
+            }
+        }
+        let loader = Loader { store: self, #[cfg(unix)] dirs: &dirs, state: RefCell::new((budget, before_read, preflight)) };
+        let claim = UntrustedId::<ManifestRelation>::from_wire(closure.as_bytes(), IdContext::relation::<ManifestRelation>()).map_err(|_| StoreError::Corrupt)?;
+        let map_error = |error| match error { LazyTreeError::Load(error) => error, _ => StoreError::Corrupt };
+        let tree = LazyTree::open(&loader, claim).map_err(map_error)?;
+        if descriptor.count.is_some_and(|count| u64::try_from(count).ok() != Some(tree.root().node().row_count())) { return Err(StoreError::Corrupt); }
+        let count = tree.root().node().row_count();
+        tree.lookup_streaming_with_depth_limit(member.as_bytes(), max_depth).map(|v| (v.is_some(), count)).map_err(map_error)
+    }
+
     /// Writes only the changed frontier of a persistent closure index when a
     /// manifest was produced by an exact-base path-copy update. The flat
     /// object export is not part of this physical publication path.

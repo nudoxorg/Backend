@@ -19,6 +19,8 @@ mod semantic;
 
 pub use candle_acquisition::{DownloadedCandleArtifacts, download_candle_artifacts};
 pub(crate) use local::SelectionPreparationDiagnostic;
+#[cfg(test)]
+pub(crate) use local::TEST_REPORT_UNJOINED_SEARCH_ROWS;
 pub use local::{
     CoverageBasis, Freshness, Lane, LaneReport, LeftOut, LexicalFailureCause, LexicalPhase,
     LocalAnswer, LocalQuery, QueryCoordinator, QueryError, QueryResult, RankedRow,

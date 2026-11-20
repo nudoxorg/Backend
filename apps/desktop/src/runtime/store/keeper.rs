@@ -377,6 +377,10 @@ mod tests {
         ));
         crate::host::private_dir(&directory).expect("fixture");
         let file = SnapshotFile::in_data(&directory);
+        // The snapshot's writer identity is the running executable's fingerprint,
+        // prepared by the launch read worker. Prepare it here, as snapshot_tests
+        // does, so the result does not depend on which test ran first.
+        crate::runtime::snapshot::prepare_writer_for_tests();
         let mut keeper = SnapshotKeeper::default();
         keeper.file = Some(file.clone());
         let view = backend_library::view_state_root(&[("fence".into(), "close".into())]);

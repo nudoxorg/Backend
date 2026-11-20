@@ -31,7 +31,7 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
             }
         }
         // The window root adds a release (`runtime::acquire`): no state here.
-        Intent::Noop | Intent::AddRelease(_) => {}
+        Intent::Noop | Intent::AddRelease(_) | Intent::RemoveRelease { .. } => {}
         Intent::Navigate(route) => {
             navigate(&mut next, route);
             effects.push(Effect::Persist);

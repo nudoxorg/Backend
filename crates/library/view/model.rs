@@ -371,6 +371,8 @@ pub enum Fragment {
 /// One declaration document.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Document {
+    /// Captured-policy claim; the selected native capability is required to issue it.
+    pub source_policy: crate::SourcePolicyQualification,
     /// Stable declaration identity.
     pub symbol: SymbolKey,
     /// Exact copied-address selection of an admitted native row. The locator
@@ -392,6 +394,8 @@ pub struct Document {
     pub location: SourceAvailability,
     /// Bounded declaration source text with explicit availability and extent.
     pub excerpt: SourceExcerpt,
+    /// Exact byte range when an owner admitted a source-range request.
+    pub source_range: Option<crate::SourceRangePage>,
     /// What the producer observed about the declaration, copied from its row.
     pub facts: DeclarationFacts,
 }
@@ -405,6 +409,7 @@ impl Document {
         fragments: impl Into<Box<[Fragment]>>,
     ) -> Self {
         Self {
+            source_policy: crate::SourcePolicyQualification::Unknown,
             symbol,
             selection: None,
             basis,
@@ -413,6 +418,7 @@ impl Document {
             signature: None,
             location: SourceAvailability::NotCaptured,
             excerpt: SourceExcerpt::NotCaptured,
+            source_range: None,
             facts: DeclarationFacts::UNOBSERVED,
         }
     }
@@ -600,17 +606,11 @@ impl DocumentSelection {
     /// Canonical bounded tuple committed by the authenticated owner.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        const PREFIX: &[u8] = b"library-document-selection-v1\0";
-        let mut bytes = Vec::with_capacity(PREFIX.len() + 5 * 32 + 2 + self.coordinate.len());
-        bytes.extend_from_slice(PREFIX);
-        bytes.extend_from_slice(self.symbol.as_bytes());
-        bytes.extend_from_slice(self.source.root.as_bytes());
-        bytes.extend_from_slice(self.source.object.as_bytes());
-        bytes.extend_from_slice(self.source.branch.as_bytes());
-        bytes.extend_from_slice(self.source.log.as_bytes());
-        bytes.extend_from_slice(&self.source.schema.to_be_bytes());
-        bytes.extend_from_slice(self.coordinate.as_bytes());
-        bytes
+        document_selection_canonical_bytes(
+            [*self.symbol.as_bytes(), *self.source.root.as_bytes(), *self.source.object.as_bytes(),
+             *self.source.branch.as_bytes(), *self.source.log.as_bytes()],
+            self.source.schema, &self.coordinate,
+        )
     }
 
     /// Content commitment of this locator, actual row, and complete basis.
@@ -624,6 +624,20 @@ impl DocumentSelection {
             && self.source.root == document.basis()
             && document.source_basis() == Some(self.source)
     }
+}
+
+/// Reconstructs only the canonical selection preimage. Raw cells remain
+/// claims; this helper never creates typed view or source authority.
+pub(crate) fn document_selection_canonical_bytes(
+    cells: [[u8; 32]; 5], schema: u16, coordinate: &str,
+) -> Vec<u8> {
+    const PREFIX: &[u8] = b"library-document-selection-v1\0";
+    let mut bytes = Vec::with_capacity(PREFIX.len() + 5 * 32 + 2 + coordinate.len());
+    bytes.extend_from_slice(PREFIX);
+    for cell in cells { bytes.extend_from_slice(&cell); }
+    bytes.extend_from_slice(&schema.to_be_bytes());
+    bytes.extend_from_slice(coordinate.as_bytes());
+    bytes
 }
 
 /// One declaration in an outline tree.
@@ -908,16 +922,31 @@ impl Row {
     #[must_use]
     pub fn new(id: RowId, basis: Basis, label: impl Into<String>) -> Self {
         let label = label.into();
+        let document = vec![Fragment::Text(label.clone())].into_boxed_slice();
+        Self::new_with_document(id, basis, label, document)
+    }
+
+    /// Creates a ready row with its complete document already owned.
+    ///
+    /// Producers that have a document use this constructor to avoid allocating
+    /// a second copy of the label for a default document they immediately replace.
+    #[must_use]
+    pub fn new_with_document(
+        id: RowId,
+        basis: Basis,
+        label: impl Into<String>,
+        document: impl Into<Box<[Fragment]>>,
+    ) -> Self {
         Self {
             id,
             identity_preimage: None,
             basis,
             state: RowState::Ready,
-            label: label.clone(),
+            label: label.into(),
             score: None,
             package: None,
             parent: None,
-            document: vec![Fragment::Text(label)].into_boxed_slice(),
+            document: document.into(),
             signature: None,
             kind: None,
             source: SourceAvailability::NotCaptured,

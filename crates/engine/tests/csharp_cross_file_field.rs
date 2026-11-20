@@ -261,7 +261,7 @@ fn cross_file_field_read_targets_workout_service_namespace_key() -> Result<(), T
     let end = usize::try_from(auth_end).map_err(|_| TestError::Fact {
         message: "authority span end does not fit usize".to_owned(),
     })?;
-    if weeks_source.get(start..end) != Some(b"Note") {
+    if weeks_source.get(start..end) != Some(&b"Note"[..]) {
         return Err(TestError::Fact {
             message: "authority span bytes must be Note, not service.Note".to_owned(),
         });

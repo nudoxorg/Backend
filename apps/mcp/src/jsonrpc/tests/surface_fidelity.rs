@@ -13,6 +13,69 @@ const NAME: &str = "HTTPieArgumentParser";
 const HEADER: &str = "class HTTPieArgumentParser(BaseHTTPieArgumentParser):";
 const SOURCE: &str = include_str!("../fixtures/httpie-signature/argparser.py");
 
+#[test]
+fn selected_graph_reports_missing_relation_coverage_at_every_detail() {
+    let coordinate = format!("{SHELF}::box.ts:1::item");
+    let symbol = symbol_key("selected-graph-gap");
+    let view = root(vec![
+        Row::new(RowId::Package(package_key(SHELF)), basis(), SHELF),
+        Row::in_package(
+            RowId::Symbol(symbol),
+            basis(),
+            package_key(SHELF),
+            &coordinate,
+        ),
+    ]);
+    let library = Library::from_view(view.clone(), backend_library::Cursor::for_view_root(&view))
+        .expect("immutable view");
+    let mut server = server(library);
+    for detail in ["summary", "standard", "full"] {
+        for tool in ["backend.graph", "backend.related"] {
+            let arguments = json!({"selected_symbol":{"kind":"selected-symbol-id","value":symbol.as_bytes()}, "detail":detail});
+            for registered in [false, true] {
+                let result = if registered {
+                    invoke(
+                        &mut server,
+                        "backend.call",
+                        json!({"name":tool,"arguments":arguments.clone()}),
+                    )
+                } else {
+                    invoke(&mut server, tool, arguments.clone())
+                };
+                assert_eq!(result["isError"], false, "{tool} {detail}: {result}");
+                let gap = result["structuredContent"]["graph_gap"]
+                    .as_str()
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "missing graph gap: {tool} {detail} registered={registered}: {result}"
+                        )
+                    });
+                assert!(gap.contains("relation"), "{result}");
+                assert!(
+                    result["content"][0]["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("graph relations incomplete")),
+                    "{result}"
+                );
+            }
+        }
+        let page = invoke(
+            &mut server,
+            "backend.call",
+            json!({"name":"backend.graph", "arguments": {
+                "selected_symbol":{"kind":"selected-symbol-id","value":symbol.as_bytes()}, "detail":detail, "limit":1
+            }}),
+        );
+        assert_eq!(page["isError"], false, "paged graph: {page}");
+        assert!(
+            page["structuredContent"]["graph_gap"]
+                .as_str()
+                .is_some_and(|gap| gap.contains("not certified")),
+            "{page}"
+        );
+    }
+}
+
 struct RetainedProduct {
     library: Library,
     selected_documents: Vec<(String, SymbolKey)>,
@@ -322,6 +385,18 @@ impl Product for RetainedProduct {
         Ok(ReplyDto::new(17, CommandReply::ProjectionPage(page)))
     }
 
+    fn related_page_window(&mut self, coordinate: String, window: backend_library::QueryWindow, continuation: Option<PageContinuation>) -> Result<ReplyDto, ClientError> {
+        let page = self.page(window.issued().get(), continuation).with_window(window).expect("window").with_incoming();
+        let page = self.library.graph_page_for_address(self.symbol(&coordinate)?, backend_library::SymbolAddress::canonical(symbol_key(&coordinate)), page).map_err(|error| ClientError::CommandFailed(error.into()))?;
+        Ok(ReplyDto::new(17, CommandReply::ProjectionPage(page)))
+    }
+    fn related_page_declaration(&mut self, selector: backend_library::DeclarationSelector, window: backend_library::QueryWindow, continuation: Option<PageContinuation>) -> Result<ReplyDto, ClientError> {
+        let RowId::Symbol(symbol) = self.selected_row(&selector)?.id else { panic!("selected symbol") };
+        let page = self.page(window.issued().get(), continuation).with_window(window).expect("window").with_incoming();
+        let page = self.library.graph_page_for_address(symbol, selector.address(), page).map_err(|error| ClientError::CommandFailed(error.into()))?;
+        Ok(ReplyDto::new(17, CommandReply::ProjectionPage(page)))
+    }
+
     fn graph_query(
         &mut self,
         _input: AdmittedGraphQueryInput,
@@ -459,7 +534,15 @@ fn immutable_library_routes_keep_distinct_reusable_operands_headers_and_summary_
                 let records = result["structuredContent"]["records"]
                     .as_array()
                     .expect("selected records");
-                assert_eq!(records.len(), count);
+                // `resolve` answers "which declaration is this": it drops the
+                // import and external candidates of a name while a real declaration
+                // remains; `search` lists all of them.
+                let expected = if tool == "backend.resolve" && query == NAME {
+                    2
+                } else {
+                    count
+                };
+                assert_eq!(records.len(), expected);
                 let mut operands = std::collections::BTreeSet::new();
                 let mut symbols = std::collections::BTreeSet::new();
                 for record in records {
@@ -492,10 +575,26 @@ fn immutable_library_routes_keep_distinct_reusable_operands_headers_and_summary_
                         json!({"coordinate":coordinate,"detail":detail}),
                     );
                     assert_eq!(document["isError"], false, "{document}");
-                    assert!(
-                        document["structuredContent"].get("notes").is_none(),
-                        "a valid external target is not a failed local member proof: {document}"
-                    );
+                    if record["identity"]["shape"] == "external" {
+                        assert!(
+                            document["structuredContent"].get("notes").is_none(),
+                            "a valid external target is not a failed local member proof: {document}"
+                        );
+                    } else {
+                        // A local page states a missing relation publication as a
+                        // typed lane note; it is the only note this
+                        // fixture's local declarations may carry.
+                        let notes = document["structuredContent"]
+                            .get("notes")
+                            .and_then(serde_json::Value::as_array)
+                            .map_or(&[][..], Vec::as_slice);
+                        assert!(
+                            notes.iter().all(|note| note["slug"] == "lane-unavailable"
+                                && note["detail"]
+                                    == "No typed semantic relations were supplied; inspect package_profile"),
+                            "a local page carries only the relation-gap note: {document}"
+                        );
+                    }
                     assert_eq!(
                         document["structuredContent"]["identity"]["coordinate"],
                         coordinate
@@ -913,9 +1012,18 @@ fn selected_graph_continuation_refuses_changed_id_or_coordinate_assertion() {
         next["structuredContent"]["records"][0]["identity"]["semantic_data"]
     );
     for expected in [center, neighbor] {
+        let expected_hex: String = expected
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
         assert!([&first, &next].iter().any(|page|
-            page["structuredContent"]["records"][0]["identity"]["semantic_data"]["value"] == json!(expected.as_bytes())),
+            page["structuredContent"]["records"][0]["identity"]["semantic_data"]["value"] == json!(expected_hex)),
             "exact center and neighbor, never substituted rows");
+        for page in [&first, &next] {
+            // Whichever row the page holds, its id reads back from both spellings.
+            selected_id_hex(&page["structuredContent"]["records"][0]["identity"]["semantic_data"]["value"]);
+        }
     }
     server.product.library = retained_library();
     assert!(matches!(

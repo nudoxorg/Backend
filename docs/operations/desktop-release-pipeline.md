@@ -123,7 +123,8 @@ Linux staging must dereference links: release archives reject links/special file
 linux-x64 builds itself (B7). A release is a fast-forward of `main` to a canonical commit
 (B8, below); a new `workspace.package.version` reaching `main` makes the
 release pipeline plan a candidate (`linux_release_ci.py`), `cargo build --release` it, package
-it with `linux_formal_release.py --release-dir` (GUI libraries, launchers, glibc floor), run
+it with `linux_formal_release.py --release-dir` and the four source-bound companion inputs
+specified in `development-companions.md` (GUI libraries, launchers, glibc floor), run
 every linux-x64 QA case in stock Ubuntu 24.04 (`linux_release_qa.py`), tag it on Forgejo and
 submit it. Publication uploads `install-linux.sh` rendered from `install_linux.sh.in`, pinned
 to that tag and archive hash. To release with red non-fast lanes, commit

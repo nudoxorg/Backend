@@ -128,6 +128,21 @@ def tool(args: argparse.Namespace, name: str) -> dict:
     return {**value, "version": shared.tool_version(path, name)}
 
 
+def observe_build_tool(selected: str, label: str) -> dict:
+    chosen = Path(selected)
+    require(chosen.is_absolute(), f"{label} must be absolute")
+    resolved = chosen.resolve(strict=True)
+    require(os.access(resolved, os.X_OK), f"{label} is not executable")
+    size, digest = package.admit_file_digest(resolved, package.MAX_BINARY_BYTES)
+    require(chosen.resolve(strict=True) == resolved, f"{label} selection changed")
+    return {"selected": str(chosen), "path": str(resolved), "bytes": size, "sha256": digest}
+
+
+def clean_source_snapshot(path: Path) -> dict:
+    with package.clean_git_environment():
+        return shared.source_snapshot(path)
+
+
 def artifact_identity(path: Path) -> dict:
     before = path.lstat()
     size, digest = package.admit_file_digest(path, package.MAX_BINARY_BYTES)
@@ -150,7 +165,7 @@ def sync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def capture(args: argparse.Namespace) -> Path:
+def capture(args: argparse.Namespace, *, stylo: bool = False) -> Path:
     require(platform.system() == "Linux" and shared.normalize_arch(platform.machine()) == "x86_64", "CPU helper producer requires Linux x86_64")
     require(type(args.jobs) is int and 1 <= args.jobs <= 4, "jobs must be between one and four")
     require(0 < args.timeout_seconds <= 1800 and 0 < args.max_log_bytes <= 64 * 1024 * 1024, "build bounds exceed the supported finite envelope")
@@ -159,7 +174,8 @@ def capture(args: argparse.Namespace) -> Path:
         require(math.isfinite(args.deadline_monotonic) and args.deadline_monotonic > 0, "managed scope deadline must be finite and positive")
         deadline = min(deadline, args.deadline_monotonic)
     require(deadline > time.monotonic(), "managed scope deadline has expired")
-    source = shared.source_snapshot(args.source_checkout)
+    snapshot = clean_source_snapshot if stylo else shared.source_snapshot
+    source = snapshot(args.source_checkout)
     require(source["clean"], "refusing to build from a dirty source checkout")
     source_path = source["path"]
     require(source_path == ROOT, "run the producer from the exact source checkout being built")
@@ -171,38 +187,68 @@ def capture(args: argparse.Namespace) -> Path:
     require(len(set(paths)) == len(paths), "helper evidence, cache, target and build directories must be distinct")
     require(all(path != source_path and source_path not in path.parents for path in paths), "helper mutable directories must be outside source")
     require(all(output.resolve(strict=False) not in path.parents and path not in output.resolve(strict=False).parents for path in paths[:-1]), "helper evidence must not overlap mutable build directories")
-    manifest = tomllib.loads(shared.read_regular(source_path / "tools/embedding-candle/Cargo.toml", 65536, "helper manifest").decode("utf-8"))
-    require(manifest.get("package", {}).get("name") == NAME and [item.get("name") for item in manifest.get("bin", [])] == [NAME], "source does not declare the fixed helper binary")
+    name = "backend-stylo-worker" if stylo else NAME
+    package_name = "backend-frontend-stylo" if stylo else NAME
+    manifest_path = "frontends/stylo/Cargo.toml" if stylo else "tools/embedding-candle/Cargo.toml"
+    argv = ["cargo", "build", "--release", "--locked", "-p", package_name, "--bin", name] if stylo else ARGV
+    manifest = tomllib.loads(shared.read_regular(source_path / manifest_path, 65536, "helper manifest").decode("utf-8"))
+    require(manifest.get("package", {}).get("name") == package_name and [item.get("name") for item in manifest.get("bin", [])] == [name], "source does not declare the fixed helper binary")
     tools = {name: tool(args, name) for name in ("cargo", "rustc")}
     env = build_environment(args)
+    if stylo:
+        allowed = {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "TZ", "RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_HOME", "CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR", "CARGO_BUILD_TARGET", "CARGO_NET_OFFLINE", "CARGO_BUILD_JOBS", "CARGO_INCREMENTAL", "CARGO_CACHE_AUTO_CLEAN_FREQUENCY", "CARGO_TERM_COLOR"}
+        env = {key: value for key, value in env.items() if key in allowed}
+        private_paths = [source_path, args.cargo_home, args.target_dir, args.build_dir]
+        require(all("\x1f" not in str(path) and "=" not in str(path) for path in private_paths), "worker build path contains a rustflag delimiter")
+        env["HOME"] = str(args.build_dir)
+        env["TMPDIR"] = str(args.build_dir)
+        env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(
+            f"--remap-path-prefix={path}=/nudox/{label}"
+            for path, label in zip(private_paths, ("source", "cargo-home", "target", "build")))
+        helpers = {}
+        for helper_name in ("cc", "make", "python3", "sh"):
+            selected = shutil.which(helper_name, path=env["PATH"])
+            require(selected is not None, f"worker build PATH has no {helper_name}")
+            helpers[helper_name] = observe_build_tool(selected, f"worker build helper {helper_name}")
     output.mkdir(mode=0o700)
     started = runtime.utc_now()
     try:
-        execution = execute(ARGV, source_path, env, output, deadline, args.max_log_bytes)
+        execution = execute(argv, source_path, env, output, deadline, args.max_log_bytes)
         require(execution["exit"] == 0 and execution["process_group_retired"], "Cargo helper build did not succeed with a retired process group")
-        source_after = shared.source_snapshot(args.source_checkout)
+        source_after = snapshot(args.source_checkout)
         require(source_after == source and source_after["clean"], "helper source changed during the actual build")
         require({name: tool(args, name) for name in tools} == tools, "helper toolchain changed during the actual build")
-        artifact = args.target_dir / TARGET / "release" / NAME
+        if stylo:
+            for helper_name, expected in helpers.items():
+                selected = shutil.which(helper_name, path=env["PATH"])
+                require(selected is not None and observe_build_tool(selected, f"worker build helper {helper_name}") == expected,
+                        f"worker build helper {helper_name} changed during the actual build")
+        artifact = args.target_dir / TARGET / "release" / name
         identity = artifact_identity(artifact)
         logs = {name: shared.stable_file(output / f"cargo.{name}", f"Cargo {name}") for name in ("stdout", "stderr")}
         require(sum(value["bytes"] for value in logs.values()) <= args.max_log_bytes, "Cargo logs exceed their admitted combined bound")
         receipt = {
-            "schema": "nudox.embedding-helper-build-receipt.v1", "preset": "candle-minilm-cpu-v1",
+            "schema": "nudox.stylo-worker-build-receipt.v2" if stylo else "nudox.embedding-helper-build-receipt.v1", "preset": "stylo-worker-v2" if stylo else "candle-minilm-cpu-v1",
             "source": {"commit": source["commit"], "tree": source["tree"], "cargo_lock_sha256": source["cargo_lock_sha256"], "clean_before": True, "clean_after": True},
-            "argv": ARGV, "exit": execution["exit"], "artifact": identity,
+            "argv": argv, "exit": execution["exit"], "artifact": identity,
             "toolchain": {**tools, "unchanged": True}, "execution": execution,
             "started_utc": started, "finished_utc": runtime.utc_now(), "logs": logs,
             "environment": {key: env[key] for key in ("RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_HOME", "CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR", "CARGO_BUILD_TARGET", "CARGO_NET_OFFLINE", "CARGO_BUILD_JOBS", "CARGO_INCREMENTAL", "CARGO_CACHE_AUTO_CLEAN_FREQUENCY")},
             "bounds": {"timeout_seconds": args.timeout_seconds, "deadline_monotonic": deadline, "combined_output_bytes": args.max_log_bytes},
         }
+        if stylo:
+            receipt["remap_schema"] = "nudox.stylo-worker-remap.v2"
+            receipt["source_path"] = str(source_path)
+            receipt["environment"] = env
+            receipt["build_helpers"] = helpers
         candidate = output / "candidate.json"
         require(len(shared.canonical_json(receipt)) + 1 <= 65536, "helper receipt exceeds consumer bound")
         runtime.write_new_json(candidate, receipt)
-        package.admit_embedding_helper(artifact, candidate, source["commit"], source["tree"], source["cargo_lock_sha256"])
+        admit = package.admit_stylo_worker if stylo else package.admit_embedding_helper
+        admit(artifact, candidate, source["commit"], source["tree"], source["cargo_lock_sha256"])
         require(artifact_identity(artifact) == identity, "helper changed before receipt publication")
         require(time.monotonic() < deadline, "helper proof exceeded its finite deadline")
-        final = output / "embedding-helper-build-receipt.json"
+        final = output / ("stylo-worker-build-receipt.json" if stylo else "embedding-helper-build-receipt.json")
         os.link(candidate, final)  # No overwrite, after real consumer admission.
         try:
             candidate.unlink()
@@ -216,7 +262,7 @@ def capture(args: argparse.Namespace) -> Path:
         raise
 
 
-def main() -> int:
+def main(*, stylo: bool = False) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("source-checkout", "cargo", "rustc", "cargo-home", "target-dir", "build-dir", "output-dir"):
         parser.add_argument("--" + name, required=True, type=Path)
@@ -227,7 +273,7 @@ def main() -> int:
     parser.add_argument("--deadline-monotonic", type=float)
     parser.add_argument("--max-log-bytes", type=int, default=64 * 1024 * 1024)
     try:
-        print(capture(parser.parse_args()))
+        print(capture(parser.parse_args(), stylo=stylo))
         return 0
     except (ValueError, OSError, subprocess.SubprocessError) as error:
         print(f"helper build refused: {error}", file=sys.stderr)

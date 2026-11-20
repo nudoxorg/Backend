@@ -27,6 +27,10 @@ const RELEASE_READS: usize = 12;
 const RELEASE_REFRESH: Duration = Duration::from_secs(15);
 const RELEASE_LIMIT: usize = 256;
 const DIFF_LIMIT: usize = 5_000;
+/// Decoding the owner's replies here takes more stack than a background
+/// executor worker has (GCD's 512 KiB on macOS): an unoptimized build
+/// overflowed it and the process died with SIGILL on opening a package page.
+const READ_STACK_BYTES: usize = 16 << 20;
 
 /// Exact key for a local release read. The owner endpoint, selected registry
 /// authority and immutable producer root prevent facts from another owner or
@@ -199,7 +203,20 @@ pub(crate) fn get<T: 'static>(
     }
 }
 
+/// Reads on a thread of its own with [`READ_STACK_BYTES`] of stack; a panic
+/// there resumes on the caller, so the offload still reports it.
 fn read(key: &ReleaseKey, cancellation: &Cancellation) -> Result<Arc<ReleaseData>, Arc<str>> {
+    std::thread::scope(|scope| {
+        let reader = std::thread::Builder::new()
+            .name("nudox-release-read".to_owned())
+            .stack_size(READ_STACK_BYTES)
+            .spawn_scoped(scope, || read_releases(key, cancellation))
+            .map_err(|error| Arc::<str>::from(format!("could not start the release read: {error}")))?;
+        reader.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    })
+}
+
+fn read_releases(key: &ReleaseKey, cancellation: &Cancellation) -> Result<Arc<ReleaseData>, Arc<str>> {
     ensure_active(cancellation)?;
     let composition = crate::host::registry::composed()
         .filter(|composition| {

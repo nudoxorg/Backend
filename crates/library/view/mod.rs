@@ -11,6 +11,7 @@ mod descriptor;
 mod model;
 mod page;
 mod proof;
+mod retained;
 mod root;
 mod transition;
 
@@ -20,6 +21,7 @@ pub use coordinate::{
 };
 pub(crate) use descriptor::DescriptorParts;
 pub use descriptor::{ViewRootDescriptor, ViewRootDescriptorClaim};
+pub(crate) use model::document_selection_canonical_bytes;
 pub use model::{
     Basis, Coverage, CoverageCapability, Document, DocumentSelection, Fragment, Freshness,
     GraphRelation, Lane, MAX_COVERAGE_EVIDENCE, MAX_ROW_IDENTITY_PREIMAGE_BYTES, NameRecord,

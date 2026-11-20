@@ -692,6 +692,70 @@ fn short_stripe_contention_waits_briefly_for_release() {
 }
 
 #[test]
+fn release_waits_out_a_gate_held_across_a_durable_write() {
+    let root = fresh_root("release-contention");
+    let store = LeaseStore::open(&root).expect("store");
+    let key = test_key();
+    let lease = store
+        .acquire(key, Duration::from_secs(30))
+        .expect("acquire")
+        .expect("lease");
+    // Another holder keeps the stripe far longer than a few milliseconds, as
+    // a publication does while its durable write is slow.
+    let gate = store.open_gate_file(key).expect("open stripe");
+    gate.lock().expect("hold stripe");
+    let holder = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(250));
+        drop(gate);
+    });
+    drop(lease);
+    holder.join().expect("join holder");
+
+    let released = store
+        .latest_lease(key)
+        .expect("lease record")
+        .expect("record");
+    assert!(
+        !released.active,
+        "a release delayed by a held gate must still be recorded"
+    );
+    store
+        .acquire(key, Duration::from_secs(30))
+        .expect("acquire after contended release")
+        .expect("a released lease is not held until its expiry");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn acquire_within_waits_for_an_active_holder_that_releases_soon() {
+    let root = fresh_root("acquire-within");
+    let store = LeaseStore::open(&root).expect("store");
+    let key = test_key();
+    let held = store
+        .acquire(key, Duration::from_secs(30))
+        .expect("first acquire")
+        .expect("lease");
+    let holder = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(250));
+        drop(held);
+    });
+    assert!(
+        store
+            .acquire(key, Duration::from_secs(30))
+            .expect("plain attempt")
+            .is_none(),
+        "a plain acquire reports an active holder as busy at once"
+    );
+    let lease = store
+        .acquire_within(key, Duration::from_secs(30), Duration::from_secs(5))
+        .expect("acquire within patience")
+        .expect("the holder releases within the patience");
+    holder.join().expect("join holder");
+    drop(lease);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn independent_processes_have_one_lease_winner() {
     let root = fresh_root("process-race");
     let _root_directory =

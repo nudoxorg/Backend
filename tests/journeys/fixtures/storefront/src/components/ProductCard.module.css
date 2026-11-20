@@ -1,0 +1,16 @@
+.card {
+  border: 1px solid var(--brand);
+  padding: var(--space-3);
+}
+
+.featured {
+  border-width: 3px;
+}
+
+.title {
+  margin: 0;
+}
+
+.price {
+  color: var(--accent);
+}

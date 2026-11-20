@@ -1,0 +1,496 @@
+//! SQL adapter for the cross-language impact framework.
+//!
+//! Nodes are schema objects (tables, columns, views, indexes, triggers,
+//! functions), plus the statements which use them (queries and migrations). An
+//! edge points from a thing to what a change to it can break: a column to the
+//! view that selects it, the trigger that updates it, the query that reads it,
+//! the migration that alters it. Edges come from references the project-wide
+//! binder resolved; a mention whose member is unknown (a view column) or which
+//! binds to several objects is a candidate edge, never an exact one. Mentions
+//! the binder could not bind are counted as a gap, not dropped.
+use super::impact_framework::{
+    DomainLoad, Edge, FileWitness, ImpactAdapter, ImpactContext, Key, Node,
+};
+use crate::builtin::sql_catalog::{ProjectSql, load_project};
+use crate::builtin::sql_embedded;
+use backend_engine::builtin::SqlHostTerminal;
+use backend_library::impact::{
+    ImpactDomain, ImpactDomainBasis, ImpactDomainState, ImpactGap, ImpactSeedSpec, ImpactStrength,
+};
+use backend_semantic::sql_analysis::{
+    SqlDefinitionAction, SqlEntityRef, SqlFact, SqlObjectKind, SqlRefKind, SqlResolution,
+    SqlStatementKind,
+};
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
+
+pub(super) struct SqlAdapter;
+
+const DOMAIN: ImpactDomain = ImpactDomain::Sql;
+
+// Entity identity is the creating fact, not its mutable display spelling.
+// Length-prefix the path so drop/recreate epochs cannot alias each other.
+fn entity_key(entity: &SqlEntityRef) -> Key {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"backend.impact.sql-entity.v1\0");
+    hash.update(&(entity.path.len() as u64).to_le_bytes());
+    hash.update(entity.path.as_bytes());
+    hash.update(&entity.ordinal.to_le_bytes());
+    *hash.finalize().as_bytes()
+}
+
+// Statement identity is the selected host key plus native statement ordinal;
+// a line number is presentation only and may collide or be unavailable.
+fn statement_key(host: &[u8; 32], ordinal: u32) -> Key {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"backend.impact.sql-statement.v1\0");
+    hash.update(host);
+    hash.update(&ordinal.to_le_bytes());
+    *hash.finalize().as_bytes()
+}
+
+/// Zero-based byte offset to one-based line, from the file's own newlines.
+struct Lines(Vec<usize>);
+impl Lines {
+    fn of(bytes: &[u8]) -> Self {
+        Self(bytes.iter().enumerate().filter(|(_, b)| **b == b'\n').map(|(i, _)| i).collect())
+    }
+    fn line(&self, offset: u32) -> u32 {
+        let offset = offset as usize;
+        u32::try_from(self.0.partition_point(|newline| *newline < offset) + 1).unwrap_or(u32::MAX)
+    }
+}
+
+impl ImpactAdapter for SqlAdapter {
+    fn domain(&self) -> ImpactDomain {
+        DOMAIN
+    }
+
+    fn load(&self, cx: &ImpactContext<'_>) -> DomainLoad {
+        let unavailable = |reason: &str| {
+            DomainLoad::empty(DOMAIN, ImpactDomainState::Unavailable { reason: reason.to_owned() })
+        };
+        let loaded = match load_project(cx.snapshot, cx.project, cx.cancelled) {
+            Ok(Some(loaded)) => loaded,
+            Ok(None) => {
+                return unavailable(
+                    "no SQL analysis is selected for this project: no .sql file was indexed, or no SQL worker is installed",
+                )
+            }
+            Err(error) => return unavailable(&format!("the selected SQL analysis could not be read: {error}")),
+        };
+        build(loaded)
+    }
+
+    fn seed_matches(&self, spec: &ImpactSeedSpec, node: &Node) -> bool {
+        if !node.seedable || spec.kind != node.kind {
+            return false;
+        }
+        if spec.path.as_deref().is_some_and(|path| node.path.as_deref() != Some(path)) {
+            return false;
+        }
+        let wanted = spec.name.to_ascii_lowercase();
+        let name = node.name.to_ascii_lowercase();
+        name == wanted || (!node.scope.is_empty() && format!("{}.{name}", node.scope.to_ascii_lowercase()) == wanted)
+    }
+}
+
+fn build(loaded: ProjectSql) -> DomainLoad {
+    let root = PathBuf::from(&loaded.root);
+    // Lines, once per file; the project capture bounds the total size. An
+    // embedded host (SQL in application code) maps its statements back to the
+    // calls that issued them.
+    enum HostLines {
+        Unread,
+        File(Lines),
+        Embedded(sql_embedded::Scan),
+    }
+    let mut lines: Vec<HostLines> = Vec::with_capacity(loaded.hosts.len());
+    for host in &loaded.hosts {
+        let read = |path: &str, bound: usize| {
+            crate::builtin::ingest::read_stylo_selected_source(&root, path, bound).ok()
+        };
+        let entry = match sql_embedded::real_path(&host.path) {
+            Some(real) => read(real, sql_embedded::MAX_SCAN_BYTES)
+                .and_then(|bytes| {
+                    let scan = sql_embedded::scan(real, &bytes)?;
+                    (host.length == Some(scan.composed.len() as u64)).then(|| HostLines::Embedded(scan))
+                })
+                .unwrap_or(HostLines::Unread),
+            None => host
+                .length
+                .and_then(|length| {
+                    read(&host.path, usize::try_from(length).unwrap_or(usize::MAX).min(8 * 1024 * 1024))
+                        .filter(|bytes| bytes.len() as u64 == length)
+                })
+                .map_or(HostLines::Unread, |bytes| HostLines::File(Lines::of(&bytes))),
+        };
+        lines.push(entry);
+    }
+    let line_of = |host: usize, offset: u32| match lines.get(host) {
+        Some(HostLines::File(l)) => Some(l.line(offset)),
+        Some(HostLines::Embedded(scan)) => scan.fragment_at(offset as usize).map(|fragment| fragment.line),
+        _ => None,
+    };
+    // Whether the call behind a statement builds its text at run time. An
+    // embedded host which could not be mapped is treated as built, never exact.
+    let dynamic_at = |host: usize, offset: u32| match lines.get(host) {
+        Some(HostLines::Embedded(scan)) => scan.fragment_at(offset as usize).is_none_or(|fragment| fragment.dynamic),
+        _ => sql_embedded::real_path(&loaded.hosts[host].path).is_some(),
+    };
+    // What a user reads: the application file for an embedded host.
+    let shown_path = |host: usize| {
+        let path = &loaded.hosts[host].path;
+        sql_embedded::real_path(path).unwrap_or(path).to_owned()
+    };
+
+    // Pass 1: entities by the definition that created them.
+    #[derive(Clone)]
+    struct Entity {
+        key: Key,
+        parent: Option<SqlEntityRef>,
+    }
+    let mut entities: BTreeMap<SqlEntityRef, Entity> = BTreeMap::new();
+    let mut aliases = Vec::new();
+    let mut nodes: BTreeMap<Key, Node> = BTreeMap::new();
+    let mut table_columns: BTreeMap<Key, Vec<Key>> = BTreeMap::new();
+    let mut entity_parent: BTreeMap<SqlEntityRef, SqlEntityRef> = BTreeMap::new();
+    for (host, ordinal, fact) in &loaded.facts {
+        let SqlFact::Definition(definition) = fact else { continue };
+        if !matches!(definition.action, SqlDefinitionAction::Create | SqlDefinitionAction::AddColumn)
+            || definition.kind == SqlObjectKind::Schema
+        {
+            continue;
+        }
+        let path = loaded.hosts[*host].path.clone();
+        let Some(entity_ref) = definition.entity.clone() else {
+            return DomainLoad::empty(DOMAIN, ImpactDomainState::Unavailable { reason: "selected SQL creating definition has no entity identity".to_owned() });
+        };
+        if entity_ref.path != path || entity_ref.ordinal != *ordinal {
+            // Conditional creation can refer to an already existing entity.
+            // Its canonical creating fact, not this occurrence, owns the node.
+            aliases.push(entity_ref);
+            continue;
+        }
+        let name = definition.head_name.clone().unwrap_or_else(|| definition.name.clone());
+        let (display, scope) = if definition.kind == SqlObjectKind::Column {
+            let parent = definition.head_parent.clone().or_else(|| definition.parent.clone()).unwrap_or_default();
+            (format!("{parent}.{name}"), definition.parent_schema.clone().or_else(|| definition.schema.clone()).unwrap_or_default())
+        } else {
+            (name.clone(), definition.schema.clone().unwrap_or_default())
+        };
+        let kind = definition.kind.as_str();
+        let key = entity_key(&entity_ref);
+        let mut node = Node::new(DOMAIN, kind, &scope, &display);
+        node.seedable = definition.live_at_head;
+        node.path = Some(path);
+        node.line = line_of(*host, definition.name_extent.start);
+        nodes.entry(key).or_insert(node);
+        entities.insert(entity_ref.clone(), Entity { key, parent: definition.parent_entity.clone() });
+        if let Some(parent) = &definition.parent_entity {
+            entity_parent.insert(entity_ref, parent.clone());
+        }
+    }
+    if aliases.iter().any(|entity| !entities.contains_key(entity)) {
+        return DomainLoad::empty(DOMAIN, ImpactDomainState::Unavailable { reason: "selected SQL definition refers to a missing creating entity".to_owned() });
+    }
+    for (entity, parent) in &entity_parent {
+        if let (Some(child), Some(parent)) = (entities.get(entity), entities.get(parent)) {
+            table_columns.entry(parent.key).or_default().push(child.key);
+        }
+    }
+    for (parent, children) in &table_columns {
+        if let Some(node) = nodes.get_mut(parent) {
+            node.companions = children.clone();
+        }
+    }
+
+    // Pass 2: statements and the edges their references create.
+    let mut edges: Vec<Edge> = Vec::new();
+    let mut unresolved = 0u32;
+    let mut truncated_candidates = 0u32;
+    let mut seen_edges: BTreeSet<(Key, Key, &'static str)> = BTreeSet::new();
+    let mut statement_nodes: BTreeMap<(usize, u32), Key> = BTreeMap::new();
+    let mut statement_kind: BTreeMap<(usize, u32), SqlStatementKind> = BTreeMap::new();
+    let mut statement_extent: BTreeMap<(usize, u32), u32> = BTreeMap::new();
+    let mut object_owners = BTreeMap::new();
+    for (host, ordinal, fact) in &loaded.facts {
+        if let SqlFact::Definition(definition) = fact {
+            if definition.kind != SqlObjectKind::Column {
+                // The creating statement keeps its entity across later renames.
+                // Object mentions still carry the spelling written at that time.
+                if let Some(entity) = definition.entity.as_ref().and_then(|id| entities.get(id)) {
+                    object_owners.insert((*host, definition.statement), entity.key);
+                }
+            }
+        }
+        if let SqlFact::Statement { class, extent, .. } = fact {
+            statement_kind.insert((*host, *ordinal), *class);
+            statement_extent.insert((*host, *ordinal), extent.start);
+        }
+    }
+    for (host, _, fact) in &loaded.facts {
+        let SqlFact::Reference(reference) = fact else { continue };
+        let embedded_dynamic = statement_extent
+            .get(&(*host, reference.statement))
+            .is_some_and(|offset| dynamic_at(*host, *offset));
+        let targets: Vec<(&SqlEntityRef, ImpactStrength)> = match &reference.resolution {
+            SqlResolution::Resolved { target, .. } => vec![(target, ImpactStrength::Exact)],
+            SqlResolution::Expands { targets } => targets.iter().map(|t| (t, ImpactStrength::Exact)).collect(),
+            SqlResolution::Relation { relation, .. } => vec![(relation, ImpactStrength::Candidate)],
+            SqlResolution::Ambiguous { candidates, more } => {
+                if *more { truncated_candidates = truncated_candidates.saturating_add(1); }
+                candidates.iter().map(|c| (c, ImpactStrength::Candidate)).collect()
+            }
+            SqlResolution::Local => continue,
+            SqlResolution::Unresolved { .. } => {
+                // Function calls to builtins and CTE-local names are expected to
+                // be unbound; real objects the project never defines are a gap.
+                if matches!(reference.kind, SqlRefKind::Relation | SqlRefKind::Column)
+                    && !(embedded_dynamic && reference.name == sql_embedded::DYNAMIC_PLACEHOLDER)
+                {
+                    unresolved += 1;
+                }
+                continue;
+            }
+        };
+        // Who owns the mention: the object its statement defines, else the statement.
+        let class = statement_kind
+            .get(&(*host, reference.statement))
+            .copied()
+            .unwrap_or(reference.statement_kind);
+        let (owner_kind, owner_name, owner_scope, relation): (&'static str, String, String, &'static str) =
+            match &reference.in_object {
+                Some(object) if !matches!(class, SqlStatementKind::AlterTable | SqlStatementKind::Drop) => {
+                    let relation = match object.kind {
+                        SqlObjectKind::View => "sql.selected-by-view",
+                        SqlObjectKind::Trigger => "sql.used-by-trigger",
+                        SqlObjectKind::Function => "sql.used-by-function",
+                        SqlObjectKind::Index => "sql.indexed-by",
+                        SqlObjectKind::Table => "sql.constrains",
+                        _ => "sql.used-by",
+                    };
+                    (object.kind.as_str(), object.name.clone(), String::new(), relation)
+                }
+                _ => {
+                    let path = &shown_path(*host);
+                    let relation_name = match (class, reference.role) {
+                        (SqlStatementKind::AlterTable | SqlStatementKind::Drop, _) => "sql.altered-by",
+                        (_, backend_semantic::sql_analysis::SqlRefRole::Write) => "sql.written-by",
+                        _ => "sql.read-by",
+                    };
+                    let kind = if matches!(class, SqlStatementKind::AlterTable | SqlStatementKind::Drop) {
+                        "migration"
+                    } else {
+                        "query"
+                    };
+                    let line = statement_extent
+                        .get(&(*host, reference.statement))
+                        .and_then(|offset| line_of(*host, *offset))
+                        .unwrap_or(0);
+                    (kind, format!("{path}:{line}"), loaded.hosts[*host].path.clone(), relation_name)
+                }
+            };
+        let owner_key = reference.in_object.as_ref()
+            .filter(|_| !matches!(class, SqlStatementKind::AlterTable | SqlStatementKind::Drop))
+            .and_then(|_| object_owners.get(&(*host, reference.statement)).copied())
+            .unwrap_or_else(|| statement_key(&loaded.hosts[*host].key, reference.statement));
+        nodes.entry(owner_key).or_insert_with(|| {
+            let mut node = Node::new(DOMAIN, owner_kind, &owner_scope, &owner_name);
+            if reference.in_object.is_none() || matches!(class, SqlStatementKind::AlterTable | SqlStatementKind::Drop) {
+                node.path = Some(loaded.hosts[*host].path.clone());
+                node.line = statement_extent
+                    .get(&(*host, reference.statement))
+                    .and_then(|offset| line_of(*host, *offset));
+            }
+            node
+        });
+        statement_nodes.insert((*host, reference.statement), owner_key);
+        // A mention of an object defined in the project: the relation holding the
+        // member (`accounts` for `accounts.email`) is not itself changed by it.
+        let why = format!(
+            "{} {:?} {} in {}",
+            if reference.role == backend_semantic::sql_analysis::SqlRefRole::Write { "writes" } else { "mentions" },
+            reference.kind,
+            reference.qualifier.as_ref().map_or_else(|| reference.name.clone(), |q| format!("{q}.{}", reference.name)),
+            shown_path(*host)
+        );
+        let why = if embedded_dynamic { format!("{why} (SQL built at run time: candidate only)") } else { why };
+        for (target, strength) in targets {
+            let strength = if embedded_dynamic { ImpactStrength::Candidate } else { strength };
+            let Some(entity) = entities.get(target) else { continue };
+            // A table's own column list/primary key is containment, not a
+            // dependency from the column to every other column and table use.
+            // Foreign-key references to other tables remain causal edges.
+            let own_column = owner_kind == "table" && class == SqlStatementKind::CreateTable && entity.parent.as_ref()
+                .and_then(|parent| entities.get(parent))
+                .is_some_and(|parent| parent.key == owner_key);
+            if entity.key == owner_key || own_column {
+                continue;
+            }
+            if seen_edges.insert((entity.key, owner_key, relation)) {
+                edges.push(Edge { from: entity.key, to: owner_key, strength, relation, why: why.clone() });
+            }
+        }
+    }
+
+    // Gaps: everything that could hide an affected node.
+    let mut gaps = Vec::new();
+    let g = loaded.gaps;
+    if g.partial_statements + g.unsupported_statements > 0 {
+        gaps.push(ImpactGap {
+            facet: "sql.partial-statement".into(),
+            note: "some statements were not fully extracted (procedural bodies, dynamic SQL or unmodeled syntax); mentions inside them may be missing".into(),
+            count: Some(g.partial_statements + g.unsupported_statements),
+        });
+    }
+    if g.unavailable_hosts > 0 {
+        gaps.push(ImpactGap {
+            facet: "sql.host-unavailable".into(),
+            note: "some SQL files could not be analysed (no admitted worker, too large, unreadable); their mentions are unknown".into(),
+            count: Some(g.unavailable_hosts),
+        });
+    }
+    if g.native_error_hosts > 0 {
+        gaps.push(ImpactGap {
+            facet: "sql.unparseable-file".into(),
+            note: "the native parser rejected some SQL files; their mentions are unknown".into(),
+            count: Some(g.native_error_hosts),
+        });
+    }
+    if !loaded.inventory_complete {
+        gaps.push(ImpactGap {
+            facet: "sql.inventory".into(),
+            note: "the SQL file inventory was cut at its bound; further files are not analysed".into(),
+            count: None,
+        });
+    }
+    if truncated_candidates > 0 {
+        gaps.push(ImpactGap { facet: "sql.candidate-limit".into(), note: "some ambiguous SQL references have additional omitted candidates".into(), count: Some(truncated_candidates) });
+    }
+    if unresolved > 0 {
+        gaps.push(ImpactGap {
+            facet: "sql.unresolved-reference".into(),
+            note: "table and column mentions that match no object defined by the project's SQL (external tables, extensions, dropped objects)".into(),
+            count: Some(unresolved),
+        });
+    }
+    let embedded_hosts = loaded.hosts.iter().filter(|host| sql_embedded::real_path(&host.path).is_some()).count();
+    // The number of analysed files goes in the note: `count` is for sites the gap touches.
+    let analysed_note = match embedded_hosts {
+        0 => String::new(),
+        1 => "1 application file was analysed. ".to_owned(),
+        many => format!("{many} application files were analysed. "),
+    };
+    gaps.push(ImpactGap {
+        facet: "sql.embedded-sql".into(),
+        note: format!("{analysed_note}SQL in string literals passed to query calls in TypeScript, JavaScript and Python files is analysed (exact where the text is static, candidate where it is built); SQL assembled elsewhere and passed as a variable, tagged templates, ORM models, query builders, application files over 1 MiB and projects with an explicit .nudox/sql.json are not"),
+        count: None,
+    });
+    gaps.push(ImpactGap {
+        facet: "sql.schema-basis".into(),
+        note: "objects come from the project's DDL in declared file order; a deployed database may differ".into(),
+        count: None,
+    });
+
+    let files: Vec<FileWitness> = loaded
+        .hosts
+        .iter()
+        .filter_map(|host| {
+            Some(FileWitness {
+                root: root.clone(),
+                path: host.path.clone(),
+                length: host.length?,
+                source: host.source?,
+            })
+        })
+        .collect();
+    let analysed = loaded
+        .hosts
+        .iter()
+        .filter(|host| matches!(host.terminal, SqlHostTerminal::Parsed { .. }))
+        .count();
+    let state = if g.unavailable_hosts + g.native_error_hosts == 0 && loaded.inventory_complete {
+        ImpactDomainState::Analyzed
+    } else if analysed == 0 {
+        ImpactDomainState::Unavailable {
+            reason: "no SQL file could be analysed (no admitted SQL worker, or every file was rejected)".into(),
+        }
+    } else {
+        ImpactDomainState::Partial {
+            reasons: gaps.iter().take(3).map(|gap| gap.note.clone()).collect(),
+        }
+    };
+    DomainLoad {
+        nodes,
+        edges,
+        gaps,
+        basis: ImpactDomainBasis {
+            domain: DOMAIN,
+            state,
+            files: u32::try_from(analysed).unwrap_or(u32::MAX),
+        },
+        known_paths: loaded.hosts.iter().map(|host| host.path.clone()).collect(),
+        files,
+        shaping_paths: BTreeSet::new(),
+    }
+}
+
+#[cfg(test)]
+mod sql_impact_regression_tests {
+    use super::*;
+    use crate::builtin::sql_catalog::SqlHost;
+    use backend_semantic::sql_analysis::{SqlByteRange, SqlCoverage, SqlDialect, SqlRefRole, SqlReference, SqlStatementKind};
+
+    #[test]
+    fn omitted_ambiguous_candidates_are_disclosed() {
+        let reference = SqlReference {
+            kind: SqlRefKind::Column, role: SqlRefRole::Read, schema: None,
+            qualifier: None, name: "id".into(), extent: SqlByteRange { start: 1, end: 3 },
+            full_extent: SqlByteRange { start: 1, end: 3 }, statement: 0,
+            statement_kind: SqlStatementKind::Select, in_object: None,
+            resolution: SqlResolution::Ambiguous { candidates: vec![SqlEntityRef { path: "a.sql".into(), ordinal: 1 }, SqlEntityRef { path: "b.sql".into(), ordinal: 1 }], more: true },
+        };
+        let loaded = ProjectSql {
+            root: "/".into(), inventory_complete: true, implicit: true, gaps: Default::default(),
+            hosts: vec![SqlHost { key: [1; 32], path: "query.sql".into(), dialect: SqlDialect::Sqlite,
+                input: Some([2; 32]), source: Some([3; 32]), producer: Some([4; 32]), settings: Some([5; 32]), fact_digest: [6; 32], length: Some(1),
+                terminal: SqlHostTerminal::Parsed { source: SqlCoverage::Partial, contextual: SqlCoverage::Partial, sqlite_lineage: None } }],
+            facts: vec![(0, 0, SqlFact::Reference(Box::new(reference)))],
+        };
+        let result = build(loaded);
+        assert!(result.gaps.iter().any(|gap| gap.facet == "sql.candidate-limit" && gap.count == Some(1)));
+    }
+
+    #[test]
+    fn analysed_embedded_hosts_are_named_in_the_note_not_counted() {
+        let host = |path: &str| SqlHost { key: [1; 32], path: path.into(), dialect: SqlDialect::Sqlite,
+            input: Some([2; 32]), source: Some([3; 32]), producer: Some([4; 32]), settings: Some([5; 32]), fact_digest: [6; 32], length: Some(1),
+            terminal: SqlHostTerminal::Parsed { source: SqlCoverage::Partial, contextual: SqlCoverage::Partial, sqlite_lineage: None } };
+        let gap_of = |hosts: Vec<SqlHost>| {
+            let loaded = ProjectSql { root: "/".into(), inventory_complete: true, implicit: true, gaps: Default::default(), hosts, facts: vec![] };
+            build(loaded).gaps.into_iter().find(|gap| gap.facet == "sql.embedded-sql").expect("the embedded-sql disclosure")
+        };
+        let gap = gap_of(vec![host("a.ts#embedded.sql"), host("b.py#embedded.sql"), host("query.sql")]);
+        assert_eq!(gap.count, None);
+        assert!(gap.note.starts_with("2 application files were analysed. "), "{}", gap.note);
+        let gap = gap_of(vec![host("query.sql")]);
+        assert_eq!(gap.count, None);
+        assert!(gap.note.starts_with("SQL in string literals"), "{}", gap.note);
+    }
+
+    #[test]
+    fn statement_identity_does_not_depend_on_line_availability() {
+        let host = [8; 32];
+        assert_ne!(statement_key(&host, 1), statement_key(&host, 2), "same-line or unknown-line statements remain distinct");
+        assert_ne!(statement_key(&host, 1), statement_key(&[9; 32], 1), "different hosts remain distinct");
+    }
+
+    #[test]
+    fn creating_fact_identity_separates_epochs() {
+        let first = SqlEntityRef { path: "schema.sql".into(), ordinal: 1 };
+        let recreated = SqlEntityRef { path: "schema.sql".into(), ordinal: 9 };
+        assert_eq!(entity_key(&first), entity_key(&first.clone()));
+        assert_ne!(entity_key(&first), entity_key(&recreated));
+    }
+}

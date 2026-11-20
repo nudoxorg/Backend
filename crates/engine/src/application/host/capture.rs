@@ -16,6 +16,7 @@ pub struct CapturedLocalHostEnvironment {
     go_path: Option<OsString>,
     cargo_home: Option<OsString>,
     user_profile: Option<OsString>,
+    python_checker_failure: Option<super::LocalPythonCheckerFailure>,
 }
 
 impl CapturedLocalHostEnvironment {
@@ -32,6 +33,7 @@ impl CapturedLocalHostEnvironment {
             go_path: environment.go_path(),
             cargo_home: environment.cargo_home(),
             user_profile: environment.user_profile(),
+            python_checker_failure: environment.python_checker_failure().cloned(),
         }
     }
 }
@@ -55,6 +57,9 @@ impl LocalHostEnvironment for CapturedLocalHostEnvironment {
     }
     fn cargo_home(&self) -> Option<OsString> {
         self.cargo_home.clone()
+    }
+    fn python_checker_failure(&self) -> Option<&super::LocalPythonCheckerFailure> {
+        self.python_checker_failure.as_ref()
     }
     fn user_profile(&self) -> Option<OsString> {
         self.user_profile.clone()

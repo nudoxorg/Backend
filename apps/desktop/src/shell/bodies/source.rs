@@ -351,6 +351,10 @@ pub(super) fn body(
     leaves.push(Leaf::new(
         text(ty::MONO_ROW, &measure, palette.ink2).role(gpui::Role::Label).aria_label(crumb.clone()).child(crumb),
     ));
+    if let Some(gap) = &view.references_gap {
+        let warning = ctx.say(format!("Reference coverage incomplete: {}", gap.detail));
+        leaves.push(Leaf::new(quiet(warning.clone(), &measure, palette).role(gpui::Role::Status).aria_label(warning)));
+    }
     match view.text.known() {
         Some(source) => {
             if source.origin == SourceOrigin::LocalFile
@@ -1326,8 +1330,20 @@ fn code_language(view: &SourceView) -> Option<facet::code::Lang> {
         Language::CSharp => Lang::CSharp,
         Language::C => Lang::C,
         Language::Cxx => Lang::Cpp,
-        Language::Unknown => return None,
+        // SQL and CSS are not declarations' frontends: the owner reads them
+        // as native analyses, so the file name alone says how to colour them.
+        Language::Unknown => return native_text_language(view.symbol.path.as_deref()),
     })
+}
+
+/// SQL and CSS files, coloured lexically by their extension.
+fn native_text_language(path: Option<&str>) -> Option<facet::code::Lang> {
+    use facet::code::Lang;
+    let (_, extension) = path?.rsplit_once('.')?;
+    match Lang::from_name(extension)? {
+        language @ (Lang::Sql | Lang::Css) => Some(language),
+        _ => None,
+    }
 }
 
 fn incoming_verb(kind: RelationKind) -> &'static str {
@@ -1371,6 +1387,10 @@ fn margin(
     let mut column = div().flex().flex_col().gap(measure.space(Space::Base));
     let name = ctx.say(view.symbol.name.to_string());
     column = column.child(text(ty::MONO_ROW, &measure, palette.ink0).role(gpui::Role::Label).aria_label(name.clone()).child(name));
+    if let Some(gap) = &page.rose.relations_gap {
+        let warning = ctx.say(format!("Graph relation coverage incomplete: {}", gap.detail));
+        column = column.child(quiet(warning.clone(), &measure, palette).role(gpui::Role::Status).aria_label(warning));
+    }
     let prose = DocFragment::plain_text(&page.docs);
     if let Some(sentence) = prose
         .split_terminator(['.', '\n'])

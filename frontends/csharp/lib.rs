@@ -32,7 +32,7 @@ pub fn syntax_frontend() -> Result<SyntaxFrontend, SyntaxError> {
     );
     SyntaxFrontend::new(
         SourceLanguage::CSharp,
-        b"tree-sitter-c-sharp-0.23.5/tags-v4-record-kinds",
+        b"tree-sitter-c-sharp-0.23.5/tags-v5-record-kinds-exact-owners",
         vec![GrammarVariant::new(
             &["cs"],
             tree_sitter_c_sharp::LANGUAGE.into(),
@@ -88,6 +88,70 @@ public struct OrdinaryStruct {}
             assert_eq!(declaration.line(), line, "{name}");
             assert_eq!(declaration.location().path(), "Records.cs");
             assert!(declaration.signature().contains(name), "{name}");
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod source_excerpt_tests {
+    use std::path::Path;
+
+    #[test]
+    fn structural_csharp_source_retains_class_method_and_private_body() -> Result<(), String> {
+        let source = "// λ before the declaration\npublic class BankAccount {\n    public string Name { get; set; }\n    private int First, Second;\n    private static bool MissingFields(string value) {\n        return value.Length == 0;\n    }\n}\n";
+        let analysis = super::syntax_frontend()
+            .map_err(|error| error.to_string())?
+            .analyze(Path::new("BankAccount.cs"), source.as_bytes())
+            .map_err(|error| error.to_string())?;
+        let class_binding = analysis
+            .declarations()
+            .iter()
+            .find(|row| {
+                row.name() == "BankAccount"
+                    && row.kind() != backend_compile::DeclarationKind::Module
+            })
+            .and_then(|row| match row.binding_identity() {
+                backend_compile::SourceBindingIdentity::Exact(capture) => Some(capture.binding()),
+                backend_compile::SourceBindingIdentity::Legacy => None,
+            })
+            .ok_or_else(|| "missing exact class binding".to_owned())?;
+        let bindings = ["First", "Second"].map(|name| {
+            analysis
+                .declarations()
+                .iter()
+                .find(|row| row.name() == name)
+                .and_then(|row| match row.binding_identity() {
+                    backend_compile::SourceBindingIdentity::Exact(capture) => Some(capture),
+                    backend_compile::SourceBindingIdentity::Legacy => None,
+                })
+        });
+        let [Some(first), Some(second)] = bindings else {
+            return Err("missing field bindings".to_owned());
+        };
+        assert_ne!(first.binding(), second.binding());
+        assert_eq!(first.owner(), second.owner());
+        for (name, expected) in [
+            ("BankAccount", source.lines().skip(1).collect::<Vec<_>>().join("\n")),
+            ("MissingFields", "private static bool MissingFields(string value) {\n        return value.Length == 0;\n    }".to_owned()),
+            ("Name", "public string Name { get; set; }".to_owned()),
+            ("First", "private int First, Second;".to_owned()),
+            ("Second", "private int First, Second;".to_owned()),
+        ] {
+            let declaration = analysis.declarations().iter().find(|row| row.name() == name && row.kind() != backend_compile::DeclarationKind::Module)
+                .ok_or_else(|| format!("missing authored declaration {name}"))?;
+            assert_eq!(declaration.source_excerpt().text(), Some(expected.as_str()));
+            assert_eq!(declaration.source_excerpt().extent(), Some(backend_compile::SourceExcerptExtent::Complete));
+            assert!(matches!(
+                declaration.binding_identity(),
+                backend_compile::SourceBindingIdentity::Exact(_)
+            ));
+            if matches!(name, "First" | "Second") {
+                assert!(matches!(
+                    declaration.container(),
+                    backend_compile::Container::Binding { binding } if *binding == class_binding
+                ));
+            }
         }
         Ok(())
     }

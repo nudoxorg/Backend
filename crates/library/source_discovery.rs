@@ -577,6 +577,10 @@ pub struct DiscoveryMetadata {
     /// Advisory evidence attached to this exact release by the source.
     #[serde(default)]
     pub advisories: DiscoveryFacet<Vec<DiscoveryAdvisory>>,
+    /// Exact release version to which a PyPI project advisory list was scoped.
+    /// Missing on older producers, whose lists must not be attributed to a release.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advisory_release_scope: Option<String>,
     /// Exact per-release download observation; absent is never zero.
     #[serde(default)]
     pub downloads: DiscoveryFacet<u64>,
@@ -596,6 +600,7 @@ impl Default for DiscoveryMetadata {
             deprecation: DiscoveryFacet::Unknown,
             yanked: DiscoveryFacet::Unknown,
             advisories: DiscoveryFacet::Unknown,
+            advisory_release_scope: None,
             downloads: DiscoveryFacet::Unknown,
             cargo_sparse: DiscoveryFacet::Unknown,
         }
@@ -605,6 +610,13 @@ impl Default for DiscoveryMetadata {
 impl DiscoveryMetadata {
     /// Checks source text and collection bounds before it enters the journal.
     pub fn admit(&self) -> Result<(), DiscoveryError> {
+        if self.advisory_release_scope.as_ref().is_some_and(|scope| {
+            scope.is_empty()
+                || scope.len() > 256
+                || scope.bytes().any(|byte| byte.is_ascii_control())
+        }) {
+            return Err(DiscoveryError::Bounds);
+        }
         fn strings_valid(values: &[String], maximum_items: usize, maximum_bytes: usize) -> bool {
             values.len() <= maximum_items
                 && values.iter().all(|value| {
@@ -747,6 +759,17 @@ pub struct DiscoveryFact {
     pub metadata: DiscoveryMetadata,
 }
 
+fn advisory_scope_admitted(fact: &DiscoveryFact) -> bool {
+    fact.metadata
+        .advisory_release_scope
+        .as_ref()
+        .is_none_or(|scope| {
+            fact.source.ecosystem() == RegistryEcosystem::Pypi
+                && scope == fact.coordinate.version()
+                && matches!(&fact.metadata.advisories, DiscoveryFacet::Known(_))
+        })
+}
+
 /// Version identity for one complete immutable source fact.
 ///
 /// `full_fact_digest` is BLAKE3 over the canonical typed JSON content in field
@@ -784,6 +807,7 @@ impl RegistryFactVersionId {
             return Err(DiscoveryError::Bounds);
         }
         if !source_coordinate_admitted(fact.source, &fact.coordinate)
+            || !advisory_scope_admitted(fact)
             || !event_admitted(
                 fact.source.ecosystem(),
                 &fact.source_event,
@@ -1917,6 +1941,7 @@ fn validate_batch_parts(
         || facts.iter().any(|fact| fact.source != source)
         || facts.iter().any(|fact| {
             !source_coordinate_admitted(source, &fact.coordinate)
+                || !advisory_scope_admitted(fact)
                 || fact.metadata.admit().is_err()
                 || !event_admitted(
                     source.ecosystem(),

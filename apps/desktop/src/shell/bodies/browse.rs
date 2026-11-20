@@ -32,6 +32,9 @@ pub(super) fn body(
     let key = BrowseKey::from(route);
     let resource = store.browse(&key);
     if matches!(route, BrowseRoute::Tree(_)) { return tree_body(route, ctx, cx); }
+    if matches!(route, BrowseRoute::Sql(_) | BrowseRoute::Css(_) | BrowseRoute::Impact(_)) {
+        return super::native::body(route, store, ctx, cx);
+    }
     // Find owns a live editing engine, including while a newly admitted
     // query is being read. Replacing it with a generic loading page loses
     // IME composition, focus, the debounce and the package hand.
@@ -90,7 +93,7 @@ pub(super) fn body(
             });
             actions.retry = Some(find_retry_action(source, expected));
         }
-        let leaves = vec![Leaf::new(
+        let mut leaves = vec![Leaf::new(
             facet::browse::find::find("find", model, actions, &ctx.measure)
                 .retry_activation_id(retry_activation_id)
                 .retained(ctx.find_state.clone())
@@ -98,6 +101,10 @@ pub(super) fn body(
                 .local_activation(ctx.native_local_activation_scope(cx))
                 .active(ctx.native_input_active && ctx.links.snapshot(cx).overlay().is_none()),
         )];
+        // What the projects' SQL and CSS hold under the same name.
+        if let BrowseRoute::Find(query) = route {
+            leaves.extend(super::native::find_leaves(query, store, ctx, cx));
+        }
         return leaves;
     }
     match shown(&resource) {
@@ -164,10 +171,20 @@ fn query_input(text: &str) -> facet::browse::find::QueryInput {
     }
 }
 
+/// A package the owner can be asked about is a registry release (a package
+/// URL) or a local project root (an absolute path). A bare leading name such as
+/// `unqualified::Thing` parses as a local label but names no project, so a
+/// result that begins with one has no page to open (`ea1f02d4e` and `07077eca6`
+/// route any `package::…` coordinate, which made that label look routable).
+fn package_is_addressable(package: &PackageRef) -> bool {
+    !package.is_local() || std::path::Path::new(package.as_str()).is_absolute()
+}
+
 fn symbol_routability(key: &SharedString) -> facet::browse::find::Routability {
     use facet::browse::find::Routability;
     match SymbolRef::new(key) {
-        Ok(symbol) if symbol.package().is_some_and(|package| indexed_result_route(&package, &symbol, View::Page).is_some()) => Routability::Available,
+        Ok(symbol) if symbol.package().is_some_and(|package| package_is_addressable(&package)
+            && indexed_result_route(&package, &symbol, View::Page).is_some()) => Routability::Available,
         Ok(_) => Routability::Unavailable("This declaration has no addressable package in the owner reply. Its recorded facts can be read, but its page and code are unavailable.".into()),
         Err(error) => Routability::Unavailable(format!("This declaration's address was not admitted: {error}.").into()),
     }

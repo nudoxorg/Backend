@@ -2,7 +2,7 @@
 
 # Homebrew formula for the loopback MCP service.
 #
-# The default install pours the published v0.2.0 release binaries (macOS
+# The default install pours the published v0.2.1 release binaries (macOS
 # arm64). `brew install --HEAD` still compiles from a blank-state clone of
 # the GitHub default branch (canonical), which carries this formula:
 #
@@ -14,7 +14,7 @@
 # created on first start at $(brew --prefix)/etc/backend-mcp.token.
 # Add a project by calling backend.index with its absolute path. No project
 # file is required. Daemon state stays in $(brew --prefix)/var/lib/backend-mcp.
-# The v0.2.0 bottle is an older binary; --HEAD builds the session tool list.
+# The packaged release is a prebuilt binary; --HEAD builds the current tool list.
 # backend-mcp and backend-locald are installed as siblings; the MCP process
 # finds the daemon beside its own executable.
 

@@ -451,6 +451,10 @@ pub(crate) fn render_admitted_answer(
     answer: &Answer,
     options: &Options,
 ) -> Result<String, Fault> {
+    let related_cursor = match answer {
+        Answer::Records(records) => records.related_continuation(),
+        _ => None,
+    };
     let cursor = answer
         .continuation()
         .filter(|continuation| session.has_portable_query_continuation(*continuation))
@@ -459,11 +463,19 @@ pub(crate) fn render_admitted_answer(
         .map_err(|error| {
             Fault::from_client_error(&error, Operand::Argument("cursor".to_owned()))
         })?;
-    render::try_answer_with_cursor(answer, options, cursor.as_deref())
+    render::try_answer_with_cursor(answer, options, related_cursor.or(cursor.as_deref()))
+}
+
+/// The page of a references listing the caller asked for.
+struct ReferencePaging {
+    limit: usize,
+    cursor: Option<String>,
 }
 
 struct Plan {
     request: Request,
+    source_range: Option<crate::source_range::Request>,
+    references: Option<ReferencePaging>,
     wait: Option<crate::index_wait::IndexWaitPolicy>,
     output: Options,
 }
@@ -488,15 +500,34 @@ fn execute_plan_with_recovery(
     mut recovery: Option<&mut crate::owner_recovery::OwnerRecovery>,
 ) -> Result<(Answer, ExitCode), Fault> {
     let cli_context = observed_product_cli_context(workspace, connection_mode(&plan.output));
-    let answer = run::execute_with_output_admission(
-        session,
-        &plan.request,
-        Some(workspace),
-        recovery.as_deref_mut(),
-        plan.output.detail(),
-        cli_context.as_ref(),
-        |answer, cursor| render::admit_answer_with_cursor(answer, &plan.output, cursor),
-    )?;
+    let answer = if let Some(request) = &plan.source_range {
+        let answer = crate::source_range::read(session, workspace, request)?;
+        render::admit_answer_with_cursor(&answer, &plan.output, None)?;
+        answer
+    } else if let Some(paging) = &plan.references {
+        // The owner answers every use at once; the page is chosen here, so the
+        // complete listing is not itself held to the response budget.
+        let listing = run::execute_with_output_admission(
+            session,
+            &plan.request,
+            Some(workspace),
+            recovery.as_deref_mut(),
+            plan.output.detail(),
+            cli_context.as_ref(),
+            |_, _| Ok(()),
+        )?;
+        page_references(listing, paging, &plan.output)?
+    } else {
+        run::execute_with_output_admission(
+            session,
+            &plan.request,
+            Some(workspace),
+            recovery.as_deref_mut(),
+            plan.output.detail(),
+            cli_context.as_ref(),
+            |answer, cursor| render::admit_answer_with_cursor(answer, &plan.output, cursor),
+        )?
+    };
     if let Some(recovery) = recovery.as_deref() {
         recovery.detach(session).map_err(|error| {
             Fault::from_client_error(&error, Operand::Text("owner replacement".to_owned()))
@@ -519,6 +550,57 @@ fn execute_plan_with_recovery(
     Ok((answer, exit))
 }
 
+fn reference_paging(invocation: &backend_present::Invocation) -> Result<ReferencePaging, Fault> {
+    let limit = match invocation.option("limit") {
+        None => usize::from(backend_present::DEFAULT_LIMIT),
+        Some(value) => value
+            .parse::<u16>()
+            .ok()
+            .filter(|limit| (1..=backend_library::QueryLimit::MAX).contains(limit))
+            .map(usize::from)
+            .ok_or_else(|| {
+                Fault::usage(
+                    "limit",
+                    format!(
+                        "`{value}` is not a page bound; choose a whole number from 1 to {}",
+                        backend_library::QueryLimit::MAX
+                    ),
+                )
+            })?,
+    };
+    Ok(ReferencePaging {
+        limit,
+        cursor: invocation.option("cursor").map(str::to_owned),
+    })
+}
+
+/// Presents the largest window of a complete references listing which fits the response.
+fn page_references(
+    listing: Answer,
+    paging: &ReferencePaging,
+    output: &Options,
+) -> Result<Answer, Fault> {
+    let Answer::Product(listing) = listing else {
+        return Ok(listing);
+    };
+    let mut limit = paging.limit;
+    loop {
+        let page = listing.reference_window(
+            paging.cursor.as_deref(),
+            limit,
+            backend_present::CursorTarget::CliOption,
+        )?;
+        let answer = Answer::Product(Box::new(page));
+        match render::admit_answer_with_cursor(&answer, output, None) {
+            Err(fault) if fault.cause().slug() == CauseSlug::Oversized && limit > 1 => {
+                limit = limit.div_ceil(2);
+            }
+            Err(fault) => return Err(fault),
+            Ok(()) => return Ok(answer),
+        }
+    }
+}
+
 fn plan(words: &[String], options: &Options, project: &str) -> Result<Plan, Fault> {
     if words.first().is_some_and(|word| word == SURFACE_VERB) {
         let encoded = words.get(1).ok_or_else(|| {
@@ -529,39 +611,160 @@ fn plan(words: &[String], options: &Options, project: &str) -> Result<Plan, Faul
         })?;
         return lower_surface_json(encoded).map(|request| Plan {
             request,
+            source_range: None,
+            references: None,
             wait: None,
             output: options.clone(),
         });
     }
     let invocation = invoke::parse(words, options.limit())?;
     let wait = crate::index_wait::IndexWaitPolicy::from_invocation(&invocation)?;
+    let source_range = if invocation.grammar().name() == "source" {
+        if invocation.option("cursor").is_some() && !invocation.flag("byte-range") {
+            return Err(Fault::usage(
+                "cursor",
+                "source --cursor requires --byte-range",
+            ));
+        }
+        if invocation.flag("byte-range") {
+            let cursor = invocation.option("cursor").map(str::to_owned);
+            if cursor.as_deref() == Some("") {
+                return Err(Fault::usage(
+                    "cursor",
+                    "source continuation must not be empty",
+                ));
+            }
+            Some(crate::source_range::Request {
+                project: project.to_owned(),
+                selector: backend_present::declaration_selector(&invocation)?,
+                cursor,
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let request = lower(&invocation, project)?;
     let request = normalize_package_profile_path(request, project)?;
+    let references = match &request {
+        Request::Surface(command)
+            if matches!(command.as_ref(), backend_library::SurfaceCommand::References { .. }) =>
+        {
+            Some(reference_paging(&invocation)?)
+        }
+        _ => None,
+    };
+    if references.is_none() && invocation.grammar().name() == "references" && invocation.option("cursor").is_some() {
+        return Err(Fault::usage(
+            "cursor",
+            "a references cursor continues a declaration's uses; a CSS name lists its components in one answer",
+        ));
+    }
     Ok(Plan {
         request,
+        source_range,
+        references,
         wait,
         output: options.clone(),
     })
 }
 
 // A local directory passed to `add` is canonicalized by the owner before it
-// becomes a Project label. Resolve explicit relative path operands for the CLI
-// package-profile command against the same selected workspace root so its
-// lookup uses that exact local identity. PURLs and bare local labels stay
-// untouched, and the JSON surface escape hatch above keeps protocol operands
-// exact.
+// becomes a Project label. Resolve explicit relative path operands of every
+// surface command that names a local package (package-profile, sql-query,
+// impact, stylo-query, package-source-membership and the rest) against the
+// same selected workspace root, so each lookup uses that exact local identity.
+// PURLs and bare local labels stay untouched, and the JSON surface escape
+// hatch above keeps protocol operands exact.
+//
+// The commands share one wire shape for a local package reference
+// (`{"kind":"local","value":...}`), so the rewrite walks that shape instead of
+// naming each command: a new command with a package operand gets the same
+// treatment without a second list to keep in step.
 fn normalize_package_profile_path(request: Request, project: &str) -> Result<Request, Fault> {
     let command = match request {
         Request::Surface(command) => command,
         other => return Ok(other),
     };
-    let (label, compiler_outcome) = match *command {
-        backend_library::SurfaceCommand::PackageProfile {
-            package: backend_library::PackageReference::Local(label),
-            compiler_outcome,
-        } => (label, compiler_outcome),
-        other => return Ok(Request::Surface(Box::new(other))),
-    };
+    let mut wire = serde_json::to_value(&*command)
+        .map_err(|error| Fault::usage(SURFACE_VERB, format!("the command could not be encoded: {error}")))?;
+    if !rewrite_relative_local_packages(&mut wire, project)? {
+        return Ok(Request::Surface(command));
+    }
+    let command: backend_library::SurfaceCommand = serde_json::from_value(wire).map_err(|error| {
+        Fault::usage(SURFACE_VERB, format!("the command could not be rebuilt with its resolved package: {error}"))
+    })?;
+    command.admit().map_err(|error| {
+        Fault::admission(error, Operand::Argument(command_package_operand(&command)))
+    })?;
+    Ok(Request::Surface(Box::new(command)))
+}
+
+/// Rewrites every relative local package reference in `wire`; reports whether any changed.
+fn rewrite_relative_local_packages(wire: &mut serde_json::Value, project: &str) -> Result<bool, Fault> {
+    use serde_json::Value;
+    let mut changed = false;
+    match wire {
+        Value::Object(fields) => {
+            let relative = fields.len() == 2
+                && fields.get("kind").and_then(Value::as_str) == Some("local")
+                && fields.get("value").and_then(Value::as_str).is_some();
+            if relative {
+                let label = fields.get("value").and_then(Value::as_str).unwrap_or_default().to_owned();
+                let product = backend_library::ProductText::new(label.as_str())
+                    .map_err(|error| Fault::admission(error, Operand::Argument(label.clone())))?;
+                if let backend_library::PackageReference::Local(resolved) = resolve_relative_local_package(product, project)?
+                    && resolved.as_str() != label
+                {
+                    fields.insert("value".to_owned(), Value::String(resolved.as_str().to_owned()));
+                    changed = true;
+                }
+            } else {
+                for child in fields.values_mut() {
+                    changed |= rewrite_relative_local_packages(child, project)?;
+                }
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                changed |= rewrite_relative_local_packages(child, project)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(changed)
+}
+
+fn command_package_operand(command: &backend_library::SurfaceCommand) -> String {
+    serde_json::to_value(command)
+        .ok()
+        .and_then(|wire| first_local_package(&wire))
+        .unwrap_or_default()
+}
+
+fn first_local_package(wire: &serde_json::Value) -> Option<String> {
+    use serde_json::Value;
+    match wire {
+        Value::Object(fields) => {
+            if fields.get("kind").and_then(Value::as_str) == Some("local")
+                && let Some(value) = fields.get("value").and_then(Value::as_str)
+            {
+                return Some(value.to_owned());
+            }
+            fields.values().find_map(first_local_package)
+        }
+        Value::Array(items) => items.iter().find_map(first_local_package),
+        _ => None,
+    }
+}
+
+/// Resolves an explicit `.`/`..` relative spelling against the selected
+/// project root; any other spelling is returned as the exact local label.
+fn resolve_relative_local_package(
+    label: backend_library::ProductText,
+    project: &str,
+) -> Result<backend_library::PackageReference, Fault> {
     let value = label.as_str();
     let is_dot_path =
         value == "." || value.starts_with("./") || (cfg!(windows) && value.starts_with(".\\"));
@@ -569,12 +772,7 @@ fn normalize_package_profile_path(request: Request, project: &str) -> Result<Req
         value == ".." || value.starts_with("../") || (cfg!(windows) && value.starts_with("..\\"));
     let is_relative_path = !Path::new(value).is_absolute() && (is_dot_path || is_parent_path);
     if !is_relative_path {
-        return Ok(Request::Surface(Box::new(
-            backend_library::SurfaceCommand::PackageProfile {
-                package: backend_library::PackageReference::Local(label),
-                compiler_outcome,
-            },
-        )));
+        return Ok(backend_library::PackageReference::Local(label));
     }
     let path = backend_runtime::normalize_surface_path(Path::new(project).join(value));
     let resolved = path.to_str().ok_or_else(|| {
@@ -583,19 +781,11 @@ fn normalize_package_profile_path(request: Request, project: &str) -> Result<Req
             Operand::Argument(value.to_owned()),
         )
     })?;
-    let package = backend_library::PackageReference::from_kind(
+    backend_library::PackageReference::from_kind(
         backend_library::PackageReferenceKind::Local,
         resolved.to_owned(),
     )
-    .map_err(|error| Fault::admission(error, Operand::Argument(value.to_owned())))?;
-    let command = backend_library::SurfaceCommand::PackageProfile {
-        package,
-        compiler_outcome,
-    };
-    command
-        .admit()
-        .map_err(|error| Fault::admission(error, Operand::Argument(value.to_owned())))?;
-    Ok(Request::Surface(Box::new(command)))
+    .map_err(|error| Fault::admission(error, Operand::Argument(value.to_owned())))
 }
 
 #[cfg(test)]
@@ -699,6 +889,94 @@ mod package_profile_path_tests {
             PackageReference::parse("scope/name").expect("hierarchical local label")
         );
         assert_eq!(selector, None);
+    }
+
+    fn sql_query_request(words: &[&str], project: &str) -> backend_library::sql_query::SqlQueryRequest {
+        let words = words.iter().map(|word| (*word).to_owned()).collect::<Vec<_>>();
+        let plan = plan(&words, &Options::fallback(), project).expect("sql-query plan");
+        let Request::Surface(command) = plan.request else {
+            panic!("sql-query lowers to a surface request");
+        };
+        let SurfaceCommand::SqlQuery { request } = *command else {
+            panic!("sql-query command");
+        };
+        request
+    }
+
+    #[test]
+    fn relative_sql_query_paths_resolve_like_package_profile() {
+        let temp = tempfile::tempdir().expect("temporary workspace");
+        let project_path = temp.path().join("project");
+        let nested_path = project_path.join("nested");
+        std::fs::create_dir_all(&nested_path).expect("nested directory");
+        let project = project_path.to_str().expect("UTF-8 temporary path");
+        let dot = canonical_surface_path(&project_path);
+        let nested = canonical_surface_path(&nested_path);
+        for (input, expected) in [(".", &dot), ("./nested", &nested), ("../project", &dot)] {
+            let request = sql_query_request(&["sql-query", input, "--role", "gap"], project);
+            let PackageReference::Local(label) = &request.package else {
+                panic!("relative local path remains a local package reference");
+            };
+            assert_eq!(label.as_str(), expected.to_string_lossy().as_ref(), "{input}");
+        }
+        // The same query through the absolute project path names the same project.
+        let absolute = sql_query_request(&["sql-query", dot.to_str().unwrap(), "--role", "gap"], project);
+        let relative = sql_query_request(&["sql-query", ".", "--role", "gap"], project);
+        assert_eq!(absolute.package, relative.package);
+    }
+
+    fn planned_surface(words: &[&str], project: &str) -> backend_library::SurfaceCommand {
+        let words = words.iter().map(|word| (*word).to_owned()).collect::<Vec<_>>();
+        let plan = plan(&words, &Options::fallback(), project).expect("surface plan");
+        let Request::Surface(command) = plan.request else {
+            panic!("{words:?} lowers to a surface request");
+        };
+        *command
+    }
+
+    #[test]
+    fn every_command_with_a_package_operand_resolves_relative_paths() {
+        let temp = tempfile::tempdir().expect("temporary workspace");
+        let project_path = temp.path().join("project");
+        let nested_path = project_path.join("nested");
+        std::fs::create_dir_all(&nested_path).expect("nested directory");
+        let project = project_path.to_str().expect("UTF-8 temporary path");
+        let dot = canonical_surface_path(&project_path);
+        let nested = canonical_surface_path(&nested_path);
+        let commands: [&[&str]; 8] = [
+            &["impact", "{}", "--component", "Button"],
+            &["impact", "{}", "--sql-table", "members"],
+            &["impact", "{}", "--class", "card"],
+            &["stylo-query", "{}", "--class", "card"],
+            &["semantic-versions", "{}"],
+            &["package-profile", "{}"],
+            &["sql-query", "{}", "--role", "gap"],
+            &["package-versions", "{}"],
+        ];
+        for template in commands {
+            for (input, expected) in [(".", &dot), ("./nested", &nested), ("../project", &dot)] {
+                let words = template.iter().map(|word| if *word == "{}" { input } else { word }).collect::<Vec<_>>();
+                let command = planned_surface(&words, project);
+                assert_eq!(
+                    command_package_operand(&command),
+                    expected.to_string_lossy(),
+                    "{words:?}"
+                );
+            }
+            // An absolute path and a bare label stay exactly as typed.
+            let absolute = template.iter().map(|word| if *word == "{}" { "/repo/other" } else { word }).collect::<Vec<_>>();
+            assert_eq!(command_package_operand(&planned_surface(&absolute, project)), "/repo/other", "{absolute:?}");
+            let bare = template.iter().map(|word| if *word == "{}" { "demo" } else { word }).collect::<Vec<_>>();
+            assert_eq!(command_package_operand(&planned_surface(&bare, project)), "demo", "{bare:?}");
+        }
+    }
+
+    #[test]
+    fn sql_query_keeps_absolute_and_bare_local_coordinates_exact() {
+        let absolute = sql_query_request(&["sql-query", "/repo/other", "--role", "gap"], "/repo");
+        assert_eq!(absolute.package.as_str(), "/repo/other");
+        let bare = sql_query_request(&["sql-query", "demo", "--role", "gap"], "/repo");
+        assert_eq!(bare.package.as_str(), "demo");
     }
 
     #[test]

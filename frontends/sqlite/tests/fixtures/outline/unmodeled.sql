@@ -1,0 +1,14 @@
+CREATE VIRTUAL TABLE docs USING fts5(title, body);
+CREATE TABLE copy AS SELECT * FROM users;
+ATTACH DATABASE 'other.db' AS aux;
+DETACH DATABASE aux;
+EXPLAIN QUERY PLAN SELECT * FROM users;
+PRAGMA table_info(users);
+PRAGMA user_version = 3;
+REINDEX users;
+ANALYZE;
+VACUUM;
+BEGIN;
+SAVEPOINT s1;
+RELEASE s1;
+COMMIT;

@@ -491,21 +491,20 @@ impl<'work> ParserStateCore<'work> {
     /// Parse function declaration (optionally async)
     pub(crate) fn parse_function_declaration(&mut self) -> NodeIndex {
         tracing::trace!(pos = self.token_pos(), "parse_function_declaration");
-        self.parse_function_declaration_with_async(false, None)
+        self.parse_function_declaration_with_async(None, None)
     }
 
     /// Parse function declaration with async modifier already consumed
     pub(crate) fn parse_function_declaration_with_async(
         &mut self,
-        is_async: bool,
+        async_start: Option<u32>,
         modifiers: Option<NodeList>,
     ) -> NodeIndex {
         let start_pos = self.token_pos();
 
         // Check for async modifier if not already parsed
         // TS1040: 'async' modifier cannot be used in an ambient context
-        let _async_token_pos = self.token_pos();
-        let is_async = if !is_async && self.is_token(SyntaxKind::AsyncKeyword) {
+        let async_start = if async_start.is_none() && self.is_token(SyntaxKind::AsyncKeyword) {
             if self.in_ambient_context() {
                 use tsz_common::diagnostics::diagnostic_codes;
                 self.parse_error_at_current_token(
@@ -513,11 +512,13 @@ impl<'work> ParserStateCore<'work> {
                     diagnostic_codes::MODIFIER_CANNOT_BE_USED_IN_AN_AMBIENT_CONTEXT,
                 );
             }
+            let start = self.token_pos();
             self.next_token(); // consume async
-            true
+            Some(start)
         } else {
-            is_async
+            async_start
         };
+        let is_async = async_start.is_some();
 
         self.parse_expected(SyntaxKind::FunctionKeyword);
 
@@ -635,6 +636,7 @@ impl<'work> ParserStateCore<'work> {
                 FunctionData {
                     modifiers,
                     is_async,
+                    async_start,
                     asterisk_token,
                     name,
                     type_parameters: None,
@@ -688,6 +690,7 @@ impl<'work> ParserStateCore<'work> {
                 FunctionData {
                     modifiers,
                     is_async,
+                    async_start,
                     asterisk_token,
                     name,
                     type_parameters,
@@ -719,6 +722,7 @@ impl<'work> ParserStateCore<'work> {
                 FunctionData {
                     modifiers,
                     is_async,
+                    async_start,
                     asterisk_token,
                     name,
                     type_parameters,
@@ -806,6 +810,7 @@ impl<'work> ParserStateCore<'work> {
             FunctionData {
                 modifiers,
                 is_async,
+                async_start,
                 asterisk_token,
                 name,
                 type_parameters,
@@ -823,7 +828,7 @@ impl<'work> ParserStateCore<'work> {
     /// overload signatures (missing body).
     pub(crate) fn parse_function_declaration_with_async_optional_name(
         &mut self,
-        is_async: bool,
+        async_start: Option<u32>,
         modifiers: Option<NodeList>,
     ) -> NodeIndex {
         let start_pos = self.token_pos();
@@ -832,7 +837,14 @@ impl<'work> ParserStateCore<'work> {
             "parse_function_declaration_with_async_optional_name"
         );
 
-        let is_async = is_async || self.parse_optional(SyntaxKind::AsyncKeyword);
+        let async_start = if async_start.is_none() && self.is_token(SyntaxKind::AsyncKeyword) {
+            let start = self.token_pos();
+            self.next_token();
+            Some(start)
+        } else {
+            async_start
+        };
+        let is_async = async_start.is_some();
         self.parse_expected(SyntaxKind::FunctionKeyword);
         let asterisk_token = self.parse_optional(SyntaxKind::AsteriskToken);
 
@@ -921,6 +933,7 @@ impl<'work> ParserStateCore<'work> {
             FunctionData {
                 modifiers,
                 is_async,
+                async_start,
                 asterisk_token,
                 name,
                 type_parameters,
@@ -1049,6 +1062,7 @@ impl<'work> ParserStateCore<'work> {
             FunctionData {
                 modifiers: None,
                 is_async,
+                async_start: None,
                 asterisk_token,
                 name,
                 type_parameters,

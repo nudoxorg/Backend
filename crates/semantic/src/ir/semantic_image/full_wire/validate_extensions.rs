@@ -12,16 +12,18 @@ use super::super::{
         SPARSE_BINDING_ROW_BYTES, get_u32,
     },
 };
-use super::{TypedLayout, availability_code, reference, wire};
+use super::{TypedLayout, SemanticImageAdmissionMeter, availability_code, compare_bytes, reference, wire, work};
 
 pub(super) fn validate_extensions(
     bytes: &[u8],
     layout: FullImageLayout,
     typed: TypedLayout,
     authority: SemanticImageAuthority,
+    meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<(), FullSemanticImageFault> {
     let entities = layout.entry(FullDirectoryKind::Entities).count;
     for (plane_index, (facts_kind, bindings_kind)) in extension_pairs().into_iter().enumerate() {
+        work(meter, 1)?;
         let bindings = layout.entry(bindings_kind);
         let facts = layout.entry(facts_kind);
         if !authority_selects_plane(authority, language_for_extension(plane_index)) {
@@ -38,13 +40,14 @@ pub(super) fn validate_extensions(
             }
             continue;
         }
-        validate_extension_ranges(bytes, layout, facts_kind)?;
+        validate_extension_ranges(bytes, layout, facts_kind, meter)?;
         let counts = extensions_decode::ExtensionCounts {
             atoms: layout.entry(FullDirectoryKind::Atoms).count,
             members: layout.entry(FullDirectoryKind::EntityLists).count,
             typed,
         };
         for fact in 0..facts.count {
+            work(meter, 1)?;
             let value = extension_value(bytes, facts, fact)?;
             extensions_decode::validate(
                 u8::try_from(plane_index).map_err(|_| FullSemanticImageFault::LengthOverflow {
@@ -58,6 +61,7 @@ pub(super) fn validate_extensions(
         }
         let mut previous = None;
         for row in 0..bindings.count {
+            work(meter, 1)?;
             let (entity, fact) = binding(bytes, bindings, row)?;
             reference(
                 FullSemanticImageField::ExtensionBindings,
@@ -103,24 +107,26 @@ pub(super) fn validate_extensions(
             }
         }
         for fact in 0..facts.count {
-            if !fact_is_bound(bytes, bindings, fact)? {
+            work(meter, 1)?;
+            if !fact_is_bound(bytes, bindings, fact, meter)? {
                 return Err(FullSemanticImageFault::UnboundExtensionFact {
                     plane: facts_kind,
                     fact,
                 });
             }
         }
-        validate_fact_order(bytes, facts)?;
+        validate_fact_order(bytes, facts, meter)?;
     }
     // A Captured claim must bind one exact named sparse extension row; merely
     // carrying a captured-empty fact pool is not enough to manufacture an
     // entity's extension authority.
     for entity in 0..entities {
+        work(meter, 1)?;
         let row = decode::entity(bytes, layout, entity)?;
         let mut present = 0_u8;
         for (_, bindings_kind) in extension_pairs() {
             let bindings = layout.entry(bindings_kind);
-            if sparse_has_entity(bytes, bindings, entity)? {
+            if sparse_has_entity(bytes, bindings, entity, meter)? {
                 present = present
                     .checked_add(1)
                     .ok_or(FullSemanticImageFault::LengthOverflow {
@@ -153,11 +159,13 @@ fn authority_selects_plane(
 fn validate_fact_order(
     bytes: &[u8],
     facts: FullDirectoryEntry,
+    meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<(), FullSemanticImageFault> {
     for row in 1..facts.count {
+        work(meter, 1)?;
         let previous = extension_value(bytes, facts, row - 1)?;
         let current = extension_value(bytes, facts, row)?;
-        match previous.cmp(current) {
+        match compare_bytes(meter, previous, current)? {
             Ordering::Less => {}
             Ordering::Greater => {
                 return Err(FullSemanticImageFault::CanonicalOrder {
@@ -185,9 +193,10 @@ fn fact_is_bound(
     bytes: &[u8],
     bindings: FullDirectoryEntry,
     fact: u32,
+    meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<bool, FullSemanticImageFault> {
     let mut row = 0;
-    Ok(next_fact_entity(bytes, bindings, &mut row, fact)?.is_some())
+    Ok(next_fact_entity(bytes, bindings, &mut row, fact, meter)?.is_some())
 }
 
 fn next_fact_entity(
@@ -195,8 +204,10 @@ fn next_fact_entity(
     bindings: FullDirectoryEntry,
     next: &mut u32,
     fact: u32,
+    meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<Option<u32>, FullSemanticImageFault> {
     while *next < bindings.count {
+        work(meter, 1)?;
         let row = *next;
         *next = row + 1;
         let (entity, observed) = binding(bytes, bindings, row)?;
@@ -211,6 +222,7 @@ fn validate_extension_ranges(
     bytes: &[u8],
     layout: FullImageLayout,
     kind: FullDirectoryKind,
+    meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<(), FullSemanticImageFault> {
     let entry = layout.entry(kind);
     let range_bytes = usize::try_from(entry.count)
@@ -237,6 +249,7 @@ fn validate_extension_ranges(
     )?;
     let mut expected = 0_usize;
     for row in 0..entry.count {
+        work(meter, 1)?;
         let offset = entry.offset
             + usize::try_from(row).map_err(|_| FullSemanticImageFault::LengthOverflow {
                 field: FullSemanticImageField::ExtensionFacts,
@@ -440,10 +453,12 @@ fn sparse_has_entity(
     bytes: &[u8],
     bindings: FullDirectoryEntry,
     entity: u32,
+    meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<bool, FullSemanticImageFault> {
     let mut lower = 0_u32;
     let mut upper = bindings.count;
     while lower < upper {
+        work(meter, 1)?;
         let middle = lower + (upper - lower) / 2;
         let (observed, _) = binding(bytes, bindings, middle)?;
         if observed < entity {

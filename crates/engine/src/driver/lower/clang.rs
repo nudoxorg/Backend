@@ -1659,7 +1659,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             None => fact,
         };
         let ordinal = push(self.facts, fact)?;
-        self.record_pushed(index, ordinal, declaration);
+        self.record_pushed(index, ordinal, declaration)?;
         let ordinal_index =
             usize::try_from(ordinal).map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
         self.facts

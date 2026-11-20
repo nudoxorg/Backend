@@ -22,6 +22,7 @@ fn exact_metadata_failure_cause_survives_cli_text_and_mcp_structured_presentatio
         let view = product_view(&SurfaceReply::PackageDiscovery {
             package: package.clone(),
             observation: observation.clone(),
+            advisory: None,
         });
         assert!(crate::text::product(&view, crate::Theme::plain()).contains(reason));
         assert!(crate::markdown::product(&view).contains(reason));

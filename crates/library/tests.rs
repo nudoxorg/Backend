@@ -272,6 +272,7 @@ fn names_documents_and_outlines_are_pinned_to_one_basis() {
                 symbol: SymbolAddress::canonical(symbol),
                 basis: revision.into(),
                 source: None,
+                source_range: None,
             })
             .expect("document")
             .text(),
@@ -294,6 +295,7 @@ fn names_documents_and_outlines_are_pinned_to_one_basis() {
                 symbol: SymbolAddress::canonical(symbol),
                 basis: view_state_root(&[("other".to_owned(), "root".to_owned())]).into(),
                 source: None,
+                source_range: None,
             })
             .is_err()
     );
@@ -440,6 +442,7 @@ fn document_projection_uses_the_complete_row_document() {
             symbol: SymbolAddress::canonical(symbol),
             basis: revision.into(),
             source: None,
+            source_range: None,
         })
         .expect("document projection");
     assert_eq!(
@@ -596,7 +599,7 @@ fn package_outline_and_graph_pages_share_root_and_query_bound_continuations() {
 
     let inconsistent_terminal = ReplyDto::new(
         42,
-        CommandReply::ProjectionPage(ProjectionPage {
+        CommandReply::ProjectionPage(ProjectionPage { graph_alias_witness: None,
             outline_order: None,
             snapshot: first.snapshot.clone(),
             terminal: PageTerminal::Complete,
@@ -695,7 +698,7 @@ fn graph_page_recovered_coordinate_preserves_claimed_cursor_and_rejects_foreign_
 }
 
 #[test]
-fn graph_page_selected_neighbors_refuses_duplicates_reordering_and_foreign_cursors() {
+fn related_and_graph_page_refuse_foreign_cursors_and_invalid_neighbors() {
     let (root, object) = source();let basis = Basis::new(root, object);
     let package = package_key("semantic-neighbors");
     let symbol = symbol_key("semantic-origin");let neighbor = symbol_key("nonparent-neighbor");
@@ -710,6 +713,12 @@ fn graph_page_selected_neighbors_refuses_duplicates_reordering_and_foreign_curso
     let second = library.graph_page_from_ids(symbol, address, request.with_continuation(next), &ids).expect("second");
     let mut union = vec![first.snapshot.root.rows()[0].id, second.snapshot.root.rows()[0].id];union.sort();
     assert_eq!(union, ids);assert_eq!(second.terminal, PageTerminal::Complete);
+    let related = request.with_incoming();
+    let related_first = library.graph_page_from_ids(symbol, address, related, &ids).expect("related first");
+    let PageTerminal::More(related_next) = related_first.terminal else { panic!("related next") };
+    assert!(library.graph_page_from_ids(symbol, address, related.with_continuation(related_next), &ids).is_ok());
+    assert!(matches!(library.graph_page_from_ids(symbol, address, request.with_continuation(related_next), &ids), Err(LibraryError::CursorMismatch)));
+    assert!(matches!(library.graph_page_from_ids(symbol, address, related.with_continuation(next), &ids), Err(LibraryError::CursorMismatch)));
     let mut duplicate = ids.clone();duplicate.insert(0, duplicate[0]);
     assert!(library.graph_page_from_ids(symbol, address, request, &duplicate).is_err());
     let mut reordered = ids.clone();reordered.reverse();

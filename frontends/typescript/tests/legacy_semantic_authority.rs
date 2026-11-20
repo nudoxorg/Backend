@@ -152,6 +152,38 @@ fn tsx_profile_accepts_jsx_while_typescript_profile_rejects_it() -> Result<(), A
 }
 
 #[test]
+fn commonjs_script_with_a_top_level_return_is_admitted() -> Result<(), AuthorityTestError> {
+    // A Node script stops early with a top-level `return`; TypeScript's parser
+    // accepts it and leaves TS1108 to the checker.
+    let source = concat!(
+        "const fs = require('fs');\n",
+        "const steps = process.argv[2];\n",
+        "for (let i = 0; i < 10; i++) {\n",
+        "  if (steps != null && i === parseInt(steps)) {\n",
+        "    fs.writeFileSync('out.txt', String(i));\n",
+        "    return\n",
+        "  }\n",
+        "}\n",
+        "function finish() { return steps; }\n",
+    );
+    let arena = Allocator::default();
+    let module = analyze(TypeScriptSource::TypeScript, source, &arena)?;
+    module
+        .declarations()
+        .any(|declaration| {
+            let start = usize::try_from(declaration.name.start).ok();
+            let end = usize::try_from(declaration.name.end).ok();
+            start
+                .zip(end)
+                .and_then(|(start, end)| source.get(start..end))
+                == Some("finish")
+        })
+        .then_some(())
+        .ok_or(AuthorityTestError::MissingSymbol { name: "finish" })?;
+    Ok(())
+}
+
+#[test]
 fn malformed_source_preserves_every_parser_diagnostic() -> Result<(), AuthorityTestError> {
     let arena = Allocator::default();
     let result = analyze(

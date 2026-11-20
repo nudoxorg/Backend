@@ -268,8 +268,22 @@ pub fn read_index_operation_progress(
 pub(super) fn read_operation_with_clock(
     query: &IndexProgressRead,
     context: &RequestContext,
+    observe: impl FnMut(SurfaceCommand) -> Result<SurfaceReply, ClientError>,
+    clock: &mut impl ProgressClock,
+) -> Result<IndexCompilerProgressUpdate, ClientError> {
+    read_operation_from_with_clock(query, context, observe, clock, None)
+}
+
+/// As [`read_operation_with_clock`], continuing the same ticket's history after
+/// the page a caller's earlier slice ended on, so a bounded slice never rereads
+/// pages it has already drained.
+#[cfg(any(unix, windows))]
+pub(super) fn read_operation_from_with_clock(
+    query: &IndexProgressRead,
+    context: &RequestContext,
     mut observe: impl FnMut(SurfaceCommand) -> Result<SurfaceReply, ClientError>,
     clock: &mut impl ProgressClock,
+    resume: Option<IndexProgressPage>,
 ) -> Result<IndexCompilerProgressUpdate, ClientError> {
     if !matches!(query.command, SurfaceCommand::IndexOperationStatus { .. }) {
         return Err(ClientError::Protocol(
@@ -277,7 +291,7 @@ pub(super) fn read_operation_with_clock(
         ));
     }
     let started = clock.elapsed();
-    let mut previous = None;
+    let mut previous = resume;
     loop {
         context.check()?;
         let reply = observe(query.command.clone());

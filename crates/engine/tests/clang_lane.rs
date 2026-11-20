@@ -785,7 +785,7 @@ fn template_parameter_is_pooled_and_field_is_typevar() -> Result<(), TestError> 
             .into_iter()
             .find(|row| row.owner.raw == value)
             .ok_or(TestError::Check("value row"))?;
-        if row.record.tag != SemanticTypeTag::TypeVar || row.record.text != Some(b"T") {
+        if row.record.tag != SemanticTypeTag::TypeVar || row.record.text != Some(&b"T"[..]) {
             return Err(TestError::Check("value TypeVar"));
         }
         Ok(())

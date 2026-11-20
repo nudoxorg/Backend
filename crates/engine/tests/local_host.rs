@@ -447,7 +447,7 @@ fn deferred_default_rust_admits_a_real_workspace_and_local_recipe_then_reopens_o
                 let mut drives = reader.canonical_entities().filter(|entity| {
                     entity.kind == ItemKind::Function
                         && entity.name.named_atom().and_then(|name| reader.atom(name))
-                            == Some(b"drive")
+                            == Some(&b"drive"[..])
                 });
                 let Some(drive) = drives.next() else {
                     return Ok::<_, std::io::Error>(0);
@@ -494,10 +494,10 @@ fn deferred_default_rust_admits_a_real_workspace_and_local_recipe_then_reopens_o
                         reader.atom(ecosystem), reader.atom(package), reader.atom(foreign.path),
                         reader.atom(foreign.display), span.start(), span.end(), expected_start + 8
                     );
-                    if reader.atom(ecosystem) == Some(b"cargo")
-                        && reader.atom(package) == Some(b"src/service")
-                        && reader.atom(foreign.path) == Some(b"set_note")
-                        && reader.atom(foreign.display) == Some(b"set_note")
+                    if reader.atom(ecosystem) == Some(&b"cargo"[..])
+                        && reader.atom(package) == Some(&b"src/service"[..])
+                        && reader.atom(foreign.path) == Some(&b"set_note"[..])
+                        && reader.atom(foreign.display) == Some(&b"set_note"[..])
                         && span.start() == expected_start
                         && span.end() == expected_start + 8
                     {

@@ -503,9 +503,15 @@ fn cancelling_snapshot_run_retains_receipt_and_leaves_owner_usable() {
     let waker = Waker::from(Arc::new(NoopWake));
     let mut context = Context::from_waker(&waker);
     let mut run = Box::pin(operation.run());
+    let first_poll = run.as_mut().poll(&mut context);
     assert!(
-        matches!(run.as_mut().poll(&mut context), Poll::Pending),
-        "large VACUUM INTO yields so its run future can be cancelled"
+        matches!(first_poll, Poll::Pending),
+        "large VACUUM INTO yields so its run future can be cancelled, got {}",
+        match &first_poll {
+            Poll::Pending => "pending".to_owned(),
+            Poll::Ready(Ok(_)) => "a completed snapshot".to_owned(),
+            Poll::Ready(Err(failure)) => format!("failure: {failure}"),
+        }
     );
     drop(run);
 

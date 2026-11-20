@@ -215,3 +215,45 @@ CREATE TABLE IF NOT EXISTS backend_index_authority_projection_watermarks (
             AND projected_root = selected_root))
 );
 ";
+
+/// Explicit domain marker added only by the owner-held v6→v7 migration.
+/// Version 6 initialization remains unchanged until that migration is invoked.
+pub(super) const AUTHORITY_SCHEMA_VERSION_V7: i64 = 7;
+pub(super) const AUTHORITY_DOMAIN_V7_SCHEMA: &str = r"
+CREATE TABLE backend_index_authority_domain_v7 (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    domain_kind INTEGER NOT NULL CHECK (domain_kind IN (0, 1)),
+    workspace_id BLOB NOT NULL CHECK (length(workspace_id) = 32),
+    domain_id BLOB NOT NULL CHECK (length(domain_id) = 32)
+);
+CREATE TRIGGER backend_index_authority_domain_v7_immutable_update
+BEFORE UPDATE ON backend_index_authority_domain_v7 BEGIN
+    SELECT RAISE (ABORT, 'authority domain is immutable');
+END;
+CREATE TRIGGER backend_index_authority_domain_v7_immutable_delete
+BEFORE DELETE ON backend_index_authority_domain_v7 BEGIN
+    SELECT RAISE (ABORT, 'authority domain is immutable');
+END;
+";
+
+/// Additional schema present only in the physically separate v7 unit domain.
+/// Generic legacy authority open refuses this catalogue and domain marker.
+pub(super) const CSHARP_UNIT_FENCE_V7_SCHEMA: &str = r"
+CREATE TABLE backend_index_authority_csharp_unit_fences_v7 (
+    unit_key BLOB NOT NULL PRIMARY KEY CHECK (typeof(unit_key) = 'blob' AND length(unit_key) = 32),
+    package TEXT NOT NULL CHECK (typeof(package) = 'text' AND length(package) > 0 AND length(package) <= 4096),
+    coordinate TEXT NOT NULL CHECK (typeof(coordinate) = 'text' AND length(coordinate) > 0 AND length(coordinate) <= 4096),
+    profile TEXT NOT NULL CHECK (typeof(profile) = 'text' AND length(profile) > 0 AND length(profile) <= 256),
+    project_path TEXT NOT NULL CHECK (typeof(project_path) = 'text' AND length(project_path) > 0 AND length(project_path) <= 4096),
+    target BLOB NOT NULL CHECK (typeof(target) = 'blob' AND length(target) = 32),
+    UNIQUE (package, coordinate, profile, project_path)
+);
+CREATE TRIGGER backend_index_authority_csharp_unit_fences_v7_immutable_update
+BEFORE UPDATE ON backend_index_authority_csharp_unit_fences_v7 BEGIN
+    SELECT RAISE (ABORT, 'C# unit fence is immutable');
+END;
+CREATE TRIGGER backend_index_authority_csharp_unit_fences_v7_immutable_delete
+BEFORE DELETE ON backend_index_authority_csharp_unit_fences_v7 BEGIN
+    SELECT RAISE (ABORT, 'C# unit fence is immutable');
+END;
+";

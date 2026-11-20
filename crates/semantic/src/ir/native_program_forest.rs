@@ -10,6 +10,12 @@ use backend_version::{ContentId, Schema, SourceFactDomain, ToolchainDomain};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+mod borrowed;
+pub use borrowed::{
+    BorrowedOwnedNativeProgramSourceRef, BorrowedProgramGraph, BorrowedProgramGraphScratch,
+    RetainedProgramGraph,
+};
+
 const MAGIC: &[u8; 8] = b"BKNPSF01";
 const PROJECT_SET_MAGIC: &[u8; 8] = b"BKNPSU01";
 /// Same bounded number of configuration nodes as project-host admission.
@@ -596,6 +602,362 @@ impl<'a> Input<'a> {
 mod tests {
     use super::*;
     use crate::ir::{NativeProgramSource, SourceIdentity};
+    fn as_borrowed(
+        row: NativeProgramOwnedSourceRef<'_>,
+    ) -> BorrowedOwnedNativeProgramSourceRef<'_> {
+        BorrowedOwnedNativeProgramSourceRef {
+            program: row.program,
+            node: row.node,
+            row: super::super::native_program_sources::BorrowedNativeProgramSourceRef {
+                program_path: row.row.program_path.as_bytes(),
+                source: row.row.source,
+                package_path: row.row.package_path.map(str::as_bytes),
+            },
+        }
+    }
+    #[test]
+    fn borrowed_graph_matches_owned_and_stops_on_budget() {
+        let toolchain = ContentId::from_canonical_bytes(b"compiler");
+        let app_image = *SemanticImageIdentity::from_encoded_bytes(b"app image").as_ref();
+        let vite_image = *SemanticImageIdentity::from_encoded_bytes(b"vite image").as_ref();
+        let other_image = *SemanticImageIdentity::from_encoded_bytes(b"other image").as_ref();
+        let graph = NativeProgramSources::from_forest(toolchain, 1, nodes())
+            .unwrap()
+            .with_image_bindings(vec![
+                ("src/app.ts".to_owned(), app_image),
+                ("vite.config.ts".to_owned(), vite_image),
+            ])
+            .unwrap();
+        let shape = BorrowedProgramGraph::scratch(graph.as_bytes(), |_| Ok::<_, ()>(())).unwrap();
+        let mut nodes = vec![0; shape.nodes * 8];
+        let mut rows = vec![0; shape.row_bytes()];
+        let mut paths = vec![0; shape.leaf_paths];
+        let view = BorrowedProgramGraph::decode(
+            graph.as_bytes(),
+            &mut nodes,
+            &mut rows,
+            &mut paths,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+        assert_eq!(view.membership_identity(), graph.membership_identity());
+        assert_eq!(view.toolchain(), graph.toolchain());
+        let mut borrowed = Vec::new();
+        view.visit_sources(
+            |_| Ok::<_, ()>(()),
+            |row| {
+                borrowed.push(row);
+                Ok(())
+            },
+        )
+        .unwrap();
+        let mut owned = graph.sources().map(as_borrowed).collect::<Vec<_>>();
+        borrowed.sort_by(|a, b| a.row.program_path.cmp(b.row.program_path));
+        owned.sort_by(|a, b| a.row.program_path.cmp(b.row.program_path));
+        assert_eq!(borrowed, owned);
+        assert!(
+            view.image_matches("src/app.ts", &app_image, |_| Ok::<_, ()>(()))
+                .unwrap()
+        );
+        assert!(
+            !view
+                .image_matches("src/app.ts", &other_image, |_| Ok::<_, ()>(()))
+                .unwrap()
+        );
+        assert!(
+            view.image_matches("vite.config.ts", &vite_image, |_| Ok::<_, ()>(()))
+                .unwrap()
+        );
+        assert!(
+            view.image_matches_bytes(b"vite.config.ts", &vite_image, |_| Ok::<_, ()>(()))
+                .unwrap()
+        );
+        let expected_source = graph
+            .sources()
+            .find(|row| row.package_path == Some("vite.config.ts"))
+            .unwrap()
+            .source;
+        assert_eq!(
+            view.source_for_package_bytes(b"vite.config.ts", |_| Ok::<_, ()>(()))
+                .unwrap(),
+            Some(expected_source)
+        );
+        assert_eq!(
+            view.source_for_package_bytes(b"missing.ts", |_| Ok::<_, ()>(()))
+                .unwrap(),
+            None
+        );
+        assert!(
+            view.source_for_package_bytes(b"vite.config.ts", |_| Err::<(), _>("stopped"))
+                .is_err()
+        );
+        assert!(
+            !view
+                .image_matches_bytes(b"vite.config.ts", &other_image, |_| Ok::<_, ()>(()))
+                .unwrap()
+        );
+        assert!(
+            view.image_matches_bytes(b"vite.config.ts", &vite_image, |_| Err::<(), _>("stopped"))
+                .is_err()
+        );
+        assert!(
+            !view
+                .image_matches("missing.ts", &vite_image, |_| Ok::<_, ()>(()))
+                .unwrap()
+        );
+        assert!(matches!(
+            BorrowedProgramGraph::scratch(graph.as_bytes(), |_| Err(())),
+            Err(crate::ir::BorrowedNativeProgramError::Stopped(()))
+        ));
+        let mut retained_nodes = vec![0; shape.node_bytes()];
+        let mut retained_paths = vec![0; shape.leaf_paths];
+        let retained = RetainedProgramGraph::admit(
+            graph.as_bytes().into(),
+            vec![0; shape.row_bytes()].into_boxed_slice(),
+            &mut retained_nodes,
+            &mut retained_paths,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+        assert_eq!(retained.membership_identity(), graph.membership_identity());
+        assert!(
+            retained
+                .image_matches("vite.config.ts", &vite_image, |_| Ok::<_, ()>(()))
+                .unwrap()
+        );
+        assert!(
+            retained
+                .image_matches_bytes(b"vite.config.ts", &vite_image, |_| Ok::<_, ()>(()))
+                .unwrap()
+        );
+        assert_eq!(
+            retained
+                .source_for_package_bytes(b"vite.config.ts", |_| Ok::<_, ()>(()))
+                .unwrap(),
+            Some(expected_source)
+        );
+        assert!(
+            retained
+                .source_for_package_bytes(b"vite.config.ts", |_| Err::<(), _>("stopped"))
+                .is_err()
+        );
+        assert!(
+            retained
+                .image_matches_bytes(b"vite.config.ts", &vite_image, |_| Err::<(), _>("stopped"))
+                .is_err()
+        );
+        let mut corrupt = graph.as_bytes().to_vec();
+        let node_offset = corrupt.len() - 64;
+        corrupt[node_offset] ^= 1;
+        let mut nodes = vec![0; shape.nodes * 8];
+        let mut rows = vec![0; shape.row_bytes()];
+        let mut paths = vec![0; shape.leaf_paths];
+        assert!(NativeProgramSources::decode(&corrupt).is_err());
+        assert!(
+            BorrowedProgramGraph::decode(&corrupt, &mut nodes, &mut rows, &mut paths, |_| Ok::<
+                _,
+                (),
+            >(
+                ()
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn borrowed_project_set_preserves_disconnected_leaf_membership() {
+        let graph = NativeProgramSources::from_project_set(
+            ContentId::from_canonical_bytes(b"compiler"),
+            0,
+            independent_nodes(),
+        )
+        .unwrap();
+        let shape = BorrowedProgramGraph::scratch(graph.as_bytes(), |_| Ok::<_, ()>(())).unwrap();
+        let mut nodes = vec![0; shape.nodes * 8];
+        let mut rows = vec![0; shape.row_bytes()];
+        let mut paths = vec![0; shape.leaf_paths];
+        let view = BorrowedProgramGraph::decode(
+            graph.as_bytes(),
+            &mut nodes,
+            &mut rows,
+            &mut paths,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+        assert_eq!(view.membership_identity(), graph.membership_identity());
+        let mut count = 0;
+        view.visit_sources(
+            |_| Ok::<_, ()>(()),
+            |_| {
+                count += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(count, graph.sources().count());
+    }
+
+    #[test]
+    fn borrowed_graph_package_lookup_is_logarithmic_at_4096_rows() {
+        let toolchain = ContentId::from_canonical_bytes(b"compiler");
+        let source = SourceIdentity::from_bytes(&0u32.to_le_bytes()).unwrap();
+        let rows = (0u32..4096)
+            .map(|i| NativeProgramSource {
+                program_path: format!("project/file{i:04}.ts"),
+                package_path: Some(format!("src/file{:04}.ts", 4095 - i)),
+                source: SourceIdentity::from_bytes(&i.to_le_bytes()).unwrap(),
+            })
+            .collect();
+        let mut project = independent_nodes().remove(0);
+        project.program = Some(NativeProgramSourceManifest::from_sources(toolchain, rows).unwrap());
+        let graph = NativeProgramSources::from_project_set(toolchain, 0, vec![project]).unwrap();
+        let shape = BorrowedProgramGraph::scratch(graph.as_bytes(), |_| Ok::<_, ()>(())).unwrap();
+        let mut nodes = vec![0; shape.node_bytes()];
+        let mut rows = vec![0; shape.row_bytes()];
+        let mut paths = vec![0; shape.leaf_paths];
+        let view = BorrowedProgramGraph::decode(
+            graph.as_bytes(),
+            &mut nodes,
+            &mut rows,
+            &mut paths,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+        let mut work = 0;
+        assert_eq!(
+            view.source_for_package_bytes(b"src/file4095.ts", |_| {
+                work += 1;
+                Ok::<_, ()>(())
+            })
+            .unwrap(),
+            Some(source)
+        );
+        assert!(work < 64, "lookup must remain logarithmic: {work}");
+        assert!(
+            view.source_for_package_bytes(b"src/file4095.ts", |_| Err::<(), _>("stopped"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn borrowed_project_set_preserves_shared_source_owner_tuples() {
+        let mut projects = independent_nodes();
+        projects[0].program = Some(shared_leaf(Some("src/app.ts"), b"same"));
+        projects[1].program = Some(shared_leaf(None, b"same"));
+        let graph = NativeProgramSources::from_project_set(
+            ContentId::from_canonical_bytes(b"compiler"),
+            0,
+            projects,
+        )
+        .unwrap();
+        let shape = BorrowedProgramGraph::scratch(graph.as_bytes(), |_| Ok::<_, ()>(())).unwrap();
+        let mut nodes = vec![0; shape.node_bytes()];
+        let mut rows = vec![0; shape.row_bytes()];
+        let mut paths = vec![0; shape.leaf_paths];
+        let view = BorrowedProgramGraph::decode(
+            graph.as_bytes(),
+            &mut nodes,
+            &mut rows,
+            &mut paths,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+        let mut actual = Vec::new();
+        view.visit_sources(
+            |_| Ok::<_, ()>(()),
+            |row| {
+                actual.push(row);
+                Ok(())
+            },
+        )
+        .unwrap();
+        let mut expected = graph.sources().map(as_borrowed).collect::<Vec<_>>();
+        actual.sort_by(|a, b| {
+            (a.row.program_path, a.node, a.program).cmp(&(b.row.program_path, b.node, b.program))
+        });
+        expected.sort_by(|a, b| {
+            (a.row.program_path, a.node, a.program).cmp(&(b.row.program_path, b.node, b.program))
+        });
+        assert_eq!(actual, expected);
+        assert!(
+            view.visit_sources(|_| Err::<(), _>("stopped"), |_| Ok(()))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn borrowed_project_set_rejects_conflicting_source_with_rehashed_node() {
+        let toolchain = ContentId::from_canonical_bytes(b"compiler");
+        let mut projects = independent_nodes();
+        projects[0].program = Some(shared_leaf(Some("src/app.ts"), b"same"));
+        projects[1].program = Some(shared_leaf(None, b"same"));
+        let graph = NativeProgramSources::from_project_set(toolchain, 0, projects.clone()).unwrap();
+        let old_leaf = projects[1].program.as_ref().unwrap().as_bytes();
+        let replacement = shared_leaf(None, b"different");
+        assert_eq!(old_leaf.len(), replacement.as_bytes().len());
+        let mut wire = graph.as_bytes().to_vec();
+        let offset = wire
+            .windows(old_leaf.len())
+            .position(|cell| cell == old_leaf)
+            .unwrap();
+        wire[offset..offset + old_leaf.len()].copy_from_slice(replacement.as_bytes());
+        projects[1].program = Some(replacement);
+        wire[offset - 36..offset - 4].copy_from_slice(&node_identity(toolchain, &projects[1]));
+        assert!(NativeProgramSources::decode(&wire).is_err());
+        let shape = BorrowedProgramGraph::scratch(&wire, |_| Ok::<_, ()>(())).unwrap();
+        let mut nodes = vec![0; shape.node_bytes()];
+        let mut rows = vec![0; shape.row_bytes()];
+        let mut paths = vec![0; shape.leaf_paths];
+        assert!(
+            BorrowedProgramGraph::decode(
+                &wire,
+                &mut nodes,
+                &mut rows,
+                &mut paths,
+                |_| Ok::<_, ()>(())
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn borrowed_graph_rejects_invalid_typed_config_even_with_matching_node_hash() {
+        let toolchain = ContentId::from_canonical_bytes(b"compiler");
+        let source_nodes = nodes();
+        let graph = NativeProgramSources::from_forest(toolchain, 1, source_nodes.clone()).unwrap();
+        let mut wire = graph.as_bytes().to_vec();
+        let node = &source_nodes[0];
+        let config_offset = 48 + 4 + node.config_path.len();
+        let foreign = ContentId::<ToolchainDomain>::from_canonical_bytes(b"wrong config domain");
+        wire[config_offset..config_offset + 32].copy_from_slice(foreign.as_ref());
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"typescript.program-node.v1\0");
+        hash.update(toolchain.as_ref());
+        hash.update(&(node.config_path.len() as u64).to_le_bytes());
+        hash.update(node.config_path.as_bytes());
+        hash.update(foreign.as_ref());
+        hash.update(&node.environment);
+        hash.update(&0u64.to_le_bytes());
+        hash.update(&[1]);
+        hash.update(&node.program.as_ref().unwrap().program());
+        let id_offset = config_offset + 32 + 32 + 4;
+        wire[id_offset..id_offset + 32].copy_from_slice(hash.finalize().as_bytes());
+        assert!(NativeProgramSources::decode(&wire).is_err());
+        let shape = BorrowedProgramGraph::scratch(&wire, |_| Ok::<_, ()>(())).unwrap();
+        let mut node_scratch = vec![0; shape.node_bytes()];
+        let mut row_scratch = vec![0; shape.row_bytes()];
+        let mut paths = vec![0; shape.leaf_paths];
+        assert!(
+            BorrowedProgramGraph::decode(
+                &wire,
+                &mut node_scratch,
+                &mut row_scratch,
+                &mut paths,
+                |_| Ok::<_, ()>(())
+            )
+            .is_err()
+        );
+    }
     fn leaf(path: &str) -> NativeProgramSourceManifest {
         NativeProgramSourceManifest::from_sources(
             ContentId::from_canonical_bytes(b"compiler"),

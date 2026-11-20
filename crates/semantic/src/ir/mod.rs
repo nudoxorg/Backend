@@ -254,11 +254,11 @@ pub use semantic_image::{
     CoreProvenanceFault, CoreProvenanceIdentityField, CoreSemanticImageFault,
     CoreSemanticImageField, ExtensionPlanFault, FullEntityFault, FullPlanError,
     FullSemanticImageError, FullSemanticImageFault, FullSemanticImageField,
-    FullSemanticImageIdentityField, GraphPlanFault, PreparedFullSemanticImage, ScopeComponent,
-    SemanticImageEncodeError, SemanticImageIdentity, SemanticImageProofOwner,
+    FullSemanticImageIdentityField, GraphPlanFault, PreparedFullSemanticImage, RetainedSemanticImage, ScopeComponent,
+    SemanticImageAdmissionMeter, SemanticImageEncodeError, SemanticImageIdentity, SemanticImageProofOwner,
     SemanticImageReopenError, SemanticImageView, TerminalPoolDomain, TerminalPoolFault,
     encode_full_semantic_image, full_semantic_image_len, reset_semantic_image_validations,
-    semantic_image_validations,
+    semantic_image_admission_scratch, semantic_image_validations,
 };
 #[cfg(feature = "mmap")]
 pub use semantic_image::{
@@ -314,6 +314,7 @@ pub use vcs::{
     SemanticStableLinks, Snapshot, StableLink, StableLinkKey, StableLinks,
 };
 pub use versioned::{
+    BorrowedSemanticCatalogHasher, BorrowedSemanticManifest, BorrowedSemanticManifestError,
     EmbeddingNormalization, EmbeddingPlaneIdentity, MAX_SEMANTIC_SEGMENT_BYTES,
     SemanticBuildIdentity, SemanticCoverageState, SemanticDeltaAction, SemanticDeltaCursor,
     SemanticHydrationCoverage, SemanticHydrationCursor, SemanticHydrationCursorToken,
@@ -355,19 +356,23 @@ pub use view::{
 };
 
 pub use native_program_forest::{
+    BorrowedOwnedNativeProgramSourceRef, BorrowedProgramGraph, BorrowedProgramGraphScratch, RetainedProgramGraph,
     MAX_NATIVE_PROGRAM_NODES, NativeProgramForestSchema, NativeProgramNode,
     NativeProgramOwnedSourceRef, NativeProgramSources,
 };
 pub use native_program_sources::{
+    BorrowedNativeProgramError, BorrowedNativeProgramSourceManifest, BorrowedNativeProgramSourceRef,
     MAX_NATIVE_PROGRAM_MANIFEST_BYTES, MAX_NATIVE_PROGRAM_SOURCES, NativeProgramSource,
     NativeProgramSourceManifest, NativeProgramSourceManifestError,
-    NativeProgramSourceManifestSchema, NativeProgramSourceRef,
+    NativeProgramSourceManifestSchema, NativeProgramSourceRef, RetainedIndexedNativeProgramSourceManifest, RetainedNativeProgramSourceManifest,
 };
 
 pub use wire::{FRAGMENT_MAGIC, FRAGMENT_SCHEMA};
 
 mod source_coverage;
 mod typescript_snapshot_witness;
+mod csharp_invocation_evidence;
+pub use csharp_invocation_evidence::{CSharpInvocationEvidenceSchema, MAX_CSHARP_INVOCATION_EVIDENCE_BYTES};
 pub use source_coverage::{
     MAX_SOURCE_COVERAGE_BYTES, MAX_SOURCE_COVERAGE_ROWS, SOURCE_COVERAGE_OBSERVATION_OVERHEAD,
     SourceCoverageCapacityReason, SourceCoverageGapCause, SourceCoverageGapDiagnostic,

@@ -1530,7 +1530,7 @@ pub fn run_with_owner<O: OwnerService + 'static>(
     owner: O,
     config: ProcessConfig,
 ) -> Result<RunReport, ProcessError> {
-    serve(owner, config, false)
+    serve(owner, config, false, None)
 }
 
 /// Binds the listener and runs it to shutdown. `own_process` is for the
@@ -1541,11 +1541,14 @@ fn serve<O: OwnerService + 'static>(
     owner: O,
     config: ProcessConfig,
     own_process: bool,
+    shutdown: Option<crate::listener::ListenerShutdown>,
 ) -> Result<RunReport, ProcessError> {
     let service =
         LocaldService::new(owner, config.listener.limits).map_err(ProcessError::Protocol)?;
-    let mut listener =
-        UnixListenerService::bind(service, config.listener).map_err(ProcessError::Listener)?;
+    let mut listener = match shutdown {
+        Some(shutdown) => UnixListenerService::bind_with_shutdown(service, config.listener, shutdown),
+        None => UnixListenerService::bind(service, config.listener),
+    }.map_err(ProcessError::Listener)?;
     // Held until the run loop has returned and the listener has dropped, so a
     // signal arriving during an orderly shutdown cannot force an exit that
     // would skip unlinking the endpoint.
@@ -1568,7 +1571,15 @@ fn serve<O: OwnerService + 'static>(
 
 /// Returns the process exit status for an already-composed owner service.
 pub fn run_process<O: OwnerService + 'static>(owner: O, config: ProcessConfig) -> ExitCode {
-    match serve(owner, config, true) {
+    report_run_result(serve(owner, config, true, None))
+}
+
+pub(crate) fn run_process_with_shutdown<O: OwnerService + 'static>(owner: O, config: ProcessConfig, shutdown: crate::listener::ListenerShutdown) -> ExitCode {
+    report_run_result(serve(owner, config, false, Some(shutdown)))
+}
+
+fn report_run_result(result: Result<RunReport, ProcessError>) -> ExitCode {
+    match result {
         Ok(_) => ExitCode::SUCCESS,
         Err(ProcessError::Help) => {
             print_help();
@@ -1715,6 +1726,13 @@ pub enum ProcessError {
     /// ([`crate::EmbeddedLocalService::start_replacing_state_from_another_build`]);
     /// one that does not must ask its operator.
     StateFromAnotherBuild(String),
+    /// The workspace holds saved index state whose staged evidence this build
+    /// cannot authenticate: another build wrote it, or it is damaged. The
+    /// message names what failed. Nothing of it is trusted. It is not a
+    /// transient file-system failure, which stays [`ProcessError::Profile`] so
+    /// a retry can succeed. A host that owns its workspace can set the state
+    /// aside whole and index again, as for [`ProcessError::StateFromAnotherBuild`].
+    SavedStateUnreadable(String),
     /// Framing/transport limits failed validation.
     Protocol(ProtocolError),
     /// Unix listener startup or lifecycle failure.
@@ -1739,6 +1757,9 @@ impl fmt::Display for ProcessError {
                     formatter,
                     "workspace state is from another build: {message}"
                 )
+            }
+            Self::SavedStateUnreadable(message) => {
+                write!(formatter, "saved index state cannot be authenticated: {message}")
             }
             Self::Protocol(error) => error.fmt(formatter),
             Self::Listener(error) => error.fmt(formatter),

@@ -1,0 +1,59 @@
+--- a/lib.rs
++++ b/lib.rs
+@@ -25,3 +25,29 @@
+ 
+ /// A hash map using the Fx hasher.
+ pub type FxHashMap<K, V> = hashbrown::HashMap<K, V, rustc_hash::FxBuildHasher>;
++/// Bounded class-token observations scoped to one native selector parse.
++pub mod nudox_observer {
++    use std::cell::RefCell;
++    /// A token consumed by the native class-selector parser.
++    #[derive(Clone, Debug, Eq, PartialEq)]
++    pub struct Event {
++        /// Original parser byte start.
++        pub start: usize,
++        /// Original parser byte end.
++        pub end: usize,
++        /// Decoded identifier.
++        pub name: String,
++    }
++    struct State { events: Vec<Event>, limit: usize, bytes: usize, used: usize, overflow: bool }
++    thread_local! { static EVENTS: RefCell<Option<State>> = const { RefCell::new(None) }; }
++    /// Owns a per-prelude observer and cleans it up on error or unwind.
++    pub struct Guard;
++    impl Drop for Guard { fn drop(&mut self) { EVENTS.with(|v| { v.borrow_mut().take(); }); } }
++    impl Guard {
++        /// Take the buffered component candidates.
++        pub fn finish(self) -> (Vec<Event>, bool) { EVENTS.with(|v| v.borrow_mut().take().map(|s| (s.events, s.overflow)).unwrap_or_default()) }
++    }
++    /// Start if no selector observer is active.
++    pub fn begin(limit: usize, bytes: usize) -> Option<Guard> { EVENTS.with(|v| { let mut v = v.borrow_mut(); if v.is_some() { None } else { *v = Some(State { events: Vec::new(), limit, bytes, used: 0, overflow: false }); Some(Guard) } }) }
++    pub(crate) fn class(start: usize, end: usize, name: &str) { EVENTS.with(|v| { if let Some(v) = v.borrow_mut().as_mut() { if v.events.len() >= v.limit || name.len() > v.bytes.saturating_sub(v.used) { v.overflow = true; return; } v.used += name.len(); v.events.push(Event { start, end, name: name.to_owned() }); } }); }
++}
+--- a/parser.rs
++++ b/parser.rs
+@@ -3621,13 +3621,18 @@
+             SimpleSelectorParseResult::SimpleSelector(if *delim == '&' {
+                 Component::ParentSelector
+             } else {
+-                let class = match *input.next_including_whitespace()? {
+-                    Token::Ident(ref class) => class,
+-                    _ => {
+-                        let e = SelectorParseErrorKind::ClassNeedsIdent;
+-                        return Err(ParseError::custom(e));
+-                    },
++                // Match next_including_whitespace's comment-skipping behavior,
++                // while recording the actual identifier token start.
++                let (token_start, class) = loop {
++                    let start = input.position().byte_index();
++                    match *input.next_including_whitespace_and_comments()? {
++                        Token::Comment(_) => continue,
++                        Token::Ident(ref class) => break (start, class.clone()),
++                        _ => return Err(ParseError::custom(SelectorParseErrorKind::ClassNeedsIdent)),
++                    }
+                 };
++                let token_end = input.position().byte_index();
++                crate::nudox_observer::class(token_start, token_end, class.as_ref());
+                 Component::Class(class.as_ref().into())
+             })
+         },

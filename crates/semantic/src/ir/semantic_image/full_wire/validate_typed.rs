@@ -7,11 +7,12 @@ use super::super::{
         FullDirectoryKind, FullImageLayout, TYPED_EDGE_ROW_BYTES, TYPED_NODE_ROW_BYTES, get_u32,
     },
 };
-use super::TypedLayout;
+use super::{TypedLayout, SemanticImageAdmissionMeter, work};
 
 pub(super) fn validate_typed(
     bytes: &[u8],
     layout: FullImageLayout,
+    meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<TypedLayout, FullSemanticImageFault> {
     let nodes = layout.entry(FullDirectoryKind::TypedNodes);
     let edges = layout.entry(FullDirectoryKind::TypedEdges);
@@ -21,6 +22,7 @@ pub(super) fn validate_typed(
     let mut expected_coordinate = 0_u32;
     let mut expected_edge = 0_u32;
     for row in 0..nodes.count {
+        work(meter, 1)?;
         let offset = nodes.offset
             + usize::try_from(row).map_err(|_| FullSemanticImageFault::LengthOverflow {
                 field: FullSemanticImageField::TypedNodes,
@@ -98,7 +100,8 @@ pub(super) fn validate_typed(
     }
     let typed = TypedLayout { starts, counts };
     for node in 0..nodes.count {
-        validate_typed_edges(bytes, layout, typed, node)?;
+        work(meter, 1)?;
+        validate_typed_edges(bytes, layout, typed, node, meter)?;
     }
     Ok(typed)
 }
@@ -108,6 +111,7 @@ fn validate_typed_edges(
     layout: FullImageLayout,
     typed: TypedLayout,
     node: u32,
+    meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<(), FullSemanticImageFault> {
     let nodes = layout.entry(FullDirectoryKind::TypedNodes);
     let node_offset = nodes.offset
@@ -118,6 +122,7 @@ fn validate_typed_edges(
     let count = get_u32(bytes, node_offset + 12, FullSemanticImageField::TypedNodes)?;
     let edges = layout.entry(FullDirectoryKind::TypedEdges);
     for ordinal in 0..count {
+        work(meter, 1)?;
         let edge = start
             .checked_add(ordinal)
             .ok_or(FullSemanticImageFault::LengthOverflow {

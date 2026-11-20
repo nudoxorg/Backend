@@ -122,11 +122,15 @@ fn late_launch_snapshot_still_dispatches_a_real_index_and_retry() -> TestResult 
     for directory in [&scratch, &host, &data, &app] {
         crate::host::private_dir(directory)?;
     }
+    // The owner indexes JavaScript natively, with no external compiler, so a
+    // JavaScript package would be published here. A Rust crate needs the
+    // `rustc` this closed environment does not name, so its refusal is real.
+    std::fs::create_dir_all(app.join("src"))?;
     std::fs::write(
-        app.join("package.json"),
-        r#"{"name":"first-send-fixture","version":"1.0.0","private":true}"#,
+        app.join("Cargo.toml"),
+        "[package]\nname = \"first-send-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
     )?;
-    std::fs::write(app.join("index.js"), "export const firstSend = 1;\n")?;
+    std::fs::write(app.join("src/lib.rs"), "pub const FIRST_SEND: u8 = 1;\n")?;
     let project = LocalProjectId::from_path(&app)?;
     let native = project.native_wire()?;
     let paths = WorkspacePaths::discover(

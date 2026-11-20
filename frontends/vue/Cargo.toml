@@ -1,0 +1,26 @@
+[package]
+name = "backend-frontend-vue"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+backend-compile = { path = "../../crates/compile" }
+backend-version = { path = "../../crates/version" }
+blake3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+verter_core = { version = "=0.0.1-beta.1", default-features = false }
+# Later prereleases use an incompatible OXC span type.
+verter_span = "=0.0.1-beta.1"
+# Native parser only; no virtual project or module identity is admitted.
+tsz-parser = { path = "../../third_party/tsz/crates/tsz-parser" }
+tsz-binder = { path = "../../third_party/tsz/crates/tsz-binder" }
+tsz-common = { path = "../../third_party/tsz/crates/tsz-common" }
+
+[lints]
+workspace = true
+
+[build-dependencies]
+blake3.workspace = true

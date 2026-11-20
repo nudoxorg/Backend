@@ -34,6 +34,10 @@ pub enum ForgeRejectReason {
     Integrity,
     /// Network policy denied the operation.
     Policy,
+    /// Provider returned a non-success HTTP status (without response body or credentials).
+    HttpStatus(u16),
+    /// Provider response did not satisfy revision resolution protocol.
+    Protocol,
 }
 
 /// One discovered package manifest inside an admitted forge tree.

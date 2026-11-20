@@ -377,7 +377,6 @@ const KNOWN: &[&str] = &[
     "facet/src/anatomy/gallery.rs",
     "facet/src/anatomy/page.rs",
     "facet/src/anatomy/page/gallery.rs",
-    "facet/src/anatomy/prism.rs",
 ];
 
 /// Files that are checks or harness code, not layout: a width compared with a

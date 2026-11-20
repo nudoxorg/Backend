@@ -254,6 +254,15 @@ pub(super) struct SourceAdmissionLedger {
 }
 
 impl SourceAdmissionLedger {
+    /// Maximum next retained native read under the current shared ledger.
+    /// A reader may inspect one extra overflow byte, which must be reported as
+    /// attempted work even when the scan is refused.
+    pub(super) fn native_retained_read_limit(&self, policy: SourceAdmissionPolicy) -> usize {
+        policy.limits.max_file_source_bytes
+            .min(policy.limits.max_project_source_bytes.saturating_sub(self.source_bytes))
+            .min(policy.limits.max_retained_compiler_source_bytes.saturating_sub(self.retained_compiler_bytes))
+    }
+
     /// Charges one real row, including valid zero-byte files. The caller must
     /// feed files in normalized path order so a refusal always names the same
     /// boundary file regardless of worker completion order.

@@ -100,6 +100,9 @@ fn advance(cx: &mut VisualTestContext, millis: u64) {
 fn open(cx: &mut TestAppContext, build: impl Fn(&mut Window, &mut Context<Page>, &Log) -> AnyElement + 'static) -> (&mut VisualTestContext, Log) {
     let log: Log = Rc::default();
     let page_log = log.clone();
+    // The sheet of evidence is a focus-trapped dialog; the component library
+    // installs the trap registry (as the app does at start), since 7ab3fda85.
+    cx.update(|cx| gpui_component::init(cx));
     let (_view, cx) = cx.add_window_view(move |_, _| Page { build: Box::new(build), log: page_log, focus: None });
     cx.update(|_, cx| probe::enable(cx));
     cx.simulate_resize(size(px(WIDTH), px(700.0)));

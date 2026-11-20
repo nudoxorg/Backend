@@ -96,6 +96,8 @@ actions!(
         Tour,
         /// Add a folder to the shelf.
         AddFolder,
+        /// What changes if I change what I am reading.
+        Impact,
     ]
 );
 
@@ -185,6 +187,8 @@ pub(crate) enum Command {
     Tour,
     /// ⌘O.
     AddFolder,
+    /// I.
+    Impact,
 }
 
 /// Where a row listens.
@@ -268,6 +272,7 @@ pub(crate) const TABLE: &[Key] = &[
     key(Command::CopyAddress, "secondary-shift-c", Scope::Shell, "copy the address"),
     key(Command::Tour, "t", Scope::Plain, "tour this package in the graph"),
     key(Command::AddFolder, "secondary-o", Scope::Shell, "add a folder"),
+    key(Command::Impact, "i", Scope::Plain, "what changes if I change this"),
 ];
 
 impl Key {
@@ -356,6 +361,7 @@ fn binding(key: &Key) -> KeyBinding {
         Command::CopyAddress => KeyBinding::new(chord, CopyAddress, context),
         Command::Tour => KeyBinding::new(chord, Tour, context),
         Command::AddFolder => KeyBinding::new(chord, AddFolder, context),
+        Command::Impact => KeyBinding::new(chord, Impact, context),
     }
 }
 

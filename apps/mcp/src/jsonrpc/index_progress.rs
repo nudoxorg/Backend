@@ -9,19 +9,37 @@ use backend_client::{
 
 #[derive(Serialize)]
 #[serde(tag = "state", content = "reference", rename_all = "kebab-case")]
-enum ProgressProjection<'a> {
-    PendingUnchanged(&'a backend_client::IndexProgressReference),
+enum ProgressProjection {
+    PendingUnchanged(Value),
+}
+
+/// The reference an unchanged poll echoes. An operation poll already names its owner ticket
+/// in the observation the caller holds, so the ticket (an owner epoch array and the package
+/// path) is left out: operation key plus fingerprint identify the observation exactly.
+fn compact_reference(
+    reference: &backend_client::IndexProgressReference,
+) -> Result<Value, RpcError> {
+    let mut value = serde_json::to_value(reference)
+        .map_err(|error| RpcError::tool(format!("progress reference encode failed: {error}")))?;
+    if matches!(
+        reference,
+        backend_client::IndexProgressReference::Operation { .. }
+    ) && let Some(object) = value.as_object_mut()
+    {
+        object.remove("ticket");
+    }
+    Ok(value)
 }
 
 #[derive(Serialize)]
 #[serde(tag = "result", content = "data", rename_all = "kebab-case")]
-enum ConditionalSurface<'a> {
-    IndexProgressUnchanged(ProgressProjection<'a>),
+enum ConditionalSurface {
+    IndexProgressUnchanged(ProgressProjection),
 }
 
 #[derive(Serialize)]
-struct PendingProgressBody<'a> {
-    surface: ConditionalSurface<'a>,
+struct PendingProgressBody {
+    surface: ConditionalSurface,
     index_poll: backend_present::IndexPollDto,
 }
 
@@ -53,6 +71,15 @@ impl<P: Product> Server<P> {
             Some(value) => value.as_u64().ok_or_else(|| {
                 RpcError::invalid("wait_millis must be an integer between 0 and 10000")
             })?,
+        };
+        // An operation poll may name the last event it was sent (`after_event`); later polls omit those.
+        let events_seen = if operation {
+            arguments
+                .get("after_event")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+        } else {
+            0
         };
         let query = IndexProgressRead::new(command.clone(), after, wait)
             .map_err(|error| RpcError::invalid(error.to_string()))?;
@@ -105,6 +132,8 @@ impl<P: Product> Server<P> {
                     context,
                     exposure,
                     compact_receipt,
+                    true,
+                    events_seen,
                 )?,
             IndexCompilerProgressUpdate::Unchanged(reference) => {
                 let mut index_poll = backend_present::IndexPollDto::for_reference_in_context(
@@ -114,17 +143,18 @@ impl<P: Product> Server<P> {
                 )
                 .ok_or_else(|| RpcError::tool("pending progress has no exact observation"))?;
                 preserve_compact_receipt_in_poll(Some(&mut index_poll), command, compact_receipt);
-                let text = format!(
-                    "Operation remains pending; the referenced observation is unchanged.\n\nObserve changes with `{}`. Omit the conditional options to read the complete current receipt.",
-                    index_poll.call
-                );
+                carry_event_position(Some(&mut index_poll), Some(events_seen));
+                // A poll repeats the call the caller just made; the exact next call is in
+                // `index_poll.call`, so neither the text nor a CLI line copies it again.
+                index_poll.shell = None;
+                let text = "Operation remains pending; the referenced observation is unchanged. Poll again with `index_poll.call`, or omit the conditional options to read the complete current receipt.";
                 let payload = encode_serializable(
                     "index-progress",
                     detail,
                     None,
                     PendingProgressBody {
                         surface: ConditionalSurface::IndexProgressUnchanged(
-                            ProgressProjection::PendingUnchanged(&reference),
+                            ProgressProjection::PendingUnchanged(compact_reference(&reference)?),
                         ),
                         index_poll,
                     },
@@ -136,7 +166,7 @@ impl<P: Product> Server<P> {
                         "conditional progress projection decode failed: {error}"
                     ))
                 })?;
-                tool_result(&text, structured, false)
+                tool_result(text, structured, false)
             }
         }))
     }

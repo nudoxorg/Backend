@@ -97,6 +97,9 @@ impl GraphAvailability {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RichGraphNode {
+    /// Per-result raw source observation; local peer admission is separate.
+    #[serde(default, skip_serializing_if = "crate::SourcePolicyQualification::is_unknown")]
+    pub source_policy: crate::SourcePolicyQualification,
     /// Stable content-derived node identity.
     pub id: GraphNodeId,
     /// Bounded display label.
@@ -123,6 +126,7 @@ impl RichGraphNode {
         provenance: Option<GraphProvenance>,
     ) -> Result<Self, RichGraphError> {
         Ok(Self {
+            source_policy: crate::SourcePolicyQualification::Unknown,
             id,
             label: ProductText::new(label).map_err(RichGraphError::Text)?,
             coordinate: coordinate
@@ -143,6 +147,9 @@ impl RichGraphNode {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RichGraphEdge {
+    /// Per-occurrence raw source observation; local peer admission is separate.
+    #[serde(default, skip_serializing_if = "crate::SourcePolicyQualification::is_unknown")]
+    pub source_policy: crate::SourcePolicyQualification,
     /// Stable endpoint-and-kind identity.
     pub id: GraphEdgeId,
     /// Directed source node.
@@ -171,6 +178,7 @@ impl RichGraphEdge {
         provenance: GraphProvenance,
     ) -> Self {
         Self {
+            source_policy: crate::SourcePolicyQualification::Unknown,
             id: GraphEdgeId::derive(from, to, kind),
             from,
             to,
@@ -191,6 +199,7 @@ impl RichGraphEdge {
     ) -> Self {
         let dependency_requirement = Some(requirement);
         Self {
+            source_policy: crate::SourcePolicyQualification::Unknown,
             id: GraphEdgeId::derive_with_detail(
                 from,
                 to,

@@ -563,7 +563,12 @@ impl RenderOnce for Button {
         }
         let edge = tones.edge;
         let edge = edge.mix(sunk(edge), press_t);
-        let edge = edge.mix(Edge::of(Bevel::Focus, palette), focus_t);
+        // A filled plate is already periwinkle or mint, where the periwinkle
+        // focus bevel all but vanishes: its doubled rim takes the plate's own
+        // ink, which the label proves legible on that fill.
+        let focus = Edge::of(Bevel::Focus, palette);
+        let focus = if matches!(self.intent, Intent::Primary | Intent::Edge) { Edge { hi: tones.ink, lo: tones.ink, ..focus } } else { focus };
+        let edge = edge.mix(focus, focus_t);
 
         let gap = height * (7.0 / 30.0);
         let mut content = div()

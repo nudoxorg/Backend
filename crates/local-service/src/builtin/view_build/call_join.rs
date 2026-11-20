@@ -129,6 +129,59 @@ impl ProjectCallableIndex {
         )
     }
 
+    /// Include explicitly observed program membership without treating it as
+    /// current effective source-selection policy. The caller must also carry
+    /// the observed-policy gap into the enclosing query response.
+    pub(in crate::builtin) fn build_from_views_with_observed_programs(
+        images: &[&SemanticImageView<'_>],
+        scopes: &BTreeMap<backend_semantic::vocabulary::Language, RetargetingScope>,
+        current: &[&super::source_availability::CurrentNativeProgram],
+        observed: &[&super::source_availability::ObservedNativeProgram<'_>],
+        legacy_image_program: bool,
+    ) -> Result<Self, BuiltinModelError> {
+        if !observed.is_empty()
+            && scopes.get(&backend_semantic::vocabulary::Language::TypeScript)
+                != Some(&RetargetingScope::SelectedArtifacts)
+        {
+            return Err(BuiltinModelError(
+                "observed TypeScript programs require selected-artifact scope".to_owned(),
+            ));
+        }
+        for program in observed {
+            if !matches!(
+                program.source_basis(),
+                super::super::native_ts_admission::NativeTsSourceBasis::CapturedObserved {
+                    policy_stability: super::super::native_ts_admission::NativePolicyStability::Unknown,
+                }
+            ) {
+                return Err(BuiltinModelError(
+                    "unsupported observed native source basis".to_owned(),
+                ));
+            }
+        }
+        let mut program_sources = current
+            .iter()
+            .map(|program| {
+                (
+                    program.sources(),
+                    program.images().map(|image| image.as_ref()).collect(),
+                )
+            })
+            .collect::<Vec<_>>();
+        program_sources.extend(observed.iter().map(|program| {
+            (
+                program.sources(),
+                program.images().map(|image| image.as_ref()).collect(),
+            )
+        }));
+        Self::build_from_views_with_program_sources(
+            images,
+            scopes,
+            &program_sources,
+            legacy_image_program && observed.is_empty(),
+        )
+    }
+
     fn build_from_views_with_program_sources(
         images: &[&SemanticImageView<'_>],
         scopes: &BTreeMap<backend_semantic::vocabulary::Language, RetargetingScope>,

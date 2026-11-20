@@ -14,39 +14,67 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 struct NameRanked {
     id: RowId,
     normalized_label: String,
-    placement: (bool, bool, u8),
+    placement: (bool, bool, bool, u8),
 }
 
 impl NameRanked {
     fn new(row: &Row, text: Option<&str>, qualified: Option<bool>) -> Option<Self> {
         let normalized_label = row.label.to_lowercase();
-        if qualified.is_none() && text.is_some_and(|text| !normalized_label.contains(text)) {
+        let normalized_text = text.map(str::to_lowercase);
+        if qualified.is_none() && normalized_text.as_deref().is_some_and(|text| !normalized_label.contains(text)) {
             return None;
         }
+        // A source file that is itself a module is named by its stem as well as
+        // by its file name: `App.vue` is what a reader means by `App`.
+        let stem = file_module_stem(row);
         // Coordinates carry an opaque identity before the declaration name.
         // Compare a complete name segment (including relative qualification),
         // never a suffix within a name such as `MockEnvironment`.
         let exact = qualified == Some(true)
-            || text.is_some_and(|text| {
+            || normalized_text.as_deref().is_some_and(|text| {
                 normalized_label == text
                     || normalized_label
                         .strip_suffix(text)
                         .is_some_and(|prefix| prefix.ends_with("::"))
+                    || stem.is_some_and(|stem| stem.to_lowercase() == text)
             });
+        // Compare the native leaf spelling without treating identity prefixes as names.
+        let exact_case = exact && text.is_some_and(|text| {
+            let leaf = crate::command::relative_name_tail(text).map_or(text, |(_, leaf)| leaf);
+            row.label.rsplit("::").next() == Some(leaf) || stem == Some(leaf)
+        });
         Some(Self {
             id: row.id,
             normalized_label,
             placement: (
                 exact,
+                exact_case,
                 row.source.captured().is_some(),
                 row.kind.map_or(1, super::declaration_name_priority),
             ),
         })
     }
 
-    fn ordering_key(&self) -> (Reverse<(bool, bool, u8)>, &str, RowId) {
+    fn ordering_key(&self) -> (Reverse<(bool, bool, bool, u8)>, &str, RowId) {
         (Reverse(self.placement), &self.normalized_label, self.id)
     }
+}
+
+/// The file stem of a row that is a whole source file used as a module
+/// (`App` for `App.vue`). The row is labelled by the file's name or by its
+/// project-relative path (`frontend/src/App.vue`). A declaration inside a file
+/// never has one, because its label does not end with the path's file name.
+fn file_module_stem(row: &Row) -> Option<&str> {
+    if row.kind != Some(crate::DeclarationKind::Module) {
+        return None;
+    }
+    let leaf = row.label.rsplit("::").next()?;
+    let path = row.source.file_path()?;
+    let file_name = path.rsplit('/').next()?;
+    if leaf != path && leaf != file_name {
+        return None;
+    }
+    file_name.rsplit_once('.').map(|(stem, _)| stem).filter(|stem| !stem.is_empty())
 }
 
 impl PartialEq for NameRanked {
@@ -425,7 +453,7 @@ fn select_name_matches_page<'view>(
 ) -> ArrangementPage {
     let normalized = selection.posting_text().to_lowercase();
     let name_text = match selection {
-        NameSelection::Name { text, .. } => Some(text.to_lowercase()),
+        NameSelection::Name { text, .. } => Some(text),
         NameSelection::Address(_) => None,
     };
     let grams = search_grams(&normalized);
@@ -461,7 +489,7 @@ fn select_name_matches_page<'view>(
                     NameSelection::Name { text, .. } => relative_matches(row.id, text),
                     NameSelection::Address(_) => None,
                 };
-                NameRanked::new(row, name_text.as_deref(), qualified)
+                NameRanked::new(row, name_text, qualified)
             }),
         capacity,
     );

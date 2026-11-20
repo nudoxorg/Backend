@@ -154,6 +154,54 @@ mod tests {
     }
 
     #[test]
+    fn optional_capture_exhaustion_preserves_checkpoint_stops() {
+        struct Check(bool);
+        impl backend_frontend_typescript::TszExecutionCheckpoint for Check {
+            fn checkpoint(&self, _: u64) -> Result<(), backend_frontend_typescript::TszProjectExecutionStop> {
+                if self.0 { Err(backend_frontend_typescript::TszProjectExecutionStop::Cancelled) } else { Ok(()) }
+            }
+        }
+        let mut authority = TszProjectAuthority::default();
+        authority.update(sources(), recipe(), &[]).unwrap();
+        let project = authority.project().unwrap();
+        let text = sources().remove(0).source;
+        let source = backend_semantic::ir::SourceIdentity::from_bytes(text.as_bytes()).unwrap();
+        let mut remaining = 0;
+        let result = project.with_source_nodes("src/main.ts", |arena, retained| {
+            super::capture_headers(arena, retained, "src/main.ts", source, &[], &Check(false), &mut remaining)
+        }).unwrap();
+        assert!(matches!(result, Ok(None)));
+        let result = project.with_source_nodes("src/main.ts", |arena, retained| {
+            super::capture_headers(arena, retained, "src/main.ts", source, &[], &Check(true), &mut remaining)
+        }).unwrap();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn source_line_capture_handles_million_lines_and_stop() {
+        struct Check(bool);
+        impl backend_frontend_typescript::TszExecutionCheckpoint for Check {
+            fn checkpoint(&self, _: u64) -> Result<(), backend_frontend_typescript::TszProjectExecutionStop> {
+                if self.0 { Err(backend_frontend_typescript::TszProjectExecutionStop::Cancelled) } else { Ok(()) }
+            }
+        }
+        let text = "x\n".repeat(999_999);
+        let identity = backend_semantic::ir::SourceIdentity::from_bytes(text.as_bytes()).unwrap();
+        let mut budget = 8 * 1024 * 1024;
+        let file = super::capture_source_lines(&text, "src/main.ts", identity, &Check(false), &mut budget).unwrap().unwrap();
+        assert_eq!(file.line_starts.len(), 1_000_000);
+        assert_eq!(file.line_starts.last().copied(), Some(text.len() as u32));
+        assert!(super::capture_source_lines(&text, "src/main.ts", identity, &Check(true), &mut budget).is_err());
+        for unsupported in ["a\rb", "a\u{2028}b", "a\u{2029}b"] {
+            let source = backend_semantic::ir::SourceIdentity::from_bytes(unsupported.as_bytes()).unwrap();
+            let mut credit = 4096;
+            assert!(super::capture_source_lines(unsupported, "src/main.ts", source, &Check(false), &mut credit).unwrap().is_none());
+        }
+        let mut empty = 0;
+        assert!(super::capture_source_lines(&text, "src/main.ts", identity, &Check(false), &mut empty).unwrap().is_none());
+    }
+
+    #[test]
     fn duplicate_nodes_cannot_alias_one_mutable_authority() {
         let mut lane = TypeScriptProgramAuthorityLane::default();
         lane.prepare(Path::new("/a"), &[None]).unwrap();
@@ -166,4 +214,192 @@ mod tests {
         );
         assert!(lane.project(&None).is_none());
     }
+}
+
+/// Capture only compact claims while the admitted TSZ arena and exact image coexist.
+pub(super) fn capture_headers(
+    arena: &backend_frontend_typescript::TszNodeArena,
+    text: &str,
+    path: &str,
+    source: backend_semantic::ir::SourceIdentity,
+    encoded: &[u8],
+    checkpoint: &dyn backend_frontend_typescript::TszExecutionCheckpoint,
+    remaining: &mut usize,
+) -> Result<Option<super::compiler::StagedNativeTypeScriptHeaders>, String> {
+    use backend_semantic::ir::{
+        DeclarationPublicationRole, FactAvailability, ImageProvenance, ItemKind,
+        SemanticCoreReader as _, SemanticImageView,
+    };
+    const SCRATCH: usize = 16384 * 512;
+    checkpoint
+        .checkpoint(0)
+        .map_err(|e| format!("header capture stopped: {e:?}"))?;
+    if text.len() > 1024 * 1024 || path.len() > 4096 || *remaining < SCRATCH {
+        return Ok(None);
+    }
+    let image = SemanticImageView::reopen(encoded).map_err(|e| format!("header image: {e}"))?;
+    let ImageProvenance::Captured {
+        source: image_source,
+        recipe,
+        scope,
+        ..
+    } = image.image_facts().provenance
+    else {
+        return Ok(None);
+    };
+    if image_source != source
+        || image.atom(scope.path) != Some(path.as_bytes())
+        || recipe.tool != backend_semantic::vocabulary::NativeTool::TypeScriptCompiler
+    {
+        return Ok(None);
+    }
+    let mut rows = match backend_frontend_typescript::native_project::function_headers_from_arena(
+        arena, text, checkpoint,
+    ) {
+        Ok(rows) => rows,
+        Err(error) if matches!(error.as_str(), "native TSZ header limit exceeded" | "native TSZ export limit exceeded" | "native TSZ header source limit exceeded") => {
+            checkpoint.checkpoint(0).map_err(|e| format!("header capture stopped: {e:?}"))?;
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
+    backend_frontend_typescript::native_project::index_function_headers_by_end(&mut rows, checkpoint)?;
+    let session = super::DocumentationSession::new(&image);
+    let mut slots = BTreeMap::new();
+    for item in session.publication_entities() {
+        checkpoint
+            .checkpoint(1)
+            .map_err(|e| format!("header capture stopped: {e:?}"))?;
+        let item = item.map_err(|e| format!("header entity: {e}"))?;
+        if item.entity.kind != ItemKind::Function
+            || item.entity.authority.publication != DeclarationPublicationRole::PrimaryOwned
+            || item.entity.authority.source != FactAvailability::Captured
+            || item.entity.authority.source_file != FactAvailability::Captured
+        {
+            continue;
+        }
+        let Some(span) = item.entity.source.filter(|span| !span.is_empty()) else {
+            continue;
+        };
+        if image.atom(span.file()) != Some(path.as_bytes()) {
+            continue;
+        }
+        let Some(name) = item
+            .name
+            .named_bytes()
+            .and_then(|name| std::str::from_utf8(name).ok())
+        else {
+            continue;
+        };
+        if slots.len() >= 16384 {
+            checkpoint.checkpoint(0).map_err(|e| format!("header capture stopped: {e:?}"))?;
+            return Ok(None);
+        }
+        slots
+            .entry((span.start(), span.end(), name))
+            .and_modify(|slot| *slot = None)
+            .or_insert(Some((item.entity.id.raw, item.entity.version.identity())));
+    }
+    let mut entries = Vec::new();
+    for ((start, end, name), identity) in slots {
+        let Some((entity_id, identity)) = identity else {
+            continue;
+        };
+        let Some(header_extent) =
+            backend_frontend_typescript::native_project::selected_function_header_range(
+                backend_frontend_typescript::native_project::function_headers_with_end(&rows, end, checkpoint)?,
+                text,
+                (start, end),
+                name,
+                checkpoint,
+            )?
+        else {
+            continue;
+        };
+        entries.push(backend_semantic::native_ts_headers::NativeTsHeaderEntry {
+            entity_id,
+            identity,
+            compiler_extent: (start, end),
+            header_extent,
+        });
+    }
+    entries.sort_unstable_by_key(|entry| entry.entity_id);
+    if entries.is_empty()
+        || entries
+            .windows(2)
+            .any(|pair| pair[0].entity_id == pair[1].entity_id)
+    {
+        return Ok(None);
+    }
+    let charge = std::mem::size_of::<super::compiler::StagedNativeTypeScriptHeaders>()
+        .checked_add(path.len())
+        .and_then(|n| {
+            n.checked_add(entries.capacity().checked_mul(std::mem::size_of::<
+                backend_semantic::native_ts_headers::NativeTsHeaderEntry,
+            >())?)
+        })
+        .ok_or("header budget overflow")?;
+    let Some(after) = remaining.checked_sub(charge) else {
+        checkpoint.checkpoint(0).map_err(|e| format!("header capture stopped: {e:?}"))?;
+        return Ok(None);
+    };
+    *remaining = after;
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"nudox.native-ts-header-spans.v1\0");
+    hash.update(backend_frontend_typescript::TSZ_NATIVE_AUTHORITY_IDENTITY);
+    checkpoint
+        .checkpoint(0)
+        .map_err(|e| format!("header capture stopped: {e:?}"))?;
+    Ok(Some(super::compiler::StagedNativeTypeScriptHeaders {
+        path: path.to_owned(),
+        source,
+        image_identity: *backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(encoded)
+            .as_ref(),
+        image_byte_len: encoded.len() as u64,
+        producer_recipe: *hash.finalize().as_bytes(),
+        entries,
+    }))
+}
+
+/// Capture line offsets from the exact selected compiler source bytes.
+/// The retained primitive buffers are precharged and allocated at exact capacity.
+pub(super) fn capture_source_lines(
+    text: &str, path: &str, source: backend_semantic::ir::SourceIdentity,
+    checkpoint: &impl backend_frontend_typescript::TszExecutionCheckpoint,
+    remaining: &mut usize,
+) -> Result<Option<backend_semantic::native_source_lines::NativeSourceLineFile>, String> {
+    use backend_semantic::native_source_lines::{NativeSourceLineFile, MAX_NATIVE_SOURCE_LINES_PER_FILE};
+    checkpoint.checkpoint(0).map_err(|e| format!("source lines stopped: {e:?}"))?;
+    if path.len() > 4096 || text.len() > 64 * 1024 * 1024 { return Ok(None); }
+    let bytes = text.as_bytes();
+    let mut count = 1usize;
+    let mut hash = backend_version::ContentPayloadHasher::<backend_version::SourceFactDomain>::new(bytes.len() as u64);
+    for (index, chunk) in bytes.chunks(64 * 1024).enumerate() {
+        checkpoint.checkpoint(1).map_err(|e| format!("source lines stopped: {e:?}"))?;
+        hash.push_chunk(chunk).map_err(|_| "source line hash failed")?;
+        let base = index * 64 * 1024;
+        for (offset, byte) in chunk.iter().enumerate() {
+            let at = base + offset;
+            if *byte == b'\r' && bytes.get(at + 1) != Some(&b'\n') { return Ok(None); }
+            if *byte == 0xe2 && bytes.get(at + 1) == Some(&0x80) && matches!(bytes.get(at + 2), Some(0xa8 | 0xa9)) { return Ok(None); }
+            if *byte == b'\n' { count = count.checked_add(1).ok_or("source line count overflow")?; }
+        }
+    }
+    if count > MAX_NATIVE_SOURCE_LINES_PER_FILE { return Ok(None); }
+    let retained = count.checked_mul(std::mem::size_of::<u32>()).and_then(|n| n.checked_add(path.len())).ok_or("source line capacity overflow")?;
+    if retained > *remaining { checkpoint.checkpoint(0).map_err(|e| format!("source lines stopped: {e:?}"))?; return Ok(None); }
+    if hash.finish().map_err(|_| "source line hash failed")? != source.identity || source.byte_len as usize != bytes.len() { return Err("source line identity differs".into()); }
+    let mut line_starts = backend_store::try_allocate_exact_zeroed_u32_budgeted(count, remaining).map_err(|e| format!("source line capacity: {e:?}"))?;
+    let mut cursor = 1;
+    for (index, chunk) in bytes.chunks(64 * 1024).enumerate() {
+        checkpoint.checkpoint(1).map_err(|e| format!("source lines stopped: {e:?}"))?;
+        for (offset, byte) in chunk.iter().enumerate() {
+            if *byte == b'\n' { line_starts[cursor] = u32::try_from(index * 64 * 1024 + offset + 1).map_err(|_| "source line offset overflow")?; cursor += 1; }
+        }
+    }
+    let mut path_bytes = backend_store::try_allocate_exact_zeroed_bytes_budgeted(path.len(), remaining).map_err(|e| format!("source line path capacity: {e:?}"))?;
+    path_bytes.copy_from_slice(path.as_bytes());
+    let path = String::from_utf8(path_bytes.into_vec()).map_err(|_| "source line path is not UTF-8")?;
+    checkpoint.checkpoint(0).map_err(|e| format!("source lines stopped: {e:?}"))?;
+    Ok(Some(NativeSourceLineFile { path, source, line_starts }))
 }

@@ -3751,7 +3751,7 @@ impl RunningAssignmentRecord {
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, ClusterWorkerError> {
-        if bytes.len() != RUNNING_JOURNAL_BYTES || bytes.get(..8) != Some(RUNNING_JOURNAL_MAGIC) {
+        if bytes.len() != RUNNING_JOURNAL_BYTES || bytes.get(..8) != Some(&RUNNING_JOURNAL_MAGIC[..]) {
             return Err(ClusterWorkerError::InvalidInputClosure);
         }
         let (data, checksum) = bytes.split_at(RUNNING_JOURNAL_DATA_BYTES);
@@ -3852,7 +3852,7 @@ impl PendingResultRecord {
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, ClusterWorkerError> {
-        if bytes.len() != RESULT_JOURNAL_BYTES || bytes.get(..8) != Some(RESULT_JOURNAL_MAGIC) {
+        if bytes.len() != RESULT_JOURNAL_BYTES || bytes.get(..8) != Some(&RESULT_JOURNAL_MAGIC[..]) {
             return Err(ClusterWorkerError::InvalidInputClosure);
         }
         let (data, checksum) = bytes.split_at(RESULT_JOURNAL_DATA_BYTES);
@@ -3960,7 +3960,7 @@ impl NoResultRecord {
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, ClusterWorkerError> {
-        if bytes.len() != NO_RESULT_JOURNAL_BYTES || bytes.get(..8) != Some(NO_RESULT_JOURNAL_MAGIC)
+        if bytes.len() != NO_RESULT_JOURNAL_BYTES || bytes.get(..8) != Some(&NO_RESULT_JOURNAL_MAGIC[..])
         {
             return Err(ClusterWorkerError::InvalidInputClosure);
         }
@@ -4063,7 +4063,7 @@ impl NoResultRetirementFloor {
             && bytes.len() != NO_RESULT_FLOOR_V2_BYTES
             && (bytes.len() < NO_RESULT_FLOOR_V3_BASE_DATA_BYTES + 32
                 || bytes.len() > NO_RESULT_FLOOR_MAX_BYTES))
-            || bytes.get(..8) != Some(NO_RESULT_FLOOR_MAGIC)
+            || bytes.get(..8) != Some(&NO_RESULT_FLOOR_MAGIC[..])
         {
             return Err(ClusterWorkerError::InvalidInputClosure);
         }
@@ -4224,7 +4224,7 @@ impl RetiredResultRecord {
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, ClusterWorkerError> {
-        if bytes.len() != RETIRED_JOURNAL_BYTES || bytes.get(..8) != Some(RETIRED_JOURNAL_MAGIC) {
+        if bytes.len() != RETIRED_JOURNAL_BYTES || bytes.get(..8) != Some(&RETIRED_JOURNAL_MAGIC[..]) {
             return Err(ClusterWorkerError::InvalidInputClosure);
         }
         let (data, checksum) = bytes.split_at(RETIRED_JOURNAL_DATA_BYTES);

@@ -714,8 +714,8 @@ fn central_commons_lang3_slice_journey() -> Result<(), TestError> {
                 .map(|atom| atom.bytes);
             // Packaged declarations carry their qualified name; the slice's
             // binary jar is on the classpath so foreign nominals stay spelled.
-            pair |= name == Some(b"org.apache.commons.lang3.tuple.Pair");
-            mutable_int |= name == Some(b"org.apache.commons.lang3.mutable.MutableInt");
+            pair |= name == Some(&b"org.apache.commons.lang3.tuple.Pair"[..]);
+            mutable_int |= name == Some(&b"org.apache.commons.lang3.mutable.MutableInt"[..]);
         }
     }
     if !pair || !mutable_int {

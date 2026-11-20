@@ -17,6 +17,7 @@ pub(crate) struct RelationNodeReferences {
 }
 
 trait RelationVerifier: Send + Sync {
+    fn admit(&self, version: &Hash, bytes: &[u8]) -> Result<(), StoreError>;
     fn references(
         &self,
         version: &Hash,
@@ -27,6 +28,11 @@ trait RelationVerifier: Send + Sync {
 struct TypedRelationVerifier<R: CanonicalRelation>(PhantomData<fn() -> R>);
 
 impl<R: CanonicalRelation> RelationVerifier for TypedRelationVerifier<R> {
+    fn admit(&self, version: &Hash, bytes: &[u8]) -> Result<(), StoreError> {
+        let claim = UntrustedId::<R>::from_wire(version, IdContext::relation::<R>())
+            .map_err(|_| StoreError::Corrupt)?;
+        admit_canonical_root_claim::<R>(claim, bytes).map(|_| ()).map_err(|_| StoreError::Corrupt)
+    }
     fn references(
         &self,
         version: &Hash,
@@ -51,6 +57,11 @@ impl<R: CanonicalRelation> RelationVerifier for TypedRelationVerifier<R> {
 struct RawRelationVerifier;
 
 impl RelationVerifier for RawRelationVerifier {
+    fn admit(&self, version: &Hash, bytes: &[u8]) -> Result<(), StoreError> {
+        let claim = UntrustedId::<RawRelation>::from_wire(version, IdContext::relation::<RawRelation>())
+            .map_err(|_| StoreError::Corrupt)?;
+        admit_canonical_root_claim::<RawRelation>(claim, bytes).map(|_| ()).map_err(|_| StoreError::Corrupt)
+    }
     fn references(
         &self,
         version: &Hash,
@@ -170,6 +181,16 @@ impl RelationAdmissionRegistry {
             return Err(StoreError::Corrupt);
         }
         self.node_references(schema, version, bytes)
+    }
+
+    /// Performs the same typed canonical admission without collecting child
+    /// and value-reference vectors. Closure/index paths still use
+    /// `admit_relation_object` and retain their full reference semantics.
+    pub(crate) fn admit_relation_object_only(
+        &self, schema: SchemaIdentity, key: &Hash, version: &Hash, bytes: &[u8],
+    ) -> Result<(), StoreError> {
+        if key != &super::relation_key(schema) { return Err(StoreError::Corrupt); }
+        self.verifiers.get(&schema).ok_or(StoreError::Corrupt)?.admit(version, bytes)
     }
 
     pub(crate) fn node_references(

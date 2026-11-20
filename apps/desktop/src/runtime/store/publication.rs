@@ -82,6 +82,9 @@ fn affected(key: &PageKey, packages: &BTreeSet<PackageRef>) -> bool {
         // read the index frontier rather than one package's immutable content.
         PageKey::Search(_) | PageKey::Orbit | PageKey::Health
         | PageKey::Browse(BrowseKey::Tree(_) | BrowseKey::FindHome | BrowseKey::Find(_)) => true,
+        // What the SQL, CSS and Impact pages say is an analysis of a whole
+        // project's files: any publication may have changed it.
+        PageKey::Browse(BrowseKey::FindNative(_) | BrowseKey::Sql(_) | BrowseKey::Css(_) | BrowseKey::Impact(_)) => true,
     }
 }
 

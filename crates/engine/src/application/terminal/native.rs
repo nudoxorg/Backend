@@ -738,7 +738,7 @@ mod tests {
         if diagnostic.byte_len != 6
             || diagnostic.observed != 6
             || diagnostic.truncated
-            || diagnostic.bytes.get(..diagnostic.byte_len) != Some(b"syntax")
+            || diagnostic.bytes.get(..diagnostic.byte_len) != Some(&b"syntax"[..])
         {
             return Err(TestError::Projection);
         }

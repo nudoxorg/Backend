@@ -110,6 +110,23 @@ pub(super) fn complete_declarations_for_file(
     complete_declarations_for_file_controlled(sources, record, None)
 }
 
+/// Materializes only facts admitted by the selected complete-facts manifest.
+/// Source ranges must not fall back to a compact row with unproven coverage.
+pub(in crate::builtin) fn admitted_complete_declarations_for_file(
+    sources: &IndexedSources,
+    record: &super::super::ProductSourceRecord,
+) -> Result<Vec<backend_compile::SourceDeclaration>, BuiltinModelError> {
+    let snapshot = sources.source_snapshot.as_ref().ok_or_else(||
+        BuiltinModelError("source facts snapshot is unavailable".to_owned()))?;
+    match snapshot.admit_complete_file_facts(record)
+        .map_err(|error| BuiltinModelError(format!("admit complete source facts: {error}")))? {
+        Some(backend_engine::ProductSourceFileFactsAdmission::InlineComplete(_))
+        | Some(backend_engine::ProductSourceFileFactsAdmission::PagedVerified(_)) =>
+            complete_declarations_for_file_controlled(sources, record, None),
+        _ => Err(BuiltinModelError("complete source facts are unavailable".to_owned())),
+    }
+}
+
 pub(super) fn complete_declarations_for_file_controlled(
     sources: &IndexedSources,
     record: &super::super::ProductSourceRecord,
@@ -2045,6 +2062,33 @@ pub(crate) fn structural_call_graph_relations_resident(
     source_id: RowId,
     include_incoming: bool,
 ) -> Result<Option<Vec<backend_engine::GraphRelation>>, BuiltinModelError> {
+    let mut relations = BTreeSet::new();
+    scan_structural_call_graph_relations_resident(
+        residence, view, sources, package, source_id, include_incoming,
+        |relation| { relations.insert(relation); },
+    )?;
+    let relations = relations.into_iter().collect::<Vec<_>>();
+    if relations.is_empty() {
+        return Ok(None);
+    }
+    if relations.len() > usize::from(backend_engine::QueryLimit::MAX) {
+        return Err(BuiltinModelError(
+            "structural call graph exceeds the bounded result contract".to_owned(),
+        ));
+    }
+    Ok(Some(relations))
+}
+
+/// Visit direction-scoped structural calls without materializing a graph page.
+pub(crate) fn scan_structural_call_graph_relations_resident(
+    residence: &mut StructuralCallResidence,
+    view: &backend_engine::ViewRoot,
+    sources: &IndexedSources,
+    package: backend_engine::PackageKey,
+    source_id: RowId,
+    include_incoming: bool,
+    mut emit: impl FnMut(backend_engine::GraphRelation),
+) -> Result<(), BuiltinModelError> {
     if view.row_ref(source_id).is_none() {
         return Err(BuiltinModelError(
             "structural call graph source is absent from the view".to_owned(),
@@ -2052,7 +2096,6 @@ pub(crate) fn structural_call_graph_relations_resident(
     }
     let calls = residence.project_calls(sources, package)?;
     let source = view.row_ref(source_id).expect("source row checked above");
-    let mut relations = BTreeSet::new();
     // Only materialize the requested neighborhood. Incoming edges use the
     // reverse adjacency built with the same exact source projection.
     for (caller, callee) in calls.neighborhood_for_row(source_id, &source.label, include_incoming) {
@@ -2071,7 +2114,7 @@ pub(crate) fn structural_call_graph_relations_resident(
         if caller_id != source_id && (!include_incoming || callee_id != source_id) {
             continue;
         }
-        relations.insert(
+        emit(
             backend_engine::GraphRelation::new(
                 caller_id,
                 callee_id,
@@ -2080,16 +2123,7 @@ pub(crate) fn structural_call_graph_relations_resident(
             .with_confidence(backend_library::SemanticConfidence::Syntactic),
         );
     }
-    let relations = relations.into_iter().collect::<Vec<_>>();
-    if relations.is_empty() {
-        return Ok(None);
-    }
-    if relations.len() > usize::from(backend_engine::QueryLimit::MAX) {
-        return Err(BuiltinModelError(
-            "structural call graph exceeds the bounded result contract".to_owned(),
-        ));
-    }
-    Ok(Some(relations))
+    Ok(())
 }
 
 /// Incoming call sites for one declaration when semantic references are absent.
@@ -2165,17 +2199,20 @@ pub(crate) fn structural_reference_facts_resident(
         // The place is where the call is in the file; a call the text
         // does not show (only in a comment, or the file changed since) has
         // no place rather than a made-up one.
-        let source = match (
+        let jsx_spans = {
+            let calls = residence.project_calls(sources, package)?;
+            calls.jsx_spans_for_rows(&StructuralCallRows::new(view, package), relation.from, target_id)
+        };
+        let sources_for_site = match (
             site_row.source.captured(),
             site_row.excerpt.text(),
             root.as_deref(),
         ) {
             (Some(location), Some(excerpt), Some(root)) => {
-                structural_call_span(excerpt, target_name)
-                    .and_then(|span| {
-                        structural_file_span(root, location, excerpt, span, &mut files)
-                    })
-                    .map(|(start, end)| {
+                let mut spans = jsx_spans;
+                if let Some(span) = structural_call_span(excerpt, target_name) { spans.push(span); }
+                if spans.is_empty() { vec![None] } else { spans.into_iter().map(|span| {
+                    structural_file_span(root, location, excerpt, span, &mut files).map(|(start, end)| {
                         Ok::<_, BuiltinModelError>(backend_engine::SemanticSourceSpan {
                             file: backend_engine::ProductText::new(location.path()).map_err(
                                 |error| {
@@ -2188,21 +2225,19 @@ pub(crate) fn structural_reference_facts_resident(
                             end,
                         })
                     })
-                    .transpose()?
+                    .transpose()
+                }).collect::<Result<Vec<_>, BuiltinModelError>>()? }
             }
-            _ => None,
+            _ => vec![None],
         };
-        facts.push(backend_engine::ReferenceFact {
-            site: site_symbol,
-            target: backend_engine::SemanticLinkTarget::Local {
-                declaration: target_identity,
-            },
-            relation: backend_library::SemanticLinkKind::Calls,
-            evidence: backend_engine::SemanticLinkEvidence {
-                confidence: backend_library::SemanticConfidence::Syntactic,
-                source,
-            },
-        });
+        for source in sources_for_site {
+            facts.push(backend_engine::ReferenceFact {
+                site: site_symbol,
+                target: backend_engine::SemanticLinkTarget::Local { declaration: target_identity },
+                relation: backend_library::SemanticLinkKind::Calls,
+                evidence: backend_engine::SemanticLinkEvidence { confidence: backend_library::SemanticConfidence::Syntactic, source },
+            });
+        }
         if facts.len() > backend_engine::MAX_PRODUCT_ROWS {
             return Err(BuiltinModelError(
                 "structural references exceed the bounded result contract".to_owned(),

@@ -7,6 +7,7 @@ mod native_identity;
 pub use native_identity::TSZ_NATIVE_AUTHORITY_IDENTITY;
 
 pub mod native_project;
+pub mod project_resolver;
 
 mod authority;
 mod coordinate;
@@ -211,7 +212,7 @@ pub fn syntax_frontend() -> Result<backend_compile::SyntaxFrontend, backend_comp
     );
     backend_compile::SyntaxFrontend::new(
         backend_compile::SourceLanguage::TypeScript,
-        b"tree-sitter-typescript-0.23.2/tags-v7-let-variables/exact-binding-owner-v5-member-extents",
+        b"tree-sitter-typescript-0.23.2/tags-v7-let-variables/exact-binding-owner-v6-reexports",
         vec![
             backend_compile::GrammarVariant::new(
                 &["ts", "mts", "cts", "js", "mjs", "cjs"],

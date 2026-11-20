@@ -5,10 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+# tests/*.rs are modules of the lib's `mod tests` (tests.rs), not integration targets.
+autotests = false
 
 [dependencies]
 backend-client = { path = "../client" }
 backend-library = { path = "../library" }
+blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 fancy-regex = "=0.17.0"

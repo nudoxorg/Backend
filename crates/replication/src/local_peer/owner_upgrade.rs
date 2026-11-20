@@ -75,6 +75,37 @@ fn lock_claim(bytes: &[u8], pid: u32, inode: u64) -> bool {
         })
     })
 }
+
+fn owner_lock_fd(
+    proc: &Path,
+    lock: &std::fs::Metadata,
+    pid: u32,
+    deadline: Instant,
+    keep_waiting: &mut impl FnMut() -> bool,
+) -> io::Result<std::ffi::OsString> {
+    let mut lock_fd = None;
+    for (i, entry) in std::fs::read_dir(proc.join("fdinfo"))?.enumerate() {
+        if i >= 4096 || Instant::now() >= deadline || !keep_waiting() { return Err(refused()); }
+        let entry = entry?;
+        let name = entry.file_name();
+        if name.to_str().and_then(|v| v.parse::<u32>().ok()).is_none() { return Err(refused()); }
+        let fd_path = proc.join("fd").join(&name);
+        let fd_meta = match std::fs::metadata(&fd_path) {
+            Ok(metadata) => metadata,
+            // An unrelated socket may close between enumeration and lookup.
+            // If this was the lock descriptor, no matching proof will remain.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        if (fd_meta.dev(), fd_meta.ino()) == (lock.dev(), lock.ino())
+            && lock_claim(&bounded(&entry.path(), 16384)?, pid, lock.ino()) {
+            let after = std::fs::metadata(&fd_path)?;
+            if (after.dev(), after.ino()) != (lock.dev(), lock.ino()) { return Err(refused()); }
+            if lock_fd.replace(name).is_some() { return Err(refused()); }
+        }
+    }
+    lock_fd.ok_or_else(refused)
+}
 fn uid_claim(bytes: &[u8], expected: u32) -> bool {
     std::str::from_utf8(bytes).ok().is_some_and(|s| {
         s.lines()
@@ -424,30 +455,7 @@ impl AuthenticatedLocalPeer {
         {
             return Err(refused());
         }
-        let mut lock_fd = None;
-        for (i, entry) in std::fs::read_dir(proc.join("fdinfo"))?.enumerate() {
-            if i >= 4096 || Instant::now() >= deadline || !keep_waiting() {
-                return Err(refused());
-            }
-            let entry = entry?;
-            let name = entry.file_name();
-            if name.to_str().and_then(|v| v.parse::<u32>().ok()).is_none() {
-                return Err(refused());
-            }
-            let fd_meta = std::fs::metadata(proc.join("fd").join(&name))?;
-            if (fd_meta.dev(), fd_meta.ino()) == (lock.dev(), lock.ino())
-                && lock_claim(
-                    &bounded(&entry.path(), 16384)?,
-                    pid.as_raw_nonzero().get().cast_unsigned(),
-                    lock.ino(),
-                )
-            {
-                if lock_fd.replace(name).is_some() {
-                    return Err(refused());
-                }
-            }
-        }
-        let lock_fd = lock_fd.ok_or_else(refused)?;
+        let lock_fd = owner_lock_fd(&proc, &lock, pid.as_raw_nonzero().get().cast_unsigned(), deadline, keep_waiting)?;
         let lock_after = std::fs::symlink_metadata(lock_path)?;
         if (lock_after.dev(), lock_after.ino()) != (lock.dev(), lock.ino()) {
             return Err(refused());
@@ -1196,6 +1204,38 @@ mod tests {
             123,
             456
         ));
+    }
+
+    #[test]
+    fn vanished_unrelated_fd_does_not_erase_the_exact_owner_lock() {
+        let root = std::env::temp_dir().join(format!("nudox-fd-churn-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos()));
+        std::fs::create_dir(&root).expect("private fixture");
+        std::fs::create_dir(root.join("fd")).expect("fd directory");
+        std::fs::create_dir(root.join("fdinfo")).expect("fdinfo directory");
+        std::fs::write(root.join("OWNER.lock"), b"").expect("lock file");
+        let lock = std::fs::metadata(root.join("OWNER.lock")).expect("lock metadata");
+        std::fs::hard_link(root.join("OWNER.lock"), root.join("fd/44")).expect("matching owner fd");
+        std::fs::write(root.join("fdinfo/44"), format!("lock: 1: FLOCK ADVISORY WRITE 123 08:02:{} 0 EOF\n", lock.ino())).expect("owner flock claim");
+        // fdinfo was enumerated while an unrelated descriptor existed, then
+        // that descriptor disappeared before /proc/PID/fd/N was inspected.
+        std::fs::write(root.join("fdinfo/33"), b"pos: 0\n").expect("vanished entry");
+        let result = owner_lock_fd(&root, &lock, 123, Instant::now() + Duration::from_secs(2), &mut || true);
+        assert_eq!(result.expect("unrelated disappearance is harmless"), std::ffi::OsString::from("44"));
+        std::fs::remove_file(root.join("fd/44")).expect("remove matching fd");
+        assert!(owner_lock_fd(&root, &lock, 123, Instant::now() + Duration::from_secs(2), &mut || true).is_err(), "a missing owner lock remains refused");
+        std::fs::write(root.join("fd/44"), b"different").expect("changed fd target");
+        assert!(owner_lock_fd(&root, &lock, 123, Instant::now() + Duration::from_secs(2), &mut || true).is_err(), "a changed owner lock target remains refused");
+        std::fs::remove_file(root.join("fd/44")).expect("remove changed fd target");
+        std::fs::hard_link(root.join("OWNER.lock"), root.join("fd/44")).expect("restore matching fd");
+        std::fs::remove_file(root.join("fdinfo/44")).expect("remove lock fdinfo");
+        std::os::unix::fs::symlink("missing", root.join("fdinfo/44")).expect("vanished lock fdinfo");
+        assert!(owner_lock_fd(&root, &lock, 123, Instant::now() + Duration::from_secs(2), &mut || true).is_err(), "a vanished known lock proof remains refused");
+        std::fs::remove_file(root.join("fdinfo/44")).expect("remove broken fdinfo");
+        std::fs::write(root.join("fdinfo/44"), format!("lock: 1: FLOCK ADVISORY WRITE 123 08:02:{} 0 EOF\n", lock.ino())).expect("restore owner claim");
+        std::os::unix::fs::symlink("33", root.join("fd/33")).expect("unrelated fd loop");
+        let error = owner_lock_fd(&root, &lock, 123, Instant::now() + Duration::from_secs(2), &mut || true).expect_err("other I/O errors remain errors");
+        assert_eq!(error.raw_os_error(), Some(40), "preserve the actual unrelated descriptor error");
+        std::fs::remove_dir_all(&root).expect("remove private fixture");
     }
     #[test]
     fn existing_valid_authority_without_initializer_gets_one_private_serializing_inode() {

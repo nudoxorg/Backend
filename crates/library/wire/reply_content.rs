@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DocumentWire {
+    #[serde(default, skip_serializing_if = "crate::SourcePolicyQualification::is_unknown")]
+    source_policy: crate::SourcePolicyQualification,
     symbol: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     selection: Option<DocumentSelectionWire>,
@@ -22,6 +24,8 @@ pub(crate) struct DocumentWire {
     location: SourceAvailabilityWire,
     #[serde(default = "source_excerpt_not_captured")]
     excerpt: SourceExcerptWire,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_range: Option<crate::SourceRangePage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     facts: Option<FactsWire>,
 }
@@ -203,6 +207,7 @@ pub(crate) struct OutlineNodeWire {
 
 pub(crate) fn document_to_wire(document: &Document) -> DocumentWire {
     DocumentWire {
+        source_policy: document.source_policy.clone(),
         symbol: encode_id(document.symbol.as_bytes()),
         selection: document
             .selection
@@ -219,6 +224,7 @@ pub(crate) fn document_to_wire(document: &Document) -> DocumentWire {
         signature: document.signature.clone(),
         location: source_availability_to_wire(&document.location),
         excerpt: source_excerpt_to_wire(&document.excerpt),
+        source_range: document.source_range.clone(),
         facts: facts_to_wire(&document.facts),
     }
 }
@@ -327,6 +333,11 @@ pub(crate) fn document_from_wire_with_admission<A: CoverageAdmission>(
     certificate: &WireCertificate,
     admission: &A,
 ) -> Result<Document, String> {
+    if !value.source_policy.is_unknown()
+        || value.source_range.as_ref().is_some_and(|page| !page.source_policy.is_unknown())
+    {
+        admission.admit_local_source_policy()?;
+    }
     let (basis, source, capability) = content_basis_from_wire(
         &value.basis,
         value.source.as_ref(),
@@ -382,6 +393,7 @@ pub(crate) fn document_from_wire_with_admission<A: CoverageAdmission>(
         })
         .transpose()?;
     let document = Document {
+        source_policy: value.source_policy,
         symbol,
         selection: None,
         basis,
@@ -390,12 +402,17 @@ pub(crate) fn document_from_wire_with_admission<A: CoverageAdmission>(
         signature: value.signature,
         location: source_availability_from_wire(value.location)?,
         excerpt: source_excerpt_from_wire(value.excerpt)?,
+        source_range: value.source_range,
         facts: facts_from_wire(value.facts)?,
     };
-    match selection {
-        Some(selection) => document.with_selection(selection).map_err(str::to_owned),
-        None => Ok(document),
+    let document = match selection {
+        Some(selection) => document.with_selection(selection).map_err(str::to_owned)?,
+        None => document,
+    };
+    if !document.source_policy.matches_document(&document) {
+        return Err("source policy claim does not match selected document".to_owned());
     }
+    Ok(document)
 }
 
 pub(crate) fn outline_to_wire(outline: &Outline) -> OutlineWire {

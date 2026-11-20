@@ -948,7 +948,7 @@ impl CanonicalRelation for ProductNativeFrontierRelation {
 }
 
 fn decode_record(bytes: &[u8]) -> Result<ProductNativeFrontierRecord, ()> {
-    if bytes.get(..4) != Some(MAGIC) {
+    if bytes.get(..4) != Some(MAGIC.as_slice()) {
         return Err(());
     }
     let mut cursor = 4;
@@ -1610,7 +1610,7 @@ mod tests {
         };
         assert!(
             OwnedPackageSourceSet::new_native_csharp_candidate(
-                csharp_request(csharp_target),
+                csharp_request(csharp_target.clone()),
                 source_root.clone(),
                 vec![OwnedPackageSource::new("src/broken.cs", source).unwrap()].into_boxed_slice(),
                 project,
@@ -1619,6 +1619,21 @@ mod tests {
             )
             .is_ok()
         );
+        assert!(OwnedPackageSourceSet::new_native_csharp_candidate(
+            csharp_request(csharp_target.clone()), source_root.clone(),
+            vec![OwnedPackageSource::new("src/broken.cs", source).unwrap(), OwnedPackageSource::new("src/other.cs", "class Other {}").unwrap()].into_boxed_slice(),
+            project, root, vec![csharp_permit.clone(), csharp_permit.clone()].into_boxed_slice(),
+        ).is_err());
+        assert!(OwnedPackageSourceSet::new_native_csharp_candidate(
+            csharp_request(csharp_target.clone()), source_root.clone(),
+            vec![OwnedPackageSource::new("src/broken.cs", "class Changed {}").unwrap()].into_boxed_slice(),
+            project, root, vec![csharp_permit.clone()].into_boxed_slice(),
+        ).is_err());
+        assert!(OwnedPackageSourceSet::new_native_csharp_candidate(
+            csharp_request(csharp_target.clone()), source_root.clone(),
+            vec![OwnedPackageSource::new("src/broken.cs", source).unwrap()].into_boxed_slice(),
+            project, [0xc3; 32], vec![csharp_permit.clone()].into_boxed_slice(),
+        ).is_err());
         let csharp_request_b = csharp_request(
             PackageUrl::parse("pkg:nuget/permit-owner-cs-b@1.0.0".to_owned()).unwrap(),
         );

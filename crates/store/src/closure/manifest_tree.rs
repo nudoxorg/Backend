@@ -52,7 +52,12 @@ impl Relation for ManifestRelation {
     type Value = ();
 
     fn encode_key(key: &Self::Key, out: &mut Vec<u8>) {
-        out.extend_from_slice(key);
+        if out.is_empty() && out.capacity() == 0 {
+            let boxed: Box<[u8]> = Box::new(*key);
+            *out = Vec::from(boxed);
+        } else {
+            out.extend_from_slice(key);
+        }
     }
 
     fn encode_value(_value: &Self::Value, _out: &mut Vec<u8>) {}

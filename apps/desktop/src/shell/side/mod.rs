@@ -2272,8 +2272,11 @@ impl Shelf {
             .filter_map(Row::item)
             .find(|item| item.is_target())
         {
+            // A lens or a narrowing took the row away: while the keyboard is
+            // in the sidebar it lands on the first row, rather than losing the
+            // sidebar (an empty selection hands the zone back to the Reader).
             Some(first) if self.input_surface != Some(ShelfNativeSurface::Spine)
-                && (!self.narrow.is_empty() || self.via.is_some()) => {
+                && (!self.narrow.is_empty() || self.via.is_some() || self.targets.is_active()) => {
                 self.targets.focus(first.key.clone())
             }
             _ => self.targets.clear_focus(),

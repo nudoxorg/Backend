@@ -37,6 +37,8 @@ mod package_compiler_outcomes;
 mod package_graph_budget;
 #[path = "tests/record_budget_pages.rs"]
 mod record_budget_pages;
+#[path = "tests/references_pages.rs"]
+mod references_pages;
 #[path = "tests/document_section_pages.rs"]
 mod document_section_pages;
 #[path = "tests/semantic_selection.rs"]
@@ -45,12 +47,18 @@ mod semantic_selection;
 mod semantic_source_pages;
 #[path = "tests/source_membership_pages.rs"]
 mod source_membership_pages;
+#[path = "tests/source_continuation.rs"]
+mod source_continuation;
 #[path = "tests/surface_fidelity.rs"]
 mod surface_fidelity;
+#[path = "tests/stylo_transport.rs"]
+mod stylo_transport;
 #[path = "tests/token_outline.rs"]
 mod token_outline;
 #[path = "tests/typescript_admission.rs"]
 mod typescript_admission;
+#[path = "tests/usage_argument_names.rs"]
+mod usage_argument_names;
 
 const PROJECT: &str = "/abs/polyglot";
 const MODULE: &str = "/abs/polyglot::src/lib.rs";
@@ -693,6 +701,17 @@ struct Fake {
     outline_owner_tokens: Vec<String>,
     /// Exact source availability returned by the document/source boundary.
     document_override: Option<Document>,
+    /// Exact host bytes for source-range routing fixtures.
+    source_range_bytes: Option<String>,
+    /// Scope asserted by the fixture owner, never inferred by the wrapper.
+    source_range_scope: backend_library::SourceRangeScope,
+    /// Raw fixture claim, never an authenticated local-session admission.
+    source_range_policy: Option<backend_library::SourcePolicyQualification>,
+    source_range_policy_mismatch: bool,
+    /// Test-only lease sentinel; never establishes authenticated-owner proof.
+    source_range_lease_sentinel: bool,
+    source_range_disconnect_after: Option<usize>,
+    source_range_calls: usize,
     /// Negative control: withhold an overridden document from the member projection.
     omit_document_override_member: bool,
     /// Optional graph rows used to exercise the complete-page admission cap.
@@ -928,6 +947,7 @@ impl Fake {
         limit: u16,
         continuation: Option<PageContinuation>,
         window: Option<backend_library::QueryWindow>,
+        incoming: bool,
     ) -> Result<ReplyDto, ClientError> {
         if let Some(failure) = &self.graph_failure {
             return Ok(ReplyDto::new(1, CommandReply::Failed(failure.clone())));
@@ -958,6 +978,7 @@ impl Fake {
             request = request
                 .with_window(window)
                 .expect("graph delivery preserves credit");
+            if incoming { request = request.with_incoming(); }
             if let Some(cursor) = continuation {
                 request = request.with_continuation(cursor);
             }
@@ -973,7 +994,7 @@ impl Fake {
         }
         Ok(ReplyDto::new(
             1,
-            CommandReply::ProjectionPage(ProjectionPage {
+            CommandReply::ProjectionPage(ProjectionPage { graph_alias_witness: None,
                 outline_order: None,
                 snapshot: snapshot(vec![declaration_row()]),
                 terminal: PageTerminal::Complete,
@@ -1215,11 +1236,18 @@ impl Engine for Fake {
                         backend_library::CommandFailure::NotFound,
                     ));
                 }
-                let mut value = self.document_override.clone().unwrap_or_else(document);
                 if self.document_matches_request && self.document_override.is_none() {
-                    value.symbol = symbol_key(at);
+                    let catalog = self.page_catalog.as_ref().ok_or_else(|| ClientError::Protocol("document fixture needs its selected catalog".to_owned()))?;
+                    let symbol = symbol_key(at);
+                    let row = catalog.view().row(RowId::Symbol(symbol)).ok_or(ClientError::CommandFailed(backend_library::CommandFailure::NotFound))?;
+                    let value = catalog.document(backend_library::DocumentQuery::new(symbol, catalog.revision_root()))
+                        .map_err(|error| ClientError::Protocol(error.to_string()))?;
+                    let selection = backend_library::DocumentSelection::from_row(&row, value.source_basis().expect("catalog document source"))
+                        .expect("selected catalog document row");
+                    CommandReply::Document(value.with_selection(selection).expect("document and selected catalog row share a basis"))
+                } else {
+                    CommandReply::Document(self.document_override.clone().unwrap_or_else(document))
                 }
-                CommandReply::Document(value)
             }
             Probe::Source(at) => {
                 if at == MISSING {
@@ -1235,7 +1263,15 @@ impl Engine for Fake {
                         backend_library::CommandFailure::NotFound,
                     ));
                 }
-                CommandReply::Graph(snapshot(vec![declaration_row()]))
+                if self.document_matches_request && self.document_override.is_none() {
+                    let catalog = self.page_catalog.as_ref().ok_or_else(|| ClientError::Protocol("graph fixture needs its selected catalog".to_owned()))?;
+                    let graph = catalog.graph(backend_library::GraphNeighborhoodQuery::new(
+                        symbol_key(at), catalog.revision_root(),
+                    )).map_err(|error| ClientError::Protocol(error.to_string()))?;
+                    CommandReply::Graph(graph)
+                } else {
+                    CommandReply::Graph(snapshot(vec![declaration_row()]))
+                }
             }
             Probe::Search { .. } => match self.published_name_readiness {
                 Some(readiness) => {
@@ -1437,7 +1473,10 @@ impl Engine for Fake {
             })),
             SurfaceCommand::References { target } => Ok(SurfaceReply::References {
                 target,
+                coverage: backend_library::ReferenceCoverage::default(),
                 references: Box::new([backend_library::ReferenceRecord {
+                site_symbol: None,
+                source_policy: Default::default(),
                     site: backend_library::ProductText::new("pkg::semantic::caller")
                         .expect("site text"),
                     target: backend_library::SemanticLinkTarget::Local {
@@ -1472,6 +1511,53 @@ impl Engine for Fake {
 }
 
 impl Product for Fake {
+    fn qualified_source_ranges_from_authenticated_session(&self) -> bool {
+        self.source_range_lease_sentinel
+    }
+
+    fn declaration_source_range(
+        &mut self,
+        _selector: &backend_library::DeclarationSelector,
+        expected_root: Option<&str>,
+        range: backend_library::SourceRangeRequest,
+    ) -> Result<ReplyDto, ClientError> {
+        let calls = self.source_range_calls;
+        self.source_range_calls += 1;
+        if self.source_range_disconnect_after == Some(calls) {
+            return Err(ClientError::Disconnected(std::io::ErrorKind::ConnectionReset));
+        }
+        let root = view_state_root(&[]);
+        if self.stale_cursor || expected_root.is_some_and(|expected| expected != encode_id(root.as_bytes())) {
+            return Err(ClientError::StaleCursor);
+        }
+        let text = self.source_range_bytes.as_deref().ok_or_else(|| ClientError::CommandFailed(
+            backend_library::CommandFailure::InvalidQuery("exact source unavailable".to_owned())
+        ))?;
+        let identity = [7; 32];
+        let start = usize::try_from(range.start).map_err(|_| ClientError::StaleCursor)?;
+        if !range.valid() || range.source_identity.is_some_and(|expected| expected != identity)
+            || start > text.len() || !text.is_char_boundary(start) {
+            return Err(ClientError::StaleCursor);
+        }
+        let mut end = start.saturating_add(usize::from(range.limit)).min(text.len());
+        while !text.is_char_boundary(end) { end -= 1; }
+        let mut document = document();
+        let source_policy = self.source_range_policy.clone().unwrap_or_default();
+        if !self.source_range_policy_mismatch {
+            document.source_policy = source_policy.clone();
+        }
+        document.source_range = Some(backend_library::SourceRangePage {
+            source_policy,
+            text: text[start..end].to_owned(), start: range.start,
+            end: u32::try_from(end).map_err(|_| ClientError::StaleCursor)?,
+            total: u32::try_from(text.len()).map_err(|_| ClientError::StaleCursor)?,
+            scope: self.source_range_scope,
+            source_identity: identity, owner_start: 0,
+            owner_end: u32::try_from(text.len()).map_err(|_| ClientError::StaleCursor)?,
+        });
+        Ok(ReplyDto::new(1, CommandReply::Document(document)))
+    }
+
     fn set_request_context(&mut self, context: Option<RequestContext>) -> Result<(), ClientError> {
         if let Some(context) = context {
             context.check()?;
@@ -1510,7 +1596,7 @@ impl Product for Fake {
         limit: u16,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
-        self.catalog_graph_page(coordinate, limit, continuation, None)
+        self.catalog_graph_page(coordinate, limit, continuation, None, false)
     }
 
     fn graph_page_window(
@@ -1524,7 +1610,37 @@ impl Product for Fake {
             window.issued().get(),
             continuation,
             Some(window),
+            false,
         )
+    }
+
+    fn related_page_window(&mut self, coordinate: String, window: backend_library::QueryWindow, continuation: Option<PageContinuation>) -> Result<ReplyDto, ClientError> {
+        self.catalog_graph_page(coordinate, window.issued().get(), continuation, Some(window), true)
+    }
+
+    fn related_edge_page(&mut self, selector: backend_library::DeclarationSelector, window: backend_library::QueryWindow, cursor: Option<backend_library::RelatedPageCursor>) -> Result<ReplyDto, ClientError> {
+        self.page_limits.push(window.issued().get());
+        if let Some(failure) = &self.graph_failure { return Ok(ReplyDto::new(1, CommandReply::Failed(failure.clone()))); }
+        let fallback = if self.page_catalog.is_none() { Some(self.fixture_catalog(PROJECT)?) } else { None };
+        let catalog = self.page_catalog.as_ref().or(fallback.as_ref()).expect("fixture catalog");
+        if cursor.is_some() && self.catalog_delivery_ceiling.is_some_and(|bound| window.delivery().get() > bound) {
+            return Err(ClientError::ResponseTooLarge { basis: Some(catalog.revision_root().into()) });
+        }
+        let symbol = selector.address();
+        let center = symbol.resolve(catalog.view()).ok_or_else(|| ClientError::Protocol("fixture center absent".to_owned()))?;
+        let scope = backend_library::RelatedPageScope { root: *catalog.revision_root().as_bytes(), source: symbol.claimed_bytes(), source_selected: symbol.is_selected(), direction: backend_library::RelatedDirection::Both, issued: window.issued().get(), delivery: window.delivery().get(), windowed: window.is_windowed() };
+        let request = backend_library::RelatedPageRequest { scope, cursor };
+        let revision = *catalog.revision_root().as_bytes();
+        let secret = [7; 32];
+        let verified = backend_library::VerifiedRelatedPageRequest::verify(&request, revision, &secret).map_err(|_| ClientError::StaleCursor)?;
+        let mut edges = catalog.view().row_refs().filter(|row| row.parent == Some(center)).map(|row| backend_library::GraphRelation::new(RowId::Symbol(center), row.id, backend_library::SemanticLinkKind::Calls).with_confidence(backend_library::SemanticConfidence::Syntactic)).collect::<Vec<_>>();
+        edges.sort_by_key(|edge| backend_library::RelatedEdgeKey::new(*edge));
+        edges.retain(|edge| verified.after().is_none_or(|after| backend_library::RelatedEdgeKey::new(*edge) > after));
+        let more = edges.len() > usize::from(window.delivery().get());
+        edges.truncate(usize::from(window.delivery().get()));
+        let terminal = if more { backend_library::RelatedEdgeTerminal::More(verified.issue_cursor(backend_library::RelatedEdgeKey::new(*edges.last().expect("nonempty page"))).map_err(|error| ClientError::Protocol(format!("fixture issue: {error:?}")))?) } else { backend_library::RelatedEdgeTerminal::Complete };
+        let snapshot = catalog.graph_from_semantic_relations(backend_library::GraphNeighborhoodQuery::addressed(symbol, catalog.revision_root()), &edges).map_err(|error| ClientError::Protocol(error.to_string()))?;
+        Ok(ReplyDto::new(1, CommandReply::RelatedEdgePage(backend_library::RelatedEdgePage { keys: edges.iter().copied().map(backend_library::RelatedEdgeKey::new).collect(), snapshot, semantic_revision: revision, terminal, withheld: true })))
     }
 
     fn outline_page_token(
@@ -1642,7 +1758,7 @@ impl Product for Fake {
 // ---------------------------------------------------------------------------
 // driving the server
 // ---------------------------------------------------------------------------
-fn ready(product: Fake) -> Server<Fake> {
+fn ready<P: Product>(product: P) -> Server<P> {
     let mut server = Server::with_authority(product, PROJECT.to_owned(), [9; 32]);
     server
         .handle(br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#)
@@ -1655,7 +1771,15 @@ fn ready(product: Fake) -> Server<Fake> {
     server
 }
 
-fn request(server: &mut Server<Fake>, method: &str, params: &Value) -> Value {
+fn ready_with_document(document: Document) -> Server<Fake> {
+    let mut fake = Fake { document_override: Some(document), ..Fake::default() };
+    let catalog = fake.fixture_catalog(PROJECT).expect("immutable fixture catalog");
+    fake.document_override.as_mut().expect("fixture document").basis = catalog.revision_root();
+    fake.page_catalog = Some(catalog);
+    ready(fake)
+}
+
+fn request<P: Product>(server: &mut Server<P>, method: &str, params: &Value) -> Value {
     let message = json!({ "jsonrpc": "2.0", "id": 9, "method": method, "params": params });
     server
         .handle(
@@ -1673,7 +1797,7 @@ fn encoded_stdio_reply(reply: Value) -> Value {
     serde_json::from_slice(&line).expect("encoded stdio response")
 }
 
-fn call(server: &mut Server<Fake>, tool: &str, arguments: &Value) -> Value {
+fn call<P: Product>(server: &mut Server<P>, tool: &str, arguments: &Value) -> Value {
     request(
         server,
         "tools/call",
@@ -2271,6 +2395,29 @@ fn semantic_shapes_jsonrpc_refuses_oversized_view_without_dropping_required_fact
     }
 }
 
+/// A selected id is written as 64 lowercase hex digits and read back from either spelling.
+fn selected_id_hex(wire: &Value) -> String {
+    let text = wire
+        .as_str()
+        .expect("a selected id is written as 64 hex digits");
+    assert!(
+        text.len() == 64 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
+        "{text}"
+    );
+    let from_hex: backend_library::SelectedSymbolId =
+        serde_json::from_value(wire.clone()).expect("the hex spelling reads back");
+    let from_array: backend_library::SelectedSymbolId =
+        serde_json::from_value(json!(from_hex.bytes())).expect("the array spelling reads back");
+    assert_eq!(from_hex, from_array);
+    text.to_owned()
+}
+
+/// The wire spelling of `bytes` as a selected id: exactly their 64 hex digits.
+fn assert_selected_id_wire(wire: &Value, bytes: &[u8; 32]) {
+    let expected: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    assert_eq!(selected_id_hex(wire), expected);
+}
+
 fn text_of(result: &Value) -> String {
     result["content"][0]["text"]
         .as_str()
@@ -2359,9 +2506,105 @@ fn selected_search_page(
 }
 
 #[test]
+fn related_pages_fit_mcp_budget_for_large_neighborhood() {
+    let mut rows = vec![package_row(), module_row()];
+    rows.extend((0..180).map(|index| {
+        let coordinate = format!("{MODULE}:{}::{}_{}", index + 2, "long_name".repeat(35), index);
+        Row::in_package(RowId::Symbol(symbol_key(&coordinate)), basis(), package_key(PROJECT), coordinate)
+            .with_parent(symbol_key(MODULE))
+    }));
+    let view = root(rows);
+    let cursor = backend_library::Cursor::for_view_root(&view);
+    let catalog = backend_library::Library::from_view(view, cursor).expect("catalog");
+    let full = catalog.graph_page(symbol_key(MODULE), backend_library::PageRequest::new(catalog.revision_root(), backend_library::QueryLimit::new(200).expect("limit")).with_incoming()).expect("full neighborhood");
+    let projected = backend_present::RecordListDto::new(&record_list("selected", &full.snapshot));
+    assert!(serde_json::to_vec(&projected).expect("JSON").len() > 49_152);
+    let mut server = ready(Fake { page_catalog: Some(catalog), ..Fake::default() });
+    let mut args = json!({"coordinate": MODULE, "limit": 200});
+    let mut count = 0;
+    loop {
+        let result = call(&mut server, "backend.related", &args);
+        assert_context_bounded(&result);
+        assert_eq!(result["isError"], false, "{result}");
+        count += result["structuredContent"]["edges"].as_array().expect("edges").len();
+        if let Some(next) = result["structuredContent"]["continuation_call"].as_object() {
+            args = next["arguments"].clone();
+        } else { break; }
+    }
+    assert_eq!(count, 180);
+}
+
+#[test]
+fn searched_document_and_related_fixture_share_the_selected_catalog_basis() {
+    let coordinate = format!("{MODULE}:2::Session_000");
+    let mut fake = Fake { page_catalog: Some(paging_catalog(3)), document_matches_request: true, ..Fake::default() };
+    let document = fake.probe(Probe::Document(&coordinate)).expect("selected catalog document");
+    let CommandReply::Document(document) = document.reply else { panic!("document reply"); };
+    let graph = fake.probe(Probe::Related(&coordinate)).expect("selected catalog graph");
+    let CommandReply::Graph(graph) = graph.reply else { panic!("graph reply"); };
+    assert_eq!(Some(graph.root.basis()), document.source_basis());
+    assert_eq!(graph.root.basis().root, document.basis);
+    assert!(graph.root.rows().iter().any(|row| row.id == RowId::Symbol(document.symbol)));
+
+    fake.page_catalog = Some(paging_catalog(4));
+    let foreign = fake.probe(Probe::Related(&coordinate)).expect("new catalog graph");
+    let CommandReply::Graph(foreign) = foreign.reply else { panic!("foreign graph reply"); };
+    assert_ne!(Some(foreign.root.basis()), document.source_basis(), "a changed catalog must not reuse the prior document basis");
+}
+
+#[test]
 fn default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapshots() {
-    for tool in ["backend.search", "backend.resolve", "backend.graph"] {
+    for tool in ["backend.search", "backend.resolve", "backend.graph", "backend.related"] {
         let catalog = paging_catalog(61);
+        if tool == "backend.related" {
+            // Related pages are keyed by edges; the selected center is a
+            // witness on every page, not another paged result identity.
+            let mut expected = catalog.view().row_refs()
+                .filter(|row| row.parent == Some(symbol_key(MODULE)))
+                .map(|row| (backend_library::RelatedEdgeKey::new(backend_library::GraphRelation::new(
+                    RowId::Symbol(symbol_key(MODULE)), row.id, backend_library::SemanticLinkKind::Calls,
+                )), row.label.clone()))
+                .collect::<Vec<_>>();
+            expected.sort_by_key(|(key, _)| *key);
+            let mut server = ready(Fake { page_catalog: Some(catalog), ..Fake::default() });
+            let mut arguments = json!({"coordinate": MODULE});
+            let mut first_continuation = None;
+            let mut seen = Vec::new();
+            for _ in 0..10 {
+                let response = request(&mut server, "tools/call", &json!({"name": tool, "arguments": arguments}));
+                assert_context_bounded(&response);
+                let result = &response["result"];
+                assert_eq!(result["isError"], false, "{tool}: {response}");
+                assert_eq!(result["structuredContent"]["detail"], "summary");
+                let edges = result["structuredContent"]["edges"].as_array().expect("complete typed edges");
+                assert!(edges.len() <= usize::from(backend_present::DEFAULT_LIMIT));
+                let preview = text_of(result);
+                assert!(preview.len() <= backend_present::MAX_PREVIEW_TEXT_BYTES);
+                assert_eq!(estimate_tokens(preview.len()), preview.len().div_ceil(backend_present::ESTIMATED_BYTES_PER_TOKEN));
+                for edge in edges {
+                    assert_eq!(edge["from"], MODULE);
+                    assert_eq!(edge["relation"], "calls");
+                    seen.push(edge["to"].as_str().expect("edge target").to_owned());
+                }
+                if let Some(next) = result["structuredContent"]["continuation_call"].as_object() {
+                    assert_eq!(result["structuredContent"]["more"], true);
+                    assert!(result["structuredContent"]["nextCursor"].is_string());
+                    assert!(preview.contains("structuredContent.continuation_call"));
+                    assert!(!preview.contains("raise `limit`"));
+                    first_continuation.get_or_insert_with(|| next["arguments"].clone());
+                    arguments = next["arguments"].clone();
+                } else { break; }
+            }
+            assert_eq!(seen, expected.into_iter().map(|(_, label)| label).collect::<Vec<_>>(),
+                "related preserves edge order with no skipped or repeated edges");
+            assert_eq!(server.product.page_limits, vec![backend_present::DEFAULT_LIMIT; 3]);
+            server.product.page_catalog = Some(paging_catalog(62));
+            let stale = request(&mut server, "tools/call", &json!({"name": tool, "arguments": first_continuation.expect("default related continues")}));
+            let fault = tool_failure(&stale, "cursor-mismatch");
+            assert_eq!(fault["cause"], "moved");
+            assert!(text_of(&stale["result"]).contains("restart the query"));
+            continue;
+        }
         let credit = backend_library::QueryLimit::new(200).expect("bounded oracle page");
         let snapshot = match tool {
             "backend.search" => selected_search_page(
@@ -2391,7 +2634,7 @@ fn default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapsho
             .iter()
             .map(|record| record.identity().coordinate().as_str().to_owned())
             .collect::<Vec<_>>();
-        if tool == "backend.graph" {
+        if matches!(tool, "backend.graph" | "backend.related") {
             // Neighborhood snapshots sort identities within each selected
             // page. The root/parent prefix precedes children in owner page
             // selection, so compare the actual owner order at this credit.
@@ -2407,6 +2650,7 @@ fn default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapsho
                     backend_library::QueryLimit::new(backend_present::DEFAULT_LIMIT)
                         .expect("default credit"),
                 );
+                if tool == "backend.related" { page = page.with_incoming(); }
                 if let Some(next) = cursor {
                     page = page.with_continuation(next);
                 }
@@ -2437,7 +2681,7 @@ fn default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapsho
             document_matches_request: tool == "backend.search",
             ..Fake::default()
         });
-        let mut arguments = if tool == "backend.graph" {
+        let mut arguments = if matches!(tool, "backend.graph" | "backend.related") {
             json!({"coordinate": MODULE})
         } else {
             json!({"query": "Session"})
@@ -3139,6 +3383,7 @@ fn every_registry_row_is_reachable_as_exactly_one_tool() {
             "backend.status",
             "backend.outline",
             "backend.search",
+            "backend.sql_query",
             "backend.resolve",
             "backend.document",
             "backend.source",
@@ -3929,30 +4174,38 @@ fn index_progress_distinguishes_prior_owner_tickets_and_terminal_refusals() {
 
 #[test]
 fn dependency_refusal_marks_tool_failure_and_keeps_the_exact_requested_package() {
-    let mut server = ready(Fake {
-        surface_reply: Some(SurfaceReply::Dependencies(
-            backend_library::DependencyFacts::Unavailable(
-                backend_library::ProductText::from_static("package is not recorded"),
-            ),
-        )),
-        ..Fake::default()
-    });
-    let result = call(
-        &mut server,
-        "backend.dependencies",
-        &json!({"package": "pkg:npm/react@19.1.0"}),
-    );
-    assert_eq!(result["isError"], true);
-    assert_eq!(result["structuredContent"]["answer"], "product");
-    assert_eq!(
-        result["structuredContent"]["fault"]["operand"],
-        "pkg:npm/react@19.1.0"
-    );
-    assert_eq!(
-        result["structuredContent"]["fault"]["call"]["arguments"]["package"],
-        "pkg:npm/react@19.1.0"
-    );
-    assert!(text_of(&result).contains("package is not recorded"));
+    // A pinned registry release is acquired before its dependencies can be read, so the
+    // refusal offers `add` (backend.index) with the release as its path; a local label is
+    // looked up with `package`. Either way the requested package is the call's operand.
+    for (package, expected_call) in [
+        (
+            "pkg:npm/react@19.1.0",
+            json!({"name": "backend.index", "arguments": {"path": "pkg:npm/react@19.1.0"}}),
+        ),
+        (
+            "serde",
+            json!({"name": "backend.package", "arguments": {"package": "serde"}}),
+        ),
+    ] {
+        let mut server = ready(Fake {
+            surface_reply: Some(SurfaceReply::Dependencies(
+                backend_library::DependencyFacts::Unavailable(
+                    backend_library::ProductText::from_static("package is not recorded"),
+                ),
+            )),
+            ..Fake::default()
+        });
+        let result = call(
+            &mut server,
+            "backend.dependencies",
+            &json!({"package": package}),
+        );
+        assert_eq!(result["isError"], true);
+        assert_eq!(result["structuredContent"]["answer"], "product");
+        assert_eq!(result["structuredContent"]["fault"]["operand"], package);
+        assert_eq!(result["structuredContent"]["fault"]["call"], expected_call);
+        assert!(text_of(&result).contains("package is not recorded"));
+    }
 }
 
 #[test]
@@ -4191,6 +4444,7 @@ fn the_session_tool_list_leads_with_packages_and_index() {
         .collect();
     assert_eq!(names.first().copied(), Some("backend.packages"));
     assert_eq!(names.get(1).copied(), Some("backend.index"));
+    assert!(names.contains(&"backend.sql_query"), "SQL must be discoverable in the default list");
     assert!(
         names
             .iter()
@@ -4437,6 +4691,39 @@ fn index_tool_advertises_and_validates_execution_intent() {
 }
 
 #[test]
+fn index_tool_acquires_a_version_pinned_release_and_refuses_every_other_non_directory() {
+    // The dependency refusal for an unacquired release offers exactly this call.
+    let mut server = ready(Fake::default());
+    let accepted = call(
+        &mut server,
+        "backend.index",
+        &json!({"path": "pkg:npm/react@19.1.0"}),
+    );
+    assert_eq!(accepted["isError"], false, "{accepted}");
+    assert!(matches!(
+        server.product.surface_commands.as_slice(),
+        [SurfaceCommand::IndexStart { package, .. }] if package.as_str() == "pkg:npm/react@19.1.0"
+    ));
+    for refused in ["pkg:npm/react", "react", "relative/dir", "/no/such/directory"] {
+        let before = server.product.surface_commands.len();
+        let response = request(
+            &mut server,
+            "tools/call",
+            &json!({"name": "backend.index", "arguments": {"path": refused}}),
+        );
+        assert!(
+            response.get("error").is_some() || response["result"]["isError"] == true,
+            "{refused}: {response}"
+        );
+        assert_eq!(
+            server.product.surface_commands.len(),
+            before,
+            "{refused}: no index operation was submitted"
+        );
+    }
+}
+
+#[test]
 fn index_tool_preserves_explicit_cargo_target_in_surface_command() {
     let fixture = LazyAuthorityFixture::new();
     let project = fixture.project.to_str().expect("UTF-8 project");
@@ -4487,12 +4774,12 @@ fn document_and_source_tools_advertise_their_useful_default_detail() {
             tool["outputSchema"]["properties"]["answer"]["description"],
             "Tagged answer; product responses may include a fault and retain the operation receipt."
         );
-        assert_eq!(
-            tool["outputSchema"]["properties"]["answer"]["enum"],
-            json!([
-                "page", "records", "shelf", "outline", "status", "product", "fault"
-            ])
-        );
+        let expected = if name == "backend.source" {
+            json!(["page", "source_range", "fault"])
+        } else {
+            json!(["page", "records", "shelf", "outline", "status", "product", "fault"])
+        };
+        assert_eq!(tool["outputSchema"]["properties"]["answer"]["enum"], expected);
     }
     let search = tool_named(&listed["result"]["tools"], "backend.search");
     assert_eq!(
@@ -4537,10 +4824,7 @@ fn explicit_source_refuses_unavailable_text_while_document_retains_its_native_id
         )
         .with_location(location)
         .with_excerpt(excerpt);
-        let mut server = ready(Fake {
-            document_override: Some(document),
-            ..Fake::default()
-        });
+        let mut server = ready_with_document(document);
         let args = json!({"coordinate":coordinate,"detail":"full"});
         let page = call(&mut server, "backend.document", &args);
         assert_eq!(page["isError"], false);
@@ -4564,23 +4848,17 @@ fn explicit_source_refuses_unavailable_text_while_document_retains_its_native_id
         assert_eq!(source["structuredContent"]["operand"], coordinate);
     }
 
-    let mut server = ready(Fake::default());
+    let body = "pub fn ferris() -> Beacon {\n    Beacon\n}";
+    let mut server = ready(Fake { source_range_bytes: Some(body.to_owned()), ..Fake::default() });
     let captured = call(
         &mut server,
         "backend.source",
-        &json!({"coordinate":DECLARATION,"detail":"full"}),
+        &json!({"coordinate":DECLARATION,"detail":"full","byte_range":true}),
     );
     assert_eq!(captured["isError"], false);
-    assert_eq!(
-        captured["structuredContent"]["source"]["path"],
-        "src/lib.rs"
-    );
-    assert_eq!(captured["structuredContent"]["source"]["line"], 2);
-    assert_eq!(
-        captured["structuredContent"]["source"]["lines"][0],
-        "pub fn ferris() -> Beacon {"
-    );
-    assert!(captured["structuredContent"]["source_fault"].is_null());
+    assert_eq!(captured["structuredContent"]["source"]["text"], body);
+    assert_eq!(captured["structuredContent"]["source"]["start"], 0);
+    assert!(captured["structuredContent"]["nextCursor"].is_null());
 }
 
 #[test]
@@ -4676,24 +4954,28 @@ fn routed_batch_reads_keep_wire_extent_exact_text_and_signature_fallback_within_
     assert!(retained.len() < original.len());
     let surface = SurfaceReply::Read(Box::new([
         DeclarationRecord {
+            source_policy: backend_library::SourcePolicyQualification::Unknown,
             label: ProductText::new(&coordinates[0]).expect("requested coordinate"),
             stable_id: Some([0x11; 32]),
             signature: Some(ProductText::new(retained).expect("retained source")),
             extent: Some(DeclarationReadExtent::Truncated),
         },
         DeclarationRecord {
+            source_policy: backend_library::SourcePolicyQualification::Unknown,
             label: ProductText::new(&coordinates[1]).expect("requested coordinate"),
             stable_id: Some([0x22; 32]),
             signature: Some(ProductText::new("class WeekService {}").expect("complete source")),
             extent: Some(DeclarationReadExtent::Complete),
         },
         DeclarationRecord {
+            source_policy: backend_library::SourcePolicyQualification::Unknown,
             label: ProductText::new(&coordinates[2]).expect("requested coordinate"),
             stable_id: Some([0x33; 32]),
             signature: Some(ProductText::new("class AuthService").expect("signature fallback")),
             extent: None,
         },
         DeclarationRecord {
+            source_policy: backend_library::SourcePolicyQualification::Unknown,
             label: ProductText::new(&coordinates[3]).expect("requested coordinate"),
             stable_id: None,
             signature: None,
@@ -4792,10 +5074,15 @@ fn page_projection_mcp_summary_omits_captured_body_and_preserves_exact_identity(
     document.signature = Some("fn MCP_SIGNATURE_SENTINEL() -> Beacon".to_owned());
     document = document.with_excerpt(excerpt);
     let native = document.symbol;
-    let mut server = ready(Fake {
+    let mut fake = Fake {
         document_override: Some(document),
         ..Fake::default()
-    });
+    };
+    // The selected document and its member pages must share one revision.
+    let catalog = fake.fixture_catalog(PROJECT).expect("immutable fixture catalog");
+    fake.document_override.as_mut().expect("fixture document").basis = catalog.revision_root();
+    fake.page_catalog = Some(catalog);
+    let mut server = ready(fake);
     for tool in ["backend.document", "backend.source"] {
         let response = request(
             &mut server,
@@ -4809,7 +5096,7 @@ fn page_projection_mcp_summary_omits_captured_body_and_preserves_exact_identity(
             .expect("complete summary response")
             .len();
         let summary = &response["result"];
-        assert_eq!(summary["isError"], false);
+        assert_eq!(summary["isError"], false, "{tool}: {response}");
         assert_eq!(
             summary["structuredContent"]["identity"]["coordinate"],
             DECLARATION
@@ -4919,10 +5206,7 @@ fn page_projection_mcp_summary_keeps_source_failure_and_source_tool_refusal() {
         .with_location(location)
         .with_excerpt(excerpt);
         document.signature = Some("fn unavailable_page()".to_owned());
-        let mut server = ready(Fake {
-            document_override: Some(document),
-            ..Fake::default()
-        });
+        let mut server = ready_with_document(document);
         let arguments = json!({"coordinate": DECLARATION, "detail": "summary"});
         let page = call(&mut server, "backend.document", &arguments);
         assert_eq!(page["isError"], false);
@@ -5001,9 +5285,9 @@ fn page_projection_mcp_combined_summary_retains_real_faults_and_section_notes() 
         result["structuredContent"]["identity"]["coordinate"],
         DECLARATION
     );
-    assert_eq!(
-        result["structuredContent"]["identity"]["semantic_data"]["value"],
-        json!(native.as_bytes())
+    assert_selected_id_wire(
+        &result["structuredContent"]["identity"]["semantic_data"]["value"],
+        native.as_bytes(),
     );
     assert_eq!(
         result["structuredContent"]["signature"],
@@ -5129,6 +5413,7 @@ fn standard_mcp_preview_retains_every_structured_coordinate_and_the_cli_projecti
         &Request::Search {
             text: "ferris".to_owned(),
             limit: 25,
+            declarations_only: false,
         },
     )
     .expect("fixture search answer");
@@ -5161,9 +5446,9 @@ fn standard_mcp_preview_retains_every_structured_coordinate_and_the_cli_projecti
             text.lines().any(|line| line == format!("  `{coordinate}`")),
             "{text}"
         );
-        assert_eq!(
-            row["identity"]["semantic_data"]["value"],
-            json!(symbol_key(coordinate).as_bytes())
+        assert_selected_id_wire(
+            &row["identity"]["semantic_data"]["value"],
+            symbol_key(coordinate).as_bytes(),
         );
     }
     assert!(text.contains("showing 1 exact coordinate(s); 0 omitted from text preview"));
@@ -5302,6 +5587,49 @@ fn positive_default_fake_members_pages_preserve_credit_cursor_family_and_overrid
     assert_eq!(page.terminal, PageTerminal::Complete, "override has no fabricated children");
     overridden.omit_document_override_member = true;
     assert!(overridden.members_page(&selected, 1, None).is_err(), "the missing selected owner remains a refusal");
+}
+
+#[test]
+fn an_outline_kind_filter_must_be_a_string_of_kinds() {
+    let mut server = ready(Fake::default());
+    let accepted = call(&mut server, "backend.outline", &json!({"kind":"function"}));
+    assert_ne!(accepted["isError"], true, "{accepted}");
+    for (name, mistyped) in [("kind", json!(5)), ("exclude_kind", json!(["function"]))] {
+        let arguments = Map::from_iter([(name.to_owned(), mistyped)]);
+        let reply = request(
+            &mut server,
+            "tools/call",
+            &json!({"name":"backend.outline","arguments":arguments}),
+        );
+        assert!(
+            reply.get("error").is_some() || reply["result"]["isError"] == true,
+            "a {name} that is not a string is refused, not read as no filter: {reply}"
+        );
+    }
+}
+
+#[test]
+fn an_outline_top_level_option_is_a_boolean_and_keeps_top_level_declarations() {
+    let mut server = ready(Fake::default());
+    for value in [true, false] {
+        let result = call(&mut server, "backend.outline", &json!({"top_level": value}));
+        assert_ne!(result["isError"], true, "{result}");
+        let text = text_of(&result);
+        assert!(text.contains("  ƒ ferris"), "a declaration of the module stays listed: {text}");
+        assert!(result["structuredContent"].get("locals_hidden").is_none(), "nothing local to count");
+    }
+    let reply = request(
+        &mut server,
+        "tools/call",
+        &json!({"name":"backend.outline","arguments":{"top_level":"yes"}}),
+    );
+    assert!(
+        reply.get("error").is_some() || reply["result"]["isError"] == true,
+        "a top_level that is not a boolean is refused: {reply}"
+    );
+    let listed = request(&mut server, "tools/list", &json!({}));
+    let outline = tool_named(&listed["result"]["tools"], "backend.outline");
+    assert_eq!(outline["inputSchema"]["properties"]["top_level"]["type"], "boolean");
 }
 
 #[test]
@@ -6105,7 +6433,7 @@ fn tool_catalog_names_callable_routes_without_advertising_unready_surfaces() {
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect();
-    assert_eq!(advertised.len(), 18);
+    assert_eq!(advertised.len(), 19);
     assert!(
         advertised
             .iter()
@@ -7985,6 +8313,8 @@ fn high_fanout_graph_and_surface_pages_refuse_atomically() {
 
     let references = (0..256)
         .map(|index| backend_library::ReferenceRecord {
+                site_symbol: None,
+                source_policy: Default::default(),
             site: backend_library::ProductText::new(format!(
                 "pkg::caller_{index}::{}",
                 "x".repeat(160)
@@ -8012,6 +8342,7 @@ fn high_fanout_graph_and_surface_pages_refuse_atomically() {
         surface_reply: Some(SurfaceReply::References {
             target: backend_library::ProductText::new("pkg::semantic::callee")
                 .expect("target text"),
+            coverage: backend_library::ReferenceCoverage::default(),
             references,
         }),
         ..Fake::default()
@@ -8175,7 +8506,8 @@ fn generic_surface_dependency_refusal_keeps_exact_package_action_and_typed_fault
     assert_eq!(fault["operand"], package.as_str());
     assert_eq!(
         fault["call"],
-        json!({"name":"backend.package", "arguments":{"package":package.as_str()}})
+        json!({"name":"backend.index", "arguments":{"path":package.as_str()}}),
+        "a pinned release is acquired with add before its dependencies can be read"
     );
     assert!(text_of(&result).contains(package.as_str()));
     assert_eq!(server.product.surface_commands, [command]);
@@ -8251,8 +8583,7 @@ fn direct_and_generic_graph_routes_preserve_typed_domain_and_protocol_failures()
 }
 
 #[test]
-fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_same_mcp_wire_result()
- {
+fn partial_terminal_is_qualified_success_with_exact_ticket_partition_and_receipt() {
     use backend_library::{
         IndexJobOutcome, IndexJobPartialPublication, IndexOperationFailureReason,
         IndexOperationKey, IndexOperationObservation, IndexOperationProfileRefusal,
@@ -8353,7 +8684,7 @@ fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_s
             &json!({"name":INDEX_PROGRESS_TOOL, "arguments":{"ticket":ticket, "after_sequence":0, "detail":detail}}),
         );
         assert!(wire.get("error").is_none(), "{wire}");
-        assert_eq!(wire["result"]["isError"], true);
+        assert_eq!(wire["result"]["isError"], false);
         let content = &wire["result"]["structuredContent"];
         assert_eq!(
             content["surface"]["data"],
@@ -8366,23 +8697,42 @@ fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_s
             ))
             .expect("exact job projection")
         );
-        assert_eq!(content["fault"]["slug"], "partially-published");
+        assert!(content["fault"].is_null());
         assert_eq!(
-            content["fault"]["partial_publication"],
-            serde_json::to_value(&partial)
-                .expect("exact receipt, partition, refusals and source tuple")
+            content["partial_publication_warning"]["published_profiles"],
+            1
         );
         assert_eq!(
-            content["fault"]["partial_publication"]["receipt"],
+            content["partial_publication_warning"]["refused_profiles"],
+            1
+        );
+        assert_eq!(
+            content["partial_publication_warning"]["receipt"],
             serde_json::to_value(&partial.receipt).expect("receipt")
         );
         let text = text_of(&wire["result"]);
-        assert!(text.contains("python: published 236 source files with Complete coverage"));
+        assert!(text.contains("python: published 236 source files with complete coverage"), "{text}");
         assert!(text.contains("typescript: unavailable"));
         assert!(text.contains("NUDOX_TSC"));
         assert_context_bounded(&wire);
         assert_eq!(server.product.surface_commands.len(), 1);
     }
+    let mut registered_server = ready(Fake {
+        surface_reply: Some(reply.clone()),
+        ..Fake::default()
+    });
+    let registered = call(
+        &mut registered_server,
+        "backend.call",
+        &json!({
+            "name": INDEX_PROGRESS_TOOL,
+            "arguments": {"ticket":ticket_value(&ticket), "after_sequence":0}
+        }),
+    );
+    assert_eq!(registered["isError"], false);
+    let warning_call = &registered["structuredContent"]["partial_publication_warning"]["call"];
+    assert_eq!(warning_call["name"], "backend.call");
+    assert_eq!(warning_call["arguments"]["name"], "backend.package_profile");
     let mut compact_server = ready(Fake {
         surface_reply: Some(reply.clone()),
         ..Fake::default()
@@ -8396,9 +8746,9 @@ fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_s
             "compact_receipt":true
         }),
     );
-    assert_eq!(compact["isError"], true);
+    assert_eq!(compact["isError"], false);
     let compact_data = serde_json::to_value(&observation).expect("exact partial observation");
-    assert_compact_index_job_receipt(&compact, &compact_data["data"]);
+    assert_compact_index_job_receipt(&compact, &compact_data);
     let compact_value = &compact["structuredContent"]["surface"]["index_job"]["value"]["detail"];
     assert_eq!(
         compact_value["ticket"]["owner_epoch"],
@@ -8417,12 +8767,49 @@ fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_s
         "rejected"
     );
     assert_context_bounded(&compact);
+    // Exercise the complete JSON-RPC envelope with warning text that must
+    // be bounded in the middle of multibyte UTF-8 while preserving evidence.
+    let long_package = PackageReference::parse(format!("/{}", "é".repeat(1300))).expect("bounded package");
+    let mut long_partial = partial.clone();
+    long_partial.package = long_package.clone();
+    long_partial.admit().expect("long typed partial");
+    let long_ticket = IndexJobTicket::new(std::num::NonZeroU64::new(32).expect("ticket"), [19;16], long_package);
+    let long_observation = IndexJobObservation::Terminal(IndexJobTerminal { ticket: long_ticket.clone(), outcome: IndexJobOutcome::PartiallyPublished(long_partial.clone()) });
+    let mut long_server = ready(Fake { surface_reply: Some(SurfaceReply::IndexProgress(long_observation.clone())), ..Fake::default() });
+    let long_wire = request(&mut long_server, "tools/call", &json!({"name": INDEX_PROGRESS_TOOL, "arguments": {"ticket":ticket_value(&long_ticket), "after_sequence":0, "compact_receipt":true}}));
+    assert_eq!(long_wire["result"]["isError"], false, "{long_wire}");
+    assert_context_bounded(&long_wire);
+    let wire_budget = &long_wire["result"]["_meta"]["backend/wireBudget"];
+    println!("partial warning envelope: {} bytes, {} estimated tokens", wire_budget["bytes"], wire_budget["estimatedTokens"]);
+    let long_content = &long_wire["result"]["structuredContent"];
+    let long_detail = long_content["partial_publication_warning"]["detail"].as_str().expect("warning detail");
+    assert!(long_detail.len() < 1200);
+    assert!(long_detail.contains("additional profile details are retained"));
+    assert_eq!(long_content["partial_publication_warning"]["receipt"], serde_json::to_value(&long_partial.receipt).expect("exact receipt"));
+    assert_compact_index_job_receipt(&long_wire["result"], &serde_json::to_value(&long_observation).expect("exact observation"));
+
+    let refused_reply =
+        SurfaceReply::IndexProgress(IndexJobObservation::Terminal(IndexJobTerminal {
+            ticket: ticket.clone(),
+            outcome: IndexJobOutcome::Refused(ProductText::from_static("all profiles refused")),
+        }));
+    let mut refused_server = ready(Fake {
+        surface_reply: Some(refused_reply),
+        ..Fake::default()
+    });
+    let refused = call(
+        &mut refused_server,
+        INDEX_PROGRESS_TOOL,
+        &json!({"ticket":ticket_value(&ticket),"after_sequence":0}),
+    );
+    assert_eq!(refused["isError"], true);
+    assert_eq!(refused["structuredContent"]["fault"]["slug"], "rejected");
+    assert!(refused["structuredContent"]["partial_publication_warning"].is_null());
     let expected_cause = backend_present::product_view(&reply)
-        .fault()
-        .expect("legacy partial fault")
-        .cause()
-        .sentence()
-        .to_owned();
+        .partial_publication_warning()
+        .expect("qualified publication warning")
+        .detail
+        .clone();
     let key = IndexOperationKey::from_bytes([0x41; 32]).expect("durable key");
     let capture = IndexOperationSourceCaptureReceipt::from_checked_parts(
         key,
@@ -8511,7 +8898,11 @@ fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_s
                 );
                 assert!(wire.get("error").is_none(), "{wire}");
                 assert_eq!(wire["id"], 9);
-                assert_eq!(wire["result"]["isError"], fault_slug.is_some(), "{wire}");
+                assert_eq!(
+                    wire["result"]["isError"],
+                    fault_slug == Some("rejected"),
+                    "{wire}"
+                );
                 let content = &wire["result"]["structuredContent"];
                 if fault_slug.is_none() {
                     assert_eq!(
@@ -8540,19 +8931,26 @@ fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_s
                     "bd8be50867ceba6df5959b6a6fdb3651b3f510574692c386858435e6e3c26897"
                 );
                 if fault_slug == Some("partially-published") {
-                    let fault = backend_present::product_view(&reply);
+                    let view = backend_present::product_view(&reply);
+                    assert!(view.fault().is_none());
                     assert_eq!(
-                        fault
-                            .fault()
-                            .expect("durable partial fault")
-                            .cause()
-                            .sentence(),
+                        view.partial_publication_warning()
+                            .expect("durable warning")
+                            .detail,
                         expected_cause
                     );
-                    assert_eq!(content["fault"]["slug"], "partially-published");
-                    assert!(
-                        content["fault"]["partial_publication"].is_null(),
-                        "no manufactured legacy source tuple"
+                    assert!(content["fault"].is_null());
+                    assert_eq!(
+                        content["partial_publication_warning"]["receipt"],
+                        serde_json::to_value(&partial.receipt).expect("receipt")
+                    );
+                    assert_eq!(
+                        content["partial_publication_warning"]["published_profiles"],
+                        1
+                    );
+                    assert_eq!(
+                        content["partial_publication_warning"]["refused_profiles"],
+                        1
                     );
                     assert_eq!(
                         content["surface"]["data"]["detail"]["source_capture"],
@@ -8561,7 +8959,7 @@ fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_s
                     );
                     let text = text_of(&wire["result"]);
                     assert!(
-                        text.contains("python: published 236 source files with Complete coverage")
+                        text.contains("python: published 236 source files with complete coverage")
                     );
                     assert!(text.contains("typescript: unavailable"));
                     assert!(text.contains("Set NUDOX_TSC"));
@@ -9428,14 +9826,31 @@ mod conditional_progress_tests {
             );
             assert_eq!(full["isError"], false);
             assert!(text_of(&full).contains("profile 2/3"));
-            assert_eq!(
-                full["structuredContent"]["surface"]["index_job"],
-                serde_json::to_value(backend_present::IndexJobProjection::Progress(
-                    backend_library::IndexJobObservation::Pending(page.clone())
-                ))
-                .expect("existing progress DTO")
-            );
+            let mut expected_job = serde_json::to_value(
+                backend_present::IndexJobProjection::Progress(
+                    backend_library::IndexJobObservation::Pending(page.clone()),
+                ),
+            )
+            .expect("existing progress DTO");
+            if detail == "summary" {
+                // A summary poll of an operation names the job ticket once, in the page; the
+                // events it carries leave out their copy of it.
+                let events = expected_job
+                    .pointer_mut("/value/detail/events")
+                    .and_then(Value::as_array_mut)
+                    .expect("page events");
+                assert_eq!(events.len(), 1);
+                for event in events {
+                    assert!(event.as_object_mut().expect("event").remove("ticket").is_some());
+                }
+            }
+            assert_eq!(full["structuredContent"]["surface"]["index_job"], expected_job);
             let action = full["structuredContent"]["index_poll"]["call"].clone();
+            assert_eq!(
+                action["arguments"].get("after_event").cloned(),
+                (detail == "summary").then(|| json!(3)),
+                "only a summary poll names the last event it reached"
+            );
             assert_eq!(
                 action["arguments"]["operation_key"],
                 json!(status.operation_key)
@@ -9473,6 +9888,198 @@ mod conditional_progress_tests {
             assert_context_bounded(&unchanged);
             assert_context_bounded(&changed);
         }
+    }
+
+    #[test]
+    fn a_changed_summary_poll_names_the_job_ticket_once_and_keeps_it_elsewhere() {
+        // Every progress event repeated the full ticket, and a poll repeated the CLI line.
+        use backend_library::{
+            IndexJobProgressEvent, IndexJobProgressKind, IndexOperationObservation,
+            IndexOperationState, IndexProgressPage, SemanticLanguageProfile,
+        };
+        let active = phases().remove(1);
+        let SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(status)) = &active
+        else {
+            panic!("active status")
+        };
+        let IndexOperationState::Active { ticket, stage } = &status.state else {
+            panic!("active ticket")
+        };
+        let event = |sequence| IndexJobProgressEvent {
+            ticket: ticket.clone(),
+            sequence,
+            kind: IndexJobProgressKind::ProfileAdmitted {
+                profile: SemanticLanguageProfile::from_name("typescript").expect("profile"),
+                ordinal: 2,
+                total: 3,
+            },
+        };
+        let page = |sequence| IndexProgressPage {
+            ticket: ticket.clone(),
+            stage: *stage,
+            events: vec![event(sequence), event(sequence + 1)].into_boxed_slice(),
+            next_sequence: sequence + 1,
+            truncated: false,
+            has_more: false,
+        };
+        let context = backend_present::StartupRecoveryContext::new(
+            PROJECT.to_owned(),
+            "/private/owner.sock".to_owned(),
+            "/observed/bundle/backend-cli".to_owned(),
+            backend_present::StartupRecoveryCommand::Status,
+            backend_present::StartupRecoveryMode::Active,
+            backend_present::StartupRecoveryWorkspace::Explicit("/private/workspace".to_owned()),
+        );
+        let mut sizes = Vec::new();
+        for (detail, compact) in [("summary", true), ("standard", false)] {
+            // With an installed CLI the poll could carry its shell line; only the standard one does.
+            let mut server = ready(Fake {
+                surface_reply: Some(active.clone()),
+                profile_progress_reply: Some(page(3)),
+                cli_context: Some(context.clone()),
+                ..Fake::default()
+            });
+            // The observation the caller holds covers the events the owner has reported so far.
+            let mut arguments = active_arguments();
+            arguments["after_observation"] = json!(
+                backend_client::IndexObservationFingerprint::active_with_profile_progress(
+                    status,
+                    Some(&page(3))
+                )
+                .expect("full fingerprint of the observed history")
+                .expect("active")
+            );
+            arguments["detail"] = json!(detail);
+            arguments["wait_millis"] = json!(0);
+            let unchanged = call(&mut server, INDEX_PROGRESS_TOOL, &arguments);
+            assert_eq!(unchanged["structuredContent"]["surface"]["data"]["state"], "pending-unchanged");
+            server.product.surface_reply = Some(active.clone());
+            server.product.profile_progress_reply = Some(page(5));
+            let changed = call(&mut server, INDEX_PROGRESS_TOOL, &arguments);
+            assert_eq!(changed["isError"], false);
+            let job = &changed["structuredContent"]["surface"]["index_job"]["value"]["detail"];
+            assert!(job["ticket"].is_object(), "the page still names its ticket once: {job}");
+            let events = job["events"].as_array().expect("events");
+            assert_eq!(events.len(), 2);
+            for event in events {
+                assert_eq!(event.get("ticket").is_none(), compact, "{detail}: {event}");
+            }
+            assert_eq!(
+                changed["structuredContent"]["index_poll"].get("shell").is_none(),
+                compact
+            );
+            sizes.push(serde_json::to_vec(&changed).expect("result").len());
+        }
+        assert!(sizes[0] < sizes[1], "summary polls are smaller: {sizes:?}");
+    }
+
+    #[test]
+    fn a_later_operation_poll_carries_only_events_after_the_last_one_it_was_sent() {
+        use backend_library::{
+            IndexJobProgressEvent, IndexJobProgressKind, IndexOperationObservation,
+            IndexOperationState, IndexProgressPage, SemanticLanguageProfile,
+        };
+        let active = phases().remove(1);
+        let SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(status)) = &active
+        else {
+            panic!("active status")
+        };
+        let IndexOperationState::Active { ticket, stage } = &status.state else {
+            panic!("active ticket")
+        };
+        let history = |through: u64| IndexProgressPage {
+            ticket: ticket.clone(),
+            stage: *stage,
+            events: (1..=through)
+                .map(|sequence| IndexJobProgressEvent {
+                    ticket: ticket.clone(),
+                    sequence,
+                    kind: IndexJobProgressKind::ProfileAdmitted {
+                        profile: SemanticLanguageProfile::from_name("typescript").expect("profile"),
+                        ordinal: 2,
+                        total: 3,
+                    },
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            next_sequence: through,
+            truncated: false,
+            has_more: false,
+        };
+        let mut server = ready(Fake {
+            surface_reply: Some(active.clone()),
+            profile_progress_reply: Some(history(5)),
+            ..Fake::default()
+        });
+        let first = call(
+            &mut server,
+            INDEX_PROGRESS_TOOL,
+            &json!({"operation_key": status.operation_key, "detail": "summary"}),
+        );
+        assert_eq!(first["isError"], false);
+        let events = |result: &Value| {
+            result["structuredContent"]["surface"]["index_job"]["value"]["detail"]["events"]
+                .as_array()
+                .expect("events")
+                .iter()
+                .map(|event| event["sequence"].as_u64().expect("sequence"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(events(&first), [1, 2, 3, 4, 5], "the first poll has the whole history");
+        let next = first["structuredContent"]["index_poll"]["call"].clone();
+        assert_eq!(next["arguments"]["after_event"], 5, "the call names the last event reached");
+        assert!(next["arguments"].get("after_sequence").is_none(), "after_sequence stays a ticket option");
+
+        // Two more events happen; the owner still replays its history from the start.
+        server.product.surface_reply = Some(active.clone());
+        server.product.profile_progress_reply = Some(history(7));
+        let mut arguments = next["arguments"].clone();
+        arguments["wait_millis"] = json!(0);
+        let resumed = call(&mut server, INDEX_PROGRESS_TOOL, &arguments);
+        assert_eq!(resumed["isError"], false, "{resumed}");
+        assert_eq!(events(&resumed), [6, 7], "only the new events");
+        let detail = &resumed["structuredContent"]["surface"]["index_job"]["value"]["detail"];
+        assert_eq!(detail["events_not_repeated"], 5);
+        assert_eq!(detail["next_sequence"], 7, "the position and the stage stay");
+        assert!(detail["stage"].is_string(), "{detail}");
+        assert_eq!(
+            resumed["structuredContent"]["index_poll"]["call"]["arguments"]["after_event"],
+            7
+        );
+        assert_eq!(
+            resumed["structuredContent"]["index_poll"]["call"]["arguments"]["operation_key"],
+            next["arguments"]["operation_key"]
+        );
+
+        // The same state read without the position replays everything.
+        server.product.surface_reply = Some(active.clone());
+        arguments.as_object_mut().expect("arguments").remove("after_event");
+        let replayed = call(&mut server, INDEX_PROGRESS_TOOL, &arguments);
+        assert_eq!(events(&replayed), [1, 2, 3, 4, 5, 6, 7]);
+        let (before, after) = (
+            serde_json::to_vec(&replayed).expect("result").len(),
+            serde_json::to_vec(&resumed).expect("result").len(),
+        );
+        println!("index_progress poll bytes: before {before}, after {after}");
+        assert!(after < before, "{after} < {before}");
+        assert_context_bounded(&resumed);
+
+        // An unchanged poll keeps the position for the next one.
+        server.product.surface_reply = Some(active.clone());
+        let mut again = resumed["structuredContent"]["index_poll"]["call"]["arguments"].clone();
+        again["wait_millis"] = json!(0);
+        let unchanged = call(&mut server, INDEX_PROGRESS_TOOL, &again);
+        assert_eq!(unchanged["structuredContent"]["surface"]["data"]["state"], "pending-unchanged");
+        assert_eq!(unchanged["structuredContent"]["index_poll"]["call"]["arguments"]["after_event"], 7);
+        // The ticket route has its own position and refuses the operation one.
+        let mut ticket_poll = ready(Fake::default());
+        let refused = call(
+            &mut ticket_poll,
+            INDEX_PROGRESS_TOOL,
+            &json!({"ticket": ticket_value(&index_job_ticket()), "after_event": 3}),
+        );
+        assert_eq!(refused["isError"], true);
+        assert!(ticket_poll.product.surface_commands.is_empty());
     }
 
     #[test]
@@ -9761,10 +10368,13 @@ mod conditional_progress_tests {
                 reference["after_observation"],
                 arguments["after_observation"]
             );
-            assert_eq!(
-                reference["ticket"],
-                serde_json::to_value(&active).expect("exact status")["data"]["detail"]["state"]["detail"]
-                    ["ticket"]
+            assert!(
+                reference.get("ticket").is_none(),
+                "the observation the caller holds already names its ticket"
+            );
+            assert!(
+                body["index_poll"].get("shell").is_none(),
+                "a poll repeats a call the caller already made"
             );
             assert_eq!(
                 body["index_poll"]["call"]["arguments"]["wait_millis"],
@@ -9777,7 +10387,7 @@ mod conditional_progress_tests {
                 serde_json::to_vec(&unchanged)
                     .expect("complete result")
                     .len()
-                    < 2200
+                    < 1500
             );
             assert_context_bounded(&unchanged);
             server.product.surface_reply = Some(active.clone());
@@ -9829,7 +10439,12 @@ mod conditional_progress_tests {
                 next["arguments"]["after_observation"],
                 arguments["after_observation"]
             );
-            assert!(text_of(&pending).contains(&next.to_string()));
+            // The poll names its next call once, in `index_poll.call`, and does not repeat it in text.
+            assert_eq!(
+                text_of(&pending),
+                "Operation remains pending; the referenced observation is unchanged. Poll again with `index_poll.call`, or omit the conditional options to read the complete current receipt."
+            );
+            assert!(!text_of(&pending).contains(&next.to_string()));
             let failed = call(
                 &mut server,
                 next["name"].as_str().expect("same tool"),
@@ -10190,8 +10805,11 @@ fn index_poll_cli_advice_is_optional_and_preserves_installed_attachment_key_and_
                 poll["call"],
                 json!({"name":"backend.index_progress","arguments":{"operation_key":key,"detail":detail}})
             );
-            assert_eq!(poll.get("shell").is_some(), installed);
-            if installed {
+            // A summary poll of an operation repeats a call the caller already made, so the
+            // CLI line is left to the first reply; the other details still carry it.
+            let carries_shell = installed && detail != "summary";
+            assert_eq!(poll.get("shell").is_some(), carries_shell);
+            if carries_shell {
                 let expected =
                     backend_present::Affordance::PollIndexOperation { operation_key: key }
                         .poll_shell_in_context(&context, backend_present::Detail::parse(detail));
@@ -10316,9 +10934,9 @@ fn search_published_names_preserves_useful_records_and_explicit_pending_scope() 
         assert_eq!(page["semantic_preparation"]["state"], "pending");
         assert_eq!(page["records"].as_array().expect("useful rows").len(), 1);
         assert_eq!(page["records"][0]["identity"]["coordinate"], DECLARATION);
-        assert_eq!(
-            page["records"][0]["identity"]["semantic_data"]["value"],
-            json!(*symbol_key(DECLARATION).as_bytes())
+        assert_selected_id_wire(
+            &page["records"][0]["identity"]["semantic_data"]["value"],
+            symbol_key(DECLARATION).as_bytes(),
         );
         assert!(
             result["content"]
@@ -10358,4 +10976,130 @@ fn search_published_names_never_masks_a_declared_compiler_refusal_as_partial() {
     assert_eq!(page["semantic_preparation"]["state"], "unavailable");
     assert_eq!(page["semantic_preparation"]["reason"], "unconfigured");
     assert_eq!(page["records"].as_array().expect("useful retained names").len(), 1);
+}
+
+#[test]
+fn related_edge_continuation_shrinks_later_delivery_without_losing_edges() {
+    let mut rows = vec![package_row(), module_row()];
+    rows.extend((0..13).map(|index| {
+        let coordinate = format!("{MODULE}:{}::{}_{}", index + 2, "long_name".repeat(12), index);
+        Row::in_package(RowId::Symbol(symbol_key(&coordinate)), basis(), package_key(PROJECT), coordinate)
+            .with_parent(symbol_key(MODULE))
+    }));
+    let view = root(rows);
+    let cursor = backend_library::Cursor::for_view_root(&view);
+    let catalog = backend_library::Library::from_view(view, cursor).expect("catalog");
+    let expected = catalog.view().row_refs().filter(|row| row.parent == Some(symbol_key(MODULE)))
+        .map(|row| row.label.clone()).collect::<std::collections::BTreeSet<_>>();
+    let mut server = ready(Fake { page_catalog: Some(catalog), catalog_delivery_ceiling: Some(2), ..Fake::default() });
+    let selected = backend_library::SelectedSymbolId::new(symbol_key(MODULE).to_bytes()).expect("center ID");
+    let facet = serde_json::to_value(backend_present::IdentitySemanticData::SelectedSymbolId(selected)).expect("selected facet");
+    let mut args = json!({"selected_symbol": facet, "limit": 4});
+    let mut seen = std::collections::BTreeSet::new();
+    let mut ordered = Vec::new();
+    let mut pages = 0;
+    loop {
+        let result = call(&mut server, "backend.related", &args);
+        assert_context_bounded(&result);
+        assert_eq!(result["isError"], false, "{result}");
+        let edges = result["structuredContent"]["edges"].as_array().expect("typed edges");
+        for edge in edges {
+            assert_eq!(edge["from"], MODULE);
+            assert_eq!(edge["relation"], "calls");
+            let target = edge["to"].as_str().expect("target");
+            assert!(seen.insert(target.to_owned()), "edge repeated");
+            ordered.push(backend_library::RelatedEdgeKey::new(backend_library::GraphRelation::new(
+                RowId::Symbol(symbol_key(MODULE)), RowId::Symbol(symbol_key(target)), backend_library::SemanticLinkKind::Calls,
+            )));
+        }
+        pages += 1;
+        if let Some(next) = result["structuredContent"]["continuation_call"].as_object() {
+            assert_eq!(result["structuredContent"]["more"], true);
+            args = next["arguments"].clone();
+        } else { break; }
+        assert!(pages < 20, "continuation failed to advance");
+    }
+    assert!(pages > 2, "later delivery ceiling must force smaller pages");
+    assert_eq!(seen, expected);
+    assert!(ordered.windows(2).all(|pair| pair[0] < pair[1]), "edge frontier order changed");
+}
+
+#[test]
+fn related_initial_delivery_preserves_credit_and_existing_cursor_window() {
+    assert_eq!(related_initial_delivery(200, None), 32);
+    assert_eq!(related_initial_delivery(12, None), 12);
+    assert_eq!(related_initial_delivery(200, Some(100)), 100);
+    assert_eq!(related_initial_delivery(200, Some(7)), 7);
+}
+
+#[test]
+fn related_first_page_caps_delivery_without_reducing_issued_credit() {
+    let mut rows = vec![package_row(), module_row()];
+    rows.extend((0..40).map(|index| {
+        let coordinate = format!("{MODULE}:{}::item_{index}", index + 2);
+        Row::in_package(RowId::Symbol(symbol_key(&coordinate)), basis(), package_key(PROJECT), coordinate)
+            .with_parent(symbol_key(MODULE))
+    }));
+    let view = root(rows);
+    let cursor = backend_library::Cursor::for_view_root(&view);
+    let catalog = backend_library::Library::from_view(view, cursor).expect("catalog");
+    let mut server = ready(Fake { page_catalog: Some(catalog), ..Fake::default() });
+    let selected = backend_library::SelectedSymbolId::new(symbol_key(MODULE).to_bytes()).expect("center");
+    let facet = serde_json::to_value(backend_present::IdentitySemanticData::SelectedSymbolId(selected)).expect("facet");
+    let first = call(&mut server, "backend.related", &json!({"selected_symbol": facet, "limit": 100}));
+    assert_eq!(first["isError"], false, "{first}");
+    assert_eq!(first["structuredContent"]["edges"].as_array().expect("edges").len(), 32);
+    let next = first["structuredContent"]["continuation_call"]["arguments"].clone();
+    let second = call(&mut server, "backend.related", &next);
+    assert_eq!(second["isError"], false, "{second}");
+    assert_eq!(second["structuredContent"]["edges"].as_array().expect("edges").len(), 8);
+    assert_eq!(server.product.page_limits, vec![100, 100]);
+}
+
+#[test]
+fn large_page_cursors_are_parked_under_a_short_signed_bounded_handle() {
+    // nextCursor was 2470 of 3575 bytes at limit 1 because it carried the owner's
+    // whole portable proof.
+    let mut server = ready(Fake::default());
+    let context = b"backend.search|project|args";
+    let owner = format!("pc2-{}", "ab".repeat(1200));
+    let inline = server.sign_cursor_token(&owner, context).expect("inline cursor");
+    let token = server.issue_page_cursor(&owner, context).expect("handle cursor");
+    assert!(token.starts_with("mcp3-"), "{token}");
+    assert!(token.len() < 100 && token.len() * 20 < inline.len(), "{} vs {}", token.len(), inline.len());
+    assert_eq!(
+        server.verify_cursor_token(&token, context).expect("verify").as_deref(),
+        Some(owner.as_str())
+    );
+    // Bound to the exact call: another tool, project or argument set cannot resume it.
+    assert_eq!(server.verify_cursor_token(&token, b"backend.search|project|other").expect("verify"), None);
+    // Any edit to the token is refused.
+    let mut forged = token.clone();
+    forged.replace_range(forged.len() - 1.., if token.ends_with('0') { "1" } else { "0" });
+    assert_eq!(server.verify_cursor_token(&forged, context).expect("verify"), None);
+    // A small owner cursor stays inline and stateless.
+    assert!(server.issue_page_cursor("pc2-abcd", context).expect("small").starts_with("mcp2-"));
+
+    // Bounded: only the newest handles are kept, and an evicted one says so.
+    for index in 0..CURSOR_HANDLE_CAPACITY {
+        let other = format!("pc2-{}", format!("{index:02x}").repeat(200));
+        server.issue_page_cursor(&other, context).expect("another handle");
+    }
+    assert_eq!(server.verify_cursor_token(&token, context).expect("verify"), None, "evicted");
+    let arguments = json!({"cursor": token}).as_object().expect("arguments").clone();
+    let error = server.continuation(&arguments, context).expect_err("evicted handle is refused");
+    let detail = error.detail.clone().unwrap_or_default();
+    assert!(detail.contains("short-lived") && detail.contains("without a cursor"), "{detail}");
+
+    // Expiring: a handle past its expiry no longer resolves, even if it is still stored.
+    let fresh = server.issue_page_cursor(&owner, context).expect("fresh handle");
+    assert!(server.verify_cursor_token(&fresh, context).expect("verify").is_some());
+    server
+        .cursor_handles
+        .lock()
+        .expect("handles")
+        .entries
+        .iter_mut()
+        .for_each(|entry| entry.1 = 1);
+    assert_eq!(server.verify_cursor_token(&fresh, context).expect("verify"), None, "expired");
 }

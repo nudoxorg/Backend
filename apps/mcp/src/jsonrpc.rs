@@ -21,6 +21,8 @@
 //!   next tool call an agent can paste back.
 
 use backend_client::{ClientError, RequestCancellationReason, RequestContext, Session};
+#[cfg(test)]
+use backend_present::record_list;
 use backend_library::protocol::mcp::{MCP_PROTOCOL_VERSION, negotiate_version};
 use backend_library::{
     AdmittedGraphQueryInput, CompileExecutionIntent, GraphQueryPage, GraphQueryRow, GraphValue,
@@ -34,9 +36,9 @@ use backend_present::{
     Answer, BudgetExceeded, CL100K_POLICY, CL100K_VOCABULARY_SHA256, ContinuationCursor,
     ContinuationTarget, CursorTarget, DEFAULT_RESPONSE_BUDGET_BYTES, Detail,
     ESTIMATED_BYTES_PER_TOKEN, Engine, Fault, Invocation, McpExecutableCall, McpExposure,
-    McpInvocation, Probe, Request, answer_paged, bounded_text, encode_answer_with_call,
+    McpInvocation, OversizeAdvice, Probe, Request, answer_paged, bounded_text, encode_answer_with_call,
     encode_serializable, estimate_tokens, fault_value, lower_with_opener, markdown,
-    oversized_fault, record_list,
+    oversized_fault, oversized_fault_advising,
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{
@@ -82,6 +84,25 @@ const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// It is the shared driver's [`Engine`] plus the one capability that is not a
 /// registry row: the typed Trustfall lane behind `backend.query`.
 pub(super) trait Product: Engine {
+    /// Whether qualified source replies come from the authenticated local
+    /// session. Generic or test products default to the fail-closed path.
+    fn qualified_source_ranges_from_authenticated_session(&self) -> bool {
+        false
+    }
+
+    /// Reads a source range without changing a continuation's view revision.
+    /// Implementations must return an admitted reply; observed policy claims
+    /// require the authenticated local owner session.
+    fn declaration_source_range(
+        &mut self,
+        selector: &backend_library::DeclarationSelector,
+        expected_root: Option<&str>,
+        range: backend_library::SourceRangeRequest,
+    ) -> Result<ReplyDto, ClientError> {
+        let _ = (selector, expected_root, range);
+        Err(ClientError::Protocol("source range is unavailable".to_owned()))
+    }
+
     /// Whether this product has the explicit owner-side rehydration route for
     /// compact outline witnesses. Other products retain full-proof cursors.
     fn supports_outline_owner_witness_route(&self) -> bool {
@@ -143,6 +164,20 @@ pub(super) trait Product: Engine {
         self.graph_page(coordinate, window.issued().get(), continuation)
     }
 
+    fn related_page_window(&mut self, coordinate: String, window: backend_library::QueryWindow, continuation: Option<PageContinuation>) -> Result<ReplyDto, ClientError> {
+        let _ = (coordinate, window, continuation);
+        Err(ClientError::Protocol("this product does not expose related pagination".to_owned()))
+    }
+    fn related_page_declaration(&mut self, selector: backend_library::DeclarationSelector, window: backend_library::QueryWindow, continuation: Option<PageContinuation>) -> Result<ReplyDto, ClientError> {
+        let _ = (selector, window, continuation);
+        Err(ClientError::Protocol("this product does not expose related pagination".to_owned()))
+    }
+
+    fn related_edge_page(&mut self, selector: backend_library::DeclarationSelector, window: backend_library::QueryWindow, cursor: Option<backend_library::RelatedPageCursor>) -> Result<ReplyDto, ClientError> {
+        let _ = (selector, window, cursor);
+        Err(ClientError::Protocol("this product does not expose related edge pages".to_owned()))
+    }
+
     /// Resumes an outline from an authenticated compact token whose page root
     /// remains untrusted until the owner reconstructs its predecessor rows.
     fn outline_page_token(
@@ -183,11 +218,18 @@ pub(super) trait Product: Engine {
 /// this crate. Its bodies carry no judgement: every arm forwards one probe to
 /// the matching session method, and every decision about which probes an answer
 /// needs is made once, in the shared driver.
-pub(super) struct SessionProduct(Session, backend_runtime::WorkspacePaths);
+pub(super) struct SessionProduct(Session, backend_runtime::WorkspacePaths, bool);
 
 impl SessionProduct {
+    #[cfg(test)]
     pub(super) const fn new(session: Session, paths: backend_runtime::WorkspacePaths) -> Self {
-        Self(session, paths)
+        Self(session, paths, false)
+    }
+
+    /// Only the matched local-owner connection path may mark this product as
+    /// eligible to project a locally admitted observed-policy reply.
+    const fn from_matched_owner(session: Session, paths: backend_runtime::WorkspacePaths) -> Self {
+        Self(session, paths, true)
     }
 
     fn into_session(self) -> Session {
@@ -289,6 +331,12 @@ impl Engine for SessionProduct {
     }
 
     fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
+        // Session has already admitted these read-only source-policy claims
+        // on its authenticated local channel. The generic journal transport
+        // cannot grant that authority and is unnecessary for these reads.
+        if matches!(command, SurfaceCommand::Read { .. } | SurfaceCommand::References { .. }) {
+            return self.0.surface(command);
+        }
         backend_client::surface_with_index_journal(&self.1, command, |command| {
             self.0.surface(command)
         })
@@ -296,6 +344,19 @@ impl Engine for SessionProduct {
 }
 
 impl Product for SessionProduct {
+    fn qualified_source_ranges_from_authenticated_session(&self) -> bool {
+        self.2
+    }
+
+    fn declaration_source_range(
+        &mut self,
+        selector: &backend_library::DeclarationSelector,
+        expected_root: Option<&str>,
+        range: backend_library::SourceRangeRequest,
+    ) -> Result<ReplyDto, ClientError> {
+        self.0.declaration_source_range(selector, expected_root, range)
+    }
+
     fn supports_outline_owner_witness_route(&self) -> bool {
         self.0.supports_outline_owner_witness_route()
     }
@@ -369,6 +430,17 @@ impl Product for SessionProduct {
     ) -> Result<ReplyDto, ClientError> {
         self.0
             .graph_page_declaration(&selector, window, continuation)
+    }
+
+    fn related_page_window(&mut self, coordinate: String, window: backend_library::QueryWindow, continuation: Option<PageContinuation>) -> Result<ReplyDto, ClientError> {
+        self.0.related_page_window(&coordinate, window, continuation)
+    }
+    fn related_page_declaration(&mut self, selector: backend_library::DeclarationSelector, window: backend_library::QueryWindow, continuation: Option<PageContinuation>) -> Result<ReplyDto, ClientError> {
+        self.0.related_page_declaration(&selector, window, continuation)
+    }
+
+    fn related_edge_page(&mut self, selector: backend_library::DeclarationSelector, window: backend_library::QueryWindow, cursor: Option<backend_library::RelatedPageCursor>) -> Result<ReplyDto, ClientError> {
+        self.0.related_edge_page_declaration(&selector, window, cursor)
     }
 
     fn graph_query(
@@ -448,7 +520,10 @@ impl reconnect::Endpoint for SessionEndpoint {
         if let Some(state) = self.pending_continuation_state.take() {
             session.restore_continuation_state(state);
         }
-        Ok(SessionProduct::new(session, self.paths.clone()))
+        Ok(SessionProduct::from_matched_owner(
+            session,
+            self.paths.clone(),
+        ))
     }
 
     fn retire(&mut self, previous: Self::Product) {
@@ -741,6 +816,11 @@ impl Drop for StdioShutdown {
     }
 }
 
+// Fresh RELATED pages cap work independently of the caller’s issued credit.
+fn related_initial_delivery(issued: u16, continuation_delivery: Option<u16>) -> u16 {
+    continuation_delivery.unwrap_or(issued.min(32))
+}
+
 pub(super) struct Server<P> {
     product: P,
     project: String,
@@ -749,6 +829,8 @@ pub(super) struct Server<P> {
     protocol: &'static str,
     opener: Option<TreeOpener>,
     cursor_secret: CursorAuthority,
+    /// Short-lived server-side bodies of the large page cursors this process issued.
+    cursor_handles: std::sync::Mutex<CursorHandles>,
     request_context: Option<RequestContext>,
     /// Records each tool call against the signed-in account. `None` when this
     /// build does not require an account; `Err` when the account directory
@@ -791,6 +873,7 @@ impl<P: Product> Server<P> {
             protocol: MCP_PROTOCOL_VERSION,
             opener: None,
             cursor_secret: cursor_secret.into(),
+            cursor_handles: std::sync::Mutex::new(CursorHandles::default()),
             request_context: None,
             account: backend_account::required().then(|| {
                 backend_account::ToolCallMeter::open().map_err(|error| error.to_string())
@@ -1135,11 +1218,17 @@ impl<P: Product> Server<P> {
             // This precedes opener admission, reconnect/startup and the durable
             // caller journal. A bad local operand must not occupy this session
             // while an owner processes a mutation it cannot admit.
+            // A version-pinned registry purl names a release to acquire, not a directory: the
+            // refusals that offer `add` for an unacquired release send exactly this call.
+            let acquires_release = matches!(
+                backend_library::PackageReference::parse(path),
+                Ok(backend_library::PackageReference::Purl(_))
+            );
             let target = std::path::Path::new(path);
-            if !target.is_absolute() || !target.is_dir() {
+            if !acquires_release && (!target.is_absolute() || !target.is_dir()) {
                 return Err(RpcError::from_fault(&Fault::usage(
                     "path",
-                    "backend.index requires an existing absolute directory; correct arguments.path before indexing; no index operation was submitted",
+                    "backend.index requires an existing absolute directory or a version-pinned package URL; correct arguments.path before indexing; no index operation was submitted",
                 )));
             }
         }
@@ -1169,6 +1258,12 @@ impl<P: Product> Server<P> {
                 "Use backend.index_progress for bounded polling",
             )));
         }
+        if name == "backend.source" && arguments.contains_key("byte_range") {
+            if arguments.get("byte_range") != Some(&Value::Bool(true)) {
+                return Err(RpcError::invalid("byte_range must be true when supplied"));
+            }
+            return self.source_range_tool(arguments, detail, invocation);
+        }
         if name == "backend.outline" {
             return self.outline_tool(arguments, detail, invocation, response_id);
         }
@@ -1192,11 +1287,18 @@ impl<P: Product> Server<P> {
         } else {
             None
         };
+        if grammar.is_some_and(|grammar| grammar.name() == "related") {
+            return self.related_edge_tool(arguments, detail, invocation, response_id);
+        }
+        // A references cursor indexes the complete reply this server holds; it is
+        // not an owner continuation, so it is read by `references_tool`.
+        let references_tool = grammar.is_some_and(|grammar| grammar.name() == "references");
         let continuation = if matches!(route, ToolRoute::Query)
-            || matches!(
-                cursor_domain,
-                Some(backend_present::ContinuationDomain::PresentationPage)
-            ) {
+            || (!references_tool
+                && matches!(
+                    cursor_domain,
+                    Some(backend_present::ContinuationDomain::PresentationPage)
+                )) {
             self.continuation(arguments, &context)?
         } else {
             None
@@ -1204,7 +1306,12 @@ impl<P: Product> Server<P> {
         if matches!(route, ToolRoute::Query) {
             return self.query_tool(arguments, detail, continuation, invocation, response_id);
         }
-        if grammar.is_some_and(|grammar| grammar.name() == "graph") {
+        // A declaration neighbourhood takes the selector route. `graph` with a
+        // component reads the style graph and lowers like any registry command.
+        if grammar.is_some_and(|grammar| {
+            grammar.name() == "related"
+                || (grammar.name() == "graph" && !arguments.contains_key("component"))
+        }) {
             return self.graph_tool(arguments, detail, continuation, invocation, response_id);
         }
         let Some(grammar) = grammar else {
@@ -1290,6 +1397,19 @@ impl<P: Product> Server<P> {
             {
                 self.select_semantic_version_tool(&command, detail, invocation, response_id)
             }
+            Ok(request @ Request::Surface(_))
+                if references_tool
+                    && matches!(&request, Request::Surface(command)
+                        if matches!(command.as_ref(), SurfaceCommand::References { .. })) =>
+            {
+                self.references_tool(&request, arguments, detail, invocation, response_id)
+            }
+            Ok(_) if references_tool && arguments.contains_key("cursor") => {
+                Err(RpcError::invalid_argument(
+                    "cursor",
+                    "a references cursor continues a declaration's uses; a CSS name lists its components in one answer",
+                ))
+            }
             Ok(request) if matches!(&request, Request::Search { .. } | Request::Resolve { .. }) => {
                 self.records_tool(&request, detail, continuation, invocation, response_id)
             }
@@ -1338,13 +1458,41 @@ impl<P: Product> Server<P> {
                     backend_present::Operand::Whole,
                 ))
             })?;
-        no_extra(arguments, &["path", "limit", "cursor", "detail"])?;
+        no_extra(
+            arguments,
+            &["path", "limit", "cursor", "detail", "kind", "exclude_kind", "top_level"],
+        )?;
+        let top_level = match arguments.get("top_level") {
+            None => false,
+            Some(Value::Bool(value)) => *value,
+            Some(_) => {
+                return Err(RpcError::invalid_argument("top_level", "true or false"));
+            }
+        };
+        // The kind filters leave the arguments before grammar validation, so
+        // their type is checked here: a filter of the wrong type is refused,
+        // never read as "no filter".
+        let kind_list = |name: &str| match arguments.get(name) {
+            None => Ok(None),
+            Some(Value::String(text)) => Ok(Some(text.as_str())),
+            Some(_) => Err(RpcError::invalid_argument(
+                name,
+                "a comma-separated string of declaration kinds",
+            )),
+        };
+        let kinds =
+            backend_present::KindFilter::parse(kind_list("kind")?, kind_list("exclude_kind")?)
+                .map_err(RpcError::invalid)?
+                .with_top_level(top_level);
         let grammar = backend_present::grammar_for_tool("backend.outline")
             .ok_or_else(|| RpcError::new(-32602, "Unknown tool"))?;
         let mut command = arguments.clone();
         command.remove("detail");
         command.remove("limit");
         command.remove("cursor");
+        command.remove("kind");
+        command.remove("exclude_kind");
+        command.remove("top_level");
         validate_registry_arguments(grammar, &command)
             .map_err(|fault| RpcError::from_fault(&fault))?;
         let planned_invocation = Invocation::from_json(grammar, &command)
@@ -1396,7 +1544,11 @@ impl<P: Product> Server<P> {
             if outline_owner_token.is_none() {
                 self.reimport_catalog_cursor(&page_arguments, detail, invocation, continuation)?;
             }
-            let selected = Request::OutlinePage { path: path.clone(), limit: effective };
+            let selected = Request::OutlinePage {
+                path: path.clone(),
+                limit: effective,
+                kinds: kinds.clone(),
+            };
             let probe = Probe::OutlinePage { path: &path, limit: effective };
             let window = record_pages::query_window(effective, delivery)?;
             let reply = if let Some(token) = outline_owner_token.as_deref() {
@@ -1449,8 +1601,13 @@ impl<P: Product> Server<P> {
                     .get("structuredContent")
                     .is_some_and(|value| value.get("nextCursor").is_some())
             {
-                let next_arguments =
+                let mut next_arguments =
                     json!({"path":path, "limit":effective, "detail":detail.name()});
+                for key in ["kind", "exclude_kind"] {
+                    if let Some(value) = arguments.get(key) {
+                        next_arguments[key] = value.clone();
+                    }
+                }
                 if let Some(text) = result
                     .get_mut("content")
                     .and_then(Value::as_array_mut)
@@ -1587,6 +1744,170 @@ impl<P: Product> Server<P> {
         }
     }
 
+    fn related_edge_tool(&mut self, arguments: &Map<String, Value>, detail: Detail, invocation: McpInvocation<'_>, response_id: &Value) -> Result<Value, RpcError> {
+        no_extra(arguments, &["coordinate", "selected_symbol", "limit", "cursor", "detail"])?;
+        let operands = arguments.iter().filter(|(key, _)| matches!(key.as_str(), "coordinate" | "selected_symbol")).map(|(key, value)| (key.clone(), value.clone())).collect();
+        let grammar = backend_present::grammar_for("related").expect("related grammar");
+        tools::validate_registry_arguments(grammar, &operands).map_err(|fault| RpcError::from_fault(&fault))?;
+        let input = backend_present::Invocation::from_json(grammar, &operands).map_err(|fault| RpcError::from_fault(&fault))?;
+        let selector = backend_present::declaration_selector(&input).map_err(|fault| RpcError::from_fault(&fault))?;
+        let selector = match selector {
+            backend_library::DeclarationSelector::Coordinate(coordinate) => backend_library::DeclarationSelector::Coordinate(backend_present::resolve_declaration(&mut self.product, &coordinate, "related").map_err(|fault| RpcError::from_fault(&fault))?),
+            selected => selected,
+        };
+        let coordinate = match &selector { backend_library::DeclarationSelector::Coordinate(value) | backend_library::DeclarationSelector::SelectedAt { coordinate: value, .. } => value.clone(), backend_library::DeclarationSelector::Selected(id) => backend_library::encode_id(id.bytes()) };
+        let context = continuation_context(&self.project, invocation.selected_name(), arguments, detail);
+        let cursor = if let Some(value) = arguments.get("cursor") {
+            let token = value.as_str().filter(|v| !v.is_empty()).ok_or_else(|| RpcError::invalid("cursor must be a non-empty opaque string"))?;
+            let owner = self.verify_cursor_token(token, &context)?.ok_or_else(RpcError::stale_cursor)?;
+            let data = owner.strip_prefix("re1-").and_then(|v| URL_SAFE_NO_PAD.decode(v).ok()).ok_or_else(RpcError::stale_cursor)?;
+            Some(serde_json::from_slice::<backend_library::RelatedPageCursor>(&data).map_err(|_| RpcError::stale_cursor())?)
+        } else { None };
+        let effective = limit(arguments)?;
+        let mut delivery = related_initial_delivery(effective, cursor.as_ref().map(|cursor| cursor.scope().delivery));
+        let budget = wire_admission::ResponseBudget::new(response_id);
+        let lifetime = self.semantic_lifetime()?;
+        loop {
+            lifetime.check().map_err(semantic_pages::semantic_client_error)?;
+            let window = record_pages::query_window(effective, delivery)?;
+            let reply = match self.product.related_edge_page(selector.clone(), window, cursor.clone()) {
+                Ok(reply) => reply,
+                Err(ClientError::ResponseTooLarge { .. }) if delivery > 1 => { delivery = delivery.div_ceil(2); continue; }
+                Err(error) => return Err(RpcError::from_fault(&Fault::from_client_error(&error, backend_present::Operand::Text(coordinate.clone())))),
+            };
+            let page = match reply.reply {
+                backend_library::CommandReply::RelatedEdgePage(page) => page,
+                backend_library::CommandReply::Failed(failure) => return Err(RpcError::from_fault(&backend_present::probe_fault(
+                    &ClientError::CommandFailed(failure), Probe::Related(&coordinate),
+                ))),
+                _ => return Err(RpcError::tool("related edge page reply changed shape")),
+            };
+            let mut records = backend_present::related_edge_records(&coordinate, &page)
+                .map_err(|fault| RpcError::from_fault(&fault))?;
+            let mut next_arguments = arguments.clone();
+            next_arguments.insert("limit".to_owned(), json!(effective));
+            let next_context = continuation_context(&self.project, invocation.selected_name(), &next_arguments, detail);
+            let next_invocation = invocation.with_arguments(&next_arguments);
+            let next = match &page.terminal {
+                backend_library::RelatedEdgeTerminal::Complete => None,
+                backend_library::RelatedEdgeTerminal::More(cursor) => {
+                    let bytes = serde_json::to_vec(cursor).map_err(|_| RpcError::tool("related cursor encoding failed"))?;
+                    Some(self.sign_cursor_token(&format!("re1-{}", URL_SAFE_NO_PAD.encode(bytes)), &next_context)?)
+                }
+            };
+            records = records.with_related_continuation(next.clone());
+            let mut result = match self.rendered_admitted(Answer::Records(Box::new(records)), detail, &context, CursorTarget::CliOption, invocation) {
+                Ok(result) => result,
+                Err(error) if delivery > 1 && semantic_pages::oversized(&error) => { delivery = delivery.div_ceil(2); continue; }
+                Err(error) => return Err(error),
+            };
+            let mut edge_preview = String::new();
+            if let Some(structured) = result.get_mut("structuredContent").and_then(Value::as_object_mut) {
+                let edges = page.snapshot.graph_relations.as_deref().unwrap_or(&[]).iter().map(|edge| {
+                    let label = |id| page.snapshot.root.rows().iter().find(|row| row.id == id).map(|row| row.label.as_str()).unwrap_or("");
+                    json!({"from": label(edge.from), "to": label(edge.to), "relation": edge.relation, "confidence": edge.confidence})
+                }).collect::<Vec<_>>();
+                // Preserve one structured copy of each edge in this surface.
+                structured.remove("related_edges");
+                for edge in edges.iter().take(10) {
+                    if let (Some(from), Some(relation), Some(to)) = (edge["from"].as_str(), edge["relation"].as_str(), edge["to"].as_str()) {
+                        edge_preview.push_str(&format!("\n- {from} — {relation} → {to}"));
+                    }
+                }
+                if edges.len() > 10 { edge_preview.push_str("\n- More edges are available in structuredContent.edges."); }
+                structured.insert("edges".to_owned(), json!(edges));
+                structured.insert("related_evidence_withheld".to_owned(), json!(page.withheld));
+                structured.insert("more".to_owned(), json!(next.is_some()));
+                if let Some(token) = &next {
+                    structured.insert("nextCursor".to_owned(), json!(token));
+                    structured.insert("continuation_call".to_owned(), serde_json::to_value(next_invocation.continuation_call(token)).map_err(|_| RpcError::tool("related continuation encoding failed"))?);
+                }
+            } else { return Err(RpcError::tool("related structured response missing")); }
+            if let Some(text) = result.get_mut("content").and_then(Value::as_array_mut).and_then(|content| content.first_mut()).and_then(|item| item.get_mut("text")).and_then(|value| value.as_str()) {
+                let mut text = text.to_owned();
+                if next.is_some() { text.push_str("\n\nMore related edges are available; copy structuredContent.continuation_call to continue."); }
+                if !edge_preview.is_empty() { text.push_str("\n\nRelated edges:"); text.push_str(&edge_preview); }
+                result["content"][0]["text"] = Value::String(bounded_text(&text));
+            }
+            match budget.admit(result) {
+                Ok(result) => return Ok(result),
+                Err(error) if delivery > 1 && semantic_pages::oversized(&error) => { delivery = delivery.div_ceil(2); }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    /// The uses of one declaration, a page at a time.
+    ///
+    /// The owner answers every use at once, so the complete reply is read once and a
+    /// window of it is presented. The cursor binds that exact listing, never a limit, so
+    /// the page size may change between pages. A page too large for the response budget
+    /// is halved until it fits, and the answer says how many uses remain.
+    fn references_tool(
+        &mut self,
+        request: &Request,
+        arguments: &Map<String, Value>,
+        detail: Detail,
+        invocation: McpInvocation<'_>,
+        response_id: &Value,
+    ) -> Result<Value, RpcError> {
+        let mut effective = usize::from(limit(arguments)?);
+        let mut context_arguments = arguments.clone();
+        context_arguments.remove("limit");
+        let context = continuation_context(
+            &self.project,
+            invocation.selected_name(),
+            &context_arguments,
+            detail,
+        );
+        let cursor = match arguments.get("cursor") {
+            None => None,
+            Some(value) => {
+                let token = value
+                    .as_str()
+                    .filter(|token| !token.is_empty())
+                    .ok_or_else(|| RpcError::invalid("cursor must be a non-empty opaque string"))?;
+                let owner = self
+                    .verify_cursor_token(token, &context)?
+                    .filter(|owner| backend_present::is_reference_cursor(owner))
+                    .ok_or_else(|| {
+                        RpcError::invalid(
+                            "cursor is unknown, expired, or belongs to another workspace authority",
+                        )
+                    })?;
+                Some(owner)
+            }
+        };
+        let Answer::Product(listing) = answer_paged(&mut self.product, request, None)
+            .map_err(|fault| RpcError::from_fault(&fault))?
+        else {
+            return Err(RpcError::tool("references reply changed shape"));
+        };
+        let budget = wire_admission::ResponseBudget::new(response_id);
+        let mut page_arguments = arguments.clone();
+        loop {
+            let page = listing
+                .reference_window(cursor.as_deref(), effective, CursorTarget::CliOption)
+                .map_err(|fault| RpcError::from_fault(&fault))?;
+            let result = self
+                .rendered_admitted(
+                    Answer::Product(Box::new(page)),
+                    detail,
+                    &context,
+                    CursorTarget::CliOption,
+                    invocation.with_arguments(&page_arguments),
+                )
+                .and_then(|result| budget.admit(result));
+            match result {
+                Err(error) if semantic_pages::oversized(&error) && effective > 1 => {
+                    effective = effective.div_ceil(2);
+                    page_arguments.insert("limit".to_owned(), json!(effective));
+                }
+                result => return result,
+            }
+        }
+    }
+
     fn graph_tool(
         &mut self,
         arguments: &Map<String, Value>,
@@ -1604,7 +1925,8 @@ impl<P: Product> Server<P> {
             .filter(|(key, _)| matches!(key.as_str(), "coordinate" | "selected_symbol"))
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
-        let grammar = backend_present::grammar_for("graph").expect("graph grammar");
+        let incoming = invocation.selected_name() == "backend.related";
+        let grammar = backend_present::grammar_for(if incoming { "related" } else { "graph" }).expect("graph grammar");
         tools::validate_registry_arguments(grammar, &operands)
             .map_err(|fault| RpcError::from_fault(&fault))?;
         let invocation_operand = backend_present::Invocation::from_json(grammar, &operands)
@@ -1614,7 +1936,7 @@ impl<P: Product> Server<P> {
         let selector = match selector {
             backend_library::DeclarationSelector::Coordinate(coordinate) => {
                 backend_library::DeclarationSelector::Coordinate(
-                    backend_present::resolve_declaration(&mut self.product, &coordinate, "graph")
+                    backend_present::resolve_declaration(&mut self.product, &coordinate, if incoming { "related" } else { "graph" })
                         .map_err(|fault| RpcError::from_fault(&fault))?,
                 )
             }
@@ -1632,8 +1954,10 @@ impl<P: Product> Server<P> {
         let probe = if selector.selected_id().is_some() {
             Probe::Declaration {
                 selector: &selector,
-                read: backend_library::DeclarationRead::Graph,
+                read: if incoming { backend_library::DeclarationRead::Related } else { backend_library::DeclarationRead::Graph },
             }
+        } else if incoming {
+            Probe::Related(&coordinate)
         } else {
             Probe::Graph(&coordinate)
         };
@@ -1653,12 +1977,11 @@ impl<P: Product> Server<P> {
             lifetime
                 .check()
                 .map_err(semantic_pages::semantic_client_error)?;
-            let reply = if selector.selected_id().is_some() {
-                self.product
-                    .graph_page_declaration(selector.clone(), window, continuation)
-            } else {
-                self.product
-                    .graph_page_window(coordinate.clone(), window, continuation)
+            let reply = match (incoming, selector.selected_id().is_some()) {
+                (true, true) => self.product.related_page_declaration(selector.clone(), window, continuation),
+                (true, false) => self.product.related_page_window(coordinate.clone(), window, continuation),
+                (false, true) => self.product.graph_page_declaration(selector.clone(), window, continuation),
+                (false, false) => self.product.graph_page_window(coordinate.clone(), window, continuation),
             };
             lifetime
                 .check()
@@ -1705,7 +2028,7 @@ impl<P: Product> Server<P> {
                     "graph page terminal disagrees with native snapshot",
                 ));
             }
-            let records = record_list(&coordinate, &page.snapshot);
+            let records = backend_present::graph_page_records(&coordinate, &page.snapshot);
             let basis = records
                 .page_basis()
                 .ok_or_else(|| RpcError::tool("graph page omits native scope"))?;
@@ -1941,6 +2264,7 @@ impl<P: Product> Server<P> {
                     &[
                         "ticket",
                         "after_sequence",
+                        "after_event",
                         "operation_key",
                         "after_observation",
                         "wait_millis",
@@ -1958,6 +2282,12 @@ impl<P: Product> Server<P> {
                     {
                         return Err(RpcError::invalid(
                             "use either operation_key or ticket with after_sequence",
+                        ));
+                    }
+                    // `after_event` only trims events an earlier reply already carried.
+                    if arguments.get("after_event").is_some_and(|value| value.as_u64().is_none()) {
+                        return Err(RpcError::invalid(
+                            "after_event must be a non-negative integer",
                         ));
                     }
                     let operation_key =
@@ -1988,6 +2318,9 @@ impl<P: Product> Server<P> {
                         exposure,
                         compact_receipt,
                     );
+                }
+                if arguments.contains_key("after_event") {
+                    return Err(RpcError::invalid("after_event applies to operation_key polls"));
                 }
                 let ticket = index_job_ticket(arguments)?;
                 let after_sequence = match arguments.get("after_sequence") {
@@ -2067,6 +2400,8 @@ impl<P: Product> Server<P> {
             context,
             exposure,
             compact_receipt,
+            false,
+            0,
         )
     }
 
@@ -2080,6 +2415,8 @@ impl<P: Product> Server<P> {
         context: &[u8],
         exposure: McpExposure,
         compact_receipt: bool,
+        conditional_poll: bool,
+        events_seen: u64,
     ) -> Result<Value, RpcError> {
         let mut reply = std::borrow::Cow::Borrowed(reply);
         let mut profile_progress = profile_progress;
@@ -2129,12 +2466,34 @@ impl<P: Product> Server<P> {
             let next_cursor = view.index_search_page().and_then(|page| page.next_cursor());
             let mut index_poll = backend_present::IndexPollDto::for_detail(&view, detail);
             preserve_compact_receipt_in_poll(index_poll.as_mut(), command, compact_receipt);
+            // A summary-detail poll of a durable operation repeats a call the caller already made:
+            // `index_poll.call` is the whole next step, so the CLI line is left to the first reply.
+            let compact_events = conditional_poll
+                && detail == Detail::Summary
+                && matches!(command, SurfaceCommand::IndexOperationStatus { .. });
+            if compact_events && let Some(poll) = index_poll.as_mut() {
+                poll.shell = None;
+            }
+            // The next poll names the last event this reply reached, so it carries only
+            // what happens after it. The conditional options stay as they were.
+            if compact_events {
+                carry_event_position(
+                    index_poll.as_mut(),
+                    match view.index_job() {
+                        Some(backend_present::IndexJobProjection::Progress(
+                            backend_library::IndexJobObservation::Pending(page),
+                        )) => Some(page.next_sequence),
+                        _ => None,
+                    },
+                );
+            }
             let payload = match encode_serializable(
                 "surface",
                 detail,
                 None,
                 SurfaceBody {
                     fault: view.fault().map(backend_present::FaultDto::new),
+                    partial_publication_warning: view.partial_publication_warning(),
                     continuation_call: None,
                     index_poll,
                     surface: SurfaceProjection {
@@ -2142,6 +2501,8 @@ impl<P: Product> Server<P> {
                         next_cursor,
                         index_job: view.index_job(),
                         compact_receipt,
+                        compact_events,
+                        events_seen,
                     },
                 },
                 DEFAULT_RESPONSE_BUDGET_BYTES,
@@ -2153,7 +2514,11 @@ impl<P: Product> Server<P> {
                     {
                         continue;
                     }
-                    return Ok(refused(&oversized_fault(error)));
+                    // Neither the surface route nor a progress read has a page `limit`.
+                    return Ok(refused(&oversized_fault_advising(
+                        error,
+                        OversizeAdvice::for_tool(SURFACE_TOOL, detail),
+                    )));
                 }
             };
             let structured: Value = serde_json::from_slice(&payload.bytes).map_err(|error| {
@@ -2230,9 +2595,17 @@ impl<P: Product> Server<P> {
             .filter(|token| !token.is_empty())
             .ok_or_else(|| RpcError::invalid("cursor must be a non-empty opaque string"))?;
         let owner_token = self.verify_cursor_token(token, context)?.ok_or_else(|| {
-            RpcError::invalid(
-                "cursor is unknown, expired, or belongs to another workspace authority",
-            )
+            if token.starts_with("mcp3-") {
+                RpcError::invalid(
+                    "this cursor was a short-lived server-side handle and it is gone: handles last 15 minutes, \
+                     live only in this MCP server process (a restart drops them), and only the 64 newest are \
+                     kept; repeat the original call without a cursor to start a fresh page chain",
+                )
+            } else {
+                RpcError::invalid(
+                    "cursor is unknown, expired, or belongs to another workspace authority",
+                )
+            }
         })?;
         self.product
             .decode_continuation(&owner_token)
@@ -2291,21 +2664,314 @@ impl<P: Product> Server<P> {
         context: &[u8],
     ) -> Result<String, RpcError> {
         let owner_token = match cursor {
-            ContinuationCursor::Page(continuation) => self
-                .product
-                .encode_continuation(continuation)
-                .map_err(|error| {
-                    RpcError::from_fault(&Fault::from_client_error(
-                        &error,
-                        backend_present::Operand::Text(self.project.clone()),
-                    ))
-                })?,
+            ContinuationCursor::Page(continuation) => {
+                let token = self
+                    .product
+                    .encode_continuation(continuation)
+                    .map_err(|error| {
+                        RpcError::from_fault(&Fault::from_client_error(
+                            &error,
+                            backend_present::Operand::Text(self.project.clone()),
+                        ))
+                    })?;
+                // A page cursor carries the owner's whole portable proof, thousands of
+                // bytes that a caller re-reads on every page. Large ones are kept here
+                // under a short signed handle instead.
+                return self.issue_page_cursor(&token, context);
+            }
             ContinuationCursor::IndexSearch(cursor) => cursor.as_str().to_owned(),
             // This cursor is already authenticated by the durable native owner
             // and binds exact roots/package/key/limit, including after restart.
             ContinuationCursor::SemanticVersions(cursor) => return Ok(cursor.as_str().to_owned()),
+            ContinuationCursor::ReferencePage(token) => token,
         };
         self.sign_cursor_token(&owner_token, context)
+    }
+
+    fn source_range_tool(
+        &mut self,
+        arguments: &Map<String, Value>,
+        detail: Detail,
+        invocation: McpInvocation<'_>,
+    ) -> Result<Value, RpcError> {
+        let context = continuation_context(&self.project, "backend.source", arguments, detail);
+        let mut inputs = arguments.clone();
+        let cursor = inputs.remove("cursor");
+        inputs.remove("detail");
+        inputs.remove("byte_range");
+        let grammar = backend_present::grammar_for_tool("backend.source")
+            .ok_or_else(|| RpcError::new(-32602, "Unknown tool"))?;
+        validate_registry_arguments(grammar, &inputs)
+            .map_err(|fault| RpcError::from_fault(&fault))?;
+        let opener = self.opener()?;
+        let request = Invocation::from_json(grammar, &inputs)
+            .and_then(|invocation| lower_with_opener(&invocation, &self.project, opener))
+            .map_err(|fault| RpcError::from_fault(&fault))?;
+        let (root, range) = match cursor {
+            None => (
+                None,
+                backend_library::SourceRangeRequest {
+                    start: 0,
+                    limit: 2048,
+                    source_identity: None,
+                },
+            ),
+            Some(value) => {
+                let token = value
+                    .as_str()
+                    .ok_or_else(|| RpcError::invalid("source cursor must be a string"))?;
+                let owner = self.verify_cursor_token(token, &context)?.ok_or_else(|| {
+                    RpcError::invalid("invalid or expired source cursor; restart the source read")
+                })?;
+                let encoded = owner
+                    .strip_prefix("sr1-")
+                    .ok_or_else(|| RpcError::invalid("invalid source cursor"))?;
+                let bytes = URL_SAFE_NO_PAD
+                    .decode(encoded)
+                    .map_err(|_| RpcError::invalid("invalid source cursor"))?;
+                if bytes.len() != 68 || URL_SAFE_NO_PAD.encode(&bytes) != encoded {
+                    return Err(RpcError::invalid("invalid source cursor"));
+                }
+                let root = hex_bytes(&bytes[..32]);
+                let mut source_identity = [0u8; 32];
+                source_identity.copy_from_slice(&bytes[32..64]);
+                let start = u32::from_be_bytes(
+                    bytes[64..68]
+                        .try_into()
+                        .map_err(|_| RpcError::invalid("invalid source cursor"))?,
+                );
+                if start == 0 {
+                    return Err(RpcError::invalid("invalid source cursor"));
+                }
+                (
+                    Some(root),
+                    backend_library::SourceRangeRequest {
+                        start,
+                        limit: 2048,
+                        source_identity: Some(source_identity),
+                    },
+                )
+            }
+        };
+        if let Some(expected) = root.as_deref() {
+            let current = self.product.revision().map_err(|error| {
+                RpcError::from_fault(&Fault::from_client_error(
+                    &error,
+                    backend_present::Operand::Text("source".to_owned()),
+                ))
+            })?;
+            if expected != hex_bytes(current.as_bytes()) {
+                return Err(RpcError::stale_cursor());
+            }
+        }
+        let original_request = request.clone();
+        let selector = match request {
+            Request::Source(text) => backend_library::DeclarationSelector::Coordinate(
+                backend_present::resolve_declaration(&mut self.product, &text, "source")
+                    .map_err(|fault| RpcError::from_fault(&fault))?,
+            ),
+            Request::Declaration {
+                selector,
+                read: backend_library::DeclarationRead::Source,
+            } => selector,
+            _ => return Err(RpcError::invalid("invalid source selector")),
+        };
+        let reply = match self
+            .product
+            .declaration_source_range(&selector, root.as_deref(), range)
+        {
+            Ok(reply) => reply,
+            Err(
+                ClientError::StaleCursor
+                | ClientError::CommandFailed(backend_library::CommandFailure::CursorMismatch),
+            ) => return Err(RpcError::stale_cursor()),
+            Err(error) => {
+                // Preserve an existing typed source-unavailable reason, but
+                // never return the retained excerpt as a successful range.
+                if root.is_none()
+                    && matches!(
+                        &error,
+                        ClientError::CommandFailed(backend_library::CommandFailure::InvalidQuery(
+                            _
+                        ))
+                    )
+                {
+                    if let Err(fault) =
+                        backend_present::answer(&mut self.product, &original_request)
+                    {
+                        if fault.slug() == backend_present::FaultSlug::SourceUnavailable {
+                            return Err(RpcError::from_fault(&fault));
+                        }
+                    }
+                }
+                return Err(RpcError::from_fault(&Fault::from_client_error(
+                    &error,
+                    backend_present::Operand::Text("source".to_owned()),
+                )));
+            }
+        };
+        let backend_library::CommandReply::Document(document) = reply.reply else {
+            return Err(RpcError::tool("source range reply changed shape"));
+        };
+        let page = document
+            .source_range
+            .as_ref()
+            .ok_or_else(|| RpcError::tool("source range missing"))?;
+        if document.source_policy != page.source_policy {
+            return Err(RpcError::tool(
+                "source policy differs between document and range",
+            ));
+        }
+        if !page.source_policy.is_unknown()
+            && !self
+                .product
+                .qualified_source_ranges_from_authenticated_session()
+        {
+            return Err(RpcError::tool(
+                "qualified source range requires an authenticated local session",
+            ));
+        }
+        // The product's authenticated session admitted the full reply above;
+        // this recheck establishes geometry only, never source authority.
+        if !page.matches_request_shape(range) {
+            return Err(RpcError::tool("source range failed admission"));
+        }
+        let basis = document.basis();
+        let root_bytes = basis.as_bytes();
+        let next = if page.end < page.total {
+            let mut payload = Vec::with_capacity(68);
+            payload.extend_from_slice(root_bytes);
+            payload.extend_from_slice(&page.source_identity);
+            payload.extend_from_slice(&page.end.to_be_bytes());
+            // Source continuations remain usable across restarts and idle periods.
+            // Revision and host identity are revalidated on every use.
+            Some(self.sign_cursor_token_at(
+                u64::MAX,
+                &format!("sr1-{}", URL_SAFE_NO_PAD.encode(payload)),
+                &context,
+            )?)
+        } else {
+            None
+        };
+        let continuation = next
+            .as_deref()
+            .map(|cursor| invocation.continuation_call(cursor));
+        let payload = encode_serializable(
+            "source_range",
+            detail,
+            next.as_deref(),
+            SourceRangeBody {
+                revision: hex_bytes(root_bytes),
+                selected_symbol: encode_id(document.symbol.as_bytes()),
+                coordinate: document
+                    .selection
+                    .as_ref()
+                    .map(|selection| selection.coordinate()),
+                freshness: "verified_at_read",
+                source: page,
+                continuation_call: continuation,
+            },
+            DEFAULT_RESPONSE_BUDGET_BYTES,
+        )
+        .map_err(|error| RpcError::from_fault(&oversized_fault(error)))?;
+        let structured: Value = serde_json::from_slice(&payload.bytes)
+            .map_err(|error| RpcError::tool(format!("source range decode failed: {error}")))?;
+        let mut text = page.text.clone();
+        text.push_str("\n\n");
+        text.push_str(page.scope.description());
+        text.push_str(if page.source_policy.is_unknown() {
+            "\n\nSource bytes match the indexed capture; effective ignore-policy stability is not established."
+        } else {
+            "\n\nSource bytes match the indexed capture; unverified policy claim; ignore-policy stability unknown."
+        });
+        Ok(tool_result(&text, structured, false))
+    }
+
+    /// Signs `owner_token` directly when it is small, and otherwise parks it in this
+    /// process under a signed handle: `mcp3-<expiry>-<handle>-<mac>`. The handle table is
+    /// bounded ([`CURSOR_HANDLE_CAPACITY`] newest entries) and expiring
+    /// ([`CURSOR_HANDLE_TTL_SECONDS`]); the MAC binds the handle to the exact call context,
+    /// so a handle cannot resume another tool, project or argument set. A handle that was
+    /// evicted, expired, or issued by another process no longer resolves, and the caller is
+    /// told so plainly instead of being given a stale page.
+    fn issue_page_cursor(&self, owner_token: &str, context: &[u8]) -> Result<String, RpcError> {
+        if owner_token.len() <= CURSOR_HANDLE_THRESHOLD_BYTES {
+            return self.sign_cursor_token(owner_token, context);
+        }
+        if !valid_direct_cursor_owner(owner_token) {
+            return Err(RpcError::invalid(
+                "owner cursor has an unsupported encoding or exceeds its bound",
+            ));
+        }
+        let now = unix_seconds();
+        let expiry = now.saturating_add(CURSOR_HANDLE_TTL_SECONDS);
+        let key = self.cursor_secret.key()?;
+        let mut table = self
+            .cursor_handles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        table.purge(now);
+        table.counter = table.counter.wrapping_add(1);
+        let mut hasher = blake3::Hasher::new_keyed(&key);
+        hasher.update(b"mcp3-handle\0");
+        hasher.update(&table.counter.to_be_bytes());
+        hasher.update(&expiry.to_be_bytes());
+        hasher.update(owner_token.as_bytes());
+        let handle = hex_bytes(&hasher.finalize().as_bytes()[..16]);
+        table.insert(handle.clone(), expiry, owner_token.to_owned());
+        drop(table);
+        let body = format!("mcp3-{expiry}-{handle}");
+        let mac = Self::cursor_mac(&key, &body, context);
+        Ok(format!("{body}-{}", hex_bytes(&mac.as_bytes()[..16])))
+    }
+
+    fn verify_handle_cursor_token(
+        &self,
+        token: &str,
+        context: &[u8],
+    ) -> Result<Option<String>, RpcError> {
+        if token.len() > 96 {
+            return Ok(None);
+        }
+        let Some((body, encoded_mac)) = token.rsplit_once('-') else {
+            return Ok(None);
+        };
+        let Some((expiry_text, handle)) = body
+            .strip_prefix("mcp3-")
+            .and_then(|body| body.split_once('-'))
+        else {
+            return Ok(None);
+        };
+        let is_hex = |text: &str, length: usize| {
+            text.len() == length
+                && text
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        };
+        let now = unix_seconds();
+        let Some(expiry) = expiry_text.parse::<u64>().ok() else {
+            return Ok(None);
+        };
+        if expiry <= now
+            || expiry.to_string() != expiry_text
+            || !is_hex(handle, 32)
+            || !is_hex(encoded_mac, 32)
+        {
+            return Ok(None);
+        }
+        let Some(key) = self.cursor_secret.verification_key()? else {
+            return Ok(None);
+        };
+        let expected = Self::cursor_mac(&key, body, context);
+        if encoded_mac != hex_bytes(&expected.as_bytes()[..16]) {
+            return Ok(None);
+        }
+        let mut table = self
+            .cursor_handles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        table.purge(now);
+        Ok(table.get(handle, expiry))
     }
 
     fn sign_cursor_token(&self, owner_token: &str, context: &[u8]) -> Result<String, RpcError> {
@@ -2333,6 +2999,9 @@ impl<P: Product> Server<P> {
     }
 
     fn verify_cursor_token(&self, token: &str, context: &[u8]) -> Result<Option<String>, RpcError> {
+        if token.starts_with("mcp3-") {
+            return self.verify_handle_cursor_token(token, context);
+        }
         if token.starts_with("mcp2-") {
             return self.verify_direct_cursor_token(token, context);
         }
@@ -2501,6 +3170,7 @@ impl<P: Product> Server<P> {
             next.as_deref()
                 .filter(|_| {
                     native_versions
+                        || matches!(&answer, Answer::Product(product) if product.reference_page().is_some())
                         || matches!(&answer, Answer::Records(_))
                         || invocation.exposure() == McpExposure::RegisteredCall
                 })
@@ -2530,7 +3200,12 @@ impl<P: Product> Server<P> {
             continuation_call.as_ref(),
         ) {
             Ok(payload) => payload,
-            Err(error) => return Err(RpcError::from_fault(&oversized_fault(error))),
+            Err(error) => {
+                return Err(RpcError::from_fault(&oversized_fault_advising(
+                    error,
+                    OversizeAdvice::for_tool(invocation.selected_name(), detail),
+                )));
+            }
         };
         let structured: Value = serde_json::from_slice(&payload.bytes)
             .map_err(|error| RpcError::tool(format!("typed projection decode failed: {error}")))?;
@@ -2729,9 +3404,56 @@ fn decode_cursor_owner(encoded: &str) -> Option<String> {
         .filter(|owner_token| !owner_token.is_empty())
 }
 
+/// Owner cursors up to this size are signed inline; larger ones are parked in the server.
+const CURSOR_HANDLE_THRESHOLD_BYTES: usize = 256;
+/// Newest handles one server process keeps; older ones are dropped and report as gone.
+const CURSOR_HANDLE_CAPACITY: usize = 64;
+/// Seconds a handle stays valid, matching the inline cursor lifetime.
+const CURSOR_HANDLE_TTL_SECONDS: u64 = 900;
+
+/// Bounded, expiring owner cursors held for signed handles.
+#[derive(Default)]
+struct CursorHandles {
+    counter: u64,
+    entries: std::collections::VecDeque<(String, u64, String)>,
+}
+
+impl CursorHandles {
+    fn purge(&mut self, now: u64) {
+        self.entries.retain(|(_, expiry, _)| *expiry > now);
+    }
+
+    fn insert(&mut self, handle: String, expiry: u64, owner: String) {
+        while self.entries.len() >= CURSOR_HANDLE_CAPACITY {
+            self.entries.pop_front();
+        }
+        self.entries.push_back((handle, expiry, owner));
+    }
+
+    fn get(&self, handle: &str, expiry: u64) -> Option<String> {
+        self.entries
+            .iter()
+            .find(|(candidate, at, _)| candidate == handle && *at == expiry)
+            .map(|(_, _, owner)| owner.clone())
+    }
+}
+
 /// Encoding admission only: the owner still checks the retained proof,
 /// selected roots, query roles and index state after wrapper authentication.
 fn valid_direct_cursor_owner(owner: &str) -> bool {
+    if let Some(encoded) = owner.strip_prefix("re1-") {
+        return encoded.len() <= backend_library::MAX_INDEX_SEARCH_CURSOR_BYTES.saturating_sub(4)
+            && URL_SAFE_NO_PAD.decode(encoded).ok().is_some_and(|bytes| serde_json::from_slice::<backend_library::RelatedPageCursor>(&bytes).is_ok());
+    }
+    if let Some(encoded) = owner.strip_prefix("rf1-") {
+        // An offset and the digest of the listing it indexes: lowercase hex only.
+        return encoded.len() == 8 + 64
+            && encoded.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    }
+    if let Some(encoded) = owner.strip_prefix("sr1-") {
+        let Ok(decoded) = URL_SAFE_NO_PAD.decode(encoded) else { return false; };
+        return decoded.len() == 68 && URL_SAFE_NO_PAD.encode(decoded) == encoded;
+    }
     if owner.is_empty() || owner.len() > backend_library::MAX_INDEX_SEARCH_CURSOR_BYTES {
         return false;
     }
@@ -3441,6 +4163,7 @@ impl RpcError {
         self.fault = self
             .fault
             .map(|fault| fault.with_mcp_exposure(invocation.exposure()));
+        self.name_arguments_for(invocation);
         if let Some(fault) = &self.fault
             && fault.startup_recovery()
                 == Some(backend_client::StartupRecovery::RetryOriginalCommand)
@@ -3493,6 +4216,28 @@ impl RpcError {
             return Ok(tool_result(&text, structured, true));
         }
         self.into_tool_result()
+    }
+
+    /// A usage refusal names the JSON arguments of the tool called, never the CLI flags
+    /// its sentence was written with.
+    fn name_arguments_for(&mut self, invocation: McpInvocation<'_>) {
+        let Some(grammar) = backend_present::grammar_for_tool(invocation.selected_name()) else {
+            return;
+        };
+        let Some(fault) = self.fault.as_ref().filter(|fault| fault.slug().is_usage()) else {
+            return;
+        };
+        let renamed = fault.clone().with_mcp_argument_names(grammar);
+        if &renamed == fault {
+            return;
+        }
+        if self.structured.is_some() {
+            self.structured = Some(fault_value(&renamed));
+            self.detail = Some(bounded_text(&markdown::fault(&renamed)));
+        } else {
+            self.detail = Some(renamed.cause().sentence().to_owned());
+        }
+        self.fault = Some(renamed);
     }
 
     const fn new(code: i64, message: &'static str) -> Self {
@@ -3806,11 +4551,25 @@ pub(super) fn default_detail(tool: &str) -> Detail {
 }
 
 #[derive(Serialize)]
+struct SourceRangeBody<'a> {
+    revision: String,
+    selected_symbol: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    coordinate: Option<&'a str>,
+    freshness: &'static str,
+    source: &'a backend_library::SourceRangePage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    continuation_call: Option<McpExecutableCall<'a>>,
+}
+
+#[derive(Serialize)]
 struct SurfaceBody<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     continuation_call: Option<&'a backend_present::McpExecutableCall<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fault: Option<backend_present::FaultDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    partial_publication_warning: Option<&'a backend_present::PartialPublicationWarning>,
     #[serde(skip_serializing_if = "Option::is_none")]
     index_poll: Option<backend_present::IndexPollDto>,
     surface: SurfaceProjection<'a>,
@@ -3821,6 +4580,24 @@ struct SurfaceProjection<'a> {
     next_cursor: Option<&'a str>,
     index_job: Option<&'a backend_present::IndexJobProjection>,
     compact_receipt: bool,
+    /// Summary-detail operation poll: progress events leave out the ticket their job already names.
+    compact_events: bool,
+    /// Events up to this sequence were in the caller's earlier reply; they are not repeated.
+    events_seen: u64,
+}
+
+/// Names the last event reached in `index_poll.call`, so a later poll resumes after it.
+fn carry_event_position(index_poll: Option<&mut backend_present::IndexPollDto>, position: Option<u64>) {
+    let Some(position) = position.filter(|position| *position > 0) else {
+        return;
+    };
+    if let Some(arguments) = index_poll
+        .and_then(|poll| poll.call.get_mut("arguments"))
+        .and_then(Value::as_object_mut)
+        && arguments.contains_key("operation_key")
+    {
+        arguments.insert("after_event".to_owned(), json!(position));
+    }
 }
 
 fn preserve_compact_receipt_in_poll(
@@ -3915,8 +4692,56 @@ impl SurfaceProjection<'_> {
         } else {
             map.serialize_entry("data", data)?;
         }
-        map.serialize_entry("index_job", index_job)?;
+        if self.compact_events {
+            let mut value = serde_json::to_value(index_job).map_err(serde::ser::Error::custom)?;
+            dedupe_event_tickets(&mut value);
+            drop_seen_events(&mut value, self.events_seen);
+            map.serialize_entry("index_job", &value)?;
+        } else {
+            map.serialize_entry("index_job", index_job)?;
+        }
         map.end()
+    }
+}
+
+/// Every progress event repeats the full job ticket (an owner epoch array and the package
+/// path). When it equals the page's own ticket, the page names it once and the event omits it.
+fn dedupe_event_tickets(job: &mut Value) {
+    let Some(detail) = job.pointer_mut("/value/detail") else {
+        return;
+    };
+    let Some(ticket) = detail.get("ticket").cloned() else {
+        return;
+    };
+    let Some(events) = detail.get_mut("events").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for event in events {
+        if let Some(object) = event.as_object_mut()
+            && object.get("ticket") == Some(&ticket)
+        {
+            object.remove("ticket");
+        }
+    }
+}
+
+/// A poll that names the last event it saw is sent only what came after: earlier events leave
+/// the page, which keeps its stage and `next_sequence`, and says how many it did not repeat.
+fn drop_seen_events(job: &mut Value, seen: u64) {
+    if seen == 0 {
+        return;
+    }
+    let Some(detail) = job.pointer_mut("/value/detail").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let Some(events) = detail.get_mut("events").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let before = events.len();
+    events.retain(|event| event.get("sequence").and_then(Value::as_u64).is_none_or(|sequence| sequence > seen));
+    let dropped = before - events.len();
+    if dropped > 0 {
+        detail.insert("events_not_repeated".to_owned(), json!(dropped));
     }
 }
 

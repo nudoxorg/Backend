@@ -231,7 +231,7 @@ fn an_old_readme_more_control_cannot_focus_or_expand_after_owner_replacement(cx:
     // Complete native keys, without watcher flush or a replacement frame.
     for key in ["tab", "shift-tab", "enter", "space"] {
         rig.native_press(key);
-        assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), Some(retained_focus.clone()),
+        assert!(rig.focus_retained_or_rehomed(Some(&retained_focus)),
             "{key} must not give an old producer another native focus owner");
     }
     let shell = rig.shell.clone();
@@ -472,6 +472,61 @@ impl crate::runtime::reads::PageReader for NonCargoPackage {
         }
         crate::shell::tests::Fixture.read(request, context)
     }
+}
+
+/// The read of a registry release's unpacked tree (GUI-12, GUI-05).
+struct PublishedPackage;
+
+impl crate::runtime::reads::PageReader for PublishedPackage {
+    fn read(
+        &mut self,
+        request: &crate::runtime::reads::ReadRequest,
+        context: &crate::runtime::reads::ReadContext<'_>,
+    ) -> Result<crate::model::pages::PageValue, crate::model::pages::ReadFailure> {
+        use crate::model::pages::{GapReason, Known, PageValue, RecordSource};
+        if !matches!(request, crate::runtime::reads::ReadRequest::Package(_)) {
+            return crate::shell::tests::Fixture.read(request, context);
+        }
+        let mut about = dossier();
+        if let Known::Known(record) = &mut about.record {
+            record.source = RecordSource::PublishedSource;
+            record.advisory = Known::unknown(GapReason::Unconfigured, "advisory feeds were not read for present 0.4.2");
+        }
+        Ok(PageValue::Package(about))
+    }
+}
+
+/// GUI-12 and GUI-05 on the mounted page: a registry release in the library
+/// is neither "yours" nor unverifiable, and it offers to leave the library
+/// only after one confirmation that belongs to this visit.
+#[gpui::test]
+fn a_published_release_page_reads_as_one_and_confirms_its_removal(cx: &mut TestAppContext) {
+    use crate::runtime::reads::ReadPool;
+    let pool = ReadPool::start(1, |_| PublishedPackage).expect("page reader");
+    let mut rig = crate::shell::tests::rig_with_reads(cx, Some(package_route()), 1440.0, 900.0, pool);
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    let ledger = painted(&mut rig);
+    let words = |ledger: &Ledger| ledger.texts.iter().map(|text| text.content.clone()).collect::<Vec<_>>();
+    assert!(!words(&ledger).iter().any(|word| word.contains("cannot be verified")), "{:?}", words(&ledger));
+    assert_eq!(said(&ledger, "advisories-word"), ["no feed"], "unknown, never yours");
+    assert!(words(&ledger).iter().any(|word| word == "IN YOUR LIBRARY"));
+    let click = |rig: &mut Rig, label: &str| {
+        let at = crate::shell::tests::native_bounds(rig, "Button", label, true)
+            .unwrap_or_else(|| panic!("a native {label} button"));
+        rig.cx.simulate_click(at.center(), Modifiers::none());
+        rig.settle();
+    };
+    let asked = |rig: &mut Rig| words(&painted(rig)).iter().any(|word| word.starts_with("Remove present 0.4.2 and its indexes"));
+    click(&mut rig, "Remove present 0.4.2 from your library");
+    assert!(asked(&mut rig), "one click asks first");
+    click(&mut rig, "Keep");
+    assert!(!asked(&mut rig), "Keep withdraws the question");
+    assert_eq!(rig.route(), package_route(), "and nothing moved");
+    click(&mut rig, "Remove present 0.4.2 from your library");
+    assert!(asked(&mut rig));
+    rig.go(Intent::Navigate(page_route("RelationLabel")));
+    rig.go(Intent::Navigate(package_route()));
+    assert!(!asked(&mut rig), "a question left behind does not wait for a later visit");
 }
 
 #[gpui::test]

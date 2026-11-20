@@ -4,6 +4,7 @@ The mocked relocation test verifies that build evidence records the final
 post-patchelf bytes. Real Linux ELF and shared-library closure validation still
 requires an actual Linux host and toolchain.
 """
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -28,6 +29,9 @@ def make_source_repo(root: Path) -> tuple[str, str, str]:
     subprocess.run(["git", "-C", str(root), "config", "user.name", "t"], check=True)
     (root / "Cargo.toml").write_text('[workspace.package]\nversion = "0.2.0"\n')
     (root / "Cargo.lock").write_text("# lock\n")
+    sqlite_lock = root / "frontends/sqlite/Cargo.lock"
+    sqlite_lock.parent.mkdir(parents=True)
+    sqlite_lock.write_text("# SQLite fixture lock\n")
     policy = root / "tools" / "package" / "linux_system_sonames.txt"
     policy.parent.mkdir(parents=True)
     policy.write_bytes((Path(release.__file__).with_name("linux_system_sonames.txt")).read_bytes())
@@ -197,6 +201,160 @@ class BuildManifestAndArchiveTests(unittest.TestCase):
                 "t1_artifact_sha256": "f" * 64, "t1_artifact_bytes": 8,
             })
 
+    def test_formal_companions_preserve_worker_and_private_library_bytes(self):
+        from record_stylo_owner_build import bounded_process
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            bin_dir = root / "input"
+            bin_dir.mkdir()
+            owner = root / "owner"
+            desktop = root / "desktop"
+            raw = root / "raw"
+            stylo = root / "stylo"
+            sqlite = root / "sqlite"
+            source_lib = root / "source-lib"
+            library = root / "private-lib"
+            for path in (owner, desktop, raw, stylo, sqlite, source_lib, library):
+                path.write_bytes(b"\x7fELF" + path.name.encode())
+            def identity(path):
+                return {"path": str(path), "bytes": path.stat().st_size, "sha256": release.sha256(path)}
+            companion = {"owner": identity(owner), "desktop": {"artifact": identity(desktop)},
+                "worker": identity(stylo), "formal_raw_stylo": str(raw),
+                "source_loader": {"path": "/loader"}, "observer_environment": {},
+                "dependency": identity(library), "dependency_source": identity(source_lib),
+                "sqlite": {"worker": identity(sqlite), "worker_raw": {"path": str(raw)},
+                           "tools": {"loader": {"path": "/loader"}}}}
+            calls = []
+            def fake_tool(command):
+                calls.append(command)
+                if command[1] == "--print-rpath":
+                    return "$ORIGIN" if Path(command[-1]).name == "libgcc_s.so.1" else "$ORIGIN/../lib"
+                return ""
+            def fake_info(_readelf, path):
+                return {"interpreter": release.INTERPRETER, "needed": ["libc.so.6", "libgcc_s.so.1"] if Path(path).parent.name == "bin" else ["libc.so.6"], "required_glibc_versions": ["2.17"]}
+            linkage = f"libgcc_s.so.1 => {source_lib} (0x1)\n"
+            with (patch.object(release, "run", side_effect=fake_tool),
+                  patch.object(release, "elf_info", side_effect=fake_info),
+                  patch("record_stylo_owner_build.bounded_process", return_value=linkage.encode())):
+                records, _ = release.portabilize(bin_dir, ("backend-locald", "backend-desktop", "backend-stylo-worker", "backend-sqlite-worker"), root / "out", Path("patchelf"), Path("readelf"), Path("ldd"), {}, companion)
+            package = root / "out/Nudox"
+            self.assertEqual((package / "bin/backend-sqlite-worker").read_bytes(), sqlite.read_bytes())
+            self.assertEqual((package / "bin/backend-stylo-worker").read_bytes(), stylo.read_bytes())
+            self.assertEqual((package / "lib/libgcc_s.so.1").read_bytes(), library.read_bytes())
+            self.assertFalse(any(command[1] == "--set-interpreter" and Path(command[-1]).name in {"backend-sqlite-worker", "backend-stylo-worker"} for command in calls))
+            self.assertEqual(len(records), 4)
+
+    def test_formal_main_readmits_original_worker_record_after_observation(self):
+        import record_stylo_owner_build as actor
+        import sqlite_macos_development as sqlite_common
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source = root / "source"
+            source.mkdir()
+            revision, tree, lock = make_source_repo(source)
+            sqlite_lock = release.sha256(source / "frontends/sqlite/Cargo.lock")
+            artifact = root / "artifact"
+            make_t1_artifact(artifact, revision)
+            raw_worker = root / "raw-worker"
+            raw_worker.write_bytes(b"raw worker")
+            worker_receipt = root / "worker-receipt.json"
+            worker_receipt.write_text(json.dumps({"source_path": "/source", "environment": {"CARGO_HOME": "/cargo", "CARGO_TARGET_DIR": "/target", "CARGO_BUILD_BUILD_DIR": "/build"}}))
+            owner_receipt = root / "owner-receipt.json"
+            owner_receipt.write_text("{}")
+            cli_manifest = root / "cli.json"
+            cli_manifest.write_text(json.dumps({"executables": {"backend-cli": {"sha256": "cli"}}}))
+            observer = root / "observer"
+            observer.write_bytes(b"observer")
+            identity = lambda path: {"path": str(path), "bytes": path.stat().st_size, "sha256": release.sha256(path)}
+            raw_record = {"bytes": raw_worker.stat().st_size, "sha256": release.sha256(raw_worker)}
+            worker_receipt_digest = release.sha256(worker_receipt)
+            owner_receipt_digest = release.sha256(owner_receipt)
+            payloads = {"backend-stylo-worker": b"stylo", "backend-sqlite-worker": b"sqlite", "libgcc_s.so.1": b"libgcc"}
+            def record_bytes(data):
+                return {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+            dependency = record_bytes(payloads["libgcc_s.so.1"])
+            companion = {"desktop": {}, "owner": {}, "observer_environment": {},
+                "observer": identity(observer), "worker_anchor": "a" * 64,
+                "worker": record_bytes(payloads["backend-stylo-worker"]),
+                "dependency": dependency, "dependency_source": dependency,
+                "sqlite": {"dependency_source": dependency, "observer": identity(observer),
+                           "worker": record_bytes(payloads["backend-sqlite-worker"]),
+                           "sqlite_lock_sha256": sqlite_lock, "artifact_identity": "c" * 64, "basis_json": "basis"}}
+            observation = {"state": "observed-build-helper", "artifact_identity": "c" * 64,
+                "basis": {"engine": "Syntaqlite4e4de76", "native_revision": sqlite_common.REVISION,
+                    "recipe": sqlite_common.RECIPE, "lock_sha256": list(bytes.fromhex(sqlite_lock)),
+                    "support_sha256": [1] * 32, "settings": {"Sqlite": {"version": 2147483647, "cflags": 0, "analyzer_dqs_fallback": True}}}}
+            observation_bytes = json.dumps(observation).encode()
+            companion["sqlite"]["basis_json"] = sqlite_common.validate_observation(observation, sqlite_lock)[1]
+            output = root / "candidate"
+            def portabilize(_bin, names, out, *_args):
+                package = out / "Nudox"
+                (package / "bin").mkdir(parents=True)
+                (package / "lib").mkdir()
+                (package / "lib/libgcc_s.so.1").write_bytes(payloads["libgcc_s.so.1"])
+                records = []
+                for name in names:
+                    path = package / "bin" / name
+                    path.write_bytes(payloads.get(name, name.encode()))
+                    info = record_bytes(path.read_bytes())
+                    records.append({"name": name, "packaged_path": "bin/" + name, **info,
+                        "t1_artifact_sha256": info["sha256"], "t1_artifact_bytes": info["bytes"],
+                        "companion_input": name in {"backend-locald", "backend-desktop", "backend-stylo-worker", "backend-sqlite-worker"}})
+                return records, "2.17"
+            admissions = []
+            def admit(_path, **kwargs):
+                admissions.append(kwargs["raw_worker"])
+                self.assertEqual(kwargs["raw_worker"], raw_record)
+                return companion, owner_receipt_digest
+            with (patch.object(release.checkpoint, "admit_receipt", return_value={}),
+                  patch.object(release.checkpoint, "check_source", return_value=(revision, tree, lock, "0.2.0")),
+                  patch.object(release.checkpoint, "admit_stylo_worker", return_value=(raw_record, worker_receipt_digest)),
+                  patch.object(release.checkpoint, "admit_stylo_bound_owner", side_effect=admit),
+                  patch.object(release, "require_tool", side_effect=lambda path, _label: path),
+                  patch.object(release, "portabilize", side_effect=portabilize),
+                  patch.object(actor, "require_runpath"), patch.object(actor, "observe", return_value="a" * 64),
+                  patch.object(actor, "bounded_process", return_value=observation_bytes),
+                  patch.object(sys, "argv", ["linux_formal_release.py", "--t1-artifact-dir", str(artifact),
+                      "--source", str(source), "--output", str(output), "--patchelf", "patchelf", "--readelf", "readelf", "--ldd", "ldd",
+                      "--companion-owner-receipt", str(owner_receipt), "--companion-cli-manifest", str(cli_manifest),
+                      "--stylo-worker", str(raw_worker), "--stylo-worker-receipt", str(worker_receipt)])):
+                self.assertEqual(release.main(), 0)
+            self.assertEqual(admissions, [raw_record, raw_record])
+            archive = output / release.ASSET
+            self.assertTrue(archive.is_file())
+            # Synthetic component fixture: validates the release gate, not a product journey.
+            release_contract.validate(output, source=source, platform="linux-x64", require_qa=False)
+            with tarfile.open(archive, "r:gz") as bundle:
+                build = json.load(bundle.extractfile("Nudox/resources/build-manifest.json"))
+            missing = copy.deepcopy(build)
+            del missing["companion"]
+            with self.assertRaisesRegex(ValueError, "companion observation"):
+                release_contract.validate_linux_formal_companion(archive, missing)
+            mismatch = copy.deepcopy(build)
+            mismatch["executables"]["backend-sqlite-worker"]["sha256"] = "f" * 64
+            with self.assertRaisesRegex(ValueError, "differs from its observed bytes"):
+                release_contract.validate_linux_formal_companion(archive, mismatch)
+            mismatch = copy.deepcopy(build)
+            mismatch["executables"]["backend-sqlite-worker"]["sha256"] = "f" * 64
+            mismatch["executables"]["backend-sqlite-worker"]["companion_artifact_sha256"] = "f" * 64
+            with self.assertRaisesRegex(ValueError, "differs from observation"):
+                release_contract.validate_linux_formal_companion(archive, mismatch)
+            missing_worker_archive = root / "missing-worker.tar.gz"
+            with tarfile.open(archive, "r:gz") as source_archive, tarfile.open(missing_worker_archive, "w:gz") as destination:
+                for member in source_archive:
+                    if member.name == "Nudox/bin/backend-sqlite-worker":
+                        continue
+                    data = source_archive.extractfile(member) if member.isfile() else None
+                    destination.addfile(member, data)
+                    if data is not None:
+                        data.close()
+            with self.assertRaisesRegex(ValueError, "member missing"):
+                release_contract.validate_linux_formal_companion(missing_worker_archive, build)
+            mismatch = copy.deepcopy(build)
+            mismatch["companion"]["dependency_sha256"] = "f" * 64
+            with self.assertRaisesRegex(ValueError, "differs from observation"):
+                release_contract.validate_linux_formal_companion(archive, mismatch)
+
     def test_build_manifest_records_mutated_post_relocation_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -252,7 +410,7 @@ class BuildManifestAndArchiveTests(unittest.TestCase):
             self.assertEqual(archived_build["executables"]["backend-cli"]["bytes"], len(archived_binary))
             self.assertEqual(json.loads(build_path.read_text()), archived_build)
 
-    def test_mocked_candidate_passes_the_real_release_contract(self):
+    def test_unbound_t1_candidate_is_rejected_by_release_contract(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "source"
@@ -274,9 +432,9 @@ class BuildManifestAndArchiveTests(unittest.TestCase):
             ):
                 self.assertEqual(release.main(), 0)
 
-            admitted = release_contract.validate(
-                output, source=source, platform="linux-x64", require_qa=False,
-            )
+            with self.assertRaisesRegex(ValueError, "companion observation"):
+                release_contract.validate(output, source=source, platform="linux-x64", require_qa=False)
+            admitted = json.loads((output / "release-manifest-linux-x64.json").read_text())
             self.assertEqual(admitted["source_sha"], revision)
             self.assertEqual(admitted["source_tree"], tree)
             self.assertEqual(admitted["cargo_lock_sha256"], cargo_lock)
@@ -292,7 +450,7 @@ class BuildManifestAndArchiveTests(unittest.TestCase):
                     self.assertEqual(record["t1_artifact_sha256"], t1_record["sha256"])
                     self.assertEqual(record["t1_artifact_bytes"], t1_record["bytes"])
 
-    def test_release_build_with_gui_libraries_passes_the_real_release_contract(self):
+    def test_unbound_release_build_is_rejected_by_release_contract(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "source"
@@ -323,7 +481,9 @@ class BuildManifestAndArchiveTests(unittest.TestCase):
                 self.assertEqual(release.main(), 0)
 
             self.assertFalse((output / "stage").exists(), "the stripped stage is not part of the candidate")
-            admitted = release_contract.validate(output, source=source, platform="linux-x64", require_qa=False)
+            with self.assertRaisesRegex(ValueError, "companion observation"):
+                release_contract.validate(output, source=source, platform="linux-x64", require_qa=False)
+            admitted = json.loads((output / "release-manifest-linux-x64.json").read_text())
             self.assertEqual((admitted["source_sha"], admitted["source_tree"]), (revision, tree))
             with tarfile.open(output / release.ASSET, "r:gz") as bundle:
                 names = set(bundle.getnames())

@@ -1,0 +1,54 @@
+{
+  "budget": {
+    "largest_case": "java-jsr305",
+    "largest_new_frame_bytes": 25403,
+    "limitBytes": 49152,
+    "limitTokens": 12000,
+    "note": "Every new frame stays far below the unchanged limits."
+  },
+  "cases": [
+    "c-rxi-map",
+    "go-sync",
+    "go-uuid",
+    "go-xxhash",
+    "java-jsr305",
+    "python-blinker",
+    "python-cachetools",
+    "python-itsdangerous",
+    "python-tomli",
+    "rust-itoa",
+    "rust-percent-encoding",
+    "rust-ryu"
+  ],
+  "changes": [
+    {
+      "after": "19 tools; backend.sql_query is listed between backend.source and backend.status (sorted order)",
+      "before": "18 tools, ending backend.source, backend.status",
+      "cause": "apps/mcp/src/jsonrpc/tools.rs now registers backend.sql_query (commit subject: make SQL and graph results easier to discover). It is the SQL query tool of this change set, and every case lists it.",
+      "path": "mcp/tools"
+    },
+    {
+      "after": "<N> declaration(s) · truncated (outline pagination only; analysis coverage is not certified)",
+      "before": "<N> declaration(s) · truncated",
+      "cause": "crates/present/render/text.rs and markdown.rs append that clause to the outline summary line (commit subject: distinguish outline pagination from coverage). It states that truncation here is paging, not an analysis-coverage claim. Structured fields (page, coverage, continuation) did not change in any case.",
+      "path": "mcp/calls/2/reply/content/0/text"
+    },
+    {
+      "path": "mcp/calls/2/reply/_meta/backend/wireBudget/normalizedFrameBytesExcludingCounters",
+      "rule": "+62 bytes in all 12 cases, exactly the length of the inserted clause (62 characters, all ASCII)"
+    },
+    {
+      "path": "mcp/calls/2/reply/_meta/backend/wireBudget/normalizedEstimatedTokensExcludingCounters",
+      "rule": "equals ceil(frame bytes / 4) before and after in all 12 cases (bytesPerToken 4), i.e. +15 or +16 tokens"
+    }
+  ],
+  "not_changed": "Declarations, kinds, coordinates, counts, ordering, coverage, readiness, continuation evidence, CLI answers and every other MCP answer are identical to the reviewed snapshots in the eight cases outside Python. The four Python cases carry separately reviewed changes in later records.",
+  "performance": {
+    "action": "Reviewed performance objects retained byte-for-byte; measurements from the candidate run were not adopted as baselines."
+  },
+  "required_before_merge": "Normal full T2 on the final exact head must reproduce these answers and pass every other correctness and performance check.",
+  "reviewer": "Claude Code / Sonnet 5.5, 2026-11-13",
+  "schema": 1,
+  "scope": "Answer-only update of the MCP tool list, the MCP outline text summary line and the two wire-budget counters that follow from that longer text. Each case's performance object is preserved byte-for-byte; no baseline, tolerance, deadline or normalizer changed.",
+  "task": "Review T2 answer changes caused by the SQL query tool and the outline pagination wording"
+}

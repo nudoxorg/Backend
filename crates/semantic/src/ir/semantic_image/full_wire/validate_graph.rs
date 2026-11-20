@@ -9,16 +9,19 @@ use super::super::{
 };
 use super::{
     availability_code, availability_match, confidence_code, link_kind_code, reference, reserve,
+    SemanticImageAdmissionMeter, work,
 };
 
 pub(super) fn validate_externals(
     bytes: &[u8],
     layout: FullImageLayout,
+    meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<(), FullSemanticImageFault> {
     let entry = layout.entry(FullDirectoryKind::Externals);
     let atoms = layout.entry(FullDirectoryKind::Atoms).count;
     let mut previous: Option<ExternalOrderKey> = None;
     for row in 0..entry.count {
+        work(meter, 1)?;
         let offset = entry.offset
             + usize::try_from(row).map_err(|_| FullSemanticImageFault::LengthOverflow {
                 field: FullSemanticImageField::Externals,
@@ -277,6 +280,7 @@ fn external_key(target: crate::ir::ExternalTarget) -> ExternalOrderKey {
 pub(super) fn validate_graph(
     bytes: &[u8],
     layout: FullImageLayout,
+    meter: &dyn SemanticImageAdmissionMeter,
 ) -> Result<(), FullSemanticImageFault> {
     let links = layout.entry(FullDirectoryKind::Links);
     let entities = layout.entry(FullDirectoryKind::Entities).count;
@@ -284,6 +288,7 @@ pub(super) fn validate_graph(
     let atoms = layout.entry(FullDirectoryKind::Atoms).count;
     let mut previous_link: Option<(u32, u8, u32, u8, u8, u8, u32, u32, u32)> = None;
     for row in 0..links.count {
+        work(meter, 1)?;
         let link = decode::link(bytes, layout, row)?;
         reference(FullSemanticImageField::Links, row, entities, link.from.raw)?;
         match link.target {
@@ -322,6 +327,7 @@ pub(super) fn validate_graph(
     let occurrences = layout.entry(FullDirectoryKind::Occurrences);
     let mut previous_occurrence = None;
     for row in 0..occurrences.count {
+        work(meter, 1)?;
         let (occurrence, authority) = decode::occurrence(bytes, layout, row)?;
         reference(
             FullSemanticImageField::Occurrences,

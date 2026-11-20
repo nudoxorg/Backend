@@ -350,6 +350,10 @@ const fn surface_is_repeatable(command: &SurfaceCommand) -> Repeatable {
         | SurfaceCommand::PackageVersions { .. }
         | SurfaceCommand::SemanticVersions { .. }
         | SurfaceCommand::SemanticSource { .. }
+        | SurfaceCommand::StyloQuery { .. }
+        | SurfaceCommand::StyloReadSite { .. }
+        | SurfaceCommand::SqlQuery { .. }
+        | SurfaceCommand::SqlReadSource { .. }
         | SurfaceCommand::PackageProfile { .. }
         | SurfaceCommand::ForgeReference { .. }
         | SurfaceCommand::Subscriptions
@@ -443,6 +447,23 @@ impl<E: Endpoint> Engine for Reconnecting<E> {
 }
 
 impl<E: Endpoint> Product for Reconnecting<E> {
+    fn qualified_source_ranges_from_authenticated_session(&self) -> bool {
+        self.product
+            .as_ref()
+            .is_some_and(|product| product.qualified_source_ranges_from_authenticated_session())
+    }
+
+    fn declaration_source_range(
+        &mut self,
+        selector: &backend_library::DeclarationSelector,
+        expected_root: Option<&str>,
+        range: backend_library::SourceRangeRequest,
+    ) -> Result<ReplyDto, ClientError> {
+        self.attempt(Repeatable::Yes, |product| {
+            product.declaration_source_range(selector, expected_root, range)
+        })
+    }
+
     fn supports_outline_owner_witness_route(&self) -> bool {
         self.product
             .as_ref()
@@ -536,6 +557,17 @@ impl<E: Endpoint> Product for Reconnecting<E> {
     ) -> Result<ReplyDto, ClientError> {
         self.attempt(Repeatable::Yes, |product| {
             product.graph_page_declaration(selector.clone(), window, continuation)
+        })
+    }
+
+    fn related_edge_page(
+        &mut self,
+        selector: backend_library::DeclarationSelector,
+        window: backend_library::QueryWindow,
+        cursor: Option<backend_library::RelatedPageCursor>,
+    ) -> Result<ReplyDto, ClientError> {
+        self.attempt(Repeatable::Yes, |product| {
+            product.related_edge_page(selector.clone(), window, cursor.clone())
         })
     }
 
@@ -658,7 +690,7 @@ mod tests {
                 }
                 Probe::OutlinePage { .. } => {
                     self.record("outline-page")?;
-                    CommandReply::ProjectionPage(ProjectionPage {
+                    CommandReply::ProjectionPage(ProjectionPage { graph_alias_witness: None,
                         outline_order: Some(backend_library::OutlinePageOrder::new(
                             0, Vec::new(),
                         ).expect("empty reconnect outline order")),
@@ -704,6 +736,11 @@ mod tests {
     }
 
     impl Product for Connection {
+        fn related_edge_page(&mut self, selector: backend_library::DeclarationSelector, window: backend_library::QueryWindow, cursor: Option<backend_library::RelatedPageCursor>) -> Result<ReplyDto, ClientError> {
+            self.record(&format!("related-edge:{selector:?}:{window:?}:{cursor:?}"))?;
+            Ok(ReplyDto::new(1, CommandReply::Graph(empty_snapshot())))
+        }
+
         fn supports_outline_owner_witness_route(&self) -> bool {
             true
         }
@@ -729,7 +766,7 @@ mod tests {
             self.record(&format!("outline-owner-token:{coordinate}:{token}"))?;
             Ok(ReplyDto::new(
                 1,
-                CommandReply::ProjectionPage(backend_library::ProjectionPage {
+                CommandReply::ProjectionPage(backend_library::ProjectionPage { graph_alias_witness: None,
                     outline_order: Some(
                         backend_library::OutlinePageOrder::new(0, Vec::new())
                             .expect("empty reconnect outline order"),
@@ -1004,6 +1041,27 @@ mod tests {
                 calls: Arc::clone(&self.calls),
             })
         }
+    }
+
+    #[test]
+    fn related_edge_read_reconnects_with_identical_selector_window_and_cursor() {
+        use backend_library::{RelatedDirection, RelatedEdgeKey, RelatedPageRequest, RelatedPageScope, RelatedRowKey, SemanticLinkKind, VerifiedRelatedPageRequest};
+        let (mut product, log) = idle_out();
+        let selector = backend_library::DeclarationSelector::Selected(
+            backend_library::SelectedSymbolId::new([2; 32]).expect("selected center"));
+        let scope = RelatedPageScope { root: [1; 32], source: [2; 32], source_selected: true, direction: RelatedDirection::Both, issued: 100, delivery: 32, windowed: true };
+        let request = RelatedPageRequest { scope, cursor: None };
+        let cursor = VerifiedRelatedPageRequest::verify(&request, [4; 32], &[3; 32]).expect("sealed request")
+            .issue_cursor(RelatedEdgeKey { from: RelatedRowKey::Symbol([2; 32]), to: RelatedRowKey::Symbol([5; 32]), relation: SemanticLinkKind::Calls }).expect("owner cursor");
+        let window = backend_library::QueryWindow::new(
+            backend_library::QueryLimit::new(100).expect("credit"),
+            backend_library::QueryLimit::new(16).expect("delivery"),
+        ).expect("window");
+        let expected = format!("related-edge:{selector:?}:{window:?}:{:?}", Some(cursor.clone()));
+        let reply = product.related_edge_page(selector, window, Some(cursor)).expect("retry on fresh connection");
+        assert!(matches!(reply.reply, CommandReply::Graph(_)));
+        assert_eq!(*log.lock().expect("fixture log"), vec![format!("dead:{expected}"), format!("live:{expected}")]);
+        assert_eq!(product.endpoint.connects, 1);
     }
 
     #[test]

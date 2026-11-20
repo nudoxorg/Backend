@@ -81,6 +81,13 @@ impl<P: Product> Server<P> {
         let (Request::Search { limit, .. } | Request::Resolve { limit, .. }) = request else {
             return Err(RpcError::tool("records preparation changed request shape"));
         };
+        let keep_declarations_only = matches!(
+            request,
+            Request::Search {
+                declarations_only: true,
+                ..
+            }
+        );
         let mut issued = *limit;
         let mut delivery = issued;
         let mut pinned = None;
@@ -93,6 +100,7 @@ impl<P: Product> Server<P> {
                 Request::Search { text, .. } => Request::Search {
                     text: text.clone(),
                     limit: issued,
+                    declarations_only: keep_declarations_only,
                 },
                 Request::Resolve { text, .. } => Request::Resolve {
                     text: text.clone(),
@@ -101,7 +109,7 @@ impl<P: Product> Server<P> {
                 _ => return Err(RpcError::tool("catalog request changed shape")),
             };
             let probe = match &selected {
-                Request::Search { text, limit } => Probe::Search {
+                Request::Search { text, limit, .. } => Probe::Search {
                     text,
                     limit: *limit,
                 },

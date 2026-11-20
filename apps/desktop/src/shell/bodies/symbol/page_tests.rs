@@ -64,8 +64,9 @@ pub(super) fn page(identity: DeclRef, sig: &str, doc: Option<&str>, made_of: Vec
             does: Arc::from(does.into_iter().map(|(receiver, members)| MethodGroup { receiver, members: Arc::from(members) }).collect::<Vec<_>>()),
             other: Arc::from([]),
         }),
-        rose: Rose { up: Known::Known(Arc::from([])), down: Known::Known(Arc::from([])), left: Known::Unknown(gap()), right: Known::Known(Arc::from([])), implemented_by: Known::Known(Arc::from([])) },
+        rose: Rose { relations_gap: None, up: Known::Known(Arc::from([])), down: Known::Known(Arc::from([])), left: Known::Unknown(gap()), right: Known::Known(Arc::from([])), implemented_by: Known::Known(Arc::from([])) },
         references: Known::Known(Arc::from([])),
+        references_gap: None,
         workspace: Arc::from([]),
         outline,
         identity,
@@ -638,7 +639,7 @@ fn after_a_resize_storm_the_page_is_what_a_fresh_window_paints(cx: &mut TestAppC
     let (mut fresh, _) = open(cx, "de.rs", 2709, "from_str", 800.0);
     let fresh = layout_of(&painted(&mut fresh));
     assert_eq!(after.keys().collect::<Vec<_>>(), fresh.keys().collect::<Vec<_>>(), "the same things are on the page");
-    let moved: Vec<String> = after.iter().filter(|(key, at)| fresh.get(*key) != Some(at)).map(|(key, at)| format!("{key}: {at:?} vs {:?}", fresh.get(key))).collect();
+    let moved: Vec<String> = after.iter().filter(|(key, at)| fresh.get(*key) != Some(*at)).map(|(key, at)| format!("{key}: {at:?} vs {:?}", fresh.get(key))).collect();
     assert!(moved.is_empty(), "{} places differ from a fresh window:\n{}", moved.len(), moved.join("\n"));
 }
 

@@ -59,6 +59,9 @@ pub enum FullSemanticImageIdentityField {
 /// producer's source.
 #[derive(Debug, Error)]
 pub enum FullSemanticImageFault {
+    #[error("semantic image admission exhausted its budget or was cancelled")]
+    /// The caller stopped admission because its work, memory, or deadline limit was reached.
+    AdmissionStopped,
     #[error("full semantic image output needs {required} bytes but only {actual} were supplied")]
     /// Caller-provided output buffer cannot hold the encoded image.
     OutputTooShort {
@@ -319,6 +322,18 @@ pub enum FullSemanticImageFault {
     SignatureCarrierBindingScratch {
         /// Scratch byte count requested by the validator.
         bytes: usize,
+    },
+    #[error("cannot reserve {bytes} bytes for retained semantic image")]
+    /// Retaining the caller's exact image bytes failed to allocate.
+    ImageStorageAllocation {
+        /// Requested storage size.
+        bytes: usize,
+    },
+    #[error("cannot reserve {elements} elements for the typed-edge index")]
+    /// Temporary typed-edge index allocation failed.
+    TypedEdgeIndexAllocation {
+        /// Number of elements requested by the failed reservation.
+        elements: usize,
     },
     #[error("cannot reserve {bytes} bytes for signature-carrier image {field:?}")]
     /// Reserving memory for signature-carrier cross-plane validation failed.

@@ -138,13 +138,16 @@ let
   };
 in
 {
+  # The C# host values below name the SDK's real ELF muxer, not `bin/dotnet`: in
+  # the pinned nixpkgs `bin/dotnet` is a launcher script, and the producer holds
+  # the execution host in private custody, which only an ELF executable can be.
   # Absolute native-toolchain authorities for the seven-language corpus. Every
   # value names a pinned nixpkgs binary; nothing is discovered from ambient
   # `PATH`. `RUSTC` and `COMPILER_STABLE_TOOLCHAIN` both resolve to the pinned
   # Fenix 1.97.1 toolchain, and `NUDOX_JDK` names a JDK root whose `bin/javac`
   # is the Java authority.
   COMPILER_CLANG_COMPILER = "${compilers.clang}/bin/clang";
-  COMPILER_CSHARP_COMPILER = "${compilers.dotnet}/bin/dotnet";
+  COMPILER_CSHARP_COMPILER = "${compilers.dotnet}/share/dotnet/dotnet";
   COMPILER_GO_COMPILER = "${compilers.go}/bin/go";
   COMPILER_JAVA_COMPILER = "${compilers.jdk}/bin/javac";
   COMPILER_PYTHON_COMPILER = "${compilers.python}/bin/python3";
@@ -155,8 +158,8 @@ in
   COMPILER_TYPESCRIPT_COMPILER = "${compilers.typescript}/bin/tsc";
   LIBCLANG_PATH = "${compilers.libclang.lib}/lib";
   NUDOX_CLANG = "${compilers.clang}/bin/clang";
-  NUDOX_CSHARP_DOTNET = "${compilers.dotnet}/bin/dotnet";
-  NUDOX_DOTNET = "${compilers.dotnet}/bin/dotnet";
+  NUDOX_CSHARP_DOTNET = "${compilers.dotnet}/share/dotnet/dotnet";
+  NUDOX_DOTNET = "${compilers.dotnet}/share/dotnet/dotnet";
   NUDOX_GO = "${compilers.go}/bin/go";
   NUDOX_JAVAC = "${compilers.jdk}/bin/javac";
   NUDOX_JDK = compilers.jdk.home;

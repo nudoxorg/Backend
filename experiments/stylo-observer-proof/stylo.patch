@@ -1,0 +1,204 @@
+--- a/lib.rs
++++ b/lib.rs
+@@ -347,3 +347,97 @@
+ 
+ // TODO(emilio): Measure and see if we're wasting a lot of memory on Vec /
+ // SmallVec, and if so consider shrinking those as well.
++
++/// Bounded, thread-local observation for accepted top-level CSS rules.
++/// The native frontend validates host bytes and exposes only its declared partial scope.
++pub mod nudox_observer {
++    use std::{cell::{Cell, RefCell}, marker::PhantomData, rc::Rc};
++    /// Native parser accepted a declaration before block deduplication.
++    #[derive(Clone, Debug, Eq, PartialEq)]
++    pub struct Event {
++        /// Parser byte start before declaration tokenization.
++        pub start: usize,
++        /// Parser byte end after accepted declaration value.
++        pub end: usize,
++        /// Decoded property name supplied to native parser.
++        pub name: String,
++        /// Native generated property identifiers before deduplication.
++        pub property_ids: Vec<String>,
++        /// Top-level native style rule ordinal, committed only on insertion.
++        pub owner_rule: Option<usize>,
++    }
++    /// Accepted simple class candidate from the native selector parser.
++    #[derive(Clone, Debug, Eq, PartialEq)]
++    pub struct ClassEvent {
++        /// Top-level native style rule ordinal, committed only on insertion.
++        pub owner_rule: Option<usize>,
++        /// Start of selector-list prelude.
++        pub prelude_start: usize,
++        /// End of selector-list prelude.
++        pub prelude_end: usize,
++        /// Index of the selector in its native list.
++        pub selector_ordinal: usize,
++        /// Byte start of the original name token.
++        pub start: usize,
++        /// Byte end of the original name token.
++        pub end: usize,
++        /// Native decoded class name.
++        pub name: String,
++    }
++    struct State { id: u64, host: [u8; 32], budget: usize, byte_budget: usize, used: usize, overflow: bool, parse_depth: usize, nest_depth: usize, frame: Option<(usize, usize)>, skipped: bool, events: Vec<Event>, classes: Vec<ClassEvent> }
++    thread_local! { static STATE: RefCell<Option<State>> = const { RefCell::new(None) }; static NEXT_ID: Cell<u64> = const { Cell::new(0) }; }
++    /// Active observation scoped to one thread and host token.
++    pub struct Guard { id: u64, _not_send: PhantomData<Rc<()>> }
++    impl Drop for Guard {
++        fn drop(&mut self) { STATE.with(|state| { let mut s = state.borrow_mut(); if s.as_ref().is_some_and(|v| v.id == self.id) { *s = None; } }); }
++    }
++    impl Guard {
++        /// Retrieve events, host token, overflow and skipped-syntax status.
++        /// Rule ownership is limited to committed top-level style rules.
++        pub fn finish(self) -> Option<([u8; 32], Vec<Event>, Vec<ClassEvent>, bool, bool)> {
++            STATE.with(|state| { let mut s = state.borrow_mut(); if s.as_ref().is_some_and(|v| v.id == self.id && v.parse_depth == 0) { s.take().map(|mut s| { if let Some((events, classes)) = s.frame.take() { s.events.truncate(events); s.classes.truncate(classes); s.skipped = true; } (s.host, s.events, s.classes, s.overflow, s.skipped) }) } else { None } })
++        }
++    }
++    /// Begin observation, rejecting reentrant independent invocations on the same thread.
++    pub fn begin(host: [u8; 32], budget: usize, byte_budget: usize) -> Option<Guard> {
++        STATE.with(|state| { let mut s = state.borrow_mut(); if s.is_some() { return None; } let id = NEXT_ID.with(|v| { let n = v.get().wrapping_add(1); v.set(n); n }); *s = Some(State { id, host, budget, byte_budget, used: 0, overflow: false, parse_depth: 0, nest_depth: 0, frame: None, skipped: false, events: Vec::new(), classes: Vec::new() }); Some(Guard { id, _not_send: PhantomData }) })
++    }
++    pub(crate) struct ParseScope { id: u64 }
++    impl Drop for ParseScope {
++        fn drop(&mut self) { STATE.with(|state| { if let Some(s) = state.borrow_mut().as_mut() { if s.id == self.id { s.parse_depth = s.parse_depth.saturating_sub(1); } } }); }
++    }
++    pub(crate) fn enter_parse() -> Option<ParseScope> {
++        STATE.with(|state| { let mut s = state.borrow_mut(); let s = s.as_mut()?; s.parse_depth += 1; Some(ParseScope { id: s.id }) })
++    }
++    pub(crate) fn begin_rule() { STATE.with(|state| { if let Some(s) = state.borrow_mut().as_mut() { if s.parse_depth == 1 { if s.frame.is_some() { s.skipped = true; } else { s.frame = Some((s.events.len(), s.classes.len())); } } } }); }
++    pub(crate) fn finish_rule(owner: Option<usize>) { STATE.with(|state| { if let Some(s) = state.borrow_mut().as_mut() { if s.parse_depth != 1 { return; } if let Some((events, classes)) = s.frame.take() { if let Some(owner) = owner { for e in &mut s.events[events..] { e.owner_rule = Some(owner); } for e in &mut s.classes[classes..] { e.owner_rule = Some(owner); } } else { s.events.truncate(events); s.classes.truncate(classes); s.skipped = true; } } } }); }
++    pub(crate) struct NestScope { id: u64 }
++    impl Drop for NestScope { fn drop(&mut self) { STATE.with(|state| { if let Some(s) = state.borrow_mut().as_mut() { if s.id == self.id { s.nest_depth = s.nest_depth.saturating_sub(1); } } }); } }
++    pub(crate) fn enter_nest() -> Option<NestScope> { STATE.with(|state| { let mut s = state.borrow_mut(); let s = s.as_mut()?; if s.parse_depth != 1 { return None; } s.nest_depth += 1; Some(NestScope { id: s.id }) }) }
++    pub(crate) fn budgets() -> Option<(usize, usize)> { STATE.with(|state| { let mut s = state.borrow_mut(); let s = s.as_mut()?; if s.parse_depth != 1 { return None; } if s.frame.is_none() || s.nest_depth != 0 { s.skipped = true; return None; } Some((s.budget.saturating_sub(s.events.len() + s.classes.len()), s.byte_budget.saturating_sub(s.used))) }) }
++    pub(crate) fn skip() { STATE.with(|state| { if let Some(s) = state.borrow_mut().as_mut() { if s.parse_depth == 1 { s.skipped = true; } } }); }
++    pub(crate) fn class_events(prelude_start: usize, prelude_end: usize, events: Vec<(usize, selectors::nudox_observer::Event)>, overflow: bool) {
++        STATE.with(|state| { if let Some(s) = state.borrow_mut().as_mut() {
++            if s.parse_depth != 1 { return; }
++            if s.frame.is_none() || s.nest_depth != 0 { s.skipped = true; return; }
++            if overflow { s.overflow = true; return; }
++            for (selector_ordinal, event) in events {
++                if s.events.len() + s.classes.len() >= s.budget || event.name.len() > s.byte_budget.saturating_sub(s.used) { s.overflow = true; return; }
++                s.used += event.name.len();
++                s.classes.push(ClassEvent { owner_rule: None, prelude_start, prelude_end, selector_ordinal, start: event.start, end: event.end, name: event.name });
++            }
++        }});
++    }
++    pub(crate) fn accepted(start: usize, end: usize, name: &str, ids: impl FnOnce() -> Vec<String>) {
++        STATE.with(|state| { if let Some(s) = state.borrow_mut().as_mut() {
++            if s.parse_depth != 1 { return; }
++            if s.frame.is_none() || s.nest_depth != 1 { s.skipped = true; return; }
++            if s.events.len() + s.classes.len() >= s.budget || name.len() > s.byte_budget.saturating_sub(s.used) { s.overflow = true; return; }
++            let property_ids = ids();
++            let Some(cost) = property_ids.iter().try_fold(name.len(), |sum, id| sum.checked_add(id.len())) else { s.overflow = true; return; };
++            if cost > s.byte_budget.saturating_sub(s.used) { s.overflow = true; return; }
++            s.used += cost;
++            s.events.push(Event { start, end, name: name.to_owned(), property_ids, owner_rule: None });
++        }});
++    }
++}
+--- a/stylesheets/stylesheet.rs
++++ b/stylesheets/stylesheet.rs
+@@ -81,6 +81,7 @@
+         allow_import_rules: AllowImportRules,
+         sanitization_data: Option<&mut SanitizationData>,
+     ) -> Arc<Self> {
++        let _observer_scope = crate::nudox_observer::enter_parse();
+         let use_counters = UseCounters::default();
+         let (namespaces, rules, source_map_url, source_url) = Stylesheet::parse_rules(
+             css,
+--- a/stylesheets/rule_parser.rs
++++ b/stylesheets/rule_parser.rs
+@@ -563,7 +563,10 @@
+             return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
+         }
+ 
+-        QualifiedRuleParser::parse_prelude(self.nested(), input)
++        crate::nudox_observer::begin_rule();
++        let result = QualifiedRuleParser::parse_prelude(self.nested(), input);
++        if result.is_err() { crate::nudox_observer::finish_rule(None); }
++        result
+     }
+ 
+     #[inline]
+@@ -573,7 +576,11 @@
+         start: &ParserState,
+         input: &mut Parser<'i>,
+     ) -> Result<Self::QualifiedRule, ParseError> {
+-        QualifiedRuleParser::parse_block(self.nested(), prelude, start, input)?;
++        let before = self.rules.len();
++        let result = QualifiedRuleParser::parse_block(self.nested(), prelude, start, input);
++        let owner = if result.is_ok() && self.rules.len() == before + 1 && matches!(self.rules.last(), Some(CssRule::Style(_))) { Some(before) } else { None };
++        crate::nudox_observer::finish_rule(owner);
++        result?;
+         self.state = State::Body;
+         Ok(start.position())
+     }
+@@ -728,6 +735,7 @@
+     }
+ 
+     fn nest_for_rule<R>(&mut self, rule_type: CssRuleType, cb: impl FnOnce(&mut Self) -> R) -> R {
++        let _observer_nest = crate::nudox_observer::enter_nest();
+         let old = self.context.nesting_context.save(rule_type);
+         let r = cb(self);
+         self.context.nesting_context.restore(old);
+@@ -1124,7 +1132,44 @@
+             url_data: self.context.url_data,
+             for_supports_rule: false,
+         };
+-        SelectorList::parse(&selector_parser, input, self.parse_relative())
++        let prelude_start = input.position().byte_index();
++        let observer = crate::nudox_observer::budgets().and_then(|(count, bytes)| selectors::nudox_observer::begin(count, bytes));
++        let parsed = SelectorList::parse(&selector_parser, input, self.parse_relative());
++        let prelude_end = input.position().byte_index();
++        if let Some(observer) = observer {
++            let (events, overflow) = observer.finish();
++            if let Ok(list) = &parsed {
++                // Only simple class-only selector lists are admitted by this experiment.
++                // Nested forgiving selector syntax can roll back speculative components.
++                if overflow {
++                    crate::nudox_observer::class_events(prelude_start, prelude_end, Vec::new(), true);
++                } else {
++                    // Pair actual parser events with native components without
++                    // allocating a second, unbounded copy of selector names.
++                    let mut events = events.into_iter();
++                    let mut linked = Vec::new();
++                    let mut supported = true;
++                    for (ordinal, selector) in list.slice().iter().enumerate() {
++                        for component in selector.iter_raw_parse_order_from(0) {
++                            match component {
++                                selectors::parser::Component::Class(name) => {
++                                    let expected: &str = name.0.as_ref();
++                                    match events.next() {
++                                        Some(event) if event.name == expected => linked.push((ordinal, event)),
++                                        _ => supported = false,
++                                    }
++                                },
++                                _ => supported = false,
++                            }
++                        }
++                    }
++                    if supported && events.next().is_none() {
++                        crate::nudox_observer::class_events(prelude_start, prelude_end, linked, false);
++                    } else { crate::nudox_observer::skip(); }
++                }
++            }
++        }
++        parsed
+     }
+ 
+     fn parse_block(
+--- a/properties/declaration_block.rs
++++ b/properties/declaration_block.rs
+@@ -1563,6 +1563,10 @@
+         };
+         // In case there is still unparsed text in the declaration, we should roll back.
+         input.expect_exhausted()?;
++        crate::nudox_observer::accepted(
++            declaration_start.position().byte_index(), input.position().byte_index(), &name,
++            || self.declarations.declarations.iter().map(|declaration| declaration.id().to_css_string()).collect(),
++        );
+         let has_parsed_declarations = self.has_parsed_declarations();
+         self.output_block
+             .extend(self.declarations.drain(), self.importance);

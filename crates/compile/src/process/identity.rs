@@ -186,7 +186,24 @@ impl ExecutableIdentity {
         cancellation: &C,
         deadline: std::time::Instant,
     ) -> Result<Self, ProcessError> {
+        Self::from_path_until_with_limit(path, cancellation, deadline, MAX_EXECUTABLE_BYTES)
+    }
+
+    /// Captures an executable identity with a caller-specified byte ceiling.
+    /// The ceiling is checked on the opened file before reading its contents.
+    ///
+    /// # Errors
+    /// Returns cancellation, deadline, extent, file drift, or read failure.
+    pub fn from_path_until_with_limit<C: CancellationObserver + ?Sized>(
+        path: &Path,
+        cancellation: &C,
+        deadline: std::time::Instant,
+        maximum_bytes: u64,
+    ) -> Result<Self, ProcessError> {
         process_checkpoint(cancellation, deadline)?;
+        if maximum_bytes == 0 || maximum_bytes > MAX_EXECUTABLE_BYTES {
+            return Err(ProcessError::ExecutableLimit);
+        }
         let mut file = open_executable_file(path)?;
         let before = file
             .metadata()
@@ -194,7 +211,7 @@ impl ExecutableIdentity {
         if !before.is_file() {
             return Err(ProcessError::ExecutableUnavailable);
         }
-        if before.len() > MAX_EXECUTABLE_BYTES {
+        if before.len() > maximum_bytes {
             return Err(ProcessError::ExecutableLimit);
         }
         let before_stamp = FileStamp::from_metadata(&before);
@@ -833,7 +850,7 @@ fn toolchain_digest_until<C: CancellationObserver + ?Sized>(
         .map_err(|_| ProcessError::ExecutableDrift)
 }
 
-fn private_temp_directory(label: &str) -> Result<PathBuf, ProcessError> {
+pub(crate) fn private_temp_directory(label: &str) -> Result<PathBuf, ProcessError> {
     let base = std::env::temp_dir();
     for _ in 0..16 {
         let nonce = EXECUTABLE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -977,6 +994,24 @@ mod tests {
             typed_of::<crate::ToolchainSchema>(&bytes)
         );
         assert_eq!(captured, ExecutableIdentity::from_path(&path)?);
+        assert!(matches!(
+            ExecutableIdentity::from_path_until_with_limit(
+                &path,
+                &cancelled,
+                deadline,
+                bytes.len() as u64 - 1
+            ),
+            Err(ProcessError::ExecutableLimit)
+        ));
+        assert_eq!(
+            captured,
+            ExecutableIdentity::from_path_until_with_limit(
+                &path,
+                &cancelled,
+                deadline,
+                bytes.len() as u64
+            )?
+        );
         cancelled.store(true, std::sync::atomic::Ordering::Release);
         assert!(matches!(
             ExecutableIdentity::from_path_until(&path, &cancelled, std::time::Instant::now()),

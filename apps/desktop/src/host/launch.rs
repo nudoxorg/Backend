@@ -428,9 +428,10 @@ fn open_the_window(cx: &mut App, parts: AppParts, starting_platform: Instant) {
     if let Ok(spec) = std::env::var("NUDOX_DEBUG_PAGE") {
         crate::runtime::debug_page::open_window(cx, graph.store.clone(), crate::runtime::debug_page::parse_keys(&spec));
     }
+    let settings = graph.store.read(cx).snapshot().settings().clone();
     let open_main = move |cx: &mut App| open_main_window(cx, graph, closing, remembered);
     if needs_sign_in() {
-        open_sign_in(cx, Box::new(open_main));
+        open_sign_in(cx, settings, Box::new(open_main));
     } else {
         open_main(cx);
     }
@@ -446,7 +447,7 @@ fn needs_sign_in() -> bool {
         )
 }
 
-fn open_sign_in(cx: &mut App, proceed: crate::shell::sign_in::Proceed) {
+fn open_sign_in(cx: &mut App, settings: crate::model::SettingsState, proceed: crate::shell::sign_in::Proceed) {
     let bounds = Bounds::centered(None, gpui::size(px(560.0), px(420.0)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -460,7 +461,7 @@ fn open_sign_in(cx: &mut App, proceed: crate::shell::sign_in::Proceed) {
         ..WindowOptions::default()
     };
     if let Err(error) = cx.open_window(options, move |window, cx| {
-        let view = cx.new(|cx| crate::shell::sign_in::SignIn::new(proceed, window, cx));
+        let view = cx.new(|cx| crate::shell::sign_in::SignIn::new(proceed, settings, window, cx));
         cx.new(|cx| gpui_component::Root::new(view, window, cx).bordered(false))
     }) {
         eprintln!("backend-desktop: open sign-in window: {error}");

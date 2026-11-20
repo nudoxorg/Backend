@@ -178,7 +178,7 @@ fn captured_tree_is_language_neutral_bounded_and_cold_replayable_after_refusal()
         ["Go", "Python", "Rust", "TypeScript"]
             .into_iter()
             .map(str::to_owned)
-            .collect()
+            .collect::<std::collections::BTreeSet<_>>()
     );
     let changed = fixture(&label, 140, 4, false)?;
     let cursor = next

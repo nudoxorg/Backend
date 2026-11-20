@@ -117,6 +117,10 @@ struct SourceProgress {
     refresh_failed: bool,
     last_batch_fingerprint: Option<[u8; 32]>,
     facts: BTreeMap<String, DiscoveryFact>,
+    // Prior positive evidence remains a separate historical fact when a
+    // later observation does not report advisories. PyPI evidence is retained
+    // only when its producer explicitly scoped it to this exact release.
+    retained_advisories: BTreeMap<String, DiscoveryFact>,
     package_releases: BTreeMap<String, BTreeSet<String>>,
 }
 
@@ -161,6 +165,23 @@ pub(crate) struct DiscoverySearchDocument {
 struct DiscoverySearchChange {
     revision: u64,
     document: DiscoverySearchDocument,
+}
+
+#[cfg(test)]
+pub(crate) fn exact_metadata_fixture_gateway(
+    endpoint: RegistryEndpoint,
+    journal: PathBuf,
+) -> DiscoveryGateway {
+    let (_sender, receiver) = mpsc::sync_channel(1);
+    DiscoveryGateway {
+        store: DiscoveryStore::open(journal).expect("fixture discovery journal"),
+        receiver,
+        workers: Vec::new(),
+        cancelled: Arc::new(AtomicBool::new(false)),
+        metadata_sources: vec![endpoint],
+        metadata_offline: false,
+        package_metadata: package_metadata::PackageMetadataCache::default(),
+    }
 }
 
 /// Durable append-only owner for package discovery claims.
@@ -1366,6 +1387,11 @@ fn merge_discovery_metadata(
             known_or_absent => known_or_absent,
         }
     }
+    let advisory_release_scope = if matches!(&observed.advisories, DiscoveryFacet::Unknown) {
+        existing.advisory_release_scope.clone()
+    } else {
+        observed.advisory_release_scope.clone()
+    };
     DiscoveryMetadata {
         aliases: overlay(existing.aliases, observed.aliases),
         description: overlay(existing.description, observed.description),
@@ -1375,6 +1401,7 @@ fn merge_discovery_metadata(
         deprecation: overlay(existing.deprecation, observed.deprecation),
         yanked: overlay(existing.yanked, observed.yanked),
         advisories: overlay(existing.advisories, observed.advisories),
+        advisory_release_scope,
         downloads: overlay(existing.downloads, observed.downloads),
         cargo_sparse: overlay(existing.cargo_sparse, observed.cargo_sparse),
     }
@@ -1802,6 +1829,17 @@ impl DiscoveryStore {
             .and_then(|progress| progress.facts.get(coordinate))
     }
 
+    pub(crate) fn retained_advisory(
+        &self,
+        source: DiscoverySourceIdentity,
+        coordinate: &str,
+    ) -> Option<&DiscoveryFact> {
+        self.sources
+            .get(&source)?
+            .retained_advisories
+            .get(coordinate)
+    }
+
     /// Whether this source has reached its last captured high watermark.
     pub(crate) fn is_caught_up(&self, source: DiscoverySourceIdentity) -> bool {
         self.sources
@@ -1841,7 +1879,7 @@ impl DiscoveryStore {
             if checksum != frame_checksum(&payload) {
                 return Err(DiscoveryStoreError::Corrupt);
             }
-            let transaction: JournalTransaction =
+            let mut transaction: JournalTransaction =
                 serde_json::from_slice(&payload).map_err(|_| DiscoveryStoreError::Corrupt)?;
             if transaction.version != JOURNAL_VERSION {
                 return Err(DiscoveryStoreError::UnsupportedVersion(transaction.version));
@@ -1850,7 +1888,18 @@ impl DiscoveryStore {
                 .batch
                 .admit()
                 .map_err(|_| DiscoveryStoreError::Corrupt)?;
-            self.apply_recovered(transaction.batch)?;
+            let original_fingerprint = batch_fingerprint(&transaction.batch)?;
+            if transaction.batch.source.ecosystem() == RegistryEcosystem::Pypi {
+                for fact in &mut transaction.batch.facts {
+                    if fact.metadata.advisory_release_scope.as_deref()
+                        != Some(fact.coordinate.version())
+                    {
+                        fact.metadata.advisories = DiscoveryFacet::Unknown;
+                        fact.metadata.advisory_release_scope = None;
+                    }
+                }
+            }
+            self.apply_recovered(transaction.batch, original_fingerprint)?;
             offset = offset
                 .checked_add(
                     u64::try_from(header.len() + length + checksum.len())
@@ -1860,14 +1909,17 @@ impl DiscoveryStore {
         }
     }
 
-    fn apply_recovered(&mut self, batch: DiscoveryBatch) -> Result<(), DiscoveryStoreError> {
+    fn apply_recovered(
+        &mut self,
+        batch: DiscoveryBatch,
+        input_fingerprint: [u8; 32],
+    ) -> Result<(), DiscoveryStoreError> {
         let expected = self.cursor(batch.source);
         if batch.previous_cursor != expected
             || self.sequence(batch.source).unwrap_or(0) != batch.expected_base_sequence
         {
             return Err(DiscoveryStoreError::Corrupt);
         }
-        let input_fingerprint = batch_fingerprint(&batch)?;
         let materialized = self.materialize_package_retractions(&batch)?;
         let prepared_apply = self.validate_fact_transition(materialized.as_ref())?;
         let next_search_revision = self
@@ -1918,6 +1970,22 @@ impl DiscoveryStore {
                 };
                 match action.transition {
                     DiscoveryFactTransition::Newer => {
+                        let scoped_positive = |candidate: &DiscoveryFact| {
+                            matches!(&candidate.metadata.advisories,
+                                DiscoveryFacet::Known(items) if !items.is_empty())
+                                && (source_identity.ecosystem() != RegistryEcosystem::Pypi
+                                    || candidate.metadata.advisory_release_scope.as_deref()
+                                        == Some(candidate.coordinate.version()))
+                        };
+                        if scoped_positive(&fact) {
+                            source.retained_advisories.remove(&action.key);
+                        } else if let Some(previous) = source.facts.get(&action.key)
+                            && scoped_positive(previous)
+                        {
+                            source
+                                .retained_advisories
+                                .insert(action.key.clone(), previous.clone());
+                        }
                         if let (Some(package_name), Some(release_key)) =
                             (action.package_name, action.package_release_key)
                         {
@@ -2380,6 +2448,193 @@ mod tests {
                 .expect("clock")
                 .as_nanos()
         ))
+    }
+
+    fn advisory_fixture() -> backend_engine::registry::DiscoveryAdvisory {
+        backend_engine::registry::DiscoveryAdvisory {
+            id: "GHSA-legacy-fixture".to_owned(),
+            aliases: DiscoveryFacet::Unknown,
+            summary: DiscoveryFacet::Unknown,
+            severity: DiscoveryFacet::Unknown,
+            fixed_in: DiscoveryFacet::Unknown,
+        }
+    }
+
+    fn advisory_fixture_batch(
+        mut fact: DiscoveryFact,
+        sequence: u64,
+        observed_at: u64,
+    ) -> DiscoveryBatch {
+        let observed_at = DiscoveryObservedAt::from_unix_millis(observed_at);
+        fact.observed_at = observed_at;
+        DiscoveryBatch {
+            source: fact.source,
+            expected_base_sequence: sequence,
+            previous_cursor: DiscoveryCursor::default(),
+            next_cursor: DiscoveryCursor::default(),
+            source_high_watermark: DiscoveryCursor::default(),
+            caught_up: false,
+            observed_at,
+            completeness: DiscoveryCompleteness::Windowed,
+            facts: vec![fact],
+            package_retractions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn legacy_pypi_nonempty_advisory_is_not_a_release_scoped_fact_after_reopen() {
+        let path = temp_path("legacy-pypi-advisory-scope");
+        let mut fact = event_fact(
+            RegistryEcosystem::Pypi,
+            DiscoverySourceEvent::Snapshot,
+            None,
+            DiscoveryStanding::Published,
+        );
+        fact.metadata.advisories = DiscoveryFacet::Known(vec![advisory_fixture()]);
+        let source = fact.source;
+        let coordinate = fact.coordinate.as_str().to_owned();
+        let legacy_batch = advisory_fixture_batch(fact, 0, 10);
+        // Construct the v2 envelope as it existed before the optional scope
+        // field: no current producer or commit path creates this fixture.
+        let payload = serde_json::to_vec(&JournalWriteTransaction {
+            version: JOURNAL_VERSION,
+            batch: &legacy_batch,
+        })
+        .expect("legacy envelope JSON");
+        assert!(!String::from_utf8_lossy(&payload).contains("advisory_release_scope"));
+        let legacy_frame = encode_frame(&payload).expect("legacy frame");
+        fs::write(&path, &legacy_frame).expect("write old envelope");
+        let mut reopened = DiscoveryStore::open(path.clone()).expect("reopen");
+        let selected = reopened
+            .fact(source, &coordinate)
+            .expect("selected release");
+        assert_eq!(
+            selected.metadata.advisories,
+            DiscoveryFacet::Unknown,
+            "a persisted list without release-scope provenance cannot be attributed to this release"
+        );
+        assert_eq!(
+            reopened.commit(legacy_batch).expect("replay"),
+            DiscoveryCommit::AlreadyCommitted,
+            "normalizing the selected view must preserve the original batch fingerprint"
+        );
+        drop(reopened);
+        assert_eq!(fs::read(&path).expect("original frame"), legacy_frame);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn explicitly_scoped_pypi_advisory_survives_reopen() {
+        let path = temp_path("scoped-pypi-advisory");
+        let mut fact = event_fact(
+            RegistryEcosystem::Pypi,
+            DiscoverySourceEvent::Snapshot,
+            None,
+            DiscoveryStanding::Published,
+        );
+        fact.metadata.advisories = DiscoveryFacet::Known(vec![advisory_fixture()]);
+        fact.metadata.advisory_release_scope = Some(fact.coordinate.version().to_owned());
+        let source = fact.source;
+        let coordinate = fact.coordinate.as_str().to_owned();
+        let mut wrong = fact.clone();
+        wrong.metadata.advisory_release_scope = Some("9.9.9".to_owned());
+        assert!(advisory_fixture_batch(wrong, 0, 10).admit().is_err());
+        let mut store = DiscoveryStore::open(path.clone()).expect("store");
+        store
+            .commit(advisory_fixture_batch(fact, 0, 10))
+            .expect("scoped fact");
+        drop(store);
+        let reopened = DiscoveryStore::open(path.clone()).expect("reopen");
+        assert!(
+            matches!(&reopened.fact(source, &coordinate).expect("release").metadata.advisories, DiscoveryFacet::Known(items) if items.len() == 1)
+        );
+        drop(reopened);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn unscoped_pypi_positive_is_never_retained_as_release_history() {
+        let path = temp_path("unscoped-pypi-no-history");
+        let mut fact = event_fact(
+            RegistryEcosystem::Pypi,
+            DiscoverySourceEvent::Snapshot,
+            None,
+            DiscoveryStanding::Published,
+        );
+        fact.metadata.advisories = DiscoveryFacet::Known(vec![advisory_fixture()]);
+        let source = fact.source;
+        let coordinate = fact.coordinate.as_str().to_owned();
+        let mut store = DiscoveryStore::open(path.clone()).expect("store");
+        store
+            .commit(advisory_fixture_batch(fact.clone(), 0, 10))
+            .expect("legacy observation");
+        fact.metadata.advisories = DiscoveryFacet::Unknown;
+        store
+            .commit(advisory_fixture_batch(fact, 1, 20))
+            .expect("refresh");
+        assert!(store.retained_advisory(source, &coordinate).is_none());
+        drop(store);
+        let reopened = DiscoveryStore::open(path.clone()).expect("reopen");
+        assert!(reopened.retained_advisory(source, &coordinate).is_none());
+        drop(reopened);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn non_pypi_positive_followed_by_unknown_remains_qualified_as_stale() {
+        let path = temp_path("non-pypi-advisory-refresh");
+        let mut first = event_fact(
+            RegistryEcosystem::Npm,
+            DiscoverySourceEvent::Snapshot,
+            None,
+            DiscoveryStanding::Published,
+        );
+        first.metadata.advisories = DiscoveryFacet::Known(vec![advisory_fixture()]);
+        let source = first.source;
+        let coordinate = first.coordinate.as_str().to_owned();
+        let mut store = DiscoveryStore::open(path.clone()).expect("store");
+        store
+            .commit(advisory_fixture_batch(first.clone(), 0, 10))
+            .expect("positive");
+        first.metadata.advisories = DiscoveryFacet::Unknown;
+        first.metadata.description = DiscoveryFacet::Known("new metadata".to_owned());
+        first.proof = [8; 32];
+        store
+            .commit(advisory_fixture_batch(first, 1, 20))
+            .expect("unknown refresh");
+        let selected = store.fact(source, &coordinate).expect("selected release");
+        assert_eq!(selected.metadata.advisories, DiscoveryFacet::Unknown);
+        assert_eq!(
+            selected.metadata.description,
+            DiscoveryFacet::Known("new metadata".to_owned())
+        );
+        assert_eq!(selected.observed_at.as_unix_millis(), 20);
+        assert_eq!(selected.proof, [8; 32]);
+        let retained = store
+            .retained_advisory(source, &coordinate)
+            .expect("retained positive");
+        assert!(
+            matches!(&retained.metadata.advisories, DiscoveryFacet::Known(items) if items.len() == 1)
+        );
+        assert_eq!(retained.observed_at.as_unix_millis(), 10);
+        assert_eq!(retained.proof, [7; 32]);
+        drop(store);
+        let reopened = DiscoveryStore::open(path.clone()).expect("reopen");
+        let selected = reopened.fact(source, &coordinate).expect("replayed release");
+        assert_eq!(selected.metadata.advisories, DiscoveryFacet::Unknown);
+        assert_eq!(
+            selected.metadata.description,
+            DiscoveryFacet::Known("new metadata".to_owned())
+        );
+        assert_eq!(selected.observed_at.as_unix_millis(), 20);
+        assert_eq!(selected.proof, [8; 32]);
+        let retained = reopened
+            .retained_advisory(source, &coordinate)
+            .expect("replayed positive");
+        assert_eq!(retained.observed_at.as_unix_millis(), 10);
+        assert_eq!(retained.proof, [7; 32]);
+        drop(reopened);
+        let _ = fs::remove_file(path);
     }
 
     #[cfg(unix)]

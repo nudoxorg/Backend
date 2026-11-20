@@ -477,7 +477,11 @@ pub fn compose(engine: &mut dyn Engine, key: &BrowseKey) -> Result<PageValue, Re
         | BrowseKey::CargoReadme(_)
         | BrowseKey::FindHome
         | BrowseKey::Find(_)
-        | BrowseKey::Compare(_) => Err(ReadFailure::Fault(crate::core::ErrorValue::new(
+        | BrowseKey::Compare(_)
+        | BrowseKey::FindNative(_)
+        | BrowseKey::Sql(_)
+        | BrowseKey::Css(_)
+        | BrowseKey::Impact(_) => Err(ReadFailure::Fault(crate::core::ErrorValue::new(
             crate::core::FaultCode::Protocol,
             "find and compare require the page reader's cancellable read context",
         ))),
@@ -749,7 +753,7 @@ fn offer_releases(
     use crate::model::browse::FindPackage;
     use crate::model::pages::PackageRef;
     use crate::model::release::{Availability, Offer};
-    for release in source.offline(query, OFFERS) {
+    for release in exact_release(query, source).into_iter().chain(source.offline(query, OFFERS)) {
         if candidates.values().any(|candidate| {
             candidate
                 .offer
@@ -793,11 +797,33 @@ fn offer_releases(
     }
 }
 
+/// `name@version` asks for one exact release: the one this machine's
+/// registry lists under that name and version, at whatever availability.
+fn exact_release(
+    query: &str,
+    source: &dyn crate::host::registry::RegistrySource,
+) -> Option<crate::model::release::Release> {
+    use crate::model::release::{CrateName, Version};
+    let (name, version) = query.trim().split_once('@')?;
+    let name = CrateName::new(name.trim()).ok()?;
+    let version = Version::new(version.trim()).ok()?;
+    source
+        .releases(&name)
+        .into_iter()
+        .map(|published| published.release)
+        .find(|release| release.version == version)
+}
+
 fn rank_packages(
     query: &str,
     mut candidates: Vec<crate::model::browse::FindPackage>,
 ) -> Vec<crate::model::browse::FindPackage> {
     let query = query.trim().to_lowercase();
+    // `name@version` matches by name; the asked release leads its name.
+    let (query, asked) = query.split_once('@')
+        .filter(|(name, _)| !name.trim().is_empty())
+        .map_or((query.as_str(), None), |(name, version)| (name.trim(), Some(version.trim())));
+    let query = query.to_owned();
     candidates.retain(|candidate| {
         candidate.name.to_lowercase().contains(&query)
             || candidate
@@ -807,8 +833,11 @@ fn rank_packages(
     });
     candidates.sort_by_cached_key(|candidate| {
         let name = candidate.name.to_lowercase();
+        let other_release = asked.is_some_and(|asked| candidate.offer.as_ref()
+            .is_none_or(|offer| !offer.release.version.as_str().eq_ignore_ascii_case(asked)));
         (
             name != query,
+            other_release,
             !name.starts_with(&query),
             !candidate.indexed,
             name,

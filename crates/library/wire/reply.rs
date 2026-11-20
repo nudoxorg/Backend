@@ -85,6 +85,7 @@ pub(crate) struct ReplyEnvelope {
 pub(crate) enum ReplyWire {
     Packages(SnapshotWire),
     ProjectionPage(ProjectionPageWire),
+    RelatedEdgePage(RelatedEdgePageWire),
     Added(DeltaWire),
     Removed(DeltaWire),
     Document(DocumentWire),
@@ -103,6 +104,23 @@ pub(crate) enum ReplyWire {
     Revision(RevisionWire),
     Error(ErrorWire),
     Failed(CommandFailureWire),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RelatedEdgePageWire {
+    snapshot: SnapshotWire,
+    keys: Box<[crate::RelatedEdgeKey]>,
+    semantic_revision: [u8; 32],
+    terminal: RelatedEdgeTerminalWire,
+    withheld: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "state", content = "cursor", rename_all = "kebab-case", deny_unknown_fields)]
+enum RelatedEdgeTerminalWire {
+    Complete,
+    More(crate::RelatedPageCursor),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -345,10 +363,25 @@ impl<'de> Deserialize<'de> for ReplyDto {
     }
 }
 
+fn admit_surface_source_policy_shape(reply: &crate::SurfaceReply) -> Result<(), String> {
+    match reply {
+        crate::SurfaceReply::Read(records) if records.iter().any(|record| !record.source_policy.matches_record(record)) =>
+            return Err("source policy claim does not match its selected record".to_owned()),
+        crate::SurfaceReply::References { references, coverage, .. }
+            if references.iter().any(|record| !record.source_policy.matches_reference_shape(record))
+                || (references.iter().any(|record| !record.source_policy.is_unknown())
+                    && !matches!(coverage, crate::ReferenceCoverage::Partial { .. })) =>
+            return Err("source policy claim does not match its reference scope".to_owned()),
+        _ => {}
+    }
+    Ok(())
+}
+
 pub(crate) fn reply_to_wire(reply: &CommandReply) -> Result<ReplyWire, String> {
     Ok(match reply {
         CommandReply::Packages(snapshot) => ReplyWire::Packages(snapshot_to_wire(snapshot)),
         CommandReply::ProjectionPage(page) => ReplyWire::ProjectionPage(ProjectionPageWire {
+            graph_alias_witness: page.graph_alias_witness.as_ref().map(super::reply_content::document_to_wire),
             snapshot: snapshot_to_wire(&page.snapshot),
             outline_order: page.outline_order.as_ref().map(super::reply_page::order_to_wire),
             terminal: match page.terminal {
@@ -365,8 +398,18 @@ pub(crate) fn reply_to_wire(reply: &CommandReply) -> Result<ReplyWire, String> {
         CommandReply::Removed(id) => ReplyWire::Removed(DeltaWire {
             id: encode_id(id.as_bytes()),
         }),
-        CommandReply::Document(document) => ReplyWire::Document(document_to_wire(document)),
-        CommandReply::Page(document) => ReplyWire::Page(document_to_wire(document)),
+        CommandReply::Document(document) => {
+            if !document.source_policy.matches_document(document) {
+                return Err("source policy claim does not match selected document".to_owned());
+            }
+            ReplyWire::Document(document_to_wire(document))
+        },
+        CommandReply::Page(document) => {
+            if !document.source_policy.matches_document(document) {
+                return Err("source policy claim does not match selected document".to_owned());
+            }
+            ReplyWire::Page(document_to_wire(document))
+        },
         CommandReply::Outline(outline) => ReplyWire::Outline(outline_to_wire(outline)),
         CommandReply::Names(snapshot) => ReplyWire::Names(snapshot_to_wire(snapshot)),
         CommandReply::Resolved(rows) => ReplyWire::Resolved(RowsWire {
@@ -379,6 +422,12 @@ pub(crate) fn reply_to_wire(reply: &CommandReply) -> Result<ReplyWire, String> {
                 readiness: page.readiness,
             })
         }
+        CommandReply::RelatedEdgePage(page) => ReplyWire::RelatedEdgePage(RelatedEdgePageWire {
+            snapshot: snapshot_to_wire(&page.snapshot), keys: page.keys.clone(),
+            semantic_revision: page.semantic_revision,
+            terminal: match &page.terminal { crate::RelatedEdgeTerminal::Complete => RelatedEdgeTerminalWire::Complete, crate::RelatedEdgeTerminal::More(cursor) => RelatedEdgeTerminalWire::More(cursor.clone()) },
+            withheld: page.withheld,
+        }),
         CommandReply::Graph(snapshot) => ReplyWire::Graph(snapshot_to_wire(snapshot)),
         CommandReply::GraphQueryPage(page) => {
             ReplyWire::GraphQueryPage(graph_query_page_to_wire(page))
@@ -388,7 +437,10 @@ pub(crate) fn reply_to_wire(reply: &CommandReply) -> Result<ReplyWire, String> {
             admit_shape_wire_tree(&wire)?;
             ReplyWire::SemanticShapes(wire)
         }
-        CommandReply::Surface(reply) => ReplyWire::Surface(reply.clone()),
+        CommandReply::Surface(reply) => {
+            admit_surface_source_policy_shape(reply)?;
+            ReplyWire::Surface(reply.clone())
+        },
         CommandReply::Health(root) => ReplyWire::Health(view_root_to_wire(root)),
         CommandReply::Readiness(report) => {
             let revision = report.revision();
@@ -434,6 +486,16 @@ pub(crate) fn reply_from_wire_with_verifier<V: ProducerObservationVerifier>(
     verifier: &V,
 ) -> Result<CommandReply, String> {
     reply_from_wire_with_admission(reply, certificate, &VerifierAdmission(verifier))
+}
+
+#[cfg(any(unix, windows))]
+pub(crate) fn reply_from_wire_with_local_policy(
+    reply: ReplyWire, certificate: &WireCertificate,
+    channel: &backend_replication::AuthenticatedLocalPeer,
+) -> Result<CommandReply, String> {
+    reply_from_wire_with_admission(
+        reply, certificate, &super::reply_admission::LocalPolicyAdmission(channel),
+    )
 }
 
 fn reply_from_wire_with_admission<A: CoverageAdmission>(
@@ -495,6 +557,13 @@ fn reply_from_wire_with_admission<A: CoverageAdmission>(
                 readiness: value.readiness,
             })
         }
+        ReplyWire::RelatedEdgePage(value) => CommandReply::RelatedEdgePage(crate::RelatedEdgePage {
+            snapshot: snapshot_from_wire_with_admission(value.snapshot, certificate, admission)?,
+            keys: value.keys,
+            semantic_revision: value.semantic_revision,
+            terminal: match value.terminal { RelatedEdgeTerminalWire::Complete => crate::RelatedEdgeTerminal::Complete, RelatedEdgeTerminalWire::More(cursor) => crate::RelatedEdgeTerminal::More(cursor) },
+            withheld: value.withheld,
+        }),
         ReplyWire::Graph(value) => CommandReply::Graph(snapshot_from_wire_with_admission(
             value,
             certificate,
@@ -506,7 +575,16 @@ fn reply_from_wire_with_admission<A: CoverageAdmission>(
         ReplyWire::SemanticShapes(value) => {
             CommandReply::SemanticShapes(semantic_shape_batch_from_wire(value, certificate)?)
         }
-        ReplyWire::Surface(value) => CommandReply::Surface(value),
+        ReplyWire::Surface(value) => {
+            let captured = match &value {
+                crate::SurfaceReply::Read(records) => records.iter().any(|record| !record.source_policy.is_unknown()),
+                crate::SurfaceReply::References { references, .. } => references.iter().any(|record| !record.source_policy.is_unknown()),
+                _ => false,
+            };
+            if captured { admission.admit_local_source_policy()?; }
+            admit_surface_source_policy_shape(&value)?;
+            CommandReply::Surface(value)
+        },
         ReplyWire::Health(value) => CommandReply::Health(view_root_from_wire_with_admission(
             &value,
             certificate,
@@ -643,7 +721,7 @@ pub(crate) fn snapshot_from_wire_with_admission<A: CoverageAdmission>(
     }
     let legacy_relations = value.graph_relations.as_ref().is_some_and(|value| value.schema == 1);
     let graph_relations = graph_relations_from_wire(value.graph_relations, &root, certificate)?;
-    let mut rich_graph = rich_graph_from_wire(value.rich_graph.as_ref(), &root)?;
+    let mut rich_graph = rich_graph_from_wire(value.rich_graph.as_ref(), &root, admission)?;
     if let (Some(relations), Some(graph)) = (&graph_relations, &mut rich_graph) {
         let mut expected = std::collections::BTreeMap::new();
         for relation in relations.iter() {
@@ -688,9 +766,10 @@ pub(crate) fn snapshot_from_wire_with_admission<A: CoverageAdmission>(
     })
 }
 
-fn rich_graph_from_wire(
+fn rich_graph_from_wire<A: CoverageAdmission>(
     value: Option<&crate::RichGraphSnapshot>,
     root: &ViewRoot,
+    admission: &A,
 ) -> Result<Option<crate::RichGraphSnapshot>, String> {
     let Some(value) = value else {
         return Ok(None);
@@ -699,6 +778,14 @@ fn rich_graph_from_wire(
         return Err("rich graph view root does not match its snapshot".to_owned());
     }
     value.admit().map_err(|error| error.to_string())?;
+    // Materialized/page root is distinct from the full selected view basis.
+    let basis = root.basis();
+    if value.nodes.iter().any(|node| !node.source_policy.matches_graph_basis(basis))
+        || value.edges.iter().any(|edge| !edge.source_policy.matches_graph_basis(basis))
+    { return Err("rich graph policy differs from admitted view basis".to_owned()); }
+    if value.nodes.iter().any(|node| !node.source_policy.is_unknown())
+        || value.edges.iter().any(|edge| !edge.source_policy.is_unknown())
+    { admission.admit_local_source_policy()?; }
     Ok(Some(value.clone()))
 }
 

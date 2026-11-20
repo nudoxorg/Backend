@@ -22,14 +22,14 @@ pub use catalog::{DerivedOutputEntry, DerivedOutputPublication};
 pub use head::{HeadExpectation, WorkspaceHead, WorkspaceSnapshot};
 pub use lazy::{
     RelationIdentity, RelationKeyPrefix, WorkspaceRelationChild, WorkspaceRelationError,
-    WorkspaceRelationFault, WorkspaceRelationHandle, WorkspaceRelationNodeHandle,
+    WorkspacePreflightRelationHandle, WorkspaceRelationFault, WorkspaceRelationHandle, WorkspaceRelationNodeHandle,
     WorkspaceRelationNodePage, WorkspaceRelationRejection,
 };
 pub use model::WorkspaceModel;
 pub use owner::{
     OwnerLease, OwnerLeaseIdentity, PreparedWorkspaceCandidate, PublishGrant,
     PublishedWorkspaceWriter, RetiredWorkspaceHead, UnselectedWorkspaceCandidate,
-    WorkspaceCandidateClaim, WorkspaceDirectoryAdmission, WorkspaceError, WorkspaceGcPin, WorkspaceOwner,
+    WorkspaceCandidateClaim, WorkspaceDirectoryAdmission, WorkspaceDirectoryWitness, WorkspaceError, WorkspaceGcPin, WorkspaceOwner,
     WorkspacePublicationFailure, WorkspaceWriter,
 };
 pub use publication::{

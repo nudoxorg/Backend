@@ -51,7 +51,7 @@
           "schema": 3,
           "sequence": 2,
           "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-          "source_root": "4f0e9f9f035f95feab1a8da33b93ed1615711d31fcbcc74609f3b5c65f830e55"
+          "source_root": "92c95876166fb3406b9e1a7f1e84520b3f89ad58a7cb439c8946d8e399203655"
         },
         "roots": [
           {
@@ -1179,7 +1179,7 @@
           }
         ],
         "readiness": "ready",
-        "revision": "4f0e9f9f",
+        "revision": "92c95876",
         "rows": 827
       }
     },
@@ -1598,7 +1598,7 @@
           {
             "identity": {
               "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::8bee74698c34c7e519999be020874ad71349a022e8873a39351edaa4e4af9fc0::signer",
-              "line": 24,
+              "line": 23,
               "name": "signer",
               "path": "tests/test_itsdangerous/test_signer.py",
               "segments": [
@@ -1642,7 +1642,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › tests/test_itsdangerous/test_signer.py:24 › signer"
+              "trail": "project › tests/test_itsdangerous/test_signer.py:23 › signer"
             },
             "kind": "method",
             "language": "python",
@@ -3337,8 +3337,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 5777,
-                "normalizedFrameBytesExcludingCounters": 23105,
+                "normalizedEstimatedTokensExcludingCounters": 5792,
+                "normalizedFrameBytesExcludingCounters": 23167,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -3347,7 +3347,7 @@
             },
             "content": [
               {
-                "text": "# project\n`/tmp/nudox-surface/python-itsdangerous/project`\n\n◆ _CompactJSON  `src/itsdangerous/_json.py:7 › _CompactJSON`\n  ƒ loads  `src/itsdangerous/_json.py:11 › loads`\n    ▫ payload  `payload`\n    ▫ loads  `loads`\n  ƒ dumps  `src/itsdangerous/_json.py:15 › dumps`\n    ▫ kwargs  `kwargs`\n    ▫ obj  `obj`\n    ▫ dumps  `dumps`\n◆ BadHeader  `src/itsdangerous/exc.py:66 › BadHeader`\n  ƒ __init__  `src/itsdangerous/exc.py:74 › __init__`\n    ▫ header  `header`\n    ▫ payload  `payload`\n    ▫ original_error  `original_error`\n    ▫ message  `message`\n◆ BadTimeSignature  `src/itsdangerous/exc.py:36 › BadTimeSignature`\n  ƒ __init__  `src/itsdangerous/exc.py:41 › __init__`\n    ▫ payload  `payload`\n    ▫ message  `message`\n    ▫ date_signed  `date_signed`\n◆ BadSignature  `src/itsdangerous/exc.py:22 › BadSignature`\n  ƒ __init__  `src/itsdangerous/exc.py:25 › __init__`\n    ▫ message  `message`\n    ▫ payload  `payload`\n◆ BadData  `src/itsdangerous/exc.py:7 › BadData`\n  ƒ __init__  `src/itsdangerous/exc.py:14 › __init__`\n    ▫ message  `message`\n  ƒ __str__  `src/itsdangerous/exc.py:18 › __str__`\n    ▫ __str__  `__str__`\n◆ SignatureExpired  `src/itsdangerous/exc.py:60 › SignatureExpired`\n◆ BadPayload  `src/itsdangerous/exc.py:92 › BadPayload`\n  ƒ __init__  `src/itsdangerous/exc.py:101 › __init__`\n    ▫ message  `message`\n    ▫ original_error  `original_error`\n◆ _PDataSerializer  `src/itsdangerous/serializer.py:26 › _PDataSerializer`\n  ƒ dumps  `src/itsdangerous/serializer.py:31 › dumps`\n    ▫ dumps  `dumps`\n    ▫ obj  `obj`\n  ƒ loads  `src/itsdangerous/serializer.py:27 › loads`\n    ▫ payload  `payload`\n    ▫ loads  `loads`\n◆ Serializer  `src/itsdangerous/serializer.py:42 › Serializer`\n  ƒ __init__  `src/itsdangerous/serializer.py:110 › __init__`\n    ▫ signer  `signer`\n    ▫ serializer_kwargs  `serializer_kwargs`\n    ▫ salt  `salt`\n    ▫ signer_kwargs  `signer_kwargs`\n    ▫ serializer  `serializer`\n    ▫ secret_key  `secret_key`\n    ▫ fallback_signers  `fallback_signers`\n  ƒ __init__  `src/itsdangerous/serializer.py:177 › __init__`\n50 declaration(s) · truncated\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 50 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/python-itsdangerous/project\",\"limit\":50,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
+                "text": "# project\n`/tmp/nudox-surface/python-itsdangerous/project`\n\n◆ _CompactJSON  `src/itsdangerous/_json.py:7 › _CompactJSON`\n  ƒ loads  `src/itsdangerous/_json.py:10 › loads`\n    ▫ payload  `payload`\n    ▫ loads  `loads`\n  ƒ dumps  `src/itsdangerous/_json.py:14 › dumps`\n    ▫ kwargs  `kwargs`\n    ▫ obj  `obj`\n    ▫ dumps  `dumps`\n◆ BadHeader  `src/itsdangerous/exc.py:66 › BadHeader`\n  ƒ __init__  `src/itsdangerous/exc.py:74 › __init__`\n    ▫ header  `header`\n    ▫ payload  `payload`\n    ▫ original_error  `original_error`\n    ▫ message  `message`\n◆ BadTimeSignature  `src/itsdangerous/exc.py:36 › BadTimeSignature`\n  ƒ __init__  `src/itsdangerous/exc.py:41 › __init__`\n    ▫ payload  `payload`\n    ▫ message  `message`\n    ▫ date_signed  `date_signed`\n◆ BadSignature  `src/itsdangerous/exc.py:22 › BadSignature`\n  ƒ __init__  `src/itsdangerous/exc.py:25 › __init__`\n    ▫ message  `message`\n    ▫ payload  `payload`\n◆ BadData  `src/itsdangerous/exc.py:7 › BadData`\n  ƒ __init__  `src/itsdangerous/exc.py:14 › __init__`\n    ▫ message  `message`\n  ƒ __str__  `src/itsdangerous/exc.py:18 › __str__`\n    ▫ __str__  `__str__`\n◆ SignatureExpired  `src/itsdangerous/exc.py:60 › SignatureExpired`\n◆ BadPayload  `src/itsdangerous/exc.py:92 › BadPayload`\n  ƒ __init__  `src/itsdangerous/exc.py:101 › __init__`\n    ▫ message  `message`\n    ▫ original_error  `original_error`\n◆ _PDataSerializer  `src/itsdangerous/serializer.py:26 › _PDataSerializer`\n  ƒ dumps  `src/itsdangerous/serializer.py:31 › dumps`\n    ▫ dumps  `dumps`\n    ▫ obj  `obj`\n  ƒ loads  `src/itsdangerous/serializer.py:27 › loads`\n    ▫ payload  `payload`\n    ▫ loads  `loads`\n◆ Serializer  `src/itsdangerous/serializer.py:42 › Serializer`\n  ƒ __init__  `src/itsdangerous/serializer.py:109 › __init__`\n    ▫ signer  `signer`\n    ▫ serializer_kwargs  `serializer_kwargs`\n    ▫ salt  `salt`\n    ▫ signer_kwargs  `signer_kwargs`\n    ▫ serializer  `serializer`\n    ▫ secret_key  `secret_key`\n    ▫ fallback_signers  `fallback_signers`\n  ƒ __init__  `src/itsdangerous/serializer.py:176 › __init__`\n50 declaration(s) · truncated (outline pagination only; analysis coverage is not certified)\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 50 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/python-itsdangerous/project\",\"limit\":50,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
                 "type": "text"
               }
             ],
@@ -3398,7 +3398,7 @@
                 "schema": 3,
                 "sequence": 2,
                 "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-                "source_root": "4f0e9f9f035f95feab1a8da33b93ed1615711d31fcbcc74609f3b5c65f830e55"
+                "source_root": "92c95876166fb3406b9e1a7f1e84520b3f89ad58a7cb439c8946d8e399203655"
               },
               "roots": [
                 {
@@ -5614,6 +5614,7 @@
         "backend.resolve",
         "backend.search",
         "backend.source",
+        "backend.sql_query",
         "backend.status"
       ]
     }

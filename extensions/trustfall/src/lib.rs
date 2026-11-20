@@ -34,11 +34,13 @@ pub use identity::{
 pub use provider::{Adapter, GraphPage, GraphSource, MemorySource, QueryRequest, QueryResult};
 pub use query::{
     BoundSemanticQueryRow, CompilerExternalTargetEvidence, CompilerSemanticEvidence,
-    PackageScopeEvidence, QueryError as SemanticQueryError, SemanticQueryCancelHandle,
-    SemanticQueryCancellation, SemanticQueryCorpus, SemanticQueryEvent, SemanticQueryEvidence,
-    SemanticQueryFact, SemanticQueryIdentity, SemanticQueryPresentation, SemanticQueryRequest,
-    SemanticQueryStream, SemanticQueryTerminal, StructuralFallbackEvidence, execute_semantic_query,
-    schema as semantic_query_schema,
+    PackageScopeEvidence, QueryError as SemanticQueryError, SemanticQueryAdmissionBudget,
+    SemanticQueryCancelHandle, SemanticQueryCancellation, SemanticQueryCorpus, SemanticQueryEvent,
+    SemanticQueryEvidence, SemanticQueryFact, SemanticQueryIdentity, SemanticQueryPresentation,
+    SemanticQueryRequest, SemanticQueryStream, SemanticQueryTerminal, SqlNativeQueryEvidence,
+    StructuralFallbackEvidence, execute_semantic_query, measure_semantic_query_facts,
+    measure_semantic_query_facts_controlled, measure_semantic_query_facts_with_quota_controlled,
+    schema as semantic_query_schema, semantic_query_corpus_admission_overhead,
 };
 pub use trustfall::{FieldValue, QueryResult as SemanticQueryRow, TransparentValue};
 
