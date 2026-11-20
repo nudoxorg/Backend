@@ -166,3 +166,11 @@ worker journeys that need installed workers or pinned runtimes. These are
 ownership-only entries in the managed-native intake, in the format of the
 2026-10-16 entries. No Rust source changed, no test was re-enabled and none is
 claimed to pass; they run only in an explicit managed run with their prerequisites.
+
+## Managed C# test 2026-11-20
+
+The partial-project evidence test joins the managed C# suite. It needs a private
+`.NET` runtime and the Roslyn helper. Set `NUDOX_TEST_DOTNET` and
+`NUDOX_TEST_CSHARP_HELPER` to the admitted executables for the test environment,
+then run `cargo test --locked -p backend-engine
+captured_csharp_partial_project_claims_only_the_files_that_compiled -- --ignored`.
