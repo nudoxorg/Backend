@@ -8,9 +8,9 @@
       "json": {
         "answer": "outline",
         "budget": {
-          "bytesExcludingCursor": 10213,
+          "bytesExcludingCursor": 8975,
           "bytesPerToken": 4,
-          "estimatedTokensExcludingCursor": 2554
+          "estimatedTokensExcludingCursor": 2244
         },
         "declarations": 25,
         "detail": "summary",
@@ -1188,9 +1188,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytesExcludingCursor": 16597,
+          "bytesExcludingCursor": 15396,
           "bytesPerToken": 4,
-          "estimatedTokensExcludingCursor": 4150
+          "estimatedTokensExcludingCursor": 3849
         },
         "coverage": [
           {
@@ -1263,7 +1263,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/pugixml.hpp:1039 \u203a xml_document"
+              "trail": "project › src/pugixml.hpp:1039 › xml_document"
             },
             "kind": "class",
             "language": "cpp",
@@ -1317,7 +1317,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/pugixml.cpp:7146 \u203a xml_document"
+              "trail": "project › src/pugixml.cpp:7146 › xml_document"
             },
             "kind": "function",
             "language": "cpp",
@@ -1371,7 +1371,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/pugixml.hpp:1047 \u203a xml_document"
+              "trail": "project › src/pugixml.hpp:1047 › xml_document"
             },
             "kind": "constructor",
             "language": "cpp",
@@ -1425,7 +1425,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/pugixml.cpp:7135 \u203a xml_document"
+              "trail": "project › src/pugixml.cpp:7135 › xml_document"
             },
             "kind": "function",
             "language": "cpp",
@@ -1479,7 +1479,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/pugixml.hpp:1063 \u203a xml_document"
+              "trail": "project › src/pugixml.hpp:1063 › xml_document"
             },
             "kind": "constructor",
             "language": "cpp",
@@ -1533,7 +1533,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/pugixml.hpp:1056 \u203a xml_document"
+              "trail": "project › src/pugixml.hpp:1056 › xml_document"
             },
             "kind": "constructor",
             "language": "cpp",
@@ -1587,7 +1587,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/pugixml.cpp:1157 \u203a xml_document_struct"
+              "trail": "project › src/pugixml.cpp:1157 › xml_document_struct"
             },
             "kind": "class",
             "language": "cpp",
@@ -1641,7 +1641,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/pugixml.hpp:1114 \u203a document_element"
+              "trail": "project › src/pugixml.hpp:1114 › document_element"
             },
             "kind": "method",
             "language": "cpp",
@@ -1695,7 +1695,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/pugixml.hpp:1059 \u203a ~xml_document"
+              "trail": "project › src/pugixml.hpp:1059 › ~xml_document"
             },
             "kind": "method",
             "language": "cpp",
@@ -1749,7 +1749,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/pugixml.cpp:7140 \u203a ~xml_document"
+              "trail": "project › src/pugixml.cpp:7140 › ~xml_document"
             },
             "kind": "function",
             "language": "cpp",
@@ -1803,7 +1803,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/pugixml.hpp:1071 \u203a reset"
+              "trail": "project › src/pugixml.hpp:1071 › reset"
             },
             "kind": "method",
             "language": "cpp",
@@ -1857,7 +1857,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/pugixml.hpp:1048 \u203a operator="
+              "trail": "project › src/pugixml.hpp:1048 › operator="
             },
             "kind": "method",
             "language": "cpp",
@@ -1911,7 +1911,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/pugixml.hpp:1064 \u203a operator="
+              "trail": "project › src/pugixml.hpp:1064 › operator="
             },
             "kind": "method",
             "language": "cpp",
@@ -1965,7 +1965,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/pugixml.cpp:1159 \u203a xml_document_struct"
+              "trail": "project › src/pugixml.cpp:1159 › xml_document_struct"
             },
             "kind": "constructor",
             "language": "cpp",
@@ -2019,7 +2019,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/pugixml.hpp:1052 \u203a _move"
+              "trail": "project › src/pugixml.hpp:1052 › _move"
             },
             "kind": "method",
             "language": "cpp",
@@ -2071,7 +2071,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a TEST_XML_FLAGS(document_element, \"<?xml version='1.0'?><node><child/></node><!---->\", parse_default | parse_declaration | parse_comments)"
+              "trail": "project › TEST_XML_FLAGS(document_element, \"<?xml version='1.0'?><node><child/></node><!---->\", parse_default | parse_declaration | parse_comments)"
             },
             "kind": "function",
             "language": "unknown",
@@ -2123,7 +2123,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a TEST_XML_FLAGS(document_element, \"<?xml version='1.0'?><node><child/></node><!---->\", parse_default | parse_declaration | parse_comments)"
+              "trail": "project › TEST_XML_FLAGS(document_element, \"<?xml version='1.0'?><node><child/></node><!---->\", parse_default | parse_declaration | parse_comments)"
             },
             "kind": "function",
             "language": "unknown",
@@ -2175,7 +2175,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a TEST_XML_FLAGS(document_element, \"<?xml version='1.0'?><node><child/></node><!---->\", parse_default | parse_declaration | parse_comments)"
+              "trail": "project › TEST_XML_FLAGS(document_element, \"<?xml version='1.0'?><node><child/></node><!---->\", parse_default | parse_declaration | parse_comments)"
             },
             "kind": "function",
             "language": "unknown",
@@ -2227,7 +2227,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a TEST_XML_FLAGS(document_element, \"<?xml version='1.0'?><node><child/></node><!---->\", parse_default | parse_declaration | parse_comments)"
+              "trail": "project › TEST_XML_FLAGS(document_element, \"<?xml version='1.0'?><node><child/></node><!---->\", parse_default | parse_declaration | parse_comments)"
             },
             "kind": "function",
             "language": "unknown",
@@ -2279,7 +2279,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a TEST_XML_FLAGS(document_element, \"<?xml version='1.0'?><node><child/></node><!---->\", parse_default | parse_declaration | parse_comments)"
+              "trail": "project › TEST_XML_FLAGS(document_element, \"<?xml version='1.0'?><node><child/></node><!---->\", parse_default | parse_declaration | parse_comments)"
             },
             "kind": "function",
             "language": "unknown",
@@ -2331,7 +2331,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a TEST_XML_FLAGS(document_element, \"<?xml version='1.0'?><node><child/></node><!---->\", parse_default | parse_declaration | parse_comments)"
+              "trail": "project › TEST_XML_FLAGS(document_element, \"<?xml version='1.0'?><node><child/></node><!---->\", parse_default | parse_declaration | parse_comments)"
             },
             "kind": "function",
             "language": "unknown",
@@ -2383,7 +2383,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a TEST_XML(document_save, \"<node/>\")"
+              "trail": "project › TEST_XML(document_save, \"<node/>\")"
             },
             "kind": "function",
             "language": "unknown",
@@ -2435,7 +2435,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a TEST_XML(document_save, \"<node/>\")"
+              "trail": "project › TEST_XML(document_save, \"<node/>\")"
             },
             "kind": "function",
             "language": "unknown",
@@ -2487,7 +2487,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a TEST_XML(document_save, \"<node/>\")"
+              "trail": "project › TEST_XML(document_save, \"<node/>\")"
             },
             "kind": "function",
             "language": "unknown",
@@ -2539,7 +2539,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a TEST_XML(document_save, \"<node/>\")"
+              "trail": "project › TEST_XML(document_save, \"<node/>\")"
             },
             "kind": "function",
             "language": "unknown",
@@ -2558,9 +2558,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 8155,
+          "bytes": 7411,
           "bytesPerToken": 4,
-          "estimatedTokens": 2039
+          "estimatedTokens": 1853
         },
         "coverage": [
           {
@@ -2632,7 +2632,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/pugixml.hpp:1017 \u203a xml_parse_result"
+              "trail": "project › src/pugixml.hpp:1017 › xml_parse_result"
             },
             "kind": "class",
             "language": "cpp",
@@ -2686,7 +2686,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/pugixml.hpp:1029 \u203a xml_parse_result"
+              "trail": "project › src/pugixml.hpp:1029 › xml_parse_result"
             },
             "kind": "constructor",
             "language": "cpp",
@@ -2740,7 +2740,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/pugixml.cpp:7095 \u203a xml_parse_result"
+              "trail": "project › src/pugixml.cpp:7095 › xml_parse_result"
             },
             "kind": "function",
             "language": "cpp",
@@ -2794,7 +2794,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/pugixml.hpp:618 \u203a append_buffer"
+              "trail": "project › src/pugixml.hpp:618 › append_buffer"
             },
             "kind": "method",
             "language": "cpp",
@@ -2848,7 +2848,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/pugixml.hpp:1094 \u203a load_buffer_inplace"
+              "trail": "project › src/pugixml.hpp:1094 › load_buffer_inplace"
             },
             "kind": "method",
             "language": "cpp",
@@ -2902,7 +2902,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/pugixml.hpp:1087 \u203a load_file"
+              "trail": "project › src/pugixml.hpp:1087 › load_file"
             },
             "kind": "method",
             "language": "cpp",
@@ -2956,7 +2956,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/pugixml.hpp:1090 \u203a load_buffer"
+              "trail": "project › src/pugixml.hpp:1090 › load_buffer"
             },
             "kind": "method",
             "language": "cpp",
@@ -3010,7 +3010,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/pugixml.hpp:1098 \u203a load_buffer_inplace_own"
+              "trail": "project › src/pugixml.hpp:1098 › load_buffer_inplace_own"
             },
             "kind": "method",
             "language": "cpp",
@@ -3064,7 +3064,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/pugixml.hpp:1086 \u203a load_file"
+              "trail": "project › src/pugixml.hpp:1086 › load_file"
             },
             "kind": "method",
             "language": "cpp",
@@ -3118,7 +3118,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/pugixml.hpp:1080 \u203a load"
+              "trail": "project › src/pugixml.hpp:1080 › load"
             },
             "kind": "method",
             "language": "cpp",
@@ -3172,7 +3172,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/pugixml.hpp:1083 \u203a load_string"
+              "trail": "project › src/pugixml.hpp:1083 › load_string"
             },
             "kind": "method",
             "language": "cpp",
@@ -3224,7 +3224,7 @@
                 ]
               },
               "shape": "external",
-              "trail": "project \u203a xml_parse_result"
+              "trail": "project › xml_parse_result"
             },
             "language": "unknown",
             "score": 4294967284,
@@ -3275,7 +3275,7 @@
                 ]
               },
               "shape": "external",
-              "trail": "project \u203a xml_parse_result"
+              "trail": "project › xml_parse_result"
             },
             "language": "unknown",
             "score": 4294967283,
@@ -3326,7 +3326,7 @@
                 ]
               },
               "shape": "external",
-              "trail": "project \u203a xml_parse_result"
+              "trail": "project › xml_parse_result"
             },
             "language": "unknown",
             "score": 4294967282,
@@ -3377,7 +3377,7 @@
                 ]
               },
               "shape": "external",
-              "trail": "project \u203a xml_parse_result"
+              "trail": "project › xml_parse_result"
             },
             "language": "unknown",
             "score": 4294967281,
@@ -3406,8 +3406,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 807,
-                "normalizedFrameBytesExcludingCounters": 3226,
+                "normalizedEstimatedTokensExcludingCounters": 763,
+                "normalizedFrameBytesExcludingCounters": 3052,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -3416,7 +3416,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u27133\n\u2022 `xml_document` \u00b7 class \u00b7 cpp\n  `/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.hpp:1039::xml_document`\n\u2022 `xml_document` \u00b7 function \u00b7 cpp\n  `/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:7146::xml_document`\n\u2022 `xml_document` \u00b7 constructor \u00b7 cpp\n  `/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.hpp:1047::xml_document`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `xml_document` · class · cpp\n  `/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.hpp:1039::xml_document`\n• `xml_document` · function · cpp\n  `/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:7146::xml_document`\n• `xml_document` · constructor · cpp\n  `/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.hpp:1047::xml_document`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
                 "type": "text"
               }
             ],
@@ -3424,13 +3424,13 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytesExcludingCursor": 2040,
+                "bytesExcludingCursor": 1913,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 510
+                "estimatedTokensExcludingCursor": 479
               },
               "continuation_call": {
                 "arguments": {
-                  "cursor": "mcp2-<live-validated>",
+                  "cursor": "mcp3-<live-validated>",
                   "limit": 3,
                   "query": "xml_document"
                 },
@@ -3456,6 +3456,7 @@
               ],
               "detail": "summary",
               "more": true,
+              "nextCursor": "mcp3-<live-validated>",
               "query": "xml_document",
               "readiness": "ready",
               "records": [
@@ -3506,7 +3507,7 @@
                       ]
                     },
                     "shape": "declaration",
-                    "trail": "project \u203a src/pugixml.hpp:1039 \u203a xml_document"
+                    "trail": "project › src/pugixml.hpp:1039 › xml_document"
                   },
                   "kind": "class",
                   "language": "cpp",
@@ -3560,7 +3561,7 @@
                       ]
                     },
                     "shape": "declaration",
-                    "trail": "project \u203a src/pugixml.cpp:7146 \u203a xml_document"
+                    "trail": "project › src/pugixml.cpp:7146 › xml_document"
                   },
                   "kind": "function",
                   "language": "cpp",
@@ -3614,7 +3615,7 @@
                       ]
                     },
                     "shape": "declaration",
-                    "trail": "project \u203a src/pugixml.hpp:1047 \u203a xml_document"
+                    "trail": "project › src/pugixml.hpp:1047 › xml_document"
                   },
                   "kind": "constructor",
                   "language": "cpp",
@@ -3643,8 +3644,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 829,
-                "normalizedFrameBytesExcludingCounters": 3315,
+                "normalizedEstimatedTokensExcludingCounters": 783,
+                "normalizedFrameBytesExcludingCounters": 3132,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -3653,7 +3654,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u27133\n\u2022 `xml_parse_result` \u00b7 class \u00b7 cpp\n  `/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.hpp:1017::xml_parse_result`\n\u2022 `xml_parse_result` \u00b7 constructor \u00b7 cpp\n  `/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.hpp:1029::xml_parse_result`\n\u2022 `xml_parse_result` \u00b7 function \u00b7 cpp\n  `/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:7095::xml_parse_result`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `xml_parse_result` · class · cpp\n  `/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.hpp:1017::xml_parse_result`\n• `xml_parse_result` · constructor · cpp\n  `/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.hpp:1029::xml_parse_result`\n• `xml_parse_result` · function · cpp\n  `/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:7095::xml_parse_result`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
                 "type": "text"
               }
             ],
@@ -3661,13 +3662,13 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytesExcludingCursor": 2105,
+                "bytesExcludingCursor": 1969,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 527
+                "estimatedTokensExcludingCursor": 493
               },
               "continuation_call": {
                 "arguments": {
-                  "cursor": "mcp2-<live-validated>",
+                  "cursor": "mcp3-<live-validated>",
                   "limit": 3,
                   "query": "xml_parse_result"
                 },
@@ -3693,6 +3694,7 @@
               ],
               "detail": "summary",
               "more": true,
+              "nextCursor": "mcp3-<live-validated>",
               "query": "xml_parse_result",
               "readiness": "ready",
               "records": [
@@ -3743,7 +3745,7 @@
                       ]
                     },
                     "shape": "declaration",
-                    "trail": "project \u203a src/pugixml.hpp:1017 \u203a xml_parse_result"
+                    "trail": "project › src/pugixml.hpp:1017 › xml_parse_result"
                   },
                   "kind": "class",
                   "language": "cpp",
@@ -3797,7 +3799,7 @@
                       ]
                     },
                     "shape": "declaration",
-                    "trail": "project \u203a src/pugixml.hpp:1029 \u203a xml_parse_result"
+                    "trail": "project › src/pugixml.hpp:1029 › xml_parse_result"
                   },
                   "kind": "constructor",
                   "language": "cpp",
@@ -3851,7 +3853,7 @@
                       ]
                     },
                     "shape": "declaration",
-                    "trail": "project \u203a src/pugixml.cpp:7095 \u203a xml_parse_result"
+                    "trail": "project › src/pugixml.cpp:7095 › xml_parse_result"
                   },
                   "kind": "function",
                   "language": "cpp",
@@ -3877,8 +3879,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 5643,
-                "normalizedFrameBytesExcludingCounters": 22570,
+                "normalizedEstimatedTokensExcludingCounters": 8179,
+                "normalizedFrameBytesExcludingCounters": 32716,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -3887,7 +3889,7 @@
             },
             "content": [
               {
-                "text": "# project\n`/tmp/nudox-surface/cpp-pugixml/project`\n\n\u25a3 xml_string_writer  `docs/samples/save_custom_writer.cpp:8 \u203a xml_string_writer`\n  \u0192 write  `docs/samples/save_custom_writer.cpp:12 \u203a write`\n    \u25ab data  `data`\n    \u25ab size  `size`\n  \u00b7 result  `docs/samples/save_custom_writer.cpp:10 \u203a result`\n\u25a3 xml_memory_writer  `docs/samples/save_custom_writer.cpp:19 \u203a xml_memory_writer`\n  \u0192 written_size  `docs/samples/save_custom_writer.cpp:34 \u203a written_size`\n    \u25ab written_size  `written_size`\n  \u0192 xml_memory_writer  `docs/samples/save_custom_writer.cpp:26 \u203a xml_memory_writer`\n  \u0192 xml_memory_writer  `docs/samples/save_custom_writer.cpp:30 \u203a xml_memory_writer`\n    \u25ab buffer  `buffer`\n    \u25ab capacity  `capacity`\n  \u0192 write  `docs/samples/save_custom_writer.cpp:39 \u203a write`\n    \u25ab size  `size`\n    \u25ab data  `data`\n  \u00b7 capacity  `docs/samples/save_custom_writer.cpp:22 \u203a capacity`\n  \u00b7 result  `docs/samples/save_custom_writer.cpp:24 \u203a result`\n  \u00b7 buffer  `docs/samples/save_custom_writer.cpp:21 \u203a buffer`\n\u25a3 allow_remote_predicate  `docs/samples/traverse_predicate.cpp:12 \u203a allow_remote_predicate`\n  \u0192 operator()  `operator()`\n    \u25ab attr  `attr`\n    \u25ab operator()  `operator()`\n\u25a3 simple_walker  `docs/samples/traverse_walker.cpp:11 \u203a simple_walker`\n  \u0192 for_each  `docs/samples/traverse_walker.cpp:13 \u203a for_each`\n    \u25ab for_each  `for_each`\n    \u25ab node  `node`\n\u25c6 xml_allocator  `src/pugixml.cpp:523 \u203a xml_allocator`\n  \u0192 allocate_memory  `src/pugixml.cpp:557 \u203a allocate_memory`\n    \u25ab allocate_memory  `allocate_memory`\n    \u25ab out_page  `out_page`\n    \u25ab size  `size`\n  \u0192 deallocate_string  `src/pugixml.cpp:687 \u203a deallocate_string`\n    \u25ab string  `string`\n  \u0192 deallocate_page  `src/pugixml.cpp:550 \u203a deallocate_page`\n    \u25ab page  `page`\n  \u2726 xml_allocator  `src/pugixml.cpp:525 \u203a xml_allocator`\n    \u25ab root  `root`\n  \u0192 allocate_memory_oob  `src/pugixml.cpp:723 \u203a allocate_memory_oob`\n    \u25ab size  `size`\n    \u25ab allocate_memory_oob  `allocate_memory_oob`\n    \u25ab out_page  `out_page`\n  \u0192 allocate_page  `src/pugixml.cpp:532 \u203a allocate_page`\n    \u25ab data_size  `data_size`\n    \u25ab allocate_page  `allocate_page`\n  \u0192 deallocate_memory  `src/pugixml.cpp:609 \u203a deallocate_memory`\n    \u25ab ptr  `ptr`\n    \u25ab size  `size`\n    \u25ab page  `page`\n  \u0192 allocate_object  `src/pugixml.cpp:603 \u203a allocate_object`\n    \u25ab out_page  `out_page`\n50 declaration(s) \u00b7 truncated (outline pagination only; analysis coverage is not certified)\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 50 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/cpp-pugixml/project\",\"limit\":50,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
+                "text": "# project\n`/tmp/nudox-surface/cpp-pugixml/project`\n\n▣ xml_string_writer  `docs/samples/save_custom_writer.cpp:8 › xml_string_writer`\n  ƒ write  `docs/samples/save_custom_writer.cpp:12 › write`\n    ▫ data  `data`\n    ▫ size  `size`\n  · result  `docs/samples/save_custom_writer.cpp:10 › result`\n▣ xml_memory_writer  `docs/samples/save_custom_writer.cpp:19 › xml_memory_writer`\n  ƒ written_size  `docs/samples/save_custom_writer.cpp:34 › written_size`\n    ▫ written_size  `written_size`\n  ƒ xml_memory_writer  `docs/samples/save_custom_writer.cpp:26 › xml_memory_writer`\n  ƒ xml_memory_writer  `docs/samples/save_custom_writer.cpp:30 › xml_memory_writer`\n    ▫ buffer  `buffer`\n    ▫ capacity  `capacity`\n  ƒ write  `docs/samples/save_custom_writer.cpp:39 › write`\n    ▫ size  `size`\n    ▫ data  `data`\n  · capacity  `docs/samples/save_custom_writer.cpp:22 › capacity`\n  · result  `docs/samples/save_custom_writer.cpp:24 › result`\n  · buffer  `docs/samples/save_custom_writer.cpp:21 › buffer`\n▣ allow_remote_predicate  `docs/samples/traverse_predicate.cpp:12 › allow_remote_predicate`\n  ƒ operator()  `operator()`\n    ▫ attr  `attr`\n    ▫ operator()  `operator()`\n▣ simple_walker  `docs/samples/traverse_walker.cpp:11 › simple\n\n… readable preview shortened to fit this response; structuredContent contains the complete page and any nextCursor; when present, copy structuredContent.continuation_call unchanged.",
                 "type": "text"
               }
             ],
@@ -3895,14 +3897,14 @@
             "structuredContent": {
               "answer": "outline",
               "budget": {
-                "bytesExcludingCursor": 19053,
+                "bytesExcludingCursor": 30744,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 4764
+                "estimatedTokensExcludingCursor": 7686
               },
-              "declarations": 50,
+              "declarations": 100,
               "detail": "summary",
               "extent": "truncated",
-              "nextCursor": "mcp2-<live-validated>",
+              "nextCursor": "mcp3-<live-validated>",
               "package": {
                 "coordinate": "/tmp/nudox-surface/cpp-pugixml/project",
                 "key": "a8da7c69",
@@ -3932,7 +3934,7 @@
                     "state": "complete"
                   }
                 ],
-                "limit": 50,
+                "limit": 100,
                 "log": "12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760",
                 "more": true,
                 "schema": 3,
@@ -6042,6 +6044,92 @@
                               242
                             ]
                           }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::semantic::0017daeb9e957b9892f14d9ae33bb30838712748fcd1cff53124c49e013d5b68::size",
+                          "key": "67e2fc86",
+                          "kind": "variable",
+                          "name": "size",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              103,
+                              226,
+                              252,
+                              134,
+                              67,
+                              99,
+                              209,
+                              83,
+                              30,
+                              120,
+                              7,
+                              246,
+                              131,
+                              219,
+                              90,
+                              255,
+                              134,
+                              23,
+                              253,
+                              87,
+                              23,
+                              44,
+                              91,
+                              227,
+                              147,
+                              220,
+                              159,
+                              2,
+                              5,
+                              41,
+                              138,
+                              80
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::semantic::9def658fab68c23e431d36ea58410baabf7a1a791d922ff0738f73b6b43d2b82::allocate_object",
+                          "key": "7ef58948",
+                          "kind": "variable",
+                          "name": "allocate_object",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              126,
+                              245,
+                              137,
+                              72,
+                              113,
+                              59,
+                              242,
+                              6,
+                              2,
+                              30,
+                              163,
+                              86,
+                              28,
+                              213,
+                              218,
+                              117,
+                              175,
+                              215,
+                              220,
+                              170,
+                              195,
+                              169,
+                              154,
+                              137,
+                              26,
+                              110,
+                              102,
+                              92,
+                              23,
+                              173,
+                              168,
+                              248
+                            ]
+                          }
                         }
                       ],
                       "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:603::allocate_object",
@@ -6085,6 +6173,311 @@
                           71
                         ]
                       }
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::semantic::25ad5d38af95ac8cd6eeab85e1fb10358a2c3cc7177c5d8f1a5803781b259775::reserve",
+                          "key": "4fcb7422",
+                          "kind": "variable",
+                          "name": "reserve",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              79,
+                              203,
+                              116,
+                              34,
+                              102,
+                              173,
+                              151,
+                              129,
+                              119,
+                              228,
+                              140,
+                              62,
+                              14,
+                              15,
+                              242,
+                              115,
+                              54,
+                              46,
+                              253,
+                              147,
+                              204,
+                              47,
+                              79,
+                              85,
+                              55,
+                              146,
+                              138,
+                              164,
+                              95,
+                              46,
+                              122,
+                              150
+                            ]
+                          }
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:706::reserve",
+                      "key": "d7f2199b",
+                      "kind": "method",
+                      "name": "reserve",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          215,
+                          242,
+                          25,
+                          155,
+                          24,
+                          73,
+                          82,
+                          95,
+                          239,
+                          31,
+                          99,
+                          174,
+                          9,
+                          140,
+                          130,
+                          122,
+                          78,
+                          82,
+                          119,
+                          211,
+                          86,
+                          237,
+                          10,
+                          249,
+                          85,
+                          113,
+                          25,
+                          50,
+                          196,
+                          218,
+                          142,
+                          139
+                        ]
+                      }
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::semantic::149b896a59ec7352332506268c7bcb7d0dca044d63fb1aaf3b6b90c5664ada01::length",
+                          "key": "dbe8c98f",
+                          "kind": "variable",
+                          "name": "length",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              219,
+                              232,
+                              201,
+                              143,
+                              54,
+                              164,
+                              163,
+                              185,
+                              153,
+                              57,
+                              254,
+                              172,
+                              94,
+                              157,
+                              20,
+                              248,
+                              16,
+                              11,
+                              246,
+                              119,
+                              206,
+                              56,
+                              18,
+                              251,
+                              7,
+                              96,
+                              90,
+                              247,
+                              51,
+                              11,
+                              225,
+                              23
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::semantic::7fb8c482bec23b5f19c2b61d05d2da6f75c88c4560a21df85e8e9f9b12efbccf::allocate_string",
+                          "key": "ec36ff16",
+                          "kind": "variable",
+                          "name": "allocate_string",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              236,
+                              54,
+                              255,
+                              22,
+                              16,
+                              106,
+                              210,
+                              21,
+                              191,
+                              68,
+                              14,
+                              61,
+                              74,
+                              176,
+                              31,
+                              99,
+                              210,
+                              4,
+                              43,
+                              17,
+                              49,
+                              108,
+                              180,
+                              68,
+                              89,
+                              176,
+                              74,
+                              213,
+                              208,
+                              104,
+                              156,
+                              14
+                            ]
+                          }
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:653::allocate_string",
+                      "key": "e906dba1",
+                      "kind": "method",
+                      "name": "allocate_string",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          233,
+                          6,
+                          219,
+                          161,
+                          187,
+                          185,
+                          208,
+                          104,
+                          160,
+                          3,
+                          31,
+                          144,
+                          29,
+                          57,
+                          181,
+                          74,
+                          232,
+                          192,
+                          158,
+                          249,
+                          107,
+                          203,
+                          184,
+                          135,
+                          203,
+                          159,
+                          219,
+                          67,
+                          140,
+                          11,
+                          144,
+                          9
+                        ]
+                      }
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:715::_root",
+                      "key": "74b7cede",
+                      "kind": "field",
+                      "name": "_root",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          116,
+                          183,
+                          206,
+                          222,
+                          157,
+                          24,
+                          91,
+                          13,
+                          181,
+                          18,
+                          110,
+                          132,
+                          55,
+                          34,
+                          248,
+                          247,
+                          181,
+                          81,
+                          249,
+                          68,
+                          173,
+                          46,
+                          126,
+                          214,
+                          136,
+                          61,
+                          167,
+                          183,
+                          237,
+                          192,
+                          216,
+                          144
+                        ]
+                      }
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:716::_busy_size",
+                      "key": "d6cd7bb8",
+                      "kind": "field",
+                      "name": "_busy_size",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          214,
+                          205,
+                          123,
+                          184,
+                          16,
+                          140,
+                          215,
+                          109,
+                          203,
+                          172,
+                          142,
+                          12,
+                          235,
+                          30,
+                          114,
+                          142,
+                          210,
+                          184,
+                          13,
+                          152,
+                          64,
+                          89,
+                          253,
+                          192,
+                          175,
+                          248,
+                          97,
+                          85,
+                          17,
+                          153,
+                          242,
+                          129
+                        ]
+                      }
                     }
                   ],
                   "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:523::xml_allocator",
@@ -6126,6 +6519,1787 @@
                       81,
                       17,
                       249
+                    ]
+                  }
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::semantic::bcfab6468684692f45dff2be240cfdaf17fe66b062c6657a96928c170ab14fb6::result",
+                          "key": "32284726",
+                          "kind": "variable",
+                          "name": "result",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              50,
+                              40,
+                              71,
+                              38,
+                              164,
+                              199,
+                              190,
+                              108,
+                              24,
+                              76,
+                              234,
+                              29,
+                              153,
+                              247,
+                              54,
+                              161,
+                              120,
+                              13,
+                              221,
+                              117,
+                              44,
+                              32,
+                              248,
+                              239,
+                              36,
+                              249,
+                              61,
+                              67,
+                              94,
+                              65,
+                              39,
+                              245
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::semantic::a6e597d5b1270ab0bed52eafda1584b6fe62f4089be405b7a864335e98cede3c::ch",
+                          "key": "50325b1d",
+                          "kind": "variable",
+                          "name": "ch",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              80,
+                              50,
+                              91,
+                              29,
+                              219,
+                              251,
+                              13,
+                              181,
+                              33,
+                              215,
+                              241,
+                              252,
+                              204,
+                              98,
+                              9,
+                              132,
+                              217,
+                              157,
+                              3,
+                              91,
+                              154,
+                              254,
+                              96,
+                              145,
+                              35,
+                              18,
+                              44,
+                              225,
+                              6,
+                              28,
+                              5,
+                              248
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::semantic::8aeb1da65cb9261ea7fb81f96168e9877be1c32e0af0165071f135117c108b1e::low",
+                          "key": "f71ad1fd",
+                          "kind": "variable",
+                          "name": "low",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              247,
+                              26,
+                              209,
+                              253,
+                              3,
+                              57,
+                              129,
+                              119,
+                              63,
+                              195,
+                              132,
+                              39,
+                              24,
+                              5,
+                              174,
+                              142,
+                              82,
+                              58,
+                              201,
+                              224,
+                              15,
+                              255,
+                              86,
+                              103,
+                              13,
+                              128,
+                              78,
+                              94,
+                              207,
+                              168,
+                              99,
+                              230
+                            ]
+                          }
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:1632::low",
+                      "key": "3441caec",
+                      "kind": "method",
+                      "name": "low",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          52,
+                          65,
+                          202,
+                          236,
+                          34,
+                          229,
+                          1,
+                          61,
+                          193,
+                          68,
+                          84,
+                          252,
+                          133,
+                          147,
+                          76,
+                          175,
+                          66,
+                          59,
+                          82,
+                          50,
+                          233,
+                          54,
+                          81,
+                          225,
+                          146,
+                          60,
+                          11,
+                          179,
+                          164,
+                          46,
+                          77,
+                          84
+                        ]
+                      }
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:1630::value_type",
+                      "key": "c1eaf16b",
+                      "kind": "type",
+                      "name": "value_type",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          193,
+                          234,
+                          241,
+                          107,
+                          81,
+                          177,
+                          252,
+                          99,
+                          28,
+                          46,
+                          98,
+                          18,
+                          20,
+                          228,
+                          210,
+                          113,
+                          210,
+                          9,
+                          113,
+                          231,
+                          81,
+                          120,
+                          42,
+                          161,
+                          218,
+                          174,
+                          6,
+                          130,
+                          243,
+                          13,
+                          49,
+                          122
+                        ]
+                      }
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::semantic::75581212827abd9cf8d784a80fa7c643c7c996993d04433e02711281806cddfb::high",
+                          "key": "03af493b",
+                          "kind": "variable",
+                          "name": "high",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              3,
+                              175,
+                              73,
+                              59,
+                              46,
+                              232,
+                              185,
+                              124,
+                              113,
+                              167,
+                              220,
+                              138,
+                              122,
+                              132,
+                              17,
+                              75,
+                              37,
+                              165,
+                              69,
+                              182,
+                              231,
+                              144,
+                              219,
+                              2,
+                              115,
+                              109,
+                              138,
+                              94,
+                              83,
+                              188,
+                              111,
+                              153
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::semantic::5c2778a45531e95a824ec1f3e04c307917fe66b062c6657a96928c170ab14fb6::result",
+                          "key": "11b8624c",
+                          "kind": "variable",
+                          "name": "result",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              17,
+                              184,
+                              98,
+                              76,
+                              21,
+                              5,
+                              118,
+                              97,
+                              209,
+                              194,
+                              68,
+                              11,
+                              117,
+                              167,
+                              66,
+                              218,
+                              49,
+                              134,
+                              167,
+                              0,
+                              200,
+                              16,
+                              192,
+                              39,
+                              173,
+                              158,
+                              181,
+                              37,
+                              65,
+                              109,
+                              59,
+                              216
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::semantic::568291cf14c926f802d4484f8c4675d9fe62f4089be405b7a864335e98cede3c::ch",
+                          "key": "b3c77dd3",
+                          "kind": "variable",
+                          "name": "ch",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              179,
+                              199,
+                              125,
+                              211,
+                              127,
+                              135,
+                              158,
+                              199,
+                              206,
+                              29,
+                              65,
+                              45,
+                              95,
+                              24,
+                              5,
+                              3,
+                              222,
+                              244,
+                              78,
+                              53,
+                              149,
+                              144,
+                              123,
+                              179,
+                              122,
+                              125,
+                              245,
+                              105,
+                              127,
+                              228,
+                              154,
+                              13
+                            ]
+                          }
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:1639::high",
+                      "key": "e2f6de5f",
+                      "kind": "method",
+                      "name": "high",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          226,
+                          246,
+                          222,
+                          95,
+                          112,
+                          102,
+                          134,
+                          198,
+                          86,
+                          255,
+                          219,
+                          40,
+                          45,
+                          62,
+                          24,
+                          31,
+                          24,
+                          53,
+                          156,
+                          87,
+                          141,
+                          40,
+                          144,
+                          246,
+                          232,
+                          37,
+                          115,
+                          152,
+                          152,
+                          155,
+                          194,
+                          169
+                        ]
+                      }
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:1628::latin1_writer",
+                  "key": "080fcbd4",
+                  "kind": "class",
+                  "name": "latin1_writer",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      8,
+                      15,
+                      203,
+                      212,
+                      123,
+                      150,
+                      205,
+                      115,
+                      173,
+                      94,
+                      229,
+                      178,
+                      190,
+                      75,
+                      145,
+                      171,
+                      16,
+                      129,
+                      103,
+                      4,
+                      198,
+                      55,
+                      96,
+                      150,
+                      177,
+                      30,
+                      199,
+                      205,
+                      39,
+                      88,
+                      89,
+                      144
+                    ]
+                  }
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:9697::axis_preceding",
+                      "key": "0a13ffa2",
+                      "kind": "variant",
+                      "name": "axis_preceding",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          10,
+                          19,
+                          255,
+                          162,
+                          65,
+                          126,
+                          42,
+                          227,
+                          17,
+                          109,
+                          183,
+                          222,
+                          158,
+                          184,
+                          83,
+                          210,
+                          81,
+                          24,
+                          169,
+                          66,
+                          243,
+                          64,
+                          192,
+                          20,
+                          157,
+                          210,
+                          200,
+                          123,
+                          163,
+                          30,
+                          150,
+                          149
+                        ]
+                      }
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:9692::axis_descendant_or_self",
+                      "key": "0c684daa",
+                      "kind": "variant",
+                      "name": "axis_descendant_or_self",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          12,
+                          104,
+                          77,
+                          170,
+                          26,
+                          79,
+                          2,
+                          116,
+                          254,
+                          218,
+                          227,
+                          253,
+                          121,
+                          36,
+                          74,
+                          57,
+                          97,
+                          183,
+                          101,
+                          170,
+                          182,
+                          232,
+                          92,
+                          11,
+                          212,
+                          167,
+                          153,
+                          248,
+                          194,
+                          156,
+                          236,
+                          229
+                        ]
+                      }
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:9689::axis_attribute",
+                      "key": "1da9f74d",
+                      "kind": "variant",
+                      "name": "axis_attribute",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          29,
+                          169,
+                          247,
+                          77,
+                          137,
+                          3,
+                          90,
+                          121,
+                          48,
+                          214,
+                          136,
+                          60,
+                          227,
+                          163,
+                          145,
+                          204,
+                          87,
+                          72,
+                          52,
+                          228,
+                          5,
+                          195,
+                          15,
+                          84,
+                          63,
+                          62,
+                          8,
+                          31,
+                          96,
+                          139,
+                          97,
+                          123
+                        ]
+                      }
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:9696::axis_parent",
+                      "key": "57a0a27c",
+                      "kind": "variant",
+                      "name": "axis_parent",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          87,
+                          160,
+                          162,
+                          124,
+                          95,
+                          131,
+                          234,
+                          49,
+                          205,
+                          15,
+                          1,
+                          33,
+                          73,
+                          35,
+                          194,
+                          38,
+                          105,
+                          97,
+                          107,
+                          156,
+                          101,
+                          165,
+                          142,
+                          38,
+                          192,
+                          8,
+                          71,
+                          218,
+                          107,
+                          232,
+                          122,
+                          60
+                        ]
+                      }
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:9693::axis_following",
+                      "key": "6ce6a407",
+                      "kind": "variant",
+                      "name": "axis_following",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          108,
+                          230,
+                          164,
+                          7,
+                          126,
+                          230,
+                          223,
+                          23,
+                          206,
+                          108,
+                          156,
+                          210,
+                          158,
+                          152,
+                          249,
+                          185,
+                          65,
+                          216,
+                          24,
+                          231,
+                          236,
+                          39,
+                          51,
+                          49,
+                          12,
+                          190,
+                          185,
+                          209,
+                          134,
+                          218,
+                          29,
+                          105
+                        ]
+                      }
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:9694::axis_following_sibling",
+                      "key": "893976a9",
+                      "kind": "variant",
+                      "name": "axis_following_sibling",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          137,
+                          57,
+                          118,
+                          169,
+                          147,
+                          62,
+                          62,
+                          89,
+                          145,
+                          104,
+                          23,
+                          164,
+                          135,
+                          138,
+                          181,
+                          120,
+                          135,
+                          107,
+                          90,
+                          252,
+                          74,
+                          149,
+                          110,
+                          197,
+                          234,
+                          23,
+                          41,
+                          94,
+                          134,
+                          201,
+                          107,
+                          198
+                        ]
+                      }
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:9699::axis_self",
+                      "key": "9b4e540e",
+                      "kind": "variant",
+                      "name": "axis_self",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          155,
+                          78,
+                          84,
+                          14,
+                          43,
+                          205,
+                          83,
+                          130,
+                          131,
+                          237,
+                          121,
+                          66,
+                          97,
+                          142,
+                          44,
+                          99,
+                          131,
+                          220,
+                          241,
+                          23,
+                          7,
+                          236,
+                          125,
+                          199,
+                          59,
+                          145,
+                          249,
+                          36,
+                          107,
+                          175,
+                          238,
+                          130
+                        ]
+                      }
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:9687::axis_ancestor",
+                      "key": "9f3b675f",
+                      "kind": "variant",
+                      "name": "axis_ancestor",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          159,
+                          59,
+                          103,
+                          95,
+                          17,
+                          244,
+                          49,
+                          230,
+                          61,
+                          155,
+                          57,
+                          177,
+                          114,
+                          20,
+                          204,
+                          228,
+                          131,
+                          93,
+                          129,
+                          157,
+                          225,
+                          20,
+                          81,
+                          163,
+                          110,
+                          59,
+                          139,
+                          231,
+                          15,
+                          184,
+                          14,
+                          126
+                        ]
+                      }
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:9695::axis_namespace",
+                      "key": "adaac2ef",
+                      "kind": "variant",
+                      "name": "axis_namespace",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          173,
+                          170,
+                          194,
+                          239,
+                          103,
+                          190,
+                          216,
+                          12,
+                          166,
+                          57,
+                          112,
+                          113,
+                          42,
+                          165,
+                          130,
+                          78,
+                          124,
+                          241,
+                          146,
+                          161,
+                          51,
+                          241,
+                          25,
+                          120,
+                          164,
+                          127,
+                          113,
+                          19,
+                          240,
+                          123,
+                          173,
+                          210
+                        ]
+                      }
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:9698::axis_preceding_sibling",
+                      "key": "c8dffd62",
+                      "kind": "variant",
+                      "name": "axis_preceding_sibling",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          200,
+                          223,
+                          253,
+                          98,
+                          59,
+                          10,
+                          151,
+                          147,
+                          120,
+                          209,
+                          101,
+                          224,
+                          167,
+                          178,
+                          41,
+                          5,
+                          81,
+                          151,
+                          206,
+                          127,
+                          87,
+                          176,
+                          150,
+                          142,
+                          191,
+                          227,
+                          201,
+                          143,
+                          243,
+                          80,
+                          5,
+                          94
+                        ]
+                      }
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:9691::axis_descendant",
+                      "key": "d25507db",
+                      "kind": "variant",
+                      "name": "axis_descendant",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          210,
+                          85,
+                          7,
+                          219,
+                          245,
+                          86,
+                          120,
+                          42,
+                          126,
+                          76,
+                          185,
+                          142,
+                          17,
+                          217,
+                          54,
+                          214,
+                          161,
+                          55,
+                          155,
+                          52,
+                          181,
+                          42,
+                          255,
+                          67,
+                          61,
+                          52,
+                          155,
+                          66,
+                          24,
+                          233,
+                          146,
+                          244
+                        ]
+                      }
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:9688::axis_ancestor_or_self",
+                      "key": "ec841290",
+                      "kind": "variant",
+                      "name": "axis_ancestor_or_self",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          236,
+                          132,
+                          18,
+                          144,
+                          76,
+                          222,
+                          98,
+                          246,
+                          168,
+                          30,
+                          188,
+                          190,
+                          95,
+                          130,
+                          14,
+                          169,
+                          144,
+                          99,
+                          44,
+                          79,
+                          192,
+                          136,
+                          247,
+                          236,
+                          29,
+                          9,
+                          150,
+                          70,
+                          224,
+                          54,
+                          97,
+                          124
+                        ]
+                      }
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:9690::axis_child",
+                      "key": "f64b49dd",
+                      "kind": "variant",
+                      "name": "axis_child",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          246,
+                          75,
+                          73,
+                          221,
+                          14,
+                          246,
+                          30,
+                          133,
+                          117,
+                          103,
+                          54,
+                          49,
+                          127,
+                          119,
+                          86,
+                          136,
+                          66,
+                          189,
+                          38,
+                          91,
+                          87,
+                          156,
+                          100,
+                          10,
+                          250,
+                          228,
+                          138,
+                          102,
+                          42,
+                          119,
+                          126,
+                          167
+                        ]
+                      }
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:9685::axis_t",
+                  "key": "0ed9dd9a",
+                  "kind": "enum",
+                  "name": "axis_t",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      14,
+                      217,
+                      221,
+                      154,
+                      133,
+                      181,
+                      77,
+                      183,
+                      152,
+                      79,
+                      189,
+                      59,
+                      3,
+                      81,
+                      116,
+                      75,
+                      91,
+                      0,
+                      244,
+                      102,
+                      249,
+                      152,
+                      149,
+                      254,
+                      1,
+                      132,
+                      59,
+                      91,
+                      145,
+                      172,
+                      48,
+                      20
+                    ]
+                  }
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:8002::~xpath_stack_data",
+                      "key": "3f989832",
+                      "kind": "method",
+                      "name": "~xpath_stack_data",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          63,
+                          152,
+                          152,
+                          50,
+                          228,
+                          21,
+                          247,
+                          198,
+                          18,
+                          229,
+                          254,
+                          155,
+                          22,
+                          239,
+                          156,
+                          71,
+                          186,
+                          97,
+                          187,
+                          64,
+                          35,
+                          227,
+                          24,
+                          66,
+                          153,
+                          25,
+                          154,
+                          31,
+                          169,
+                          98,
+                          46,
+                          252
+                        ]
+                      }
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:7993::xpath_stack_data",
+                      "key": "ee19457e",
+                      "kind": "constructor",
+                      "name": "xpath_stack_data",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          238,
+                          25,
+                          69,
+                          126,
+                          17,
+                          3,
+                          128,
+                          183,
+                          78,
+                          237,
+                          225,
+                          129,
+                          132,
+                          69,
+                          148,
+                          82,
+                          169,
+                          199,
+                          68,
+                          56,
+                          44,
+                          226,
+                          225,
+                          227,
+                          12,
+                          34,
+                          191,
+                          221,
+                          61,
+                          93,
+                          178,
+                          227
+                        ]
+                      }
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:7989::temp",
+                      "key": "630191b9",
+                      "kind": "field",
+                      "name": "temp",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          99,
+                          1,
+                          145,
+                          185,
+                          79,
+                          31,
+                          124,
+                          200,
+                          37,
+                          144,
+                          202,
+                          30,
+                          1,
+                          137,
+                          246,
+                          104,
+                          170,
+                          84,
+                          108,
+                          73,
+                          78,
+                          84,
+                          53,
+                          57,
+                          116,
+                          188,
+                          110,
+                          123,
+                          167,
+                          174,
+                          67,
+                          112
+                        ]
+                      }
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:7988::result",
+                      "key": "65a57cad",
+                      "kind": "field",
+                      "name": "result",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          101,
+                          165,
+                          124,
+                          173,
+                          141,
+                          32,
+                          234,
+                          121,
+                          9,
+                          46,
+                          74,
+                          139,
+                          93,
+                          60,
+                          202,
+                          119,
+                          160,
+                          249,
+                          47,
+                          174,
+                          49,
+                          66,
+                          253,
+                          169,
+                          59,
+                          68,
+                          112,
+                          192,
+                          246,
+                          157,
+                          148,
+                          51
+                        ]
+                      }
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:7987::blocks",
+                      "key": "ad56be17",
+                      "kind": "field",
+                      "name": "blocks",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          173,
+                          86,
+                          190,
+                          23,
+                          123,
+                          38,
+                          120,
+                          65,
+                          94,
+                          57,
+                          96,
+                          234,
+                          192,
+                          236,
+                          186,
+                          63,
+                          198,
+                          40,
+                          41,
+                          106,
+                          243,
+                          86,
+                          37,
+                          4,
+                          99,
+                          86,
+                          79,
+                          248,
+                          245,
+                          78,
+                          200,
+                          122
+                        ]
+                      }
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:7991::oom",
+                      "key": "af8b4349",
+                      "kind": "field",
+                      "name": "oom",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          175,
+                          139,
+                          67,
+                          73,
+                          13,
+                          159,
+                          34,
+                          185,
+                          8,
+                          158,
+                          144,
+                          226,
+                          187,
+                          40,
+                          115,
+                          179,
+                          144,
+                          246,
+                          159,
+                          173,
+                          28,
+                          71,
+                          140,
+                          132,
+                          164,
+                          15,
+                          253,
+                          204,
+                          60,
+                          154,
+                          36,
+                          116
+                        ]
+                      }
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:7990::stack",
+                      "key": "de53e5f7",
+                      "kind": "field",
+                      "name": "stack",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          222,
+                          83,
+                          229,
+                          247,
+                          131,
+                          37,
+                          7,
+                          144,
+                          97,
+                          3,
+                          30,
+                          231,
+                          90,
+                          121,
+                          47,
+                          249,
+                          4,
+                          30,
+                          240,
+                          113,
+                          216,
+                          212,
+                          4,
+                          217,
+                          68,
+                          56,
+                          5,
+                          32,
+                          209,
+                          96,
+                          223,
+                          23
+                        ]
+                      }
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:7985::xpath_stack_data",
+                  "key": "0ede9e4d",
+                  "kind": "class",
+                  "name": "xpath_stack_data",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      14,
+                      222,
+                      158,
+                      77,
+                      73,
+                      247,
+                      82,
+                      244,
+                      56,
+                      86,
+                      175,
+                      47,
+                      79,
+                      231,
+                      224,
+                      102,
+                      164,
+                      220,
+                      65,
+                      195,
+                      19,
+                      177,
+                      226,
+                      44,
+                      83,
+                      53,
+                      244,
+                      17,
+                      104,
+                      110,
+                      58,
+                      30
+                    ]
+                  }
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::semantic::09efed5b702dcc95cc1aaa60b9c0cd75c2419f611b90db517c19328cb1b74107::rhs",
+                          "key": "1ec0e3b6",
+                          "kind": "variable",
+                          "name": "rhs",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              30,
+                              192,
+                              227,
+                              182,
+                              151,
+                              171,
+                              61,
+                              133,
+                              233,
+                              215,
+                              221,
+                              239,
+                              26,
+                              235,
+                              173,
+                              72,
+                              59,
+                              191,
+                              47,
+                              95,
+                              80,
+                              125,
+                              96,
+                              220,
+                              199,
+                              237,
+                              33,
+                              57,
+                              12,
+                              8,
+                              237,
+                              2
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::semantic::5f03ddd632d0807485ed1996d3913499c314e7915d2c5b978ed1dc88d6e7d50a::operator",
+                          "key": "1efabbb6",
+                          "kind": "variable",
+                          "name": "operator",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              30,
+                              250,
+                              187,
+                              182,
+                              144,
+                              193,
+                              40,
+                              215,
+                              73,
+                              126,
+                              5,
+                              74,
+                              17,
+                              21,
+                              22,
+                              75,
+                              25,
+                              112,
+                              234,
+                              68,
+                              42,
+                              74,
+                              31,
+                              168,
+                              98,
+                              247,
+                              124,
+                              89,
+                              167,
+                              64,
+                              3,
+                              34
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::semantic::ea9114b348909e7abbe7ddae25ea6afbe060e2ee1a36b648e118b8922cfc497a::lhs",
+                          "key": "7943462e",
+                          "kind": "variable",
+                          "name": "lhs",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              121,
+                              67,
+                              70,
+                              46,
+                              63,
+                              113,
+                              246,
+                              239,
+                              114,
+                              140,
+                              106,
+                              102,
+                              88,
+                              229,
+                              141,
+                              238,
+                              46,
+                              203,
+                              6,
+                              15,
+                              62,
+                              50,
+                              152,
+                              12,
+                              19,
+                              183,
+                              214,
+                              176,
+                              155,
+                              233,
+                              68,
+                              80
+                            ]
+                          }
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:7613::operator",
+                      "key": "9fdaee0f",
+                      "kind": "method",
+                      "name": "operator",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          159,
+                          218,
+                          238,
+                          15,
+                          238,
+                          8,
+                          62,
+                          115,
+                          119,
+                          78,
+                          33,
+                          37,
+                          180,
+                          171,
+                          99,
+                          145,
+                          207,
+                          249,
+                          146,
+                          176,
+                          134,
+                          2,
+                          54,
+                          238,
+                          40,
+                          6,
+                          99,
+                          133,
+                          252,
+                          34,
+                          177,
+                          243
+                        ]
+                      }
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:7611::not_equal_to",
+                  "key": "0fc3927e",
+                  "kind": "class",
+                  "name": "not_equal_to",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      15,
+                      195,
+                      146,
+                      126,
+                      37,
+                      144,
+                      112,
+                      43,
+                      10,
+                      14,
+                      72,
+                      140,
+                      53,
+                      14,
+                      94,
+                      252,
+                      165,
+                      195,
+                      98,
+                      32,
+                      126,
+                      59,
+                      190,
+                      147,
+                      7,
+                      178,
+                      172,
+                      36,
+                      15,
+                      60,
+                      184,
+                      4
+                    ]
+                  }
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:1842::decoder",
+                          "key": "fff1e779",
+                          "kind": "type",
+                          "name": "decoder",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              255,
+                              241,
+                              231,
+                              121,
+                              88,
+                              63,
+                              227,
+                              90,
+                              102,
+                              6,
+                              157,
+                              205,
+                              201,
+                              147,
+                              125,
+                              46,
+                              197,
+                              107,
+                              0,
+                              240,
+                              231,
+                              135,
+                              238,
+                              230,
+                              27,
+                              229,
+                              179,
+                              167,
+                              99,
+                              95,
+                              33,
+                              39
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::semantic::6fcfc2069a2ee81eff64e71db814150096e1941b75677cc91ed889771f57ebe0::process",
+                          "key": "0ea88bce",
+                          "kind": "variable",
+                          "name": "process",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              14,
+                              168,
+                              139,
+                              206,
+                              210,
+                              166,
+                              66,
+                              197,
+                              17,
+                              54,
+                              27,
+                              75,
+                              74,
+                              77,
+                              48,
+                              11,
+                              116,
+                              5,
+                              201,
+                              100,
+                              197,
+                              122,
+                              56,
+                              223,
+                              63,
+                              255,
+                              198,
+                              2,
+                              195,
+                              136,
+                              240,
+                              162
+                            ]
+                          }
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:1840::process",
+                      "key": "09996967",
+                      "kind": "method",
+                      "name": "process",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          9,
+                          153,
+                          105,
+                          103,
+                          115,
+                          250,
+                          249,
+                          149,
+                          253,
+                          197,
+                          186,
+                          54,
+                          209,
+                          177,
+                          81,
+                          75,
+                          3,
+                          104,
+                          184,
+                          250,
+                          43,
+                          208,
+                          30,
+                          136,
+                          125,
+                          38,
+                          236,
+                          188,
+                          223,
+                          154,
+                          145,
+                          216
+                        ]
+                      }
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/cpp-pugixml/project::src/pugixml.cpp:1836::wchar_decoder",
+                  "key": "150b5d5c",
+                  "kind": "class",
+                  "name": "wchar_decoder",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      21,
+                      11,
+                      93,
+                      92,
+                      234,
+                      229,
+                      46,
+                      155,
+                      106,
+                      183,
+                      248,
+                      138,
+                      108,
+                      117,
+                      173,
+                      195,
+                      51,
+                      33,
+                      215,
+                      247,
+                      57,
+                      11,
+                      41,
+                      72,
+                      196,
+                      146,
+                      199,
+                      220,
+                      183,
+                      125,
+                      255,
+                      217
                     ]
                   }
                 }

@@ -8,9 +8,9 @@
       "json": {
         "answer": "outline",
         "budget": {
-          "bytesExcludingCursor": 20053,
+          "bytesExcludingCursor": 17592,
           "bytesPerToken": 4,
-          "estimatedTokensExcludingCursor": 5014
+          "estimatedTokensExcludingCursor": 4398
         },
         "declarations": 50,
         "detail": "summary",
@@ -2271,9 +2271,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytesExcludingCursor": 14595,
+          "bytesExcludingCursor": 13371,
           "bytesPerToken": 4,
-          "estimatedTokensExcludingCursor": 3649
+          "estimatedTokensExcludingCursor": 3343
         },
         "coverage": [
           {
@@ -3664,9 +3664,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 6395,
+          "bytes": 5838,
           "bytesPerToken": 4,
-          "estimatedTokens": 1599
+          "estimatedTokens": 1460
         },
         "coverage": [
           {
@@ -4296,8 +4296,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 951,
-                "normalizedFrameBytesExcludingCounters": 3802,
+                "normalizedEstimatedTokensExcludingCounters": 904,
+                "normalizedFrameBytesExcludingCounters": 3616,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -4306,7 +4306,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `PercentEncode` · struct · rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::a3a78a92969ecd6d25f04a56b2d21af5b58b0d442df0bc27920dbc35f825ef8d::PercentEncode`\n• `percent_encode` · function · rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::b32114bb75cbcfe09c6ad40e840c02988c2da15211a4e55a9baedc6a1f9f4094::percent_encode`\n• `utf8_percent_encode` · function · rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::634da06b4504632a7366df9e10181584b28f38468f980234ee3fca450ee77173::utf8_percent_encode`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `PercentEncode` · struct · rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::a3a78a92969ecd6d25f04a56b2d21af5b58b0d442df0bc27920dbc35f825ef8d::PercentEncode`\n• `percent_encode` · function · rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::b32114bb75cbcfe09c6ad40e840c02988c2da15211a4e55a9baedc6a1f9f4094::percent_encode`\n• `utf8_percent_encode` · function · rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::634da06b4504632a7366df9e10181584b28f38468f980234ee3fca450ee77173::utf8_percent_encode`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
                 "type": "text"
               }
             ],
@@ -4314,13 +4314,13 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytesExcludingCursor": 2403,
+                "bytesExcludingCursor": 2264,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 601
+                "estimatedTokensExcludingCursor": 566
               },
               "continuation_call": {
                 "arguments": {
-                  "cursor": "mcp2-<live-validated>",
+                  "cursor": "mcp3-<live-validated>",
                   "limit": 3,
                   "query": "PercentEncode"
                 },
@@ -4346,6 +4346,7 @@
               ],
               "detail": "summary",
               "more": true,
+              "nextCursor": "mcp3-<live-validated>",
               "query": "PercentEncode",
               "readiness": "ready",
               "records": [
@@ -4536,8 +4537,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 879,
-                "normalizedFrameBytesExcludingCounters": 3516,
+                "normalizedEstimatedTokensExcludingCounters": 835,
+                "normalizedFrameBytesExcludingCounters": 3337,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -4546,7 +4547,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `AsciiSet` · struct · rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::03d4cf8275bbde9af062483aa42b5803afa6d6ab168baea9577972a2f0cf6f0b::AsciiSet`\n• `AsciiSet` · import · rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::f6ff4af48d0445a862ca7b44924a66c53728a211bf3d4c409ba6b948d8f25185::AsciiSet`\n• `AsciiSet` · type · unknown\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::e87b278e6619b380f76383081933421344717f10d073c5db36fc8aed17534918::AsciiSet`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `AsciiSet` · struct · rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::03d4cf8275bbde9af062483aa42b5803afa6d6ab168baea9577972a2f0cf6f0b::AsciiSet`\n• `AsciiSet` · import · rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::f6ff4af48d0445a862ca7b44924a66c53728a211bf3d4c409ba6b948d8f25185::AsciiSet`\n• `AsciiSet` · type · unknown\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::e87b278e6619b380f76383081933421344717f10d073c5db36fc8aed17534918::AsciiSet`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
                 "type": "text"
               }
             ],
@@ -4554,13 +4555,13 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytesExcludingCursor": 2164,
+                "bytesExcludingCursor": 2032,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 541
+                "estimatedTokensExcludingCursor": 508
               },
               "continuation_call": {
                 "arguments": {
-                  "cursor": "mcp2-<live-validated>",
+                  "cursor": "mcp3-<live-validated>",
                   "limit": 3,
                   "query": "AsciiSet"
                 },
@@ -4586,6 +4587,7 @@
               ],
               "detail": "summary",
               "more": true,
+              "nextCursor": "mcp3-<live-validated>",
               "query": "AsciiSet",
               "readiness": "ready",
               "records": [
@@ -4769,8 +4771,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 5861,
-                "normalizedFrameBytesExcludingCounters": 23441,
+                "normalizedEstimatedTokensExcludingCounters": 5245,
+                "normalizedFrameBytesExcludingCounters": 20980,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -4787,14 +4789,14 @@
             "structuredContent": {
               "answer": "outline",
               "budget": {
-                "bytesExcludingCursor": 20052,
+                "bytesExcludingCursor": 17591,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 5013
+                "estimatedTokensExcludingCursor": 4398
               },
               "declarations": 50,
               "detail": "summary",
               "extent": "truncated",
-              "nextCursor": "mcp2-<live-validated>",
+              "nextCursor": "mcp3-<live-validated>",
               "package": {
                 "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project",
                 "key": "4847644e",
