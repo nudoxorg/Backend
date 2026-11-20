@@ -1545,7 +1545,10 @@ def _exact_symbol_id(dto: dict) -> str | None:
     proof = dto.get("semantic_data")
     if not isinstance(proof, dict) or proof.get("kind") != "selected-symbol-id":
         return None
-    value = proof.get("value")
+    return _selected_symbol_id_value(proof.get("value"))
+
+
+def _selected_symbol_id_value(value) -> str:
     if isinstance(value, str):
         if re.fullmatch(r"[0-9a-f]{64}", value) and value != "0" * 64:
             return value
@@ -1555,6 +1558,17 @@ def _exact_symbol_id(dto: dict) -> str | None:
             or not any(value)):
         raise RuntimeError("snapshot continuation: malformed selected-symbol ID")
     return bytes(value).hex()
+
+
+def canonical_snapshot_symbols(value):
+    """Compare selected-symbol bytes equally across the two wire spellings."""
+    if isinstance(value, dict):
+        if value.get("kind") == "selected-symbol-id":
+            return {**value, "value": _selected_symbol_id_value(value.get("value"))}
+        return {key: canonical_snapshot_symbols(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [canonical_snapshot_symbols(item) for item in value]
+    return value
 
 
 def _search_record_identity(row: dict) -> str:
@@ -3055,9 +3069,11 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
         if isinstance(baseline, (int, float)) and baseline > 0 and isinstance(indexed, (int, float)):
             entry["index_delta_percent"] = round((indexed / baseline - 1) * 100, 2)
         slow = regressions(reviewed.get("performance", {}), record["performance"])
-        if reviewed["answers"] != record["answers"]:
-            old = json.dumps(reviewed["answers"], indent=2, sort_keys=True, ensure_ascii=False).splitlines()
-            new = json.dumps(record["answers"], indent=2, sort_keys=True, ensure_ascii=False).splitlines()
+        reviewed_answers = canonical_snapshot_symbols(reviewed["answers"])
+        actual_answers = canonical_snapshot_symbols(record["answers"])
+        if reviewed_answers != actual_answers:
+            old = json.dumps(reviewed_answers, indent=2, sort_keys=True, ensure_ascii=False).splitlines()
+            new = json.dumps(actual_answers, indent=2, sort_keys=True, ensure_ascii=False).splitlines()
             diff = "\n".join(difflib.unified_diff(old, new, "reviewed", "this change", lineterm="", n=2))
             entry["snapshot_diff"] = bounded_text(diff, 8192)
             fail_case(case, entry, [f"answers changed; explain or update the snapshot:\n{diff[:20000]}", *slow])

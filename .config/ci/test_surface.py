@@ -1571,6 +1571,10 @@ class SnapshotContinuationTests(unittest.TestCase):
         for value in (symbol.hex()[:-1], "g" * 64, "0" * 64, [True] * 32, [0] * 32):
             with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, "malformed selected-symbol ID"):
                 surface._exact_symbol_id(identity(value))
+        self.assertEqual(surface.canonical_snapshot_symbols([identity(list(symbol))]),
+                         surface.canonical_snapshot_symbols([identity(symbol.hex())]))
+        self.assertNotEqual(surface.canonical_snapshot_symbols([identity(list(symbol))]),
+                            surface.canonical_snapshot_symbols([identity("01" * 32)]))
 
 
 class InteractiveMcpTests(unittest.TestCase):
