@@ -1,0 +1,795 @@
+{
+  "authority_environment": {
+    "NUDOX_CARGO": "/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+    "NUDOX_CARGO_HOME": "/root/.cargo",
+    "NUDOX_PYTHON": "/nix/store/jxyrvv4gbpnp3ap5iy7wxwl1sg4x2x88-python3-3.14.6/bin/python3",
+    "NUDOX_RUSTC": "/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/rustc",
+    "PATH": "/run/wrappers/bin:/root/.nix-profile/bin:/nix/profile/bin:/root/.local/state/nix/profile/bin:/etc/profiles/per-user/root/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin"
+  },
+  "authority_environment_sha256": "ed605e35403109ef416aed64174ae82c418b58331b390b7e4b233e3898226fe8",
+  "binaries": {
+    "backend-cli": "2352334ee406997c4a2ec04240ccde9640fb27debe5fe02c95305213e95321a0",
+    "backend-locald": "350816b5f3473a3f193ab7201c8888e1919b85ff031909837000546d6773585e",
+    "backend-mcp": "8462f01088c9870c36c25f767a03cf654867b94ab9e91629a6db0b0a11fe0e60",
+    "backend-sqlite-worker": "5a6a267631092875b9e4e623b53719d8dc0ea96cbd7f89ef9897015c10ad200f",
+    "backend-stylo-worker": "14d0c933c4b58dc9902e883a07435796579c91ca44afa97b085369c162fb4829"
+  },
+  "cases": [
+    {
+      "duration_ms": 152,
+      "error": null,
+      "evidence_dir": "/root/nudox-keel-native-preview-11bcc-f3e-20261116/evidence/css-source-observer",
+      "id": "css-source-observer",
+      "language": "css",
+      "node": "frontends.stylo",
+      "status": "pass",
+      "steps": [
+        {
+          "detail": {
+            "duration_ms": 20,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-native-preview-11bcc-f3e-20261116/keel-2709413-1794880796692608213-0"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "d8aa9f2a422b9fe0024eb8f2fe996bcf09baa907aa9cabdf222d556d42f9efa8"
+          },
+          "duration_ms": 21,
+          "id": "unicode-escapes-and-duplicates",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-native-preview-11bcc-f3e-20261116/keel-2709413-1794880796713676943-1"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "d036f97f00e408676a7fe8add1974f57d70b0274a7b5c2b24f4b36718882e06e"
+          },
+          "duration_ms": 10,
+          "id": "invalid-value-is-partial",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-native-preview-11bcc-f3e-20261116/keel-2709413-1794880796724601477-2"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "69fa056ec89661d31782718deb5da80006f3c00d647178e2be6bc6016a32dbb2"
+          },
+          "duration_ms": 10,
+          "id": "record-limit",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-native-preview-11bcc-f3e-20261116/keel-2709413-1794880796735479730-3"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "708e4203e3c87ca6bd95f37ca29ad06d1985c8587afb871feae6199b0b02e0be"
+          },
+          "duration_ms": 10,
+          "id": "unsupported-quirks",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-native-preview-11bcc-f3e-20261116/keel-2709413-1794880796746263050-4"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "8ff5c0252a4af96b34d036144cede6a8be5a707256ed6e619b12234edef41b7a"
+          },
+          "duration_ms": 10,
+          "id": "observer-root-and-duplicate-sites",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-native-preview-11bcc-f3e-20261116/keel-2709413-1794880796757227865-5"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "1cc9bc7cf838fa074a3a3580a770638d94a53c05109ca51d6c05345b5db6a8ab"
+          },
+          "duration_ms": 10,
+          "id": "class-site-skips-comments",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-native-preview-11bcc-f3e-20261116/keel-2709413-1794880796768148019-6"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "110bb027586b940ff9016b2f316dc48dd87867bd7c9972bba81e9113b2b21c84"
+          },
+          "duration_ms": 10,
+          "id": "rejected-rule-does-not-shift-root-ordinals",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-native-preview-11bcc-f3e-20261116/keel-2709413-1794880796779082093-7"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "84c0d26e7118b4a3bc6cd8f223bac2e6ea3c1ac86fea13eeb79dee72f1b40f63"
+          },
+          "duration_ms": 10,
+          "id": "bom-is-decoded-before-native-location",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-native-preview-11bcc-f3e-20261116/keel-2709413-1794880796789951606-8"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "8fe6ff2234c1d8579fc47c9ee8a97c2176a2fd39c80725d8bb7ef3593d09b36c"
+          },
+          "duration_ms": 10,
+          "id": "native-location-is-utf16-column",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-native-preview-11bcc-f3e-20261116/keel-2709413-1794880796800863069-9"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "d5c7c7ce9bb18c1015ce89da7e45b73b192642a4399795ba8417d81fce0d1542"
+          },
+          "duration_ms": 10,
+          "id": "native-media-selectors-declarations-dependencies",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-native-preview-11bcc-f3e-20261116/keel-2709413-1794880796811815973-10"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "f617d2fbbc97dc72adab853fc860a7014529a984a8aaf0187eda41a3c8183410"
+          },
+          "duration_ms": 10,
+          "id": "imports-are-retained-with-qualifiers-and-never-loaded",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-native-preview-11bcc-f3e-20261116/keel-2709413-1794880796822731297-11"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "02da243ad02068d6f99476f1642d8bf54e73a33392b4def2c91d313d77e0d928"
+          },
+          "duration_ms": 10,
+          "id": "imports-refuse-when-not-authorized",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-native-preview-11bcc-f3e-20261116/keel-2709413-1794880796833653711-12"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "83f1fee900609bfa5e28c3b85f476a6acc37fad545e029e6097f6b5b445b220d"
+          },
+          "duration_ms": 11,
+          "id": "late-import-is-rejected-not-loaded",
+          "status": "pass"
+        }
+      ],
+      "world_isolation": null
+    },
+    {
+      "duration_ms": 43,
+      "error": null,
+      "evidence_dir": "/root/nudox-keel-native-preview-11bcc-f3e-20261116/evidence/sqlite-syntactic-outline",
+      "id": "sqlite-syntactic-outline",
+      "language": "sql",
+      "node": "frontends.sql",
+      "status": "pass",
+      "steps": [
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-native-preview-11bcc-f3e-20261116/keel-2709413-1794880796845361532-13"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "465dde59b9e114d5d9cd998a13394fcda4dd98dd469e44751ee574751da07b50"
+          },
+          "duration_ms": 10,
+          "id": "unicode-definitions-and-reads",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-native-preview-11bcc-f3e-20261116/keel-2709413-1794880796856273036-14"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "01bcc5b5233f358fe928be970295e22d35a12069589109525d3416d9ec4fe86c"
+          },
+          "duration_ms": 10,
+          "id": "unmodeled-pragma",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-native-preview-11bcc-f3e-20261116/keel-2709413-1794880796867141028-15"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "e156e815ef8fd17872975d68813bcbde35377daa3a9b70c2d99abf1615c6e3c2"
+          },
+          "duration_ms": 10,
+          "id": "syntax-error",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 10,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-native-preview-11bcc-f3e-20261116/keel-2709413-1794880796878048631-16"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "9b0b00ea566a06f7c9f479b246d7c958ea00b3c15361a1cc9785aae1e4adbd6b"
+          },
+          "duration_ms": 10,
+          "id": "wrong-protocol-version",
+          "status": "pass"
+        }
+      ],
+      "world_isolation": null
+    },
+    {
+      "duration_ms": 2043,
+      "error": "index-initial",
+      "evidence_dir": "/root/nudox-keel-native-preview-11bcc-f3e-20261116/evidence/owner-css-sql-history",
+      "id": "owner-css-sql-history",
+      "language": "rust",
+      "node": "engine.lanes",
+      "status": "fail",
+      "steps": [
+        {
+          "duration_ms": 71,
+          "error": "index must publish a terminal receipt, got {\"answer\":\"fault\",\"cause\":\"refused\",\"detail\":\"sign in first: run `nudox auth login` with a key from https://dashboard.nudox.org/, or set NUDOX_API_KEY\",\"operand\":\"account\",\"slug\":\"rejected\"}",
+          "id": "index-initial",
+          "status": "fail"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "class-card",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "class-card-standard",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "read-card",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "property-tone",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "read-tone",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "table-members",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "table-members-standard",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "read-members",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "view-member-names",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "read-member-names",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "reject-css-handle",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "reject-sql-handle",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "edit-both",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "reindex-edits",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "class-panel",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "read-panel",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "removed-card",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "property-shade",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "table-persons",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "read-persons",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "removed-members",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "view-person-names",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "cold-restart",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "panel-after-restart",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "panel-source-after-restart",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "persons-after-restart",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "persons-source-after-restart",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "remove-explicit-sql-selection",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "reindex-implicit-sql-selection",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "implicit-persons",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "implicit-persons-source",
+          "status": "blocked"
+        },
+        {
+          "blocked_by": "index-initial",
+          "id": "implicit-removed-members",
+          "status": "blocked"
+        }
+      ],
+      "world_isolation": {
+        "mode": "cgroup-v2",
+        "path": "/sys/fs/cgroup/nudox-keel-native-preview-11bcc-f3e-20261116/keel-2709413-1794880796889880886-17"
+      }
+    }
+  ],
+  "containment_policy": {
+    "required": true,
+    "root": {
+      "Unix": [
+        47,
+        115,
+        121,
+        115,
+        47,
+        102,
+        115,
+        47,
+        99,
+        103,
+        114,
+        111,
+        117,
+        112,
+        47,
+        110,
+        117,
+        100,
+        111,
+        120,
+        45,
+        107,
+        101,
+        101,
+        108,
+        45,
+        110,
+        97,
+        116,
+        105,
+        118,
+        101,
+        45,
+        112,
+        114,
+        101,
+        118,
+        105,
+        101,
+        119,
+        45,
+        49,
+        49,
+        98,
+        99,
+        99,
+        45,
+        102,
+        51,
+        101,
+        45,
+        50,
+        48,
+        50,
+        54,
+        49,
+        49,
+        49,
+        54
+      ]
+    }
+  },
+  "driver_sha256": "9cfe7ba70633dc63ea182ab8679c9d4790f2b40051560ee5b8079061a4bd6c70",
+  "duration_ms": 2240,
+  "inventory": [
+    {
+      "definition_sha256": "c41119f7af7dadf8e11d817b28a9e9b994cf8b29713c46894719fc37f700db2b",
+      "id": "css-source-observer",
+      "inputs": {},
+      "language": "css",
+      "node": "frontends.stylo",
+      "requires": [],
+      "steps": [
+        {
+          "id": "unicode-escapes-and-duplicates",
+          "kind": "process"
+        },
+        {
+          "id": "invalid-value-is-partial",
+          "kind": "process"
+        },
+        {
+          "id": "record-limit",
+          "kind": "process"
+        },
+        {
+          "id": "unsupported-quirks",
+          "kind": "process"
+        },
+        {
+          "id": "observer-root-and-duplicate-sites",
+          "kind": "process"
+        },
+        {
+          "id": "class-site-skips-comments",
+          "kind": "process"
+        },
+        {
+          "id": "rejected-rule-does-not-shift-root-ordinals",
+          "kind": "process"
+        },
+        {
+          "id": "bom-is-decoded-before-native-location",
+          "kind": "process"
+        },
+        {
+          "id": "native-location-is-utf16-column",
+          "kind": "process"
+        },
+        {
+          "id": "native-media-selectors-declarations-dependencies",
+          "kind": "process"
+        },
+        {
+          "id": "imports-are-retained-with-qualifiers-and-never-loaded",
+          "kind": "process"
+        },
+        {
+          "id": "imports-refuse-when-not-authorized",
+          "kind": "process"
+        },
+        {
+          "id": "late-import-is-rejected-not-loaded",
+          "kind": "process"
+        }
+      ],
+      "world": "process"
+    },
+    {
+      "definition_sha256": "b08502ca4c4f58afbab9dce0ed4c9b3a358e96908388114f7c20d91e5edc0d46",
+      "id": "sqlite-syntactic-outline",
+      "inputs": {},
+      "language": "sql",
+      "node": "frontends.sql",
+      "requires": [],
+      "steps": [
+        {
+          "id": "unicode-definitions-and-reads",
+          "kind": "process"
+        },
+        {
+          "id": "unmodeled-pragma",
+          "kind": "process"
+        },
+        {
+          "id": "syntax-error",
+          "kind": "process"
+        },
+        {
+          "id": "wrong-protocol-version",
+          "kind": "process"
+        }
+      ],
+      "world": "process"
+    },
+    {
+      "definition_sha256": "29ef866e26500210765fdd7934a6c90126cdf9cb77197ec4566a1d8d7a4cb3c5",
+      "id": "owner-css-sql-history",
+      "inputs": {
+        ".nudox/sql.json": "21afc3ec650f866d5621a0b6502b382e08a15d79b8b996fb63652b7559c950e3",
+        "Cargo.toml": "f33108961e62d30a5605d41526432708e87412dfcf846821e6eda9de98954576",
+        "db/schema.sql": "4d1150533449d91b622971ed35a547fe22ccd35511095ac3f2a13aae73e3b025",
+        "src/lib.rs": "0b343b614bcd1070fcae683aa92b9975970056a269dc950407fc4ca175d30fe9",
+        "styles/site.css": "80d185f467ee6c446678f6ffb8d9105c8a892a1662e6f8ef9dc0e1c31d960cae"
+      },
+      "language": "rust",
+      "node": "engine.lanes",
+      "requires": [
+        "css-source-observer",
+        "sqlite-syntactic-outline"
+      ],
+      "steps": [
+        {
+          "id": "index-initial",
+          "kind": "index"
+        },
+        {
+          "id": "class-card",
+          "kind": "query"
+        },
+        {
+          "id": "class-card-standard",
+          "kind": "query"
+        },
+        {
+          "id": "read-card",
+          "kind": "query"
+        },
+        {
+          "id": "property-tone",
+          "kind": "query"
+        },
+        {
+          "id": "read-tone",
+          "kind": "query"
+        },
+        {
+          "id": "table-members",
+          "kind": "query"
+        },
+        {
+          "id": "table-members-standard",
+          "kind": "query"
+        },
+        {
+          "id": "read-members",
+          "kind": "query"
+        },
+        {
+          "id": "view-member-names",
+          "kind": "query"
+        },
+        {
+          "id": "read-member-names",
+          "kind": "query"
+        },
+        {
+          "id": "reject-css-handle",
+          "kind": "cli"
+        },
+        {
+          "id": "reject-sql-handle",
+          "kind": "cli"
+        },
+        {
+          "id": "edit-both",
+          "kind": "write"
+        },
+        {
+          "id": "reindex-edits",
+          "kind": "index"
+        },
+        {
+          "id": "class-panel",
+          "kind": "query"
+        },
+        {
+          "id": "read-panel",
+          "kind": "query"
+        },
+        {
+          "id": "removed-card",
+          "kind": "query"
+        },
+        {
+          "id": "property-shade",
+          "kind": "query"
+        },
+        {
+          "id": "table-persons",
+          "kind": "query"
+        },
+        {
+          "id": "read-persons",
+          "kind": "query"
+        },
+        {
+          "id": "removed-members",
+          "kind": "query"
+        },
+        {
+          "id": "view-person-names",
+          "kind": "query"
+        },
+        {
+          "id": "cold-restart",
+          "kind": "restart"
+        },
+        {
+          "id": "panel-after-restart",
+          "kind": "query"
+        },
+        {
+          "id": "panel-source-after-restart",
+          "kind": "query"
+        },
+        {
+          "id": "persons-after-restart",
+          "kind": "query"
+        },
+        {
+          "id": "persons-source-after-restart",
+          "kind": "query"
+        },
+        {
+          "id": "remove-explicit-sql-selection",
+          "kind": "write"
+        },
+        {
+          "id": "reindex-implicit-sql-selection",
+          "kind": "index"
+        },
+        {
+          "id": "implicit-persons",
+          "kind": "query"
+        },
+        {
+          "id": "implicit-persons-source",
+          "kind": "query"
+        },
+        {
+          "id": "implicit-removed-members",
+          "kind": "query"
+        }
+      ],
+      "world": "owner"
+    }
+  ],
+  "manifest_sha256": "89dfa9408fc728b9549196252f23be097166e4f0cd057098ad69321ab80e2295",
+  "order": null,
+  "schema": 1,
+  "status": "fail"
+}

@@ -1,0 +1,44 @@
+{
+  "captured_log_sha256": "1cc7c798d22fdac3c4f602ef98a7ab175b242f7239b400eaff2c2d1b9069c8fa",
+  "cargo_lock_sha256": "25056ca2f943a969d0d3dd797098e81fc7de66e275ccdffc06f197a76a1c52ab",
+  "command": [
+    "cargo",
+    "+1.97.1",
+    "test",
+    "--locked",
+    "-p",
+    "backend-platform",
+    "-p",
+    "backend-runtime",
+    "--lib",
+    "--",
+    "--test-threads=2"
+  ],
+  "matched_core_files_sha256": {
+    "crates/platform/directory.rs": "0b6b51245180d5dc2bf321a22b57471051652422d60e6eb71b46db1102f82b36",
+    "crates/platform/win32/file.rs": "714716e1b5ca3eba0d7d226a785f6fa16e325e8b08a82c9d055e9298338a2c14",
+    "crates/platform/win32/workspace_fs.rs": "73fe659672b1e5a1501e0679f41cf380f22a4f1f35a21265369ab441050f85a0",
+    "crates/platform/win32/workspace_fs/adverse_tests.rs": "683eb03c3c546ca6303c661f30e70b354bfab129af1d2719990233b95fff1b7b",
+    "crates/runtime/src/lib.rs": "2c104b4db2acd8780b52a612a8ff8803853ec9b6a9dc1ec05303ce10497ace00",
+    "crates/runtime/src/startup.rs": "c309519a7d5d65f16f4d85b57eb49067f98ef7bbc726467a83a9e31f3b33a6a1"
+  },
+  "platform": {
+    "failed": 0,
+    "filtered_out": 0,
+    "ignored": 0,
+    "passed": 148
+  },
+  "preview_source_commit": "fc5c228e090220d80566494e62bc037f3cd11a22",
+  "preview_source_tree": "8a6af1491600b25b487080082cc6fe32c5988d71",
+  "run_url": "https://github.com/nudoxorg/backend-windows-v030-preview/actions/runs/44013598256",
+  "runner": "github-hosted windows-2022",
+  "runtime": {
+    "failed": 0,
+    "filtered_out": 0,
+    "ignored": 0,
+    "passed": 39
+  },
+  "schema": "nudox.windows-native-platform-runtime-evidence.v1",
+  "scope": "Native platform/runtime tests on the identified preview tree. The listed core file bytes match this cohort; this does not establish a test pass for the different integrated source tree, release build, application journeys, or native installation.",
+  "target": "x86_64-pc-windows-msvc"
+}

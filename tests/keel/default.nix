@@ -7,36 +7,86 @@ let
   references = import ./references.nix;
   ownerNative = import ./owner-native.nix;
   tsExternal = import ./ts-external.nix;
+  jsRetained = import ./javascript-retained.nix;
+  cursorLifecycle = import ./cursor-lifecycle.nix;
+  pageBound = import ./page-bound.nix;
+  searchHelp = import ./search-help.nix;
+  sourceRange = import ./source-range.nix;
+  mcpStdio = import ./mcp-stdio.nix;
+  tsCrossFile = import ./ts-cross-file.nix;
   required = import ./required-cases.nix;
-  assembled = histories.cases ++ native.cases ++ protocol.cases ++ focus.cases ++ references.cases ++ ownerNative.cases ++ tsExternal.cases;
-  cases = map (case: case // {
-    steps = map (step: if step.kind == "query" then
-      let
-        detail = step.arguments.detail or "standard";
-        searchBarrier = if step.tool == "backend.search" then {
-          wait_for = true;
-          expect = step.expect // {
-            # Wait for full-search preparation, while preserving honest partial
-            # semantic coverage (for example a JavaScript program without full
-            # static type evidence). Every remaining field still compares.
-            json = step.expect.json ++ [
-              { pointer = "/full_search"; absent = true; }
-              { pointer = "/search_scope"; absent = true; }
+  assembled =
+    histories.cases
+    ++ native.cases
+    ++ protocol.cases
+    ++ focus.cases
+    ++ references.cases
+    ++ ownerNative.cases
+    ++ tsExternal.cases
+    ++ jsRetained.cases
+    ++ cursorLifecycle.cases
+    ++ pageBound.cases
+    ++ searchHelp.cases
+    ++ sourceRange.cases
+    ++ mcpStdio.cases
+    ++ tsCrossFile.cases;
+  cases = map (
+    case:
+    case
+    // {
+      steps = map (
+        step:
+        if step.kind == "query" then
+          let
+            detail = step.arguments.detail or "standard";
+            searchBarrier =
+              if step.tool == "backend.search" then
+                {
+                  wait_for = true;
+                  expect = step.expect // {
+                    # Wait for full-search preparation, while preserving honest partial
+                    # semantic coverage (for example a JavaScript program without full
+                    # static type evidence). Every remaining field still compares.
+                    json =
+                      step.expect.json
+                      ++ builtins.filter (guard: !(builtins.elem guard step.expect.json)) [
+                        {
+                          pointer = "/full_search";
+                          absent = true;
+                        }
+                        {
+                          pointer = "/search_scope";
+                          absent = true;
+                        }
+                      ];
+                  };
+                }
+              else
+                { };
+          in
+          step
+          // {
+            cli = step.cli ++ [
+              "--detail"
+              detail
             ];
-          };
-        } else {};
-      in step // {
-        cli = step.cli ++ [ "--detail" detail ];
-        arguments = step.arguments // { inherit detail; };
-      } // searchBarrier
-    else step) case.steps;
-  }) assembled;
+            arguments = step.arguments // {
+              inherit detail;
+            };
+          }
+          // searchBarrier
+        else
+          step
+      ) case.steps;
+    }
+  ) assembled;
   actual = map (case: case.id) cases;
   sorted = builtins.sort builtins.lessThan;
 in
 if sorted actual != sorted required then
   throw "Keel release inventory differs from required-cases.nix; missing, duplicated or unreviewed case identities cannot satisfy the release gate"
-else {
-  schema = 1;
-  inherit cases;
-}
+else
+  {
+    schema = 1;
+    inherit cases;
+  }

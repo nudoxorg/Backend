@@ -15,8 +15,49 @@ from test_release_contract import FakeGitHub, candidate
 def native_candidate(directory, platform):
     root = Path(directory)
     profile = release.PLATFORMS[platform]
-    build = json.dumps({"source": {"git_revision": "a" * 40, "git_tree": "b" * 40, "cargo_lock_sha256": "c" * 64}}).encode()
     files = {name: b"native executable fixture" for name in profile["executables"]}
+    files.update({name: b"native installer fixture" for name in profile.get("support_files", [])})
+    build_data = {"source": {"git_revision": "a" * 40, "git_tree": "b" * 40, "cargo_lock_sha256": "c" * 64}}
+    if platform == "linux-x64":
+        lock_sha256 = "c" * 64
+        observation = {
+            "state": "observed-build-helper",
+            "artifact_identity": hashlib.sha256(b"SQLite worker fixture").hexdigest(),
+            "basis": {
+                "engine": "Syntaqlite4e4de76",
+                "native_revision": "4e4de76312429fb2235ae093ab2125914320d5bd",
+                "recipe": "syntaqlite-sqlite-fmt-analysis-dqs-default-v1",
+                "lock_sha256": list(bytes.fromhex(lock_sha256)),
+                "support_sha256": list(bytes.fromhex("d" * 64)),
+                "settings": {"Sqlite": {"version": 2147483647, "cflags": 0, "analyzer_dqs_fallback": True}},
+            },
+        }
+        observation_bytes = json.dumps(observation).encode()
+        for name in ("backend-stylo-worker", "backend-sqlite-worker"):
+            files[f"Nudox/bin/{name}"] = b"native executable fixture"
+        files["Nudox/lib/libgcc_s.so.1"] = b"Linux dependency fixture"
+        files["Nudox/resources/sqlite-observation.json"] = observation_bytes
+        build_data["companion"] = {
+            "owner_receipt_sha256": "e" * 64,
+            "stylo_anchor": "f" * 64,
+            "sqlite_artifact_identity": observation["artifact_identity"],
+            "sqlite_lock_sha256": lock_sha256,
+            "sqlite_observation_sha256": hashlib.sha256(observation_bytes).hexdigest(),
+            "sqlite_observer_sha256": "1" * 64,
+            "stylo_observer_sha256": "2" * 64,
+            "dependency_sha256": hashlib.sha256(files["Nudox/lib/libgcc_s.so.1"]).hexdigest(),
+            "sqlite_observation_path": "resources/sqlite-observation.json",
+        }
+        build_data["executables"] = {}
+        for name in ("backend-desktop", "backend-locald", "backend-stylo-worker", "backend-sqlite-worker"):
+            path = f"Nudox/bin/{name}"
+            data = files[path]
+            digest = hashlib.sha256(data).hexdigest()
+            build_data["executables"][name] = {
+                "path": f"bin/{name}", "sha256": digest, "bytes": len(data),
+                "companion_artifact_sha256": digest, "companion_artifact_bytes": len(data),
+            }
+    build = json.dumps(build_data).encode()
     files[profile["build"]] = build
     archive = root / profile["asset"]
     if platform == "windows":
@@ -33,7 +74,7 @@ def native_candidate(directory, platform):
     manifest = {"schema": 1, "version": "0.2.0", "source_sha": "a" * 40, "source_tree": "b" * 40,
                 "cargo_lock_sha256": "c" * 64, "platform": platform, "target": profile["target"],
                 "asset": archive.name, "sha256": release.sha256(archive), "size_bytes": archive.stat().st_size,
-                "minimum_os": "Windows 10" if platform == "windows" else "glibc 2.31",
+                "minimum_os": "Windows 10" if platform == "windows" else "Linux glibc 2.31",
                 "build_manifest_sha256": hashlib.sha256(build).hexdigest(),
                 "signed": profile["signed"], "notarized": profile["notarized"]}
     qa = {"schema": 1, "archive_sha256": manifest["sha256"], "source_sha": manifest["source_sha"],
@@ -150,7 +191,7 @@ class PlatformReleaseTests(unittest.TestCase):
                     release.validate(root)
                 native_candidate(root, platform)
                 if platform == "windows":
-                    manifest["signed"] = False
+                    manifest["signed"] = True
                     (root / "release-manifest.json").write_text(json.dumps(manifest))
                     with self.assertRaisesRegex(ValueError, "signing/notarization"):
                         release.validate(root)
@@ -160,12 +201,21 @@ class PlatformReleaseTests(unittest.TestCase):
         for platform in ("macos", "linux-x64", "linux-arm64", "windows"):
             with tempfile.TemporaryDirectory() as directory:
                 candidate(directory) if platform == "macos" else native_candidate(directory, platform)
-                github.publish_fixture(directory, "v0.2.0", True)
+                if platform == "linux-x64":
+                    installer_template = Path(release.__file__).with_name("install_linux.sh.in").read_bytes()
+                    with patch.object(release, "linux_installer_template", return_value=installer_template):
+                        github.publish_fixture(directory, "v0.2.0", True)
+                else:
+                    github.publish_fixture(directory, "v0.2.0", True)
                 for kind in ("release-manifest", "native-qa"):
                     path = Path(directory) / (kind + ".json")
                     path.rename(Path(directory) / f"{kind}-{platform}.json")
                 self.assertEqual(release.validate(directory, platform=platform)["platform"], platform)
-                github.publish_fixture(directory, "v0.2.0", True, platform)
+                if platform == "linux-x64":
+                    with patch.object(release, "linux_installer_template", return_value=installer_template):
+                        github.publish_fixture(directory, "v0.2.0", True, platform)
+                else:
+                    github.publish_fixture(directory, "v0.2.0", True, platform)
         self.assertEqual(len(github.uploaded), 17)
         self.assertEqual(len({asset["name"] for asset in github.release["assets"]}), 17)
 

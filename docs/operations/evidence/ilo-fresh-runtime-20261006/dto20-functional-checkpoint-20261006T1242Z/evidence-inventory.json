@@ -4948,13 +4948,13 @@
       "original_path": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f-diagnostic-06406262/clone-health.stdout"
     },
     {
-      "path": "runs/20261006T120515Z-python-configured-6e0f640f-diagnostic-06406262/clone-search-parse(version:.stderr",
+      "path": "runs/20261006T120515Z-python-configured-6e0f640f-diagnostic-06406262/clone-search-parse(version_.stderr",
       "bytes": 0,
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "original_path": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f-diagnostic-06406262/clone-search-parse(version:.stderr"
     },
     {
-      "path": "runs/20261006T120515Z-python-configured-6e0f640f-diagnostic-06406262/clone-search-parse(version:.stdout",
+      "path": "runs/20261006T120515Z-python-configured-6e0f640f-diagnostic-06406262/clone-search-parse(version_.stdout",
       "bytes": 17693,
       "sha256": "a7cd720d15e697219fa515e629b18ee6058d59c2b95def36dd287aa4e8e1c877",
       "original_path": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f-diagnostic-06406262/clone-search-parse(version:.stdout"
@@ -5194,13 +5194,13 @@
       "original_path": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-e0196a0a-diagnostic-087c90ac/clone-health.stdout"
     },
     {
-      "path": "runs/20261006T120515Z-python-configured-e0196a0a-diagnostic-087c90ac/clone-search-sign(self, value:.stderr",
+      "path": "runs/20261006T120515Z-python-configured-e0196a0a-diagnostic-087c90ac/clone-search-sign(self, value_.stderr",
       "bytes": 0,
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "original_path": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-e0196a0a-diagnostic-087c90ac/clone-search-sign(self, value:.stderr"
     },
     {
-      "path": "runs/20261006T120515Z-python-configured-e0196a0a-diagnostic-087c90ac/clone-search-sign(self, value:.stdout",
+      "path": "runs/20261006T120515Z-python-configured-e0196a0a-diagnostic-087c90ac/clone-search-sign(self, value_.stdout",
       "bytes": 562,
       "sha256": "b22630959ed16ea79cf888b82720f83620751ad19a1413c7d0e8f9b3805f2e82",
       "original_path": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-e0196a0a-diagnostic-087c90ac/clone-search-sign(self, value:.stdout"

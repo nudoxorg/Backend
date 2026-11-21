@@ -1,0 +1,29 @@
+{
+  "candidate_build_and_native_product_qa": "not established",
+  "contract_control": {
+    "probe_sha256": "7e11b5dbc029af36175c36ee0cff0a53fa72a364ebee5ce7c58cf9685b5abbbe",
+    "scope": "A separate local synthetic control accepted unsigned Windows, rejected a signed claim, rejected a missing installer and rejected a missing SQLite worker. The full test_release_platforms suite had two unrelated Linux fixture errors concerning absent formal companion evidence; it was not green."
+  },
+  "file_sha256": {
+    "tools/package/install-windows.ps1": "c38a4b3bd1761f10e5fcdd451fb311a34d3dd9ddcf75e731d66ee510024d1e82",
+    "tools/package/release_contract.py": "47dd1be0dbd63e5cae184b4392d944093f7af0f6433917647dc8515f9427f05f",
+    "tools/package/release_platforms.py": "2ab4b6b51a3d563672d4036ae8fe6a3518cc23219497738ec2e6e33c7b214b25",
+    "tools/package/windows_build.py": "f2b53c08e321635036197c7bd52927f07a017a133ced9a8384e78fa2e357ddd3",
+    "tools/package/windows_package.py": "36b2cba38980e37bdc4c51b0dd29624b4ed8ac46ceab7ebdab5fb645b593df0f"
+  },
+  "installer_control": {
+    "log_sha256": "f4a5bf6d1043f71b0e3495991a1edc8a49a783b048486f08bec88fc7b426cc4d",
+    "preview_source_commit": "c2f13329eb2285bb00717eead3076e393587105f",
+    "run_url": "https://github.com/nudoxorg/backend-windows-v030-preview/actions/runs/44013854609",
+    "scope": "Synthetic install, collision, checksum, embedded installer, seven executable roles, unexpected-file protection, uninstall and traversal checks; installer bytes match this cohort."
+  },
+  "note": "The Windows release is intentionally unsigned. Native product journey, exact release-source build, installation, minimum-OS and desktop acceptance remain required.",
+  "package_control": {
+    "log_sha256": "d156240be60e24fff1eb224a6428b1bde158d391290b20e9fdff811a4231b8a0",
+    "preview_source_commit": "53b3cf793831a785016c64f387dc1b1ed8fefe89",
+    "run_url": "https://github.com/nudoxorg/backend-windows-v030-preview/actions/runs/44013166768",
+    "scope": "Synthetic x64 PE files, native Windows candidate packaging and source-bound release-contract validation. Windows package/build scripts and release_contract.py match the files in this cohort. The tested platform profile predates the stricter seven-executable requirement."
+  },
+  "schema": "nudox.windows-unsigned-packaging-controls.v1",
+  "status": "synthetic-controls-only"
+}

@@ -66,7 +66,7 @@ impl StartupAttempt {
             .to_owned();
         let directory = backend_platform::DirectoryCapability::open(workspace)?;
         directory.validate_private()?;
-        let file = directory.create_file_exclusive(&name)?;
+        let file = directory.create_file_exclusive_for_replacement(&name)?;
         let mut attempt = Self {
             path,
             directory,

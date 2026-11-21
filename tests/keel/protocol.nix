@@ -55,7 +55,7 @@ in {
     (cli "cli-root-help" [ "--help" ] 0
       [ "Usage: nudox [OPTIONS] <COMMAND> [OPERANDS]" "--limit COUNT" "library" "registry" "home" "session" "system" "surface <JSON>" "--format human|markdown|json" "--passive" "nudox add ." "nudox search \"error handling\"" "nudox mcp-config" "no config writes or service start" ] [ ])
     (cli "cli-add-help" [ "add" "--help" ] 0
-      [ "nudox add" "use `.` for the current directory" "--execution-intent INTENT" "--cargo-target NAME" "bounded remote calibration" ] [ ])
+      [ "nudox add" "`.` for the current directory" "--execution-intent INTENT" "--cargo-target NAME" "bounded remote calibration" "Defaults to interactive." ] [ ])
     (cliJson "cli-add-unknown-execution-intent"
       [ "--format" "json" "--project" "\${project}" "add" "\${project}" "--execution-intent" "remote" ]
       64 [
@@ -82,7 +82,7 @@ in {
     (cli "cli-passive-search-refused" [ "--passive" "search" "needle" ] 64 [ ]
       [ "--passive" "health" "status" ])
     (cliJson "cli-passive-status-connect-only"
-      [ "--passive" "--format" "json" "--project" "\${project}" "--workspace" "\${project}/passive-status-workspace" "--endpoint" "\${project}/passive-status.sock" "status" ]
+      [ "--passive" "--format" "json" "--project" "\${project}" "--workspace" "\${project}/passive-status-workspace" "status" ]
       1 [
         (check "/answer" "fault")
         (check "/slug" "endpoint")
@@ -90,7 +90,7 @@ in {
         { pointer = "/detail"; contains = "without starting it"; }
       ])
     (cliJson "cli-passive-health-connect-only"
-      [ "--passive" "--format" "json" "--project" "\${project}" "--workspace" "\${project}/passive-health-workspace" "--endpoint" "\${project}/passive-health.sock" "health" ]
+      [ "--passive" "--format" "json" "--project" "\${project}" "--workspace" "\${project}/passive-health-workspace" "health" ]
       1 [
         (check "/answer" "fault")
         (check "/slug" "endpoint")

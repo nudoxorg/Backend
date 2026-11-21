@@ -507,6 +507,11 @@ in
         patterns = [ "^/apps/locald/" ];
       }
       {
+        name = "backend-metrics";
+        description = "Backend operator HTTP metrics and owner health";
+        patterns = [ "^/apps/metrics/" ];
+      }
+      {
         name = "backend-worker";
         description = "Target v2 remote worker application";
         patterns = [ "^/apps/worker/" ];

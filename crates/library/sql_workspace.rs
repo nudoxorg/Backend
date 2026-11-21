@@ -161,14 +161,18 @@ fn valid_postgres_name(name: &str) -> bool {
 impl SqlProjectSettings {
     /// Check finite grammar, per-host dialect/context compatibility and uniqueness.
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.version != 1
-            || self.sources.len() > MAX_SQL_PROJECT_HOSTS
-            || self
-                .sources
-                .windows(2)
-                .any(|pair| pair[0].path >= pair[1].path)
+        if self.version != 1 {
+            return Err("unsupported SQL settings version (expected 1)");
+        }
+        if self.sources.len() > MAX_SQL_PROJECT_HOSTS {
+            return Err("too many SQL source selections (maximum 256)");
+        }
+        if self
+            .sources
+            .windows(2)
+            .any(|pair| pair[0].path >= pair[1].path)
         {
-            return Err("invalid SQL source selection");
+            return Err("SQL sources must be strictly ordered by path and unique");
         }
         for selected in &self.sources {
             if !valid_path(&selected.path)
@@ -273,6 +277,31 @@ mod tests {
             r#"{"version":1,"sources":[{"path":"a.sql","dialect":"sqlite","context":{"kind":"unavailable"}},{"path":"a.sql","dialect":"postgres","context":{"kind":"unavailable"}}]}"#,
         ] {
             assert!(ParsedSqlProjectSettings::parse(source.as_bytes()).is_err());
+        }
+    }
+    #[test]
+    fn misplaced_source_selection_names_the_exact_rule() {
+        for (source, expected) in [
+            (
+                r#"{"version":2,"sources":[]}"#,
+                "unsupported SQL settings version (expected 1)",
+            ),
+            (
+                r#"{"version":1,"sources":[{"path":"b.sql","dialect":"sqlite","context":{"kind":"unavailable"}},{"path":"a.sql","dialect":"sqlite","context":{"kind":"unavailable"}}]}"#,
+                "SQL sources must be strictly ordered by path and unique",
+            ),
+            (
+                r#"{"version":1,"sources":[{"path":"a.sql","dialect":"sqlite","context":{"kind":"unavailable"}},{"path":"a.sql","dialect":"sqlite","context":{"kind":"unavailable"}}]}"#,
+                "SQL sources must be strictly ordered by path and unique",
+            ),
+        ] {
+            assert_eq!(
+                ParsedSqlProjectSettings::parse(source.as_bytes())
+                    .err()
+                    .expect("invalid settings are refused"),
+                expected,
+                "{source}"
+            );
         }
     }
     #[test]

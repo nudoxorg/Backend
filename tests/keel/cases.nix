@@ -84,7 +84,10 @@ let
       { pointer = "/records"; select = "/identity/name"; not_contains = removed; }
     ]; };
   };
-  index = id: { inherit id; kind = "index"; };
+  index = id: {
+    inherit id; kind = "index";
+    expect = { exit = 0; json = [ (eq "/index_operation/detail/execution_intent" "interactive") ]; };
+  };
   restart = id: { inherit id; kind = "restart"; };
 in {
   schema = 1;
@@ -237,6 +240,7 @@ in {
           expect = { exit = 0; json = [
             (eq "/index_operation/state" "known")
             (eq "/index_operation/detail/state/state" "published")
+            (eq "/index_operation/detail/execution_intent" "background")
           ]; };
         }
         {

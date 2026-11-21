@@ -1,0 +1,482 @@
+{
+  "account_key": {
+    "present": false,
+    "source_basename": null
+  },
+  "authority_environment": {
+    "PATH": "/run/wrappers/bin:/root/.nix-profile/bin:/nix/profile/bin:/root/.local/state/nix/profile/bin:/etc/profiles/per-user/root/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin"
+  },
+  "authority_environment_sha256": "f4791bbf89244febb361aaa7b273d3be4dfd7737af0ea1322098f6fd7bff4283",
+  "binaries": {
+    "backend-mcp": "49a6b110352c0ccd3c44a052b3d8d48f627c6ad2205e758ac9c3d1a49a0f473d"
+  },
+  "cases": [
+    {
+      "duration_ms": 122,
+      "error": null,
+      "evidence_dir": "/root/nudox-keel-mcp-stdio-c1ec-555-public-v5-20261116/evidence/mcp-stdio-handshake-state",
+      "id": "mcp-stdio-handshake-state",
+      "language": "protocol",
+      "node": "",
+      "status": "pass",
+      "steps": [
+        {
+          "detail": {
+            "duration_ms": 30,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-mcp-stdio-c1ec-555-public-v5-20261116/keel-3093210-1794894135045584574-0"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "duration_ms": 30,
+          "id": "unsolicited-ack-is-silent",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 90,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-mcp-stdio-c1ec-555-public-v5-20261116/keel-3093210-1794894135076521715-1"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "4cae195d6545a781b1ac8f4ccfd76fc86697686b542a14bf6921699459c2e769"
+          },
+          "duration_ms": 91,
+          "id": "state-transitions",
+          "status": "pass"
+        }
+      ],
+      "world_isolation": null
+    },
+    {
+      "duration_ms": 456,
+      "error": null,
+      "evidence_dir": "/root/nudox-keel-mcp-stdio-c1ec-555-public-v5-20261116/evidence/mcp-stdio-version-negotiation",
+      "id": "mcp-stdio-version-negotiation",
+      "language": "protocol",
+      "node": "",
+      "status": "pass",
+      "steps": [
+        {
+          "detail": {
+            "duration_ms": 100,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-mcp-stdio-c1ec-555-public-v5-20261116/keel-3093210-1794894135168202944-2"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "f74fe23d6f4fcc40bb1f60da975d2e17d2fc7cb51020e8fa06aaa05a1864d673"
+          },
+          "duration_ms": 101,
+          "id": "current",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 90,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-mcp-stdio-c1ec-555-public-v5-20261116/keel-3093210-1794894135269523405-3"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "a7a3e4235a182055c2d5859a1f729c6d95a3845b1c9fc978c692a628e555a079"
+          },
+          "duration_ms": 91,
+          "id": "previous",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 80,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-mcp-stdio-c1ec-555-public-v5-20261116/keel-3093210-1794894135360765235-4"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "f74fe23d6f4fcc40bb1f60da975d2e17d2fc7cb51020e8fa06aaa05a1864d673"
+          },
+          "duration_ms": 81,
+          "id": "newer",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 100,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-mcp-stdio-c1ec-555-public-v5-20261116/keel-3093210-1794894135441900021-5"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "f74fe23d6f4fcc40bb1f60da975d2e17d2fc7cb51020e8fa06aaa05a1864d673"
+          },
+          "duration_ms": 101,
+          "id": "newer-2026",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 80,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-mcp-stdio-c1ec-555-public-v5-20261116/keel-3093210-1794894135543149861-6"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "f74fe23d6f4fcc40bb1f60da975d2e17d2fc7cb51020e8fa06aaa05a1864d673"
+          },
+          "duration_ms": 81,
+          "id": "unknown",
+          "status": "pass"
+        }
+      ],
+      "world_isolation": null
+    },
+    {
+      "duration_ms": 91,
+      "error": null,
+      "evidence_dir": "/root/nudox-keel-mcp-stdio-c1ec-555-public-v5-20261116/evidence/mcp-stdio-init-refusal-retry",
+      "id": "mcp-stdio-init-refusal-retry",
+      "language": "protocol",
+      "node": "",
+      "status": "pass",
+      "steps": [
+        {
+          "detail": {
+            "duration_ms": 90,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-mcp-stdio-c1ec-555-public-v5-20261116/keel-3093210-1794894135625018664-7"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "629f557b2941f97cba31c76c51d1eac8c7a34b7aff29c67fdc70c21614f8e7b6"
+          },
+          "duration_ms": 91,
+          "id": "invalid-then-valid",
+          "status": "pass"
+        }
+      ],
+      "world_isolation": null
+    },
+    {
+      "duration_ms": 122,
+      "error": null,
+      "evidence_dir": "/root/nudox-keel-mcp-stdio-c1ec-555-public-v5-20261116/evidence/mcp-stdio-discovery-envelope",
+      "id": "mcp-stdio-discovery-envelope",
+      "language": "protocol",
+      "node": "",
+      "status": "pass",
+      "steps": [
+        {
+          "detail": {
+            "duration_ms": 121,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-mcp-stdio-c1ec-555-public-v5-20261116/keel-3093210-1794894135716819796-8"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "72f178361f8d9a4ae25f68296761a41577550ab1de59371fc8d9ae8561b09af9"
+          },
+          "duration_ms": 121,
+          "id": "discover-and-recover",
+          "status": "pass"
+        }
+      ],
+      "world_isolation": null
+    },
+    {
+      "duration_ms": 101,
+      "error": null,
+      "evidence_dir": "/root/nudox-keel-mcp-stdio-c1ec-555-public-v5-20261116/evidence/mcp-stdio-line-endings-notifications",
+      "id": "mcp-stdio-line-endings-notifications",
+      "language": "protocol",
+      "node": "",
+      "status": "pass",
+      "steps": [
+        {
+          "detail": {
+            "duration_ms": 100,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-mcp-stdio-c1ec-555-public-v5-20261116/keel-3093210-1794894135839125429-9"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "15530e7131ba993ab7a1ebf75a6037a6f8492470892b18ff2b9211506f1c210e"
+          },
+          "duration_ms": 101,
+          "id": "crlf-and-eof",
+          "status": "pass"
+        }
+      ],
+      "world_isolation": null
+    },
+    {
+      "duration_ms": 91,
+      "error": null,
+      "evidence_dir": "/root/nudox-keel-mcp-stdio-c1ec-555-public-v5-20261116/evidence/mcp-stdio-correlation",
+      "id": "mcp-stdio-correlation",
+      "language": "protocol",
+      "node": "",
+      "status": "pass",
+      "steps": [
+        {
+          "detail": {
+            "duration_ms": 90,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-mcp-stdio-c1ec-555-public-v5-20261116/keel-3093210-1794894135969156253-10"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "962c6ca9a3e6b9e5a175e26723f08f4fd9543461fe282b541515bc1e13dfaf71"
+          },
+          "duration_ms": 91,
+          "id": "correlate-id-types",
+          "status": "pass"
+        }
+      ],
+      "world_isolation": null
+    },
+    {
+      "duration_ms": 91,
+      "error": null,
+      "evidence_dir": "/root/nudox-keel-mcp-stdio-c1ec-555-public-v5-20261116/evidence/mcp-stdio-depth-recovery",
+      "id": "mcp-stdio-depth-recovery",
+      "language": "protocol",
+      "node": "",
+      "status": "pass",
+      "steps": [
+        {
+          "detail": {
+            "duration_ms": 90,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-mcp-stdio-c1ec-555-public-v5-20261116/keel-3093210-1794894136071752412-11"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "cb3e17ca8907076d21b70bf98a6eb076c7619072439a38d4f2ac0c66b5fbe217"
+          },
+          "duration_ms": 91,
+          "id": "reject-nesting",
+          "status": "pass"
+        }
+      ],
+      "world_isolation": null
+    }
+  ],
+  "containment_policy": {
+    "required": true,
+    "root": {
+      "Unix": [
+        47,
+        115,
+        121,
+        115,
+        47,
+        102,
+        115,
+        47,
+        99,
+        103,
+        114,
+        111,
+        117,
+        112,
+        47,
+        110,
+        117,
+        100,
+        111,
+        120,
+        45,
+        107,
+        101,
+        101,
+        108,
+        45,
+        109,
+        99,
+        112,
+        45,
+        115,
+        116,
+        100,
+        105,
+        111,
+        45,
+        99,
+        49,
+        101,
+        99,
+        45,
+        53,
+        53,
+        53,
+        45,
+        112,
+        117,
+        98,
+        108,
+        105,
+        99,
+        45,
+        118,
+        53,
+        45,
+        50,
+        48,
+        50,
+        54,
+        49,
+        49,
+        49,
+        54
+      ]
+    }
+  },
+  "driver_sha256": "3ea59a7c4dcd7638f88f5ff93a622e9c65f487f3bf1eceba2071137eacd0ba1d",
+  "duration_ms": 1117,
+  "inventory": [
+    {
+      "definition_sha256": "712808aaf8cc7034546887758677abc43b3d29b4cce8abac8b4cc19f72b71312",
+      "id": "mcp-stdio-handshake-state",
+      "inputs": {},
+      "language": "protocol",
+      "node": "",
+      "requires": [],
+      "steps": [
+        {
+          "id": "unsolicited-ack-is-silent",
+          "kind": "process"
+        },
+        {
+          "id": "state-transitions",
+          "kind": "process"
+        }
+      ],
+      "world": "process"
+    },
+    {
+      "definition_sha256": "6b0acdcbabef25f03191b248d4450d00ad1524771a06f87b761083e2113e1e4c",
+      "id": "mcp-stdio-version-negotiation",
+      "inputs": {},
+      "language": "protocol",
+      "node": "",
+      "requires": [],
+      "steps": [
+        {
+          "id": "current",
+          "kind": "process"
+        },
+        {
+          "id": "previous",
+          "kind": "process"
+        },
+        {
+          "id": "newer",
+          "kind": "process"
+        },
+        {
+          "id": "newer-2026",
+          "kind": "process"
+        },
+        {
+          "id": "unknown",
+          "kind": "process"
+        }
+      ],
+      "world": "process"
+    },
+    {
+      "definition_sha256": "693c3c7e8a531faf31bdac44e5ccf6118411ccf7dd20613fdb3d430385c59ce9",
+      "id": "mcp-stdio-init-refusal-retry",
+      "inputs": {},
+      "language": "protocol",
+      "node": "",
+      "requires": [],
+      "steps": [
+        {
+          "id": "invalid-then-valid",
+          "kind": "process"
+        }
+      ],
+      "world": "process"
+    },
+    {
+      "definition_sha256": "7e505a3ef7c6a1a8031f989b0df8c83a315f46e04e7dfa4e5063e3a2bd620e99",
+      "id": "mcp-stdio-discovery-envelope",
+      "inputs": {},
+      "language": "protocol",
+      "node": "",
+      "requires": [],
+      "steps": [
+        {
+          "id": "discover-and-recover",
+          "kind": "process"
+        }
+      ],
+      "world": "process"
+    },
+    {
+      "definition_sha256": "a37ace7e7af7403f5be8141c167291922092dafa4fc3ee08c5eba13e86a1ab58",
+      "id": "mcp-stdio-line-endings-notifications",
+      "inputs": {},
+      "language": "protocol",
+      "node": "",
+      "requires": [],
+      "steps": [
+        {
+          "id": "crlf-and-eof",
+          "kind": "process"
+        }
+      ],
+      "world": "process"
+    },
+    {
+      "definition_sha256": "3749def920a8d51d16641189a8f66a314f5746db5751f51b95bf28f610d54d8e",
+      "id": "mcp-stdio-correlation",
+      "inputs": {},
+      "language": "protocol",
+      "node": "",
+      "requires": [],
+      "steps": [
+        {
+          "id": "correlate-id-types",
+          "kind": "process"
+        }
+      ],
+      "world": "process"
+    },
+    {
+      "definition_sha256": "a56c261f466c5df36eb7d8f59cbc196ceba26edccf3a8094da488a7c844ef6c7",
+      "id": "mcp-stdio-depth-recovery",
+      "inputs": {},
+      "language": "protocol",
+      "node": "",
+      "requires": [],
+      "steps": [
+        {
+          "id": "reject-nesting",
+          "kind": "process"
+        }
+      ],
+      "world": "process"
+    }
+  ],
+  "manifest_sha256": "a565b2d24e24858addd34946c1e403b0db93f11934984b465f5dc12e3e029ec1",
+  "order": null,
+  "schema": 1,
+  "status": "pass"
+}

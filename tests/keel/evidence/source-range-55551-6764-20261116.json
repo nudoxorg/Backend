@@ -1,0 +1,390 @@
+{
+  "account_key": {
+    "present": false,
+    "source_basename": null
+  },
+  "authority_environment": {
+    "NUDOX_CARGO": "/nix/store/qm5b3rg00i7filzq24dp4cl9pcjdwa59-cargo/bin/cargo",
+    "NUDOX_CARGO_HOME": "/root/.cargo",
+    "NUDOX_PYTHON": "/nix/store/jxyrvv4gbpnp3ap5iy7wxwl1sg4x2x88-python3-3.14.6/bin/python3",
+    "NUDOX_RUSTC": "/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/rustc",
+    "PATH": "/run/wrappers/bin:/root/.nix-profile/bin:/nix/profile/bin:/root/.local/state/nix/profile/bin:/etc/profiles/per-user/root/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin"
+  },
+  "authority_environment_sha256": "25b9d1a34eba8db97256abf807f2d72a1fc960c6aca3c69241051ef83e13cf8a",
+  "binaries": {
+    "backend-cli": "23e0a5b10922a280204334a1b2df13cd11770bb37ebc18713da629862cdbd60c",
+    "backend-locald": "aa4f9f9f9f9681331d303e6cf2859c4b003616a5003e6fa8675ebf5833a4b28d",
+    "backend-mcp": "49a6b110352c0ccd3c44a052b3d8d48f627c6ad2205e758ac9c3d1a49a0f473d"
+  },
+  "cases": [
+    {
+      "duration_ms": 38334,
+      "error": null,
+      "evidence_dir": "/root/nudox-keel-source-range-6764-555-v2-20261116/evidence/typescript-source-range-restart",
+      "id": "typescript-source-range-restart",
+      "language": "typescript",
+      "node": "engine.lower.typescript",
+      "status": "pass",
+      "steps": [
+        {
+          "detail": {
+            "profiles": [
+              {
+                "input_digest": "88ac0d75d4b6f12dbdb0c391ebd687b182d1dad189011d07cd5aefd9c850004a",
+                "observation_sequence": 1,
+                "profile": [
+                  1,
+                  0
+                ],
+                "source_count": 1,
+                "source_version": "e67beea74f4fa9080bbb1eabe73b93f37eba102cb543820d3f1898a6a5b1e5b9",
+                "state": {
+                  "detail": {
+                    "coverage": {
+                      "coverage": "complete"
+                    },
+                    "generation": "06129f020ab8e9ac20462689f5d4f505dcd914e962ca3473eedb4bbfcc558527"
+                  },
+                  "state": "published"
+                }
+              }
+            ],
+            "view_root": "1970d868dc9e71d9c65bd932c89a879a8de79734a31d3eec89f3a7e5df8e1460"
+          },
+          "duration_ms": 28188,
+          "id": "index",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "duration_ms": 50,
+            "exit": 0,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-source-range-6764-555-v2-20261116/keel-3040120-1794892276211258620-2"
+            },
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "c734efd9b7b63df7b0a67c44b3055dd9b8552d2caa0c064365a46bed8657da2e"
+          },
+          "duration_ms": 234,
+          "id": "resolve-ferris",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "bytes": 6714,
+            "cli_page_receipts": [
+              {
+                "reply_sha256": "28c7ddcc1898d724b074d68107d9d8a1fa88fa7ab80e50d81e42801e37ae4aa1",
+                "request_sha256": "c69610f77e87ee7b443220e70d69fb685a664e812faf942031fe3ff05c340cc4"
+              },
+              {
+                "reply_sha256": "1571d268163639e440787a4dfa633b2ac48d3ebd1757764b051f0f5eb91519da",
+                "request_sha256": "cbe476aafea85dea690270c60ed85032dc3f1bbf7b962ceb8051073825332769"
+              },
+              {
+                "reply_sha256": "d683151dbe223a47fb7f9640487d144cece83b3172548f02e038a78b8ad4582d",
+                "request_sha256": "3a2f7573d594bc992b695757981bbbaada242999bb14ab00584a93d850f7f209"
+              },
+              {
+                "reply_sha256": "038ef7ee37ae103db14a3849d6b991cb25595a0abc26f7fc4081ace4b56ec993",
+                "request_sha256": "efc6e8e1bd069a88ac50976b2f70c46123e02ff6c8af9f48881966fab312995f"
+              }
+            ],
+            "cli_pages": 4,
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-source-range-6764-555-v2-20261116/keel-3040120-1794892276445949406-5"
+            },
+            "page_receipts": [
+              {
+                "pid": 3041503,
+                "reply_sha256": "702bc47d6feb65371325cd2a56e3c47216f8be32669c2022025b6c4c13f669d6",
+                "request_id": 1,
+                "request_sha256": "e680d19aa77724463a4831dc1cd7fc2b0f861407b94cb6e5b88ae85a9c2adc88"
+              },
+              {
+                "pid": 3041503,
+                "reply_sha256": "a9291a386763bc4d9be2eacf26bafc616a3fcf92a0baa0fa27acd30c740719ba",
+                "request_id": 2,
+                "request_sha256": "347d444af0e08fab60ca2b8af10ff3f6cc36298e8d0a0a9f5bd6fe7c9cdbe61a"
+              },
+              {
+                "pid": 3041503,
+                "reply_sha256": "fdeda82574c5539944b0fd2f66dabfef5c74f521d7f7975afb42765d1bf6981b",
+                "request_id": 3,
+                "request_sha256": "5c8f04a6d5c18755c5555903daf91437f31572abf800bbbd942f51c4df6fd251"
+              },
+              {
+                "pid": 3041503,
+                "reply_sha256": "cb3e39677c2f35991dee8d00f43f88dfcaf2c67dd0d55cba013dcac91ae444fd",
+                "request_id": 4,
+                "request_sha256": "54d7127f7ed5ca07913e9bd4545d310dd1375d3a63c1e918675c254309aa1daf"
+              }
+            ],
+            "pages": 4
+          },
+          "duration_ms": 859,
+          "id": "source-pages",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-source-range-6764-555-v2-20261116/keel-3040120-1794892277305255191-10"
+            },
+            "pid": 3041578,
+            "reply_sha256": "e32244cf98d0ede8a053fa5b9875d23cd6afd9957c9be85aad4042758600a8bb",
+            "request_sha256": "ec1af0aaef5fad258cd4c7d26e34a7cc664aa2f127f6e1f5b2633b1d6de0d07a",
+            "session": "source"
+          },
+          "duration_ms": 92,
+          "id": "start-mcp",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "is_error": false,
+            "pid": 3041578,
+            "reply_sha256": "702bc47d6feb65371325cd2a56e3c47216f8be32669c2022025b6c4c13f669d6",
+            "request_id": 1,
+            "request_sha256": "e680d19aa77724463a4831dc1cd7fc2b0f861407b94cb6e5b88ae85a9c2adc88",
+            "session": "source"
+          },
+          "duration_ms": 54,
+          "id": "first-page",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-source-range-6764-555-v2-20261116/keel-3040120-1794892277305255191-10"
+            },
+            "pid": 3041578,
+            "reaped": true,
+            "session": "source"
+          },
+          "duration_ms": 10,
+          "id": "stop-mcp",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "generation": 2
+          },
+          "duration_ms": 1697,
+          "id": "restart-owner",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-source-range-6764-555-v2-20261116/keel-3040120-1794892279159896366-12"
+            },
+            "pid": 3041651,
+            "reply_sha256": "e32244cf98d0ede8a053fa5b9875d23cd6afd9957c9be85aad4042758600a8bb",
+            "request_sha256": "ec1af0aaef5fad258cd4c7d26e34a7cc664aa2f127f6e1f5b2633b1d6de0d07a",
+            "session": "source"
+          },
+          "duration_ms": 94,
+          "id": "restart-mcp",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "is_error": false,
+            "pid": 3041651,
+            "reply_sha256": "98c6687ccc406c9a1c7ec9177ac93feebe038d899e17d2e6d21dcc71e4c0f7cf",
+            "request_id": 1,
+            "request_sha256": "813279e9b79c32c91c2e0e95cadbb1dfbc3e48eca39a3407d6a27e578ddb1b2f",
+            "session": "source"
+          },
+          "duration_ms": 61,
+          "id": "resume-after-restart",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "changed": [
+              "entry.ts"
+            ],
+            "removed": []
+          },
+          "duration_ms": 0,
+          "id": "same-size-edit",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "is_error": true,
+            "pid": 3041651,
+            "reply_sha256": "b9675e7aa33f804e64292ff83f4425f72fabf857b8ed1a72eaee0a700bfce3fe",
+            "request_id": 2,
+            "request_sha256": "347d444af0e08fab60ca2b8af10ff3f6cc36298e8d0a0a9f5bd6fe7c9cdbe61a",
+            "session": "source"
+          },
+          "duration_ms": 21,
+          "id": "reject-stale-source",
+          "status": "pass"
+        },
+        {
+          "detail": {
+            "isolation": {
+              "mode": "cgroup-v2",
+              "path": "/sys/fs/cgroup/nudox-keel-source-range-6764-555-v2-20261116/keel-3040120-1794892279159896366-12"
+            },
+            "pid": 3041651,
+            "reaped": true,
+            "session": "source"
+          },
+          "duration_ms": 10,
+          "id": "close-mcp",
+          "status": "pass"
+        }
+      ],
+      "world_isolation": {
+        "mode": "cgroup-v2",
+        "path": "/sys/fs/cgroup/nudox-keel-source-range-6764-555-v2-20261116/keel-3040120-1794892241043881877-0"
+      }
+    }
+  ],
+  "containment_policy": {
+    "required": true,
+    "root": {
+      "Unix": [
+        47,
+        115,
+        121,
+        115,
+        47,
+        102,
+        115,
+        47,
+        99,
+        103,
+        114,
+        111,
+        117,
+        112,
+        47,
+        110,
+        117,
+        100,
+        111,
+        120,
+        45,
+        107,
+        101,
+        101,
+        108,
+        45,
+        115,
+        111,
+        117,
+        114,
+        99,
+        101,
+        45,
+        114,
+        97,
+        110,
+        103,
+        101,
+        45,
+        54,
+        55,
+        54,
+        52,
+        45,
+        53,
+        53,
+        53,
+        45,
+        118,
+        50,
+        45,
+        50,
+        48,
+        50,
+        54,
+        49,
+        49,
+        49,
+        54
+      ]
+    }
+  },
+  "driver_sha256": "e5219d43396081413c5815b17862b0125a37fda4dfb50bcefedc647467ffdc5d",
+  "duration_ms": 38336,
+  "inventory": [
+    {
+      "definition_sha256": "7102771cd93d420ac6e5402d8ad971b889248acd065afcef3d543a7bfde65c71",
+      "id": "typescript-source-range-restart",
+      "inputs": {
+        "entry.ts": "3681c8cbe2fd3085d0f1ee4cc57d22c5477592c81aa800eb2a909123823c00ad",
+        "tsconfig.json": "cb53202a4f1549cf7bc82d3c82225c7995acbcd4d58dcc652ac9c0b31ea37d5b"
+      },
+      "language": "typescript",
+      "node": "engine.lower.typescript",
+      "requires": [],
+      "steps": [
+        {
+          "id": "index",
+          "kind": "index"
+        },
+        {
+          "id": "resolve-ferris",
+          "kind": "query"
+        },
+        {
+          "id": "source-pages",
+          "kind": "pages"
+        },
+        {
+          "id": "start-mcp",
+          "kind": "mcp-start"
+        },
+        {
+          "id": "first-page",
+          "kind": "mcp-call"
+        },
+        {
+          "id": "stop-mcp",
+          "kind": "mcp-stop"
+        },
+        {
+          "id": "restart-owner",
+          "kind": "restart"
+        },
+        {
+          "id": "restart-mcp",
+          "kind": "mcp-start"
+        },
+        {
+          "id": "resume-after-restart",
+          "kind": "mcp-call"
+        },
+        {
+          "id": "same-size-edit",
+          "kind": "write"
+        },
+        {
+          "id": "reject-stale-source",
+          "kind": "mcp-call"
+        },
+        {
+          "id": "close-mcp",
+          "kind": "mcp-stop"
+        }
+      ],
+      "world": "owner"
+    }
+  ],
+  "manifest_sha256": "7b3e300793b531fee174f94428ff41803a5ceaa1a545bf64b47b576e654e8273",
+  "order": null,
+  "schema": 1,
+  "status": "pass"
+}

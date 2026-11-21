@@ -26,8 +26,9 @@ PLATFORMS = {
     },
     "windows": {
         "target": "x86_64-pc-windows-gnu", "asset": "nudox-windows-x64.zip",
-        "host": "Windows", "qa_host": "os_version", "signed": True,
-        "notarized": False, "qa": COMMON_QA | {"desktop_launch", "install_uninstall", "authenticode"},
+        "host": "Windows", "qa_host": "os_version", "signed": False,
+        "notarized": False, "qa": COMMON_QA | {"desktop_launch", "install_uninstall"},
+        "support_files": ["Nudox/install-windows.ps1"],
     },
 }
 for key, profile in PLATFORMS.items():
@@ -43,3 +44,8 @@ for key, profile in PLATFORMS.items():
 for profile in PLATFORMS.values():
     profile["targets"] = {profile["target"]}
 PLATFORMS["windows"]["targets"].add("x86_64-pc-windows-msvc")
+# The Windows release includes the metrics sidecar and both identity-bound
+# language workers; their absence is not an acceptable partial candidate.
+PLATFORMS["windows"]["executables"].extend(
+    f"Nudox/bin/{name}.exe" for name in ("backend-metrics", "backend-stylo-worker", "backend-sqlite-worker")
+)

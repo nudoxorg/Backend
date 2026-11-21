@@ -2210,6 +2210,7 @@ fn compose_owner_timed(
     timing.begin(startup_timing::Phase::ViewRecovery);
     let view_path = config.workspace.join("view.journal");
     let view_journal = ViewJournal::open(&view_path).map_err(ProcessError::Profile)?;
+    let dependency_metrics = view_journal.metrics();
     let workspace_root = daemon.engine().daemon().owner().head().root();
     timing.workspace_root(workspace_root.to_bytes());
     let workspace_snapshot = daemon.engine().daemon().owner().snapshot();
@@ -2491,7 +2492,8 @@ fn compose_owner_timed(
             replication,
             semantic_ranges,
         )
-        .with_deferred_commands(deferred))
+        .with_deferred_commands(deferred)
+        .with_dependency_metrics(dependency_metrics))
 }
 
 /// The builtin owner's deferred commands: an `Add` of a local folder hands

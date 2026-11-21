@@ -5,7 +5,7 @@ resolver = "3"
 # A plain build produces the public applications. Workspace QA members enable
 # GPUI test-support/visual-harness features, which must not unify into product
 # binaries. Complete validation still uses `cargo test --workspace` explicitly.
-default-members = ["apps/cli", "apps/mcp", "apps/locald", "apps/desktop"]
+default-members = ["apps/cli", "apps/mcp", "apps/locald", "apps/metrics", "apps/desktop"]
 members = [
     "crates/*",
     "frontends/*",
@@ -28,6 +28,9 @@ exclude = [
     "frontends/postgres",
     "frontends/sqlite",
     "tools/package",
+    # Python/Nix services are not Cargo workspace members.
+    "tools/index-canary",
+    "tools/licensed-node-relay",
     "vendor/pyrefly_config_native_1_2",
     "vendor/stylo-native",
     "vendor/selectors-native",

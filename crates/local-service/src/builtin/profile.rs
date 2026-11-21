@@ -3426,7 +3426,7 @@ impl<'a> IntentDecoder<'a> {
             .saturating_mul(2)
             .saturating_add(2);
         let minimum_bytes_per_change = 34usize;
-        if (count == 0 && self.version < BuiltinIntent::STYLO_ANALYSIS_VERSION)
+        if (count == 0 && self.version == BuiltinIntent::NATIVE_FRONTIER_VERSION)
             || count > maximum
             || (matches!(self.version, BuiltinIntent::NATIVE_EVIDENCE_VERSION | BuiltinIntent::EMPTY_NATIVE_TS_VERSION) && count != 0)
             || count > self.bytes.len().saturating_sub(self.at) / minimum_bytes_per_change
@@ -9471,20 +9471,16 @@ mod persisted_intent_tests {
     }
 
     #[test]
-    fn native_frontier_empty_count_is_accepted_only_from_the_stylo_analysis_version() {
+    fn native_frontier_empty_count_is_rejected_only_in_its_initial_version() {
         let count = [0u8; 4];
+        let mut decoder = IntentDecoder {
+            bytes: &count,
+            at: 0,
+            version: BuiltinIntent::NATIVE_FRONTIER_VERSION,
+        };
+        assert!(decoder.native_frontier_changes().is_err());
         for version in [
-            BuiltinIntent::NATIVE_FRONTIER_VERSION,
             BuiltinIntent::CARGO_TARGET_VERSION,
-        ] {
-            let mut decoder = IntentDecoder {
-                bytes: &count,
-                at: 0,
-                version,
-            };
-            assert!(decoder.native_frontier_changes().is_err());
-        }
-        for version in [
             BuiltinIntent::STYLO_ANALYSIS_VERSION,
             BuiltinIntent::NATIVE_EVIDENCE_VERSION,
         ] {

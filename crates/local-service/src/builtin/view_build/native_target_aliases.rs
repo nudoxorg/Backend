@@ -2,7 +2,7 @@
 //! pathless declarations. Keep image-local cached projections unchanged and
 //! resolve their endpoint keys against the selected immutable publication.
 
-use super::{call_join, identity, source_availability::SelectedSourceArtifacts};
+use super::{call_join, identity, source_availability::{ObservedNativeArtifacts, SelectedSourceArtifacts}};
 use super::super::BuiltinModelError;
 use backend_engine::{Fragment, PackageKey, Row, RowId, SymbolKey};
 use backend_engine::application::DocumentationSession;
@@ -70,6 +70,21 @@ impl<T> NativePackageSelections<T> {
     }
 }
 
+/// Keep observed policy qualification while resolving exact native endpoints.
+pub(super) enum NativeAliasArtifacts {
+    Current(SelectedSourceArtifacts),
+    Observed(ObservedNativeArtifacts),
+}
+
+impl NativeAliasArtifacts {
+    fn images(&self) -> Box<dyn Iterator<Item = &backend_library::interface::SemanticImageSnapshot> + '_> {
+        match self {
+            Self::Current(value) => Box::new(value.images()),
+            Self::Observed(value) => Box::new(value.images()),
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct NativeTargetAliases {
     aliases: BTreeMap<SymbolKey, Option<SymbolKey>>,
@@ -79,7 +94,7 @@ impl NativeTargetAliases {
     pub(super) fn record_selected(
         &mut self,
         package: PackageKey,
-        selected: &[SelectedSourceArtifacts],
+        selected: &[NativeAliasArtifacts],
     ) -> Result<(), BuiltinModelError> {
         let snapshots = selected.iter().flat_map(|publication| publication.images()).collect::<Vec<_>>();
         let images = snapshots.iter().map(|image| image.reopen().map_err(|error|
@@ -93,9 +108,24 @@ impl NativeTargetAliases {
             return Ok(());
         }
         let views = images.iter().collect::<Vec<_>>();
-        let programs = selected.iter().filter_map(|publication| publication.program()).collect::<Vec<_>>();
-        let index = call_join::ProjectCallableIndex::build_from_views_with_programs(
-            &views, &BTreeMap::new(), &programs, !selected.iter().any(|publication| publication.has_program_manifest()),
+        let programs = selected.iter().filter_map(|publication| match publication {
+            NativeAliasArtifacts::Current(value) => value.program(),
+            NativeAliasArtifacts::Observed(_) => None,
+        }).collect::<Vec<_>>();
+        let observed = selected.iter().filter_map(|publication| match publication {
+            NativeAliasArtifacts::Observed(value) => value.program(),
+            NativeAliasArtifacts::Current(_) => None,
+        }).collect::<Vec<_>>();
+        let mut scopes = BTreeMap::new();
+        if !observed.is_empty() {
+            scopes.insert(backend_semantic::vocabulary::Language::TypeScript, call_join::RetargetingScope::SelectedArtifacts);
+        }
+        let index = call_join::ProjectCallableIndex::build_from_views_with_observed_programs(
+            &views, &scopes, &programs, &observed.iter().collect::<Vec<_>>(),
+            !selected.iter().any(|publication| match publication {
+                NativeAliasArtifacts::Current(value) => value.has_program_manifest(),
+                NativeAliasArtifacts::Observed(_) => true,
+            }),
         )?;
         let mut published = BTreeSet::new();
         for image in &images {

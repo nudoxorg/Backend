@@ -290,7 +290,7 @@ impl CapabilitySummary {
     pub fn render(&self) -> String {
         let mut parts = Vec::with_capacity(4);
         if !self.frontends.is_empty() {
-            parts.push(format!("frontends {}", self.frontends));
+            parts.push(format!("structural frontends {}", self.frontends));
         }
         if !self.oracles.is_empty() {
             // Oracles are optional compiler-backed checkers. Say so, and account for
@@ -647,6 +647,22 @@ mod source_selection_tests {
 #[cfg(test)]
 mod oracle_rollup_tests {
     use super::*;
+
+    #[test]
+    fn capability_summary_labels_structural_frontends_separately_from_checkers() {
+        let mut frontends = FamilyRollup::default();
+        frontends.observe(CapabilityLifecycle::Ready);
+        let mut oracles = FamilyRollup::default();
+        oracles.observe(CapabilityLifecycle::Unavailable(CapabilityUnavailable::NoManifest));
+        let summary = CapabilitySummary {
+            frontends,
+            oracles,
+            ..CapabilitySummary::default()
+        };
+        let line = summary.render();
+        assert!(line.contains("structural frontends 1/1 ready"), "{line}");
+        assert!(line.contains("oracles 0/1 ready"), "{line}");
+    }
 
     #[test]
     fn every_oracle_slot_that_is_not_ready_is_accounted_for() {

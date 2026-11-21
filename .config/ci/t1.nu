@@ -3,7 +3,7 @@
 # Invoked as `nu .config/ci/t1.nu` inside the lean
 # `.#smoke` dev shell; run the same command locally to get the same verdict.
 #
-# It builds the product binaries (CLI, MCP, desktop and their locald owner) for the host
+# It builds the product binaries (CLI, MCP, desktop, locald and HTTP metrics) for the host
 # target: no --all-targets, so none of the ~330 test binaries are linked, and
 # no foreign targets. Then .config/ci/smoke.py starts each one: CLI --help,
 # MCP initialize + tools/list on stdio, and the desktop drawing a first frame
@@ -16,6 +16,7 @@
 # and selects incremental/compiler-cache defaults.
 
 use lib.nu *
+use stage-keel-native.nu [prepare-keel-native verify-keel-native]
 
 const SURFACES = [
     {package: "backend-cli", bin: "backend-cli"}
@@ -24,13 +25,38 @@ const SURFACES = [
     # Not smoked here; published so T2 (.config/ci/surface.py) drives the
     # exact owner the CLI and MCP find beside them.
     {package: "backend-locald", bin: "backend-locald"}
+    {package: "backend-metrics", bin: "backend-metrics"}
 ]
 
 def main []: nothing -> nothing {
     let started = (date now)
+    let host = (
+        ^rustc -vV
+        | lines
+        | where {|line| $line | str starts-with "host: "}
+        | first
+        | str replace "host: " ""
+    )
+    let native_artifact_host = $host == "x86_64-unknown-linux-gnu"
+    let artifact_root = $env.CI_T1_ARTIFACT_ROOT? | default ""
+    if not $native_artifact_host and ($artifact_root | is-not-empty) {
+        error make {msg: $"T1 native artifact publication requires x86_64-unknown-linux-gnu, got ($host)"}
+    }
+    if $native_artifact_host {
+        # Record the actual tools used for native staging and closure export.
+        let tools = ci-step "t1" "native tool preflight" {||
+            run-bounded 10sec "sh" "-c" 'for tool in patchelf readelf nix-store; do path=$(command -v "$tool") || exit 1; printf "CI-T1-TOOL %s %s\n" "$tool" "$path"; done'
+        }
+        if not $tools {
+            finish-lane "t1" [$tools]
+            return
+        }
+    }
     let cache = $env.CI_T1_CACHE_ROOT? | default ""
     let target_dir = if ($cache | is-not-empty) {
-        $cache | path join "t1-target"
+        # The old t1-target may predate the managed Cargo ownership stamp.
+        # Start a fresh cache directory so the wrapper can claim it itself.
+        $cache | path join "t1-target-owned-v1"
     } else {
         $env.CARGO_TARGET_DIR? | default ($env.PWD | path join ".local/target")
     }
@@ -59,7 +85,18 @@ def main []: nothing -> nothing {
     }
     if ($cache | is-empty) { $env.CARGO_TARGET_DIR = $target_dir }
     print $"CI-TIMING lane=t1 step=cache-preparation seconds=(((date now) - $started) / 1sec | math round)"
-    let bin_dir = $target_dir | path join "debug"
+    let build_bin_dir = if $native_artifact_host {
+        $target_dir | path join $host "debug"
+    } else {
+        $target_dir | path join "debug"
+    }
+    let stage = if $native_artifact_host {
+        mkdir .local/t1-stages
+        ^mktemp -d --tmpdir=.local/t1-stages native.XXXXXX | str trim | path expand
+    } else { "" }
+    let bin_dir = if $native_artifact_host {
+        $stage | path join "bin"
+    } else { $build_bin_dir }
     let cargo = $env.BACKEND_PARALLEL_CARGO? | default "cargo"
 
     let capacity = ci-step "t1" "disk and memory preflight" {||
@@ -68,7 +105,7 @@ def main []: nothing -> nothing {
 
     let build_args = $SURFACES | each {|surface| ["--package" $surface.package "--bin" $surface.bin] } | flatten
     let built = if $capacity {
-        ci-step "t1" "build cli, mcp, desktop, locald" {||
+        ci-step "t1" "build cli, mcp, desktop, locald, metrics" {||
             # Fix the job count regardless of ambient shell settings. Four is
             # the managed wrapper's per-process bound; CI can lower it with
             # CI_T1_CARGO_JOBS. Two left a cold build at ~23 min on a 20-thread
@@ -85,12 +122,24 @@ def main []: nothing -> nothing {
             ))
             print $"T1 cargo jobs: ($jobs)"
             with-env {CARGO_BUILD_JOBS: $jobs, CARGO_LOG: $fingerprint_log} {
-                run-bounded 30min $cargo "build" "--locked" "--jobs" $jobs ...$build_args
+                if $native_artifact_host {
+                    let anchors = prepare-keel-native $host $target_dir ($jobs | into int) $stage
+                    with-env $anchors {
+                        run-bounded 60min $cargo "build" "--locked" "--target" $host "--jobs" $jobs ...$build_args
+                    }
+                    for surface in $SURFACES {
+                        ^cp ($build_bin_dir | path join $surface.bin) ($bin_dir | path join $surface.bin)
+                        ^chmod 700 ($bin_dir | path join $surface.bin)
+                    }
+                    verify-keel-native $host $target_dir $stage --without-keel
+                } else {
+                    run-bounded 30min $cargo "build" "--locked" "--jobs" $jobs ...$build_args
+                }
             }
         }
     } else { false }
     let smoke = if $built {
-        ["cli" "mcp" "gui"] | each {|surface|
+        ["cli" "mcp" "gui" "metrics"] | each {|surface|
             ci-step "t1" $"smoke ($surface)" {||
                 run-bounded 3min "python3" ($env.FILE_PWD | path join "smoke.py") $surface "--bin-dir" $bin_dir
             }
@@ -99,13 +148,12 @@ def main []: nothing -> nothing {
         print "== t1: build was not admitted or failed; skipping smoke checks =="
         []
     }
-    let artifact_root = $env.CI_T1_ARTIFACT_ROOT? | default ""
     # Publish successful builds even when a smoke is red. Artifact presence
     # enables T2 diagnosis; the smoke results remain part of finish-lane below.
     let published = if $built and ($artifact_root | is-not-empty) {
         ci-step "t1" "publish exact binaries and runtime" {||
             let sha = (^git rev-parse HEAD | str trim)
-            run-bounded 10min "python3" ($env.FILE_PWD | path join "t1_artifacts.py") "publish" "--bin-dir" $bin_dir "--output" ($artifact_root | path join $sha)
+            run-bounded 10min "python3" ($env.FILE_PWD | path join "t1_artifacts.py") "publish" "--stage" $stage "--output" ($artifact_root | path join $sha)
         }
     } else { true }
     # T2 is a separate verdict. Run `test.py integration --bin-dir ...`

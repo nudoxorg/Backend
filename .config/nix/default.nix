@@ -131,6 +131,7 @@ let
       toolchains = import ./toolchains.nix { inherit inputs pkgs system; };
       tools = import ./tools.nix {
         inherit pkgs toolchains workspaceRoot;
+        sourceRevision = inputs.self.rev or null;
         # The configuration-only consumer has no product flake input.
         keelHarness = if inputs ? keel then inputs.keel.packages.${system}.keel-nudox-harness else null;
       };
@@ -257,6 +258,9 @@ in
     )
     // value.pkgs.lib.optionalAttrs (value.tools.guiRuntime != null) {
       gui-runtime = value.tools.guiRuntime;
+    }
+    // value.pkgs.lib.optionalAttrs (value.tools.backendServiceRuntime != null) {
+      backend-service-runtime = value.tools.backendServiceRuntime;
     }
     // value.pkgs.lib.optionalAttrs (value.tools.roslynHelper != null) {
       roslyn-helper = value.tools.roslynHelper;

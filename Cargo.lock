@@ -1701,6 +1701,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "backend-metrics"
+version = "0.3.0"
+dependencies = [
+ "axum",
+ "backend-client",
+ "hyper",
+ "hyper-util",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "backend-performance-tests"
 version = "0.3.0"
 dependencies = [

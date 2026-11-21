@@ -1338,6 +1338,35 @@ class SnapshotContinuationTests(unittest.TestCase):
             surface.require_mcp_wire_budget(bad, size)
         self.assertEqual(one["mcp"]["calls"][0]["reply"]["_meta"]["backend/wireBudget"]["limitBytes"], 49152)
 
+    def test_snapshot_tolerates_only_accounted_clipping_of_a_proven_outline_preview(self):
+        import json
+
+        def fixture(tail="", *, token="mcp3-<live-validated>", root="Task", size_error=0, clipped=True):
+            text = "# Tasks\n▣ Task" + tail
+            if clipped:
+                text += surface._MCP_SHORTENED_PREVIEW
+            size = 1024 + len(json.dumps(text, ensure_ascii=False).encode()) + size_error
+            return {"mcp": {"calls": [{"call": {"tool": "backend.outline"}, "reply": {
+                "isError": False,
+                "content": [{"type": "text", "text": text}],
+                "structuredContent": {"answer": "outline", "roots": [{"name": root}], "nextCursor": token},
+                "_meta": {"backend/wireBudget": {"bytesPerToken": 4,
+                    "normalizedFrameBytesExcludingCounters": size,
+                    "normalizedEstimatedTokensExcludingCounters": (size + 3) // 4}},
+            }}]}}
+
+        reviewed = fixture(" › Task")
+        actual = fixture()
+        self.assertNotEqual(reviewed, actual)
+        old, new = surface.snapshot_comparison_answers(reviewed, actual)
+        self.assertEqual(old, new)
+        self.assertNotEqual(reviewed, actual, "keep the original evidence")
+        for changed in (fixture(" different"), fixture(root="Other"), fixture(size_error=1),
+                        fixture(token="mcp3-live"), fixture(clipped=False), fixture("x" * 80)):
+            with self.subTest(changed=changed):
+                old, new = surface.snapshot_comparison_answers(reviewed, changed)
+                self.assertNotEqual(old, new)
+
     def test_same_cursor_from_distinct_mcp_answers_requires_each_answer_proof(self):
         token = "mcp2-reused-across-answers"
         reply = {"structuredContent": self.page(token)}
@@ -1559,6 +1588,22 @@ class SnapshotContinuationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "repeated search cursor"):
             surface.walk_record_pages(first, lambda _current, token: {
                 "pc4-a": second, "pc4-b": cycle}[token])
+
+    def test_selected_symbol_ids_use_canonical_hex_across_wire_spellings(self):
+        symbol = hashlib.sha256(b"Digest").digest()
+
+        def identity(value):
+            return {"semantic_data": {"kind": "selected-symbol-id", "value": value}}
+
+        for value in (symbol.hex(), list(symbol)):
+            self.assertEqual(surface._exact_symbol_id(identity(value)), symbol.hex())
+        for value in (symbol.hex()[:-1], "g" * 64, "0" * 64, [True] * 32, [0] * 32):
+            with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, "malformed selected-symbol ID"):
+                surface._exact_symbol_id(identity(value))
+        self.assertEqual(surface.canonical_snapshot_symbols([identity(list(symbol))]),
+                         surface.canonical_snapshot_symbols([identity(symbol.hex())]))
+        self.assertNotEqual(surface.canonical_snapshot_symbols([identity(list(symbol))]),
+                            surface.canonical_snapshot_symbols([identity("01" * 32)]))
 
 
 class InteractiveMcpTests(unittest.TestCase):
@@ -2071,6 +2116,34 @@ for line in sys.stdin:
             self.assertEqual(len(answer["calls"]), 1)
             self.assertEqual(answer["calls"][0]["reply"]["structuredContent"]["nextCursor"], "mcp2-issued")
 
+    def test_live_mcp_search_exhausts_the_session_owned_cursor(self):
+        from unittest.mock import patch
+
+        records = [{"identity": {"name": name}} for name in ("first", "last")]
+        reference = {"answer": "records", "query": "Digest", "coverage": [], "readiness": "ready",
+                     "records": records, "more": False}
+        request = {"tool": "backend.search", "arguments": {"query": "Digest", "limit": 1}}
+        initial = dict(reference, records=records[:1], more=True, nextCursor="mcp2-issued")
+        continuation = {"tool": "backend.search", "arguments": {
+            "query": "Digest", "limit": 1, "cursor": "mcp2-issued"}}
+
+        def session(_owner, _project, calls, timeout, on_reply):
+            self.assertEqual(calls, [request])
+            self.assertEqual(timeout, 30)
+
+            def exchange(call):
+                self.assertEqual(call, continuation)
+                return {"structuredContent": dict(reference, records=records[1:])}
+
+            reply = {"structuredContent": initial}
+            on_reply(request, reply, exchange, None)
+            return {"exit": 0, "calls": [{"call": request, "reply": reply}]}, 0.5
+
+        with patch.object(surface, "run_mcp_interactive", side_effect=session) as interactive, \
+                patch.object(surface, "run_mcp", side_effect=AssertionError("unexpected new session")):
+            self.assertEqual(surface._walk_live_mcp_search(None, Path("/fixture"), "Digest", reference), (2, 0.5))
+            interactive.assert_called_once()
+
 
 class ParallelCaseTests(unittest.TestCase):
     def invoke(self, failure=None, duplicate=False, wait_for_fast_verdict=False):
@@ -2433,23 +2506,13 @@ class CIEvidenceTests(unittest.TestCase):
         import sys
         import tempfile
         from unittest.mock import patch
-        import t1_artifacts
+        from test_t1_artifacts import synthetic_admission_bundle
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             artifact = root / "artifact"
-            (artifact / "bin").mkdir(parents=True)
-            payloads = [*("bin/" + name for name in t1_artifacts.BINARIES), "smoke.py", "runtime.nar"]
-            for name in payloads:
-                (artifact / name).write_bytes(b"fixture")
             sha = "a" * 40
-            store = "/nix/store/" + "b" * 32 + "-runtime"
-            manifest = {"schema": 1, "source_sha": sha, "target": t1_artifacts.TARGET,
-                        "toolchain": "fixture", "runtime_roots": [store],
-                        "python": store + "/bin/python3", "runtime_env": {"PATH": store + "/bin"},
-                        "files": [{"path": name, "bytes": 7, "sha256": hashlib.sha256(b"fixture").hexdigest()}
-                                  for name in payloads]}
-            (artifact / "manifest.json").write_text(json.dumps(manifest))
+            synthetic_admission_bundle(artifact, sha)
             if damage:
                 (artifact / "bin/backend-cli").write_bytes(b"tampered")
             corpus = root / "surface"
@@ -2471,7 +2534,8 @@ class CIEvidenceTests(unittest.TestCase):
             args = ["surface.py", "--bin-dir", str(artifact / "bin"), "--ci-report", str(evidence),
                     "--source-sha", sha, "--report", str(legacy), "--jobs", str(jobs)]
             stdout = io.StringIO()
-            with patch.object(surface, "SURFACE", corpus), patch.object(surface, "SCRATCH", root / "scratch"), patch.object(surface, "run_case", side_effect=run), patch.object(surface.subprocess, "check_output", side_effect=[head or sha, " M dirty.py" if dirty else ""]), patch.object(sys, "argv", args), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
+            # This fixture admits static bytes; it imports no Nix runtime writes.
+            with patch.object(surface, "SURFACE", corpus), patch.object(surface, "SCRATCH", root / "scratch"), patch.object(surface, "run_case", side_effect=run), patch.object(surface, "drain_task_volume"), patch.object(surface.subprocess, "check_output", side_effect=[head or sha, " M dirty.py" if dirty else ""]), patch.object(sys, "argv", args), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
                 try:
                     code = surface.main()
                 except SystemExit as error:
@@ -2805,6 +2869,8 @@ for name in cases:
 surface.SURFACE = corpus
 surface.SCRATCH = root / "scratch"
 surface.evidence_artifact = lambda _bin_dir, _sha: "b" * 64
+# No runtime was imported by this signal-only child fixture.
+surface.drain_task_volume = lambda: None
 
 def run_case(case, _bin_dir):
     name = case["name"]

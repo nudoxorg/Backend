@@ -374,7 +374,10 @@ fn initialize_default_state(state: &ApplicationStateRoot, data: &Path) -> std::i
                 "default project state has no name",
             )
         })?;
-    if !same_path_identity(&normalize_identity(&projects.path().join(name)), data) {
+    if !same_path_identity(
+        &normalize_identity(&projects.path().join(name)),
+        &normalize_identity(data),
+    ) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "default project state is outside the captured application directory",

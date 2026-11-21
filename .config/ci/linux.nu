@@ -281,7 +281,7 @@ def main [
             with-env $anchors {
                 run-bounded 75min "cargo" "build" "--locked" ...(focused-package-args) "--bins" "--target" $host "--jobs" ($test_jobs | into string)
             }
-            for name in ["backend-locald" "backend-cli" "backend-mcp" "backend-desktop"] {
+            for name in ["backend-locald" "backend-cli" "backend-mcp" "backend-desktop" "backend-metrics"] {
                 ^cp ($build_bin_dir | path join $name) ($bin_dir | path join $name)
                 ^chmod 700 ($bin_dir | path join $name)
             }

@@ -987,6 +987,25 @@ impl DirectoryCapability {
             .map_err(DirectoryRenameError::into_io_error)
     }
 
+    /// Creates a private file whose name may be replaced or unlinked while
+    /// the returned descriptor continues to identify the created object.
+    ///
+    /// # Errors
+    /// Returns an error if the capability is not writable, the name is not a
+    /// valid component, or the exclusive private creation fails.
+    pub fn create_file_exclusive_for_replacement(&self, name: &str) -> io::Result<File> {
+        self.ensure_writable()?;
+        validate_component(name)?;
+        #[cfg(windows)]
+        {
+            return self.handle.create_file_exclusive_for_replacement(&[name]);
+        }
+        #[cfg(not(windows))]
+        {
+            self.create_file_exclusive(name)
+        }
+    }
+
     /// Atomically renames one direct child and preserves whether a subsequent
     /// directory-flush failure happened before or after the namespace commit.
     pub fn rename_with_outcome(
@@ -2804,6 +2823,9 @@ mod windows_tests {
             .expect("receipt removes the held created child");
         assert!(!path.join("new-child").exists());
 
+        // The receipt retains the parent handle; release it before removing
+        // the fixture directory on Windows.
+        drop(directory);
         drop(parent);
         fs::remove_dir_all(path).expect("remove fixture");
     }

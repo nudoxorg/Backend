@@ -1,0 +1,20 @@
+[package]
+name = "backend-metrics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+axum.workspace = true
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+backend-client = { path = "../../crates/client" }
+tokio = { workspace = true, features = ["net", "io-util", "signal"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

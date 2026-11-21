@@ -108,6 +108,7 @@ struct JournalGeneration {
 #[derive(Debug)]
 pub(super) struct ViewJournal {
     path: PathBuf,
+    metrics: crate::dependency_metrics::Metrics,
     faults: Arc<Faults>,
     generation: Cell<Option<JournalGeneration>>,
 }
@@ -124,9 +125,14 @@ impl ViewJournal {
         }
         Ok(Self {
             path,
+            metrics: crate::dependency_metrics::Metrics::default(),
             faults,
             generation: Cell::new(None),
         })
+    }
+
+    pub(super) fn metrics(&self) -> crate::dependency_metrics::Metrics {
+        self.metrics.clone()
     }
 
     fn load_scoped(
@@ -272,7 +278,7 @@ impl ViewJournal {
         prior_workspace: Option<WorkspaceRoot>,
         capability: &CoverageCapability,
     ) -> Result<ViewJournalRecovery, String> {
-        self.load_scoped(capability, workspace_root, prior_workspace)
+        self.metrics.observe(0, || self.load_scoped(capability, workspace_root, prior_workspace))
     }
 
     /// How this journal shows that another build wrote it, when one did.
@@ -398,6 +404,10 @@ impl ViewJournal {
     }
 
     fn append(&self, kind: u8, payload: &[u8]) -> Result<(), String> {
+        self.metrics.observe(1, || self.append_inner(kind, payload))
+    }
+
+    fn append_inner(&self, kind: u8, payload: &[u8]) -> Result<(), String> {
         if payload.len() > MAX_RECORD_BYTES {
             return Err("view journal record exceeds bound".to_owned());
         }
@@ -446,6 +456,10 @@ impl ViewJournal {
     }
 
     fn replace_with_snapshot(&self, payload: &[u8]) -> Result<(), String> {
+        self.metrics.observe(2, || self.replace_with_snapshot_inner(payload))
+    }
+
+    fn replace_with_snapshot_inner(&self, payload: &[u8]) -> Result<(), String> {
         let (kind, payload) = snapshot_frame(payload)?;
         let frame_length = u64::try_from(HEADER_BYTES)
             .ok()

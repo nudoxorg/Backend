@@ -5,6 +5,8 @@
 //! bounds, and reply admission path.
 #![forbid(unsafe_code)]
 
+/// Typed read-only dependency metrics protocol.
+pub mod dependency_metrics;
 mod backoff;
 #[cfg(any(unix, windows))]
 mod deferred_command;
