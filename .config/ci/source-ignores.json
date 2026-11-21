@@ -1817,17 +1817,6 @@
       "review": "docs/testing/quarantine.md#renewal-2026-11-13",
       "reviewed": "2026-11-13",
       "expires": "2026-12-13"
-    },
-    {
-      "filter": "source:crates/engine/src/application/runtime.rs::rust_target_selector_admission_tests::captured_csharp_partial_project_claims_only_the_files_that_compiled",
-      "attribute": "#[ignore = \"requires explicitly configured private .NET and Roslyn helper\"]",
-      "line": 5266,
-      "category": "managed-native-prerequisites",
-      "reason": "Existing canonical C# partial-project control requires explicit .NET and Roslyn helpers. C# is paused behind paused-frontends; no native execution or replacement integration receipt is claimed.",
-      "owner": "NuDox Backend maintainers",
-      "review": "docs/testing/quarantine.md#paused-frontend-inventory-2026-11-16",
-      "reviewed": "2026-11-16",
-      "expires": "2026-12-13"
     }
   ]
 }
