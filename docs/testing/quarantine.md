@@ -167,16 +167,17 @@ ownership-only entries in the managed-native intake, in the format of the
 2026-10-16 entries. No Rust source changed, no test was re-enabled and none is
 claimed to pass; they run only in an explicit managed run with their prerequisites.
 
-## Paused frontend inventory 2026-11-16
+## Managed C# test 2026-11-20
 
-The focused release check found one existing canonical ignore missing from the
-source registry: `captured_csharp_partial_project_claims_only_the_files_that_compiled`
-in the engine runtime's target-selector admission controls. Its source ignore
-already required explicit .NET and Roslyn helper paths. It is now also compiled
-only under the archived `paused-frontends` feature.
+The focused release compiles the partial-project evidence test under the
+`paused-frontends` feature. The test checks which files a partially successful
+.NET project claims. Set `NUDOX_TEST_DOTNET` and `NUDOX_TEST_CSHARP_HELPER` to the
+admitted runtime and Roslyn helper, then run the managed control explicitly.
 
-Record this coverage gap under the Backend maintainers through December13,
-aligned with the existing intake deadline. No ignore was added, no runtime
-selection changed, and no C# execution or replacement integration pass is claimed.
-The focused release does not support C#; reopening that support requires managed
-native evidence and review of this archived control.
+```sh
+cargo test --locked -p backend-engine --features paused-frontends \
+  captured_csharp_partial_project_claims_only_the_files_that_compiled -- --ignored
+```
+
+The Backend maintainers will review this archived control by 2026-12-13.
+C# release coverage still requires a managed run with these prerequisites.

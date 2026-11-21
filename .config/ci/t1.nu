@@ -54,7 +54,9 @@ def main []: nothing -> nothing {
     }
     let cache = $env.CI_T1_CACHE_ROOT? | default ""
     let target_dir = if ($cache | is-not-empty) {
-        $cache | path join "t1-target"
+        # The old t1-target may predate the managed Cargo ownership stamp.
+        # Start a fresh cache directory so the wrapper can claim it itself.
+        $cache | path join "t1-target-owned-v1"
     } else {
         $env.CARGO_TARGET_DIR? | default ($env.PWD | path join ".local/target")
     }

@@ -2284,8 +2284,10 @@ struct FrontendSet {
     values: [ProductFrontend; 3],
 }
 
-// Readiness must never construct a syntax parser. Legacy indexing may fill
-// this registry; capability reporting only observes what was already admitted.
+// The structural registry admits the linked syntax baselines once per process.
+// It is initialized by either indexing or the first readiness read, so status
+// reports the same linked frontends whether or not a legacy scan ran first.
+// Construction only admits grammar metadata; it never parses project source.
 static FRONTENDS: OnceLock<FrontendSet> = OnceLock::new();
 
 impl FrontendSet {
@@ -2344,7 +2346,9 @@ pub(super) fn semantic_capabilities(
     baseline: &backend_engine::CapabilityInventory,
     compiler: &backend_engine::application::LocalCompilerClient,
 ) -> Result<backend_engine::CapabilityInventory, String> {
-    let frontends = FRONTENDS.get();
+    // Readiness admits the linked structural baselines itself, so the count is
+    // stable whether or not a scan already touched this process.
+    let frontends = frontends().ok();
     let target = backend_engine::CapabilityTarget::Native {
         os: native_os(),
         architecture: native_architecture(),
@@ -12633,9 +12637,25 @@ pub(super) enum SqlCaptureFailure {
     NoConfiguration,
     Unavailable,
     Invalid,
+    /// A settings file parsed but failed validation; carries the exact reason
+    /// so the operator sees which rule the file broke.
+    InvalidSettings(&'static str),
     Limit,
     Stale,
     Cancelled,
+}
+impl std::fmt::Display for SqlCaptureFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoConfiguration => formatter.write_str("no SQL configuration"),
+            Self::Unavailable => formatter.write_str("SQL sources are unavailable"),
+            Self::Invalid => formatter.write_str("invalid SQL source selection"),
+            Self::InvalidSettings(reason) => formatter.write_str(reason),
+            Self::Limit => formatter.write_str("SQL source limit"),
+            Self::Stale => formatter.write_str("stale SQL source"),
+            Self::Cancelled => formatter.write_str("SQL source capture cancelled"),
+        }
+    }
 }
 impl SqlProjectCapture {
     /// Actual checked settings, still requiring owner selection admission.
@@ -12924,7 +12944,7 @@ pub(super) fn capture_sql_project(walk: &SqlWalkEvidence, fence: &CompilerRevisi
         // that every named file is present and unignored.
         if !walk.inventory_complete { return Err(SqlCaptureFailure::Unavailable); }
         let settings = backend_library::sql_workspace::ParsedSqlProjectSettings::parse(&config)
-            .map_err(|_| SqlCaptureFailure::Invalid)?;
+            .map_err(SqlCaptureFailure::InvalidSettings)?;
         for selected in &settings.settings().sources {
             if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
             let path = Path::new(&selected.path);

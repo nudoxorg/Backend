@@ -1381,3 +1381,316 @@ fn gym_package_profile_names_the_sql_analysis_instead_of_a_missing_capture() {
         "{compiler_outcomes:?}"
     );
 }
+
+/// N57: a workspace which already holds a selected SQL analysis and its
+/// owner-sealed receipt index requires receipt custody for every later
+/// transaction. An owner restart must close the `Pending` capture it left
+/// behind with the owner's own authority: the publication worker is only one
+/// holder of that authority, and no SQL worker is involved in recovery.
+///
+/// Returns the cold-reopened fixture, the package whose capture was stranded,
+/// its label, the exact stranded capture key, and the SQL row count that
+/// recovery must not disturb.
+fn workspace_holding_sql_with_a_stranded_capture() -> (
+    AdapterFixture,
+    backend_engine::PackageKey,
+    String,
+    ProductSemanticPublicationKey,
+    usize,
+) {
+    let workers = admitted_workers(Some(frontend_worker("sqlite", "sqlite-worker")), None);
+    let mut fixture = AdapterFixture::new();
+    let (project, project_label) = fixture.add_target();
+    for (relative, bytes) in sqlite_files() {
+        let path = Path::new(&project_label).join(&relative);
+        fs::create_dir_all(path.parent().expect("SQL file parent")).expect("SQL directory");
+        fs::write(&path, bytes).expect("real SQL input");
+    }
+    fs::write(Path::new(&project_label).join("notes.txt"), "notes\n").expect("structural input");
+
+    // `add_target()` always returns the same directory, so the stranded project
+    // needs its own canonical root. Otherwise its Python file would enter the
+    // SQL project's initial scan and remove would delete the SQL owner.
+    let stranded_root = fixture.root.0.join("workspace").join("stranded-target");
+    fs::create_dir_all(&stranded_root).expect("stranded directory");
+    let stranded_root = stranded_root.canonicalize().expect("physical stranded dir");
+    let stranded_label = stranded_root.to_str().expect("UTF-8 stranded path").to_owned();
+    let stranded = backend_engine::package_key(&stranded_label);
+    assert_ne!(project, stranded, "the stranded project is not the SQL owner");
+    fs::write(
+        stranded_root.join("stranded.py"),
+        "def stranded_name():\n    return 1\n",
+    )
+    .expect("stranded source");
+
+    {
+        let (adapter, daemon) = fixture.parts();
+        adapter.sql_test_workers = Some(workers);
+        // The synchronous add route is the cheapest deterministic way to
+        // publish a real SQL selection together with its receipt index.
+        let add = BuiltinIntent::add(project, project_label.clone()).expect("target source scope");
+        crate::builtin::commands::commit_builtin_intent(daemon, 0xd001, &add)
+            .expect("admit SQL target");
+        adapter
+            .publish_view(daemon, Some(&add))
+            .expect("publish SQL target");
+        adapter
+            .execute(daemon, &add_body(0xd002, project, &project_label))
+            .expect("synchronous add of a project with SQL");
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        assert!(
+            backend_engine::builtin::sql_analysis_relation(&snapshot)
+                .expect("SQL relation admission")
+                .is_some(),
+            "the SQL selection is durable"
+        );
+        assert!(
+            backend_engine::builtin::sql_receipt_index_relation(&snapshot)
+                .expect("SQL receipt index admission")
+                .is_some(),
+            "the SQL receipt index is durable"
+        );
+
+        // A second project reaches its committed Pending capture and then the
+        // owner is dropped, exactly as a restart mid-index leaves it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        assert!(matches!(
+            adapter.start_index_operation(
+                daemon,
+                backend_library::IndexOperationKey::from_bytes([0x71; 32]).expect("operation"),
+                backend_library::PackageReference::parse(stranded_label.clone())
+                    .expect("reference"),
+                backend_library::CompileExecutionIntent::Interactive,
+                0xd003,
+            ),
+            Ok(Executed::Reply(_))
+        ));
+        while !adapter
+            .indexing
+            .as_ref()
+            .is_some_and(|job| matches!(job.work, IndexJobWork::Compiling { .. }))
+        {
+            adapter.poll_deferred(daemon);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "reach committed Pending capture"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    fixture = fixture.reopen();
+    let (adapter, daemon) = fixture.parts();
+    let _ = adapter;
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let relation = backend_engine::builtin::semantic_capture_relation(&snapshot)
+        .expect("capture relation")
+        .expect("capture");
+    let reference =
+        backend_library::PackageReference::parse(stranded_label.clone()).expect("reference");
+    let page = relation
+        .page_from(
+            &ProductSemanticPublicationKey::package_lower_bound(reference),
+            8,
+        )
+        .expect("capture page");
+    let (capture_key, record) = page
+        .entries()
+        .iter()
+        .find(|(key, _)| key.package().as_str() == stranded_label.as_str())
+        .expect("stranded capture marker");
+    assert!(
+        matches!(
+            record.outcome(),
+            backend_engine::builtin::ProductSemanticCaptureOutcome::Pending { .. }
+        ),
+        "the dead owner left the stranded capture Pending"
+    );
+    let capture_key = capture_key.clone();
+    let sql_rows = crate::builtin::sql_journey_support::count_rows(&snapshot)
+        .expect("SQL rows")
+        .0;
+    assert!(sql_rows > 0, "the SQL base survived the restart");
+    (
+        fixture,
+        stranded,
+        stranded_label,
+        capture_key,
+        sql_rows,
+    )
+}
+
+#[test]
+fn startup_reconciliation_closes_a_pending_capture_in_a_workspace_holding_sql_receipts() {
+    let (mut fixture, _stranded, _label, capture_key, sql_rows) =
+        workspace_holding_sql_with_a_stranded_capture();
+    {
+        let (adapter, daemon) = fixture.parts();
+        let report = adapter.reconcile_interrupted_captures(daemon);
+        assert_eq!(report.pending_packages, 1);
+        assert_eq!(
+            report.refused_packages, 0,
+            "the owner's receipt authority must close the marker without a publication worker"
+        );
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        let relation = backend_engine::builtin::semantic_capture_relation(&snapshot)
+            .expect("capture relation")
+            .expect("capture");
+        let closed = relation
+            .lookup(&capture_key)
+            .expect("capture lookup")
+            .expect("retained marker");
+        assert!(
+            matches!(
+                closed.outcome(),
+                backend_engine::builtin::ProductSemanticCaptureOutcome::Unavailable {
+                    reason: backend_engine::builtin::SemanticUnavailableReason::Rejected
+                }
+            ),
+            "the stranded capture reached its exact terminal"
+        );
+        assert_eq!(
+            crate::builtin::sql_journey_support::count_rows(&snapshot)
+                .expect("SQL rows")
+                .0,
+            sql_rows,
+            "recovery preserves the selected SQL receipts"
+        );
+        assert!(
+            backend_engine::builtin::sql_receipt_index_relation(&snapshot)
+                .expect("SQL receipt index admission")
+                .is_some()
+        );
+    }
+    fixture = fixture.reopen();
+    {
+        let (_, daemon) = fixture.parts();
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        let relation = backend_engine::builtin::semantic_capture_relation(&snapshot)
+            .expect("capture relation")
+            .expect("capture");
+        let durable = relation
+            .lookup(&capture_key)
+            .expect("capture lookup")
+            .expect("marker survives another restart");
+        assert!(
+            !matches!(
+                durable.outcome(),
+                backend_engine::builtin::ProductSemanticCaptureOutcome::Pending { .. }
+            ),
+            "the closure is durable across another restart"
+        );
+        assert_eq!(
+            crate::builtin::sql_journey_support::count_rows(&snapshot)
+                .expect("SQL rows")
+                .0,
+            sql_rows
+        );
+    }
+}
+
+#[test]
+fn a_normal_add_recovers_a_stranded_capture_in_a_workspace_holding_sql_receipts() {
+    let (mut fixture, stranded, label, _capture_key, sql_rows) =
+        workspace_holding_sql_with_a_stranded_capture();
+    {
+        let (adapter, daemon) = fixture.parts();
+        let started = adapter
+            .execute_or_defer(daemon, &add_body(0xd101, stranded, &label), 0xd201)
+            .expect("a normal add must not be stranded by receipt custody");
+        assert!(matches!(started, Executed::Deferred));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        while adapter.indexing.is_some() {
+            adapter.poll_deferred(daemon);
+            assert!(std::time::Instant::now() < deadline, "terminal add");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        // Recovery terminalized the stranded operation before starting the new
+        // one; the new project row alone does not prove that.
+        let old_operation =
+            backend_library::IndexOperationKey::from_bytes([0x71; 32]).expect("operation");
+        let Some(JournalEntry::Retained(entry)) = adapter
+            .index_operations
+            .entry(old_operation)
+            .expect("operation journal")
+        else {
+            panic!("the stranded operation remains retained");
+        };
+        assert!(matches!(
+            entry.state,
+            StoredOperationState::Failed {
+                reason: backend_library::IndexOperationFailureReason::WorkerFailed,
+                ..
+            }
+        ));
+        assert!(project_is_admitted(daemon, stranded));
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        assert_eq!(
+            crate::builtin::sql_journey_support::count_rows(&snapshot)
+                .expect("SQL rows")
+                .0,
+            sql_rows
+        );
+        assert!(
+            backend_engine::builtin::sql_receipt_index_relation(&snapshot)
+                .expect("SQL receipt index admission")
+                .is_some()
+        );
+    }
+    fixture = fixture.reopen();
+    {
+        let (_, daemon) = fixture.parts();
+        assert_eq!(
+            crate::builtin::sql_journey_support::count_rows(
+                &daemon.engine().daemon().owner().snapshot()
+            )
+            .expect("SQL rows")
+            .0,
+            sql_rows
+        );
+    }
+}
+
+#[test]
+fn a_normal_remove_recovers_a_stranded_capture_in_a_workspace_holding_sql_receipts() {
+    let (mut fixture, stranded, label, _capture_key, sql_rows) =
+        workspace_holding_sql_with_a_stranded_capture();
+    {
+        let (adapter, daemon) = fixture.parts();
+        assert!(
+            matches!(
+                adapter
+                    .execute_or_defer(daemon, &remove_body(0xd301, stranded, &label), 0xd401)
+                    .expect("a normal remove must not be stranded by receipt custody"),
+                Executed::Reply(_)
+            ),
+            "the stranded project is deleted"
+        );
+        assert!(!project_is_admitted(daemon, stranded));
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        assert_eq!(
+            crate::builtin::sql_journey_support::count_rows(&snapshot)
+                .expect("SQL rows")
+                .0,
+            sql_rows,
+            "removing the stranded project leaves the sibling SQL receipts intact"
+        );
+        assert!(
+            backend_engine::builtin::sql_receipt_index_relation(&snapshot)
+                .expect("SQL receipt index admission")
+                .is_some()
+        );
+    }
+    fixture = fixture.reopen();
+    {
+        let (_, daemon) = fixture.parts();
+        assert_eq!(
+            crate::builtin::sql_journey_support::count_rows(
+                &daemon.engine().daemon().owner().snapshot()
+            )
+            .expect("SQL rows")
+            .0,
+            sql_rows
+        );
+    }
+}

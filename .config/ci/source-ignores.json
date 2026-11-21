@@ -1511,6 +1511,17 @@
       "expires": "2026-12-13"
     },
     {
+      "filter": "source:crates/engine/src/application/runtime.rs::rust_target_selector_admission_tests::captured_csharp_partial_project_claims_only_the_files_that_compiled",
+      "attribute": "#[ignore = \"requires explicitly configured private .NET and Roslyn helper\"]",
+      "line": 5266,
+      "category": "managed-native-prerequisites",
+      "reason": "Requires an admitted private .NET runtime and Roslyn helper. The archived C# control compiles with paused-frontends.",
+      "owner": "NuDox Backend maintainers",
+      "review": "docs/testing/quarantine.md#managed-csharp-test-2026-11-20",
+      "reviewed": "2026-11-20",
+      "expires": "2026-12-13"
+    },
+    {
       "filter": "source:crates/engine/src/driver/lower/typescript.rs::lane_tests::native_tsz_configured_lock_verified_react_children",
       "attribute": "#[ignore = \"requires isolated lock-verified React and TypeScript project fixture\"]",
       "line": 18070,

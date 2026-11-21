@@ -1021,7 +1021,7 @@ def run_mcp(owner: Owner, project: Path, calls: list[dict], timeout: float) -> t
 
 def run_mcp_interactive(owner: Owner, project: Path, calls: list[dict], timeout: float, on_reply,
                        absolute_deadline: float | None = None) -> tuple[dict, float]:
-    """Keep session-bound outline authority while dynamically consuming its token."""
+    """Keep session-bound continuation authority while consuming a token."""
     import selectors
     import tempfile
 
@@ -1442,27 +1442,9 @@ def run_live_contracts(owner: Owner, project: Path, config: dict, published_root
     times["CLI search continuation"] = round(time.monotonic() - started, 3)
     print(f"surface-contract: CLI search exhausted {count} pages in rank order, no lost/duplicate rows", flush=True)
 
-    def prove_mcp_search(call, reply, exchange, _readiness_exchange):
-        first = _mcp_structured(reply, "MCP search initial page")
-        current = first
-        def mcp_page(cursor):
-            nonlocal current
-            if cursor is None:
-                return current
-            continuation = mcp_continuation_call(call, current)
-            if continuation["arguments"].get("cursor") != cursor:
-                raise RuntimeError("MCP search continuation changed its offered cursor")
-            current = _mcp_structured(exchange(continuation, 10), "MCP search continuation")
-            return current
-        count, _ = walk_search_pages(reference, mcp_page)
-        print(f"surface-contract: MCP search exhausted {count} pages in rank order, no lost/duplicate rows", flush=True)
-
-    session, seconds = run_mcp_interactive(owner, project, [{"tool": "backend.search", "arguments": {
-        "query": text, "limit": 1,
-    }}], 30, prove_mcp_search)
-    if session["exit"] != 0 or len(session["calls"]) != 1:
-        raise RuntimeError("MCP search continuation: session failed")
+    count, seconds = _walk_live_mcp_search(owner, project, text, reference)
     times["MCP search continuation"] = round(seconds, 3)
+    print(f"surface-contract: MCP search exhausted {count} pages in rank order, no lost/duplicate rows", flush=True)
 
     refused_cli, seconds = run_cli(owner, project, ["--limit", "1", "search", text, "--cursor", "pc1-not-hex"], 10)
     times["malformed CLI cursor"] = round(seconds, 3)
@@ -1566,17 +1548,99 @@ def _exact_symbol_id(dto: dict) -> str | None:
     proof = dto.get("semantic_data")
     if not isinstance(proof, dict) or proof.get("kind") != "selected-symbol-id":
         return None
-    value = proof.get("value")
-    # Current product DTOs encode the complete 32-byte key as canonical hex.
-    # Older retained evidence uses a 32-byte JSON array; keep its exact meaning.
+    return _selected_symbol_id_value(proof.get("value"))
+
+
+def _selected_symbol_id_value(value) -> str:
     if isinstance(value, str):
         if re.fullmatch(r"[0-9a-f]{64}", value) and value != "0" * 64:
             return value
-    elif (isinstance(value, list) and len(value) == 32
-          and all(type(byte) is int and 0 <= byte <= 255 for byte in value)
-          and any(value)):
-        return bytes(value).hex()
-    raise RuntimeError("snapshot continuation: malformed selected-symbol ID")
+        raise RuntimeError("snapshot continuation: malformed selected-symbol ID")
+    if (not isinstance(value, list) or len(value) != 32
+            or any(type(byte) is not int or not 0 <= byte <= 255 for byte in value)
+            or not any(value)):
+        raise RuntimeError("snapshot continuation: malformed selected-symbol ID")
+    return bytes(value).hex()
+
+
+def canonical_snapshot_symbols(value):
+    """Compare selected-symbol bytes equally across the two wire spellings."""
+    if isinstance(value, dict):
+        if value.get("kind") == "selected-symbol-id":
+            return {**value, "value": _selected_symbol_id_value(value.get("value"))}
+        return {key: canonical_snapshot_symbols(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [canonical_snapshot_symbols(item) for item in value]
+    return value
+
+
+_MCP_SHORTENED_PREVIEW = (
+    "\n\n… readable preview shortened to fit this response; structuredContent contains the complete "
+    "page and any nextCursor; when present, copy structuredContent.continuation_call unchanged."
+)
+_MCP_PREVIEW_TAIL_DRIFT_BYTES = 64
+
+
+def _shortened_outline_preview(call: dict) -> tuple[dict, dict, str] | None:
+    if call.get("call", {}).get("tool") != "backend.outline":
+        return None
+    reply = call.get("reply", {})
+    page = reply.get("structuredContent", {})
+    cursor = page.get("nextCursor")
+    if (reply.get("isError") is not False or page.get("answer") != "outline"
+            or not isinstance(cursor, str) or not re.fullmatch(r"mcp[0-9]+-<live-validated>", cursor)):
+        return None
+    content = reply.get("content", [])
+    if len(content) != 1 or content[0].get("type") != "text":
+        return None
+    block = content[0]
+    text = block.get("text")
+    if not isinstance(text, str) or not text.endswith(_MCP_SHORTENED_PREVIEW):
+        return None
+    budget = reply.get("_meta", {}).get("backend/wireBudget", {})
+    width = budget.get("bytesPerToken")
+    size = budget.get("normalizedFrameBytesExcludingCounters")
+    tokens = budget.get("normalizedEstimatedTokensExcludingCounters")
+    if (type(width) is not int or width <= 0 or type(size) is not int or size <= 0
+            or type(tokens) is not int or tokens != (size + width - 1) // width):
+        return None
+    return block, budget, text.removesuffix(_MCP_SHORTENED_PREVIEW)
+
+
+def snapshot_comparison_answers(reviewed: dict, actual: dict) -> tuple[dict, dict]:
+    """Compare complete answers with bounded drift at a clipped outline's last byte."""
+    reviewed, actual = canonical_snapshot_symbols(reviewed), canonical_snapshot_symbols(actual)
+    for previous, current in zip(reviewed.get("mcp", {}).get("calls", []),
+                                 actual.get("mcp", {}).get("calls", [])):
+        old = _shortened_outline_preview(previous)
+        new = _shortened_outline_preview(current)
+        if old is None or new is None:
+            continue
+        old_block, old_budget, old_prefix = old
+        new_block, new_budget, new_prefix = new
+        shorter, longer = sorted((old_prefix, new_prefix), key=len)
+        # A live cursor's bytes and tokenization affect the space left for
+        # duplicate prose. Only a small extension of the same text may drift.
+        if not shorter or not longer.startswith(shorter):
+            continue
+        text_delta = len(longer[len(shorter):].encode())
+        if not 0 < text_delta <= _MCP_PREVIEW_TAIL_DRIFT_BYTES:
+            continue
+        old_size = old_budget["normalizedFrameBytesExcludingCounters"]
+        new_size = new_budget["normalizedFrameBytesExcludingCounters"]
+        old_text_bytes = len(json.dumps(old_block["text"], ensure_ascii=False).encode())
+        new_text_bytes = len(json.dumps(new_block["text"], ensure_ascii=False).encode())
+        if new_size - old_size != new_text_bytes - old_text_bytes:
+            continue
+        width = old_budget["bytesPerToken"]
+        if width != new_budget["bytesPerToken"]:
+            continue
+        size = min(old_size, new_size)
+        for block, budget in ((old_block, old_budget), (new_block, new_budget)):
+            block["text"] = shorter + _MCP_SHORTENED_PREVIEW
+            budget.update(normalizedFrameBytesExcludingCounters=size,
+                          normalizedEstimatedTokensExcludingCounters=(size + width - 1) // width)
+    return reviewed, actual
 
 
 def _search_record_identity(row: dict) -> str:
@@ -1991,6 +2055,42 @@ def _mcp_structured(reply: dict, label: str) -> dict:
             or not isinstance(reply.get("structuredContent"), dict)):
         raise RuntimeError(f"{label}: MCP refused the offered cursor: {reply}")
     return reply["structuredContent"]
+
+
+def _single_mcp_hop(exchange, call: dict, first: dict,
+                    label: str, published_root: str) -> None:
+    """Measure one offered page while its issuing process still owns the handle."""
+    remaining = exchange.deadline - time.monotonic()
+    if remaining <= 0:
+        raise RuntimeError(f"{label}: MCP continuation deadline exceeded")
+    continuation = mcp_continuation_call(call, first)
+    following = _mcp_structured(exchange(continuation, min(10, remaining)), label)
+    require_continuation_reply(first, following, published_root)
+
+
+def _walk_live_mcp_search(owner: Owner, project: Path, query: str, reference: dict) -> tuple[int, float]:
+    call = {"tool": "backend.search", "arguments": {"query": query, "limit": 1}}
+    count = 0
+
+    def consume(initial_call, reply, exchange, _readiness_exchange):
+        nonlocal count
+        current = _mcp_structured(reply, "MCP search initial page")
+
+        def fetch(cursor):
+            nonlocal current
+            if cursor is not None:
+                continuation = mcp_continuation_call(initial_call, current)
+                if continuation["arguments"].get("cursor") != cursor:
+                    raise RuntimeError("MCP search continuation changed its offered cursor")
+                current = _mcp_structured(exchange(continuation), "MCP search continuation")
+            return current
+
+        count, _ = walk_search_pages(reference, fetch)
+
+    session, seconds = run_mcp_interactive(owner, project, [call], 30, consume)
+    if session["exit"] != 0 or len(session["calls"]) != 1 or count == 0:
+        raise RuntimeError("MCP search continuation: session failed")
+    return count, seconds
 
 
 def _replay_cli_cursor(owner: Owner, project: Path, args: list[str], key: str,
@@ -2585,17 +2685,10 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                 token = require_initial_cursor_shape(first)
                 if token is None:
                     return replacement
-                remaining = exchange.deadline - time.monotonic()
-                if remaining <= 0:
-                    raise RuntimeError(f"{call['tool']} first-hop deadline exceeded")
-                continuation = mcp_continuation_call(call, first)
-                following = _mcp_structured(
-                    exchange(continuation, min(10, remaining)),
-                    call["tool"] + " first continuation",
-                )
-                require_continuation_reply(first, following, published_root)
+                tool = call["tool"]
+                _single_mcp_hop(exchange, call, first, f"{tool} first continuation", published_root)
                 proven_answers.setdefault(f"mcp:{answer_index}", set()).add(token)
-                log(f"{call['tool']}: measured one offered continuation in its issuing session")
+                log(f"{tool}: measured one offered continuation in its issuing session")
                 return replacement
 
             mcp_answer_index = 0
@@ -3068,9 +3161,10 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
         if isinstance(baseline, (int, float)) and baseline > 0 and isinstance(indexed, (int, float)):
             entry["index_delta_percent"] = round((indexed / baseline - 1) * 100, 2)
         slow = regressions(reviewed.get("performance", {}), record["performance"])
-        if reviewed["answers"] != record["answers"]:
-            old = json.dumps(reviewed["answers"], indent=2, sort_keys=True, ensure_ascii=False).splitlines()
-            new = json.dumps(record["answers"], indent=2, sort_keys=True, ensure_ascii=False).splitlines()
+        reviewed_answers, actual_answers = snapshot_comparison_answers(reviewed["answers"], record["answers"])
+        if reviewed_answers != actual_answers:
+            old = json.dumps(reviewed_answers, indent=2, sort_keys=True, ensure_ascii=False).splitlines()
+            new = json.dumps(actual_answers, indent=2, sort_keys=True, ensure_ascii=False).splitlines()
             diff = "\n".join(difflib.unified_diff(old, new, "reviewed", "this change", lineterm="", n=2))
             entry["snapshot_diff"] = bounded_text(diff, 8192)
             fail_case(case, entry, [f"answers changed; explain or update the snapshot:\n{diff[:20000]}", *slow])
