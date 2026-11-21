@@ -8,9 +8,9 @@
       "json": {
         "answer": "outline",
         "budget": {
-          "bytesExcludingCursor": 10229,
+          "bytesExcludingCursor": 8996,
           "bytesPerToken": 4,
-          "estimatedTokensExcludingCursor": 2558
+          "estimatedTokensExcludingCursor": 2249
         },
         "declarations": 25,
         "detail": "summary",
@@ -1188,9 +1188,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 3306,
+          "bytes": 3067,
           "bytesPerToken": 4,
-          "estimatedTokens": 827
+          "estimatedTokens": 767
         },
         "coverage": [
           {
@@ -1496,9 +1496,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 3447,
+          "bytes": 3205,
           "bytesPerToken": 4,
-          "estimatedTokens": 862
+          "estimatedTokens": 802
         },
         "coverage": [
           {
@@ -1816,8 +1816,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 925,
-                "normalizedFrameBytesExcludingCounters": 3697,
+                "normalizedEstimatedTokensExcludingCounters": 882,
+                "normalizedFrameBytesExcludingCounters": 3526,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -1826,7 +1826,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `NamedSignal` · class · python\n  `/tmp/nudox-surface/python-blinker/project::semantic::e3dea55e31bba8ba597837935bcbb1d1f843e74cd511b98bc019959af843ee6d::NamedSignal`\n• `NamedSignal` · import · python\n  `/tmp/nudox-surface/python-blinker/project::semantic::bcd2edce4c4d5267425cbdc42b022ff3ac505cf33ca41bd08236cacce89f80cb::NamedSignal`\n• `signal` · method · python\n  `/tmp/nudox-surface/python-blinker/project::semantic::9320ca91c42d53a8a9cab987c6e397236708afb256095758e9c11686280d9839::signal`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `NamedSignal` · class · python\n  `/tmp/nudox-surface/python-blinker/project::semantic::e3dea55e31bba8ba597837935bcbb1d1f843e74cd511b98bc019959af843ee6d::NamedSignal`\n• `NamedSignal` · import · python\n  `/tmp/nudox-surface/python-blinker/project::semantic::bcd2edce4c4d5267425cbdc42b022ff3ac505cf33ca41bd08236cacce89f80cb::NamedSignal`\n• `signal` · method · python\n  `/tmp/nudox-surface/python-blinker/project::semantic::9320ca91c42d53a8a9cab987c6e397236708afb256095758e9c11686280d9839::signal`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
                 "type": "text"
               }
             ],
@@ -1834,13 +1834,13 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytesExcludingCursor": 2354,
+                "bytesExcludingCursor": 2230,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 589
+                "estimatedTokensExcludingCursor": 558
               },
               "continuation_call": {
                 "arguments": {
-                  "cursor": "mcp2-<live-validated>",
+                  "cursor": "mcp3-<live-validated>",
                   "limit": 3,
                   "query": "NamedSignal"
                 },
@@ -1866,6 +1866,7 @@
               ],
               "detail": "summary",
               "more": true,
+              "nextCursor": "mcp3-<live-validated>",
               "query": "NamedSignal",
               "readiness": "ready",
               "records": [
@@ -2055,8 +2056,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 936,
-                "normalizedFrameBytesExcludingCounters": 3744,
+                "normalizedEstimatedTokensExcludingCounters": 891,
+                "normalizedFrameBytesExcludingCounters": 3562,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -2065,7 +2066,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `make_id` · function · python\n  `/tmp/nudox-surface/python-blinker/project::semantic::ec2d2394fc8e2a531a4b3c8132649afdae1a54726dda5bc882f569dba2885a81::make_id`\n• `make_id` · import · python\n  `/tmp/nudox-surface/python-blinker/project::semantic::fd5d8977c60984185603614de620248c5595696af3dd0a33f4f28c0012e57e7b::make_id`\n• `_make_cleanup_sender` · method · python\n  `/tmp/nudox-surface/python-blinker/project::semantic::0494d5bcb31087d8d69bc8ba6933d7da1d0fdb2368f64506d8e6c3c4189ba384::_make_cleanup_sender`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `make_id` · function · python\n  `/tmp/nudox-surface/python-blinker/project::semantic::ec2d2394fc8e2a531a4b3c8132649afdae1a54726dda5bc882f569dba2885a81::make_id`\n• `make_id` · import · python\n  `/tmp/nudox-surface/python-blinker/project::semantic::fd5d8977c60984185603614de620248c5595696af3dd0a33f4f28c0012e57e7b::make_id`\n• `_make_cleanup_sender` · method · python\n  `/tmp/nudox-surface/python-blinker/project::semantic::0494d5bcb31087d8d69bc8ba6933d7da1d0fdb2368f64506d8e6c3c4189ba384::_make_cleanup_sender`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
                 "type": "text"
               }
             ],
@@ -2073,13 +2074,13 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytesExcludingCursor": 2386,
+                "bytesExcludingCursor": 2251,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 597
+                "estimatedTokensExcludingCursor": 563
               },
               "continuation_call": {
                 "arguments": {
-                  "cursor": "mcp2-<live-validated>",
+                  "cursor": "mcp3-<live-validated>",
                   "limit": 3,
                   "query": "make_id"
                 },
@@ -2105,6 +2106,7 @@
               ],
               "detail": "summary",
               "more": true,
+              "nextCursor": "mcp3-<live-validated>",
               "query": "make_id",
               "readiness": "ready",
               "records": [
@@ -2291,8 +2293,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 5717,
-                "normalizedFrameBytesExcludingCounters": 22868,
+                "normalizedEstimatedTokensExcludingCounters": 5100,
+                "normalizedFrameBytesExcludingCounters": 20399,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -2309,14 +2311,14 @@
             "structuredContent": {
               "answer": "outline",
               "budget": {
-                "bytesExcludingCursor": 19646,
+                "bytesExcludingCursor": 17177,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 4912
+                "estimatedTokensExcludingCursor": 4295
               },
               "declarations": 50,
               "detail": "summary",
               "extent": "truncated",
-              "nextCursor": "mcp2-<live-validated>",
+              "nextCursor": "mcp3-<live-validated>",
               "package": {
                 "coordinate": "/tmp/nudox-surface/python-blinker/project",
                 "key": "23951a25",

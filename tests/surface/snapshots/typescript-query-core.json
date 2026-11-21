@@ -8,9 +8,9 @@
       "json": {
         "answer": "outline",
         "budget": {
-          "bytesExcludingCursor": 10518,
+          "bytesExcludingCursor": 9302,
           "bytesPerToken": 4,
-          "estimatedTokensExcludingCursor": 2630
+          "estimatedTokensExcludingCursor": 2326
         },
         "declarations": 25,
         "detail": "summary",
@@ -51,7 +51,7 @@
           "schema": 3,
           "sequence": 2,
           "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-          "source_root": "67e5d3d449cf12355d254714c9658e48b38155c32af7842c17f6eadb85389577"
+          "source_root": "53eafe2c02136ac71bc9a3222e4fe378e08504421be3c5c91e8f980edd57a759"
         },
         "roots": [
           {
@@ -1180,8 +1180,8 @@
           }
         ],
         "readiness": "partial",
-        "revision": "67e5d3d4",
-        "rows": 3382
+        "revision": "53eafe2c",
+        "rows": 3387
       }
     },
     "cli search CancelledError": {
@@ -1189,9 +1189,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 1747,
+          "bytes": 1642,
           "bytesPerToken": 4,
-          "estimatedTokens": 437
+          "estimatedTokens": 411
         },
         "coverage": [
           {
@@ -1338,9 +1338,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytesExcludingCursor": 16888,
+          "bytesExcludingCursor": 15657,
           "bytesPerToken": 4,
-          "estimatedTokensExcludingCursor": 4222
+          "estimatedTokensExcludingCursor": 3915
         },
         "coverage": [
           {
@@ -2764,8 +2764,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 971,
-                "normalizedFrameBytesExcludingCounters": 3884,
+                "normalizedEstimatedTokensExcludingCounters": 926,
+                "normalizedFrameBytesExcludingCounters": 3704,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -2774,7 +2774,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact✓3 names✓3 graph✓3 semantic◐ partial\n• `QueryClient` · class · typescript\n  `/tmp/nudox-surface/typescript-query-core/project::semantic::91a1843919f8778ddac42d452f557d70d5faa893e4a0f71a28966358d2cc7403::QueryClient`\n• `QueryClient` · import · typescript\n  `/tmp/nudox-surface/typescript-query-core/project::semantic::e6cc664b5757cf1cfcd3716601d6d726248ad7f3e0c1980c437cd4a3fed89834::QueryClient`\n• `QueryClient` · import · typescript\n  `/tmp/nudox-surface/typescript-query-core/project::semantic::6196c7731804307eddc8a7ba77b0cf0f248ad7f3e0c1980c437cd4a3fed89834::QueryClient`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic◐ partial\n• `QueryClient` · class · typescript\n  `/tmp/nudox-surface/typescript-query-core/project::semantic::91a1843919f8778ddac42d452f557d70d5faa893e4a0f71a28966358d2cc7403::QueryClient`\n• `QueryClient` · import · typescript\n  `/tmp/nudox-surface/typescript-query-core/project::semantic::e6cc664b5757cf1cfcd3716601d6d726248ad7f3e0c1980c437cd4a3fed89834::QueryClient`\n• `QueryClient` · import · typescript\n  `/tmp/nudox-surface/typescript-query-core/project::semantic::6196c7731804307eddc8a7ba77b0cf0f248ad7f3e0c1980c437cd4a3fed89834::QueryClient`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
                 "type": "text"
               }
             ],
@@ -2782,13 +2782,13 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytesExcludingCursor": 2491,
+                "bytesExcludingCursor": 2358,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 623
+                "estimatedTokensExcludingCursor": 590
               },
               "continuation_call": {
                 "arguments": {
-                  "cursor": "mcp2-<live-validated>",
+                  "cursor": "mcp3-<live-validated>",
                   "limit": 3,
                   "query": "QueryClient"
                 },
@@ -2814,6 +2814,7 @@
               ],
               "detail": "summary",
               "more": true,
+              "nextCursor": "mcp3-<live-validated>",
               "query": "QueryClient",
               "readiness": "partial",
               "records": [
@@ -3001,9 +3002,9 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 2777,
+                "bytes": 2672,
                 "bytesPerToken": 4,
-                "estimatedTokens": 695,
+                "estimatedTokens": 668,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
                 "scope": "complete_jsonrpc_line",
@@ -3022,9 +3023,9 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytes": 1747,
+                "bytes": 1642,
                 "bytesPerToken": 4,
-                "estimatedTokens": 437
+                "estimatedTokens": 411
               },
               "coverage": [
                 {
@@ -3178,8 +3179,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 6094,
-                "normalizedFrameBytesExcludingCounters": 24375,
+                "normalizedEstimatedTokensExcludingCounters": 5490,
+                "normalizedFrameBytesExcludingCounters": 21959,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -3196,14 +3197,14 @@
             "structuredContent": {
               "answer": "outline",
               "budget": {
-                "bytesExcludingCursor": 20186,
+                "bytesExcludingCursor": 17770,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 5047
+                "estimatedTokensExcludingCursor": 4443
               },
               "declarations": 50,
               "detail": "summary",
               "extent": "truncated",
-              "nextCursor": "mcp2-<live-validated>",
+              "nextCursor": "mcp3-<live-validated>",
               "package": {
                 "coordinate": "/tmp/nudox-surface/typescript-query-core/project",
                 "key": "d66499ae",
@@ -3239,7 +3240,7 @@
                 "schema": 3,
                 "sequence": 2,
                 "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-                "source_root": "67e5d3d449cf12355d254714c9658e48b38155c32af7842c17f6eadb85389577"
+                "source_root": "53eafe2c02136ac71bc9a3222e4fe378e08504421be3c5c91e8f980edd57a759"
               },
               "roots": [
                 {
