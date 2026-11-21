@@ -408,6 +408,12 @@ let
           pkgs.xdotool
           pkgs.imagemagick
           (pkgs.tesseract.override { enableLanguages = [ "eng" ]; })
+          # The integration tier runs the Keel VM gate from this shell:
+          # integration.py resolves the source with git, and keel-vm.py drives
+          # nix/nix-store. A mkShell PATH is assembled from the declared
+          # packages, not inherited from the caller's shell, so name both.
+          pkgs.git
+          pkgs.nix
         ];
       NUDOX_SURFACE_RUST_PERCENT_ENCODING =
         toString

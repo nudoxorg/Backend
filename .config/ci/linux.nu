@@ -311,10 +311,17 @@ def main [
     if not $tests { print-captured-failures }
     let archived_tests = if $archived {
         ci-step "linux" "warm registry cache for archived tests" {|| warm-registry-cache } | ignore
+        let archived_started = date now
         let result = ci-step "linux" "archived backend test pr" {||
             with-env $test_env { run-bounded 75min "sh" "-c" "umask 077 && exec backend test pr" }
         }
         if not $result { print-captured-failures }
+        let step_seconds = ((date now) - $archived_started) / 1sec
+        let junit = glob ".local/nextest/runs/*/**/junit.xml"
+        try {
+            ^python3 ($env.FILE_PWD | path join "junit_timing.py") --lane linux --step-seconds $step_seconds ...$junit
+        } catch { print "ci: nextest timing summary unavailable" }
+        print-per-test-table "linux" $junit
         $result
     } else { true }
 

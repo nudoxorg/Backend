@@ -2340,6 +2340,13 @@ def steady_readiness(content: dict, gap_lanes: tuple[str, ...] = ()) -> bool:
     return gapped
 
 
+def snapshot_search_needs_settling(content: dict) -> bool:
+    """Recognize the transient published-name page before recording a snapshot."""
+    return (content.get("readiness") == "partial"
+            and content.get("search_scope") == "published_names_only"
+            and content.get("full_search") == "preparing")
+
+
 def resolve_partial_authored_search(first: dict, retry, deadline: float, *,
                                     transport: str, query: str, expected: dict,
                                     language: str, request: dict | list[str],
@@ -2635,20 +2642,24 @@ def run_case(case: dict, bin_dir: Path) -> dict:
             require_cli_success(key, answer)
             if args[0] == "search" and not answer["json"].get("records"):
                 raise RuntimeError(f"{key}: expected fixture symbol, got no records")
-            if args[0] == "search" and args[-1] in case.get("authored_symbols", {}):
+            expected = case.get("authored_symbols", {})
+            if args[0] == "search" and (args[-1] in expected or snapshot_search_needs_settling(answer["json"])):
                 answer, _frames = resolve_partial_authored_search(
                     answer,
                     lambda remaining: run_cli(owner, project, args, remaining)[0],
                     query_deadline,
                     transport="cli",
                     query=args[-1],
-                    expected={args[-1]: case["authored_symbols"][args[-1]]},
+                    expected={args[-1]: expected[args[-1]]} if args[-1] in expected else {},
                     language=case.get("authored_languages", {}).get(args[-1], case["languages"][0]),
                     request=args,
                     gap_lanes=settled_gap_lanes(case),
                 )
+                if not answer["json"].get("records"):
+                    raise RuntimeError(f"{key}: settled search returned no fixture symbols")
                 seconds = time.monotonic() - query_started
-                capture_first_full_search_diagnostic(answer["json"])
+                if args[-1] in expected:
+                    capture_first_full_search_diagnostic(answer["json"])
             token = require_initial_cursor_shape(answer["json"])
             if token is not None:
                 remaining = query_deadline - time.monotonic()
@@ -2664,24 +2675,26 @@ def run_case(case: dict, bin_dir: Path) -> dict:
         if case.get("mcp"):
             def prove_session_continuation(call, reply, exchange, readiness_exchange, answer_index):
                 query = call.get("arguments", {}).get("query")
-                if (call["tool"] == "backend.search" and query in case.get("authored_symbols", {})):
+                expected = case.get("authored_symbols", {})
+                first = reply.get("structuredContent") if isinstance(reply, dict) else None
+                first = first if isinstance(first, dict) else {}
+                if (call["tool"] == "backend.search"
+                        and (query in expected or snapshot_search_needs_settling(first))):
                     ready, _frames = resolve_partial_authored_search(
                         reply,
                         lambda remaining: readiness_exchange(call, remaining),
                         readiness_exchange.deadline,
                         transport="mcp",
                         query=query,
-                        expected={query: case["authored_symbols"][query]},
+                        expected={query: expected[query]} if query in expected else {},
                         language=case.get("authored_languages", {}).get(query, case["languages"][0]),
                         request=call,
                         gap_lanes=settled_gap_lanes(case),
                     )
                     replacement = ready
+                    first = ready["structuredContent"]
                 else:
                     replacement = None
-                first = reply.get("structuredContent", {}) if isinstance(reply, dict) else {}
-                if (call["tool"] == "backend.search" and query in case.get("authored_symbols", {})):
-                    first = ready.get("structuredContent", {})
                 token = require_initial_cursor_shape(first)
                 if token is None:
                     return replacement
