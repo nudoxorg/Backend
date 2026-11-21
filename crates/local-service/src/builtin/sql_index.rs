@@ -72,7 +72,7 @@ pub(super) fn sql_projection(
             return Err(BuiltinModelError(ingest::INDEX_SCAN_CANCELLED.to_owned()));
         }
         Err(error) => {
-            return Err(BuiltinModelError(format!("SQL source capture: {error:?}")));
+            return Err(BuiltinModelError(format!("SQL source capture: {error}")));
         }
     };
     if walk.file_count() == 0

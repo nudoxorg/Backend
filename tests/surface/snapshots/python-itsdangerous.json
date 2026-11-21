@@ -8,9 +8,9 @@
       "json": {
         "answer": "outline",
         "budget": {
-          "bytesExcludingCursor": 10384,
+          "bytesExcludingCursor": 9126,
           "bytesPerToken": 4,
-          "estimatedTokensExcludingCursor": 2596
+          "estimatedTokensExcludingCursor": 2282
         },
         "declarations": 25,
         "detail": "summary",
@@ -1188,9 +1188,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytesExcludingCursor": 13448,
+          "bytesExcludingCursor": 12260,
           "bytesPerToken": 4,
-          "estimatedTokensExcludingCursor": 3362
+          "estimatedTokensExcludingCursor": 3065
         },
         "coverage": [
           {
@@ -2545,9 +2545,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 3578,
+          "bytes": 3332,
           "bytesPerToken": 4,
-          "estimatedTokens": 895
+          "estimatedTokens": 833
         },
         "coverage": [
           {
@@ -2864,8 +2864,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 966,
-                "normalizedFrameBytesExcludingCounters": 3862,
+                "normalizedEstimatedTokensExcludingCounters": 921,
+                "normalizedFrameBytesExcludingCounters": 3682,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -2874,7 +2874,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `URLSafeSerializer` · class · python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::66d216efc50c5884f6331026b9bd86df8331487c3a7461a38014e631f955459b::URLSafeSerializer`\n• `URLSafeSerializer` · import · python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::f78802f91841887db251e1346749f3d9e8e363ee46639df2afd4b6f4f687103a::URLSafeSerializer`\n• `URLSafeSerializer` · import · python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::d0e0cb3325042ba8d1b2fe2283a782862097175433b3805019377f31931160fa::URLSafeSerializer`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `URLSafeSerializer` · class · python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::66d216efc50c5884f6331026b9bd86df8331487c3a7461a38014e631f955459b::URLSafeSerializer`\n• `URLSafeSerializer` · import · python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::f78802f91841887db251e1346749f3d9e8e363ee46639df2afd4b6f4f687103a::URLSafeSerializer`\n• `URLSafeSerializer` · import · python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::d0e0cb3325042ba8d1b2fe2283a782862097175433b3805019377f31931160fa::URLSafeSerializer`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
                 "type": "text"
               }
             ],
@@ -2882,13 +2882,13 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytesExcludingCursor": 2458,
+                "bytesExcludingCursor": 2325,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 615
+                "estimatedTokensExcludingCursor": 582
               },
               "continuation_call": {
                 "arguments": {
-                  "cursor": "mcp2-<live-validated>",
+                  "cursor": "mcp3-<live-validated>",
                   "limit": 3,
                   "query": "URLSafeSerializer"
                 },
@@ -2914,6 +2914,7 @@
               ],
               "detail": "summary",
               "more": true,
+              "nextCursor": "mcp3-<live-validated>",
               "query": "URLSafeSerializer",
               "readiness": "ready",
               "records": [
@@ -3102,8 +3103,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 905,
-                "normalizedFrameBytesExcludingCounters": 3617,
+                "normalizedEstimatedTokensExcludingCounters": 863,
+                "normalizedFrameBytesExcludingCounters": 3449,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -3112,7 +3113,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `Signer` · class · python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::f21f9c0794aacc3a3c55db3486897c9e429dfbd59d20f7171c84b756159aa1ad::Signer`\n• `Signer` · import · python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::5e95daf73d8e34afe6736260e4758ca7703f29dfb408783b6abe6a455027fc9a::Signer`\n• `Signer` · import · python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::cc93af2e73dba2aabbe66ded2f679c45a1c86369cc44fed2e8dca89ad0864de3::Signer`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `Signer` · class · python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::f21f9c0794aacc3a3c55db3486897c9e429dfbd59d20f7171c84b756159aa1ad::Signer`\n• `Signer` · import · python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::5e95daf73d8e34afe6736260e4758ca7703f29dfb408783b6abe6a455027fc9a::Signer`\n• `Signer` · import · python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::cc93af2e73dba2aabbe66ded2f679c45a1c86369cc44fed2e8dca89ad0864de3::Signer`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
                 "type": "text"
               }
             ],
@@ -3120,13 +3121,13 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytesExcludingCursor": 2279,
+                "bytesExcludingCursor": 2158,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 570
+                "estimatedTokensExcludingCursor": 540
               },
               "continuation_call": {
                 "arguments": {
-                  "cursor": "mcp2-<live-validated>",
+                  "cursor": "mcp3-<live-validated>",
                   "limit": 3,
                   "query": "Signer"
                 },
@@ -3152,6 +3153,7 @@
               ],
               "detail": "summary",
               "more": true,
+              "nextCursor": "mcp3-<live-validated>",
               "query": "Signer",
               "readiness": "ready",
               "records": [
@@ -3337,8 +3339,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 5792,
-                "normalizedFrameBytesExcludingCounters": 23167,
+                "normalizedEstimatedTokensExcludingCounters": 5165,
+                "normalizedFrameBytesExcludingCounters": 20660,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -3355,14 +3357,14 @@
             "structuredContent": {
               "answer": "outline",
               "budget": {
-                "bytesExcludingCursor": 19873,
+                "bytesExcludingCursor": 17366,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 4969
+                "estimatedTokensExcludingCursor": 4342
               },
               "declarations": 50,
               "detail": "summary",
               "extent": "truncated",
-              "nextCursor": "mcp2-<live-validated>",
+              "nextCursor": "mcp3-<live-validated>",
               "package": {
                 "coordinate": "/tmp/nudox-surface/python-itsdangerous/project",
                 "key": "fad6ed32",

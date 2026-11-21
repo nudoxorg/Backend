@@ -1131,6 +1131,14 @@ pub(super) fn prepare_scan_source(
     // commits.
     let mut observed_profiles = live.clone();
     observed_profiles.extend(lost.iter().copied());
+    // Rust handles are stored under the extension-default edition, while the
+    // live profile is the Cargo edition. Count through the same edition-aware
+    // helper the scanner uses, otherwise a 2021 crate observes zero sources.
+    let rust_profile_counts = ingest::compiler_profile_source_counts(
+        source_root,
+        &scan.compiler_sources,
+        &scan.reused_compiler_files,
+    );
     let mut observations = BTreeMap::new();
     for profile in observed_profiles {
         let coordinate = semantic_context.compiler_coordinate(profile)?;
@@ -1141,7 +1149,7 @@ pub(super) fn prepare_scan_source(
         )
         .map_err(|error| BuiltinModelError(error.to_owned()))?;
         let input_digest = semantic_target_input_digest(&scan, profile, rust_target.as_ref());
-        let count = scan
+        let direct_count = scan
             .compiler_sources
             .iter()
             .filter(|source| source.profile == profile)
@@ -1151,7 +1159,13 @@ pub(super) fn prepare_scan_source(
                     .iter()
                     .filter(|source| source.profile == profile)
                     .count(),
-            )
+            );
+        let count = if matches!(profile, LanguageProfile::Rust(_)) {
+            rust_profile_counts.get(&profile).copied().unwrap_or(0)
+        } else {
+            direct_count
+        };
+        let count = count
             .saturating_add(
                 scan.native_clang_candidates
                     .iter()

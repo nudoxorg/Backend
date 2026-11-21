@@ -8,9 +8,9 @@
       "json": {
         "answer": "outline",
         "budget": {
-          "bytes": 7401,
+          "bytes": 6517,
           "bytesPerToken": 4,
-          "estimatedTokens": 1851
+          "estimatedTokens": 1630
         },
         "declarations": 18,
         "detail": "summary",
@@ -887,9 +887,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 923,
+          "bytes": 867,
           "bytesPerToken": 4,
-          "estimatedTokens": 231
+          "estimatedTokens": 217
         },
         "coverage": [
           {
@@ -961,7 +961,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/Main.cs:1 \u203a Anders"
+              "trail": "project › src/Main.cs:1 › Anders"
             },
             "kind": "class",
             "language": "csharp",
@@ -980,9 +980,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 918,
+          "bytes": 867,
           "bytesPerToken": 4,
-          "estimatedTokens": 230
+          "estimatedTokens": 217
         },
         "coverage": [
           {
@@ -1054,7 +1054,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/main.cpp:3 \u203a Bjarne"
+              "trail": "project › src/main.cpp:3 › Bjarne"
             },
             "kind": "struct",
             "language": "cpp",
@@ -1073,9 +1073,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 908,
+          "bytes": 859,
           "bytesPerToken": 4,
-          "estimatedTokens": 227
+          "estimatedTokens": 215
         },
         "coverage": [
           {
@@ -1147,7 +1147,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/Duke.java:1 \u203a Duke"
+              "trail": "project › src/Duke.java:1 › Duke"
             },
             "kind": "class",
             "language": "java",
@@ -1166,9 +1166,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 954,
+          "bytes": 911,
           "bytesPerToken": 4,
-          "estimatedTokens": 239
+          "estimatedTokens": 228
         },
         "coverage": [
           {
@@ -1240,7 +1240,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a go/main.go:4 \u203a Gopher"
+              "trail": "project › go/main.go:4 › Gopher"
             },
             "kind": "function",
             "language": "go",
@@ -1260,9 +1260,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 956,
+          "bytes": 908,
           "bytesPerToken": 4,
-          "estimatedTokens": 239
+          "estimatedTokens": 227
         },
         "coverage": [
           {
@@ -1334,7 +1334,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/lib.rs:2 \u203a ferris"
+              "trail": "project › src/lib.rs:2 › ferris"
             },
             "kind": "function",
             "language": "rust",
@@ -1354,9 +1354,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 956,
+          "bytes": 909,
           "bytesPerToken": 4,
-          "estimatedTokens": 239
+          "estimatedTokens": 228
         },
         "coverage": [
           {
@@ -1428,7 +1428,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/main.py:1 \u203a monty"
+              "trail": "project › src/main.py:1 › monty"
             },
             "kind": "function",
             "language": "python",
@@ -1448,9 +1448,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 910,
+          "bytes": 864,
           "bytesPerToken": 4,
-          "estimatedTokens": 228
+          "estimatedTokens": 216
         },
         "coverage": [
           {
@@ -1522,7 +1522,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a src/main.ts:2 \u203a turing"
+              "trail": "project › src/main.ts:2 › turing"
             },
             "kind": "function",
             "language": "typescript",
@@ -1549,9 +1549,9 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 1756,
+                "bytes": 1708,
                 "bytesPerToken": 4,
-                "estimatedTokens": 439,
+                "estimatedTokens": 427,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
                 "scope": "complete_jsonrpc_line",
@@ -1562,7 +1562,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27131 names\u27131 graph\u27131 semantic\u25d0 partial\n\u2022 `ferris` \u00b7 function \u00b7 rust\n  `/tmp/nudox-surface/polyglot/project::semantic::ef50602bb73121801eebfb4a0bdf09fb05c9af6f8f13ef9eb04d0be5012fcabf::ferris`\n1 row(s) on this page; showing 1 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
+                "text": "~lanes exact✓1 names✓1 graph✓1 semantic◐ partial\n• `ferris` · function · rust\n  `/tmp/nudox-surface/polyglot/project::semantic::ef50602bb73121801eebfb4a0bdf09fb05c9af6f8f13ef9eb04d0be5012fcabf::ferris`\n1 row(s) on this page; showing 1 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
                 "type": "text"
               }
             ],
@@ -1570,9 +1570,9 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytes": 956,
+                "bytes": 908,
                 "bytesPerToken": 4,
-                "estimatedTokens": 239
+                "estimatedTokens": 227
               },
               "coverage": [
                 {
@@ -1644,7 +1644,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/lib.rs:2 \u203a ferris"
+                    "trail": "project › src/lib.rs:2 › ferris"
                   },
                   "kind": "function",
                   "language": "rust",
@@ -1670,9 +1670,9 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 1752,
+                "bytes": 1709,
                 "bytesPerToken": 4,
-                "estimatedTokens": 438,
+                "estimatedTokens": 428,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
                 "scope": "complete_jsonrpc_line",
@@ -1683,7 +1683,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27131 names\u27131 graph\u27131 semantic\u25d0 partial\n\u2022 `Gopher` \u00b7 function \u00b7 go\n  `/tmp/nudox-surface/polyglot/project::semantic::6146df368b528e088137e9ac48a79827fa48dc32b53ad946b94d3ec159c74445::Gopher`\n1 row(s) on this page; showing 1 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
+                "text": "~lanes exact✓1 names✓1 graph✓1 semantic◐ partial\n• `Gopher` · function · go\n  `/tmp/nudox-surface/polyglot/project::semantic::6146df368b528e088137e9ac48a79827fa48dc32b53ad946b94d3ec159c74445::Gopher`\n1 row(s) on this page; showing 1 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
                 "type": "text"
               }
             ],
@@ -1691,9 +1691,9 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytes": 954,
+                "bytes": 911,
                 "bytesPerToken": 4,
-                "estimatedTokens": 239
+                "estimatedTokens": 228
               },
               "coverage": [
                 {
@@ -1765,7 +1765,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a go/main.go:4 \u203a Gopher"
+                    "trail": "project › go/main.go:4 › Gopher"
                   },
                   "kind": "function",
                   "language": "go",
@@ -1789,9 +1789,9 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 8632,
+                "bytes": 7748,
                 "bytesPerToken": 4,
-                "estimatedTokens": 2158,
+                "estimatedTokens": 1937,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
                 "scope": "complete_jsonrpc_line",
@@ -1802,7 +1802,7 @@
             },
             "content": [
               {
-                "text": "# project\n`/tmp/nudox-surface/polyglot/project`\n\n\u25c6 Duke  `src/Duke.java:1 \u203a Duke`\n  \u0192 language  `src/Duke.java:2 \u203a language`\n    \u25ab java.lang.String  `java.lang.String`\n  \u0192 <init>  `<init>`\n\u25c6 Anders  `src/Main.cs:1 \u203a Anders`\n  \u0192 Language  `src/Main.cs:2 \u203a Language`\n    \u25ab string  `string`\n\u25a3 Bjarne  `src/main.cpp:3 \u203a Bjarne`\n  \u0192 language  `src/main.cpp:4 \u203a language`\n    \u25ab language  `language`\n\u0192 Gopher  `go/main.go:4 \u203a Gopher`\n  \u25ab _  `_`\n\u0192 ferris  `src/lib.rs:2 \u203a ferris`\n  \u25ab ferris  `ferris`\n\u0192 monty  `src/main.py:1 \u203a monty`\n  \u25ab monty  `monty`\n\u0192 turing  `src/main.ts:2 \u203a turing`\n\u25a6 string_view  `string_view`\n18 declaration(s) \u00b7 complete (outline pagination only; analysis coverage is not certified)\n",
+                "text": "# project\n`/tmp/nudox-surface/polyglot/project`\n\n◆ Duke  `src/Duke.java:1 › Duke`\n  ƒ language  `src/Duke.java:2 › language`\n    ▫ java.lang.String  `java.lang.String`\n  ƒ <init>  `<init>`\n◆ Anders  `src/Main.cs:1 › Anders`\n  ƒ Language  `src/Main.cs:2 › Language`\n    ▫ string  `string`\n▣ Bjarne  `src/main.cpp:3 › Bjarne`\n  ƒ language  `src/main.cpp:4 › language`\n    ▫ language  `language`\nƒ Gopher  `go/main.go:4 › Gopher`\n  ▫ _  `_`\nƒ ferris  `src/lib.rs:2 › ferris`\n  ▫ ferris  `ferris`\nƒ monty  `src/main.py:1 › monty`\n  ▫ monty  `monty`\nƒ turing  `src/main.ts:2 › turing`\n▦ string_view  `string_view`\n18 declaration(s) · complete (outline pagination only; analysis coverage is not certified)\n",
                 "type": "text"
               }
             ],
@@ -1810,9 +1810,9 @@
             "structuredContent": {
               "answer": "outline",
               "budget": {
-                "bytes": 7401,
+                "bytes": 6517,
                 "bytesPerToken": 4,
-                "estimatedTokens": 1851
+                "estimatedTokens": 1630
               },
               "declarations": 18,
               "detail": "summary",

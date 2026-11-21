@@ -311,6 +311,7 @@ fn prepare_index_project_at(
                 &committed_captures,
                 backend_engine::builtin::SemanticUnavailableReason::Rejected,
                 None,
+                None,
             ) {
                 Ok(()) => Err(primary),
                 Err(cleanup) => Err(BuiltinModelError(format!(
@@ -1025,7 +1026,7 @@ pub(super) fn finish_index_scan(
                         backend_engine::builtin::SemanticUnavailableReason::Rejected,
                         None,
                     )?;
-                    commit_semantic_terminal(daemon, package, &label, request_id, terminal)?;
+                    commit_semantic_terminal(daemon, package, &label, request_id, terminal, None)?;
                     return Err(error);
                 }
             };
@@ -1088,7 +1089,7 @@ pub(super) fn finish_index_scan(
                         backend_engine::builtin::SemanticUnavailableReason::Rejected,
                         None,
                     )?;
-                    commit_semantic_terminal(daemon, package, &label, request_id, terminal)?;
+                    commit_semantic_terminal(daemon, package, &label, request_id, terminal, None)?;
                     return Err(error);
                 }
             };
@@ -2193,6 +2194,7 @@ fn commit_semantic_terminal(
     label: &str,
     request_id: u64,
     capture_changes: Vec<BuiltinCaptureChange>,
+    owner: Option<&super::super::owner_receipt_context::OwnerReceiptContext>,
 ) -> Result<(), BuiltinModelError> {
     if capture_changes.is_empty() {
         return Ok(());
@@ -2219,7 +2221,11 @@ fn commit_semantic_terminal(
         )?,
         None => intent,
     };
-    super::adapter::commit_builtin_intent(daemon, request_id, &intent)
+    // A recovery terminal is source-less, so it may commit with the owner's
+    // own receipt authority. A workspace which holds SQL receipts requires
+    // that authority for every transaction; the publication worker is only
+    // one holder of it.
+    super::adapter::commit_builtin_intent_with_owner(daemon, request_id, &intent, owner)
 }
 
 pub(super) fn commit_pending_capture_failure(
@@ -2230,9 +2236,10 @@ pub(super) fn commit_pending_capture_failure(
     captures: &BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
     reason: backend_engine::builtin::SemanticUnavailableReason,
     compiler_failure: Option<(LanguageProfile, backend_library::PackageCompilerFailure)>,
+    owner: Option<&super::super::owner_receipt_context::OwnerReceiptContext>,
 ) -> Result<(), BuiltinModelError> {
     let changes = terminal_capture_changes(daemon, captures, reason, compiler_failure)?;
-    commit_semantic_terminal(daemon, package, label, request_id, changes)
+    commit_semantic_terminal(daemon, package, label, request_id, changes, owner)
 }
 
 fn staged_cargo_alias_evidence(
