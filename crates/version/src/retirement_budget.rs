@@ -189,3 +189,34 @@ impl Drop for RetirementReservation {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ownership_and_coverage_require_the_exact_ledger_and_charge() {
+        let owner = RetirementBudget::new(4096).expect("owner ledger");
+        let foreign = RetirementBudget::new(4096).expect("foreign ledger");
+        let held = owner.reserve(128).expect("reservation").meter(vec![0u8; 64]);
+        assert!(owner.owns(&held));
+        assert!(owner.owns_and_covers(&held, 128));
+        assert!(!owner.owns_and_covers(&held, 129));
+        assert!(!foreign.owns(&held));
+        assert!(!foreign.owns_and_covers(&held, 0));
+
+        let reservation = owner.reserve(64).expect("opaque reservation");
+        assert!(owner.owns_reservation_and_covers(&reservation, 64));
+        assert!(!owner.owns_reservation_and_covers(&reservation, 65));
+        assert!(!foreign.owns_reservation_and_covers(&reservation, 0));
+    }
+
+    #[test]
+    fn sharing_a_foreign_metered_value_fails_the_target_ledger_closed() {
+        let owner = RetirementBudget::new(4096).expect("owner ledger");
+        let foreign = RetirementBudget::new(4096).expect("foreign ledger");
+        let held = owner.reserve(64).expect("reservation").meter(vec![0u8; 1]);
+        assert!(foreign.share_metered(held, 0).is_err());
+        assert!(foreign.reserve(1).is_err());
+    }
+}

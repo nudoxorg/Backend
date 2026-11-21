@@ -8873,6 +8873,81 @@ mod persisted_intent_tests {
     }
 
     #[test]
+    fn persisted_v17_retirement_remains_fail_closed_without_full_replay() {
+        use backend_engine::builtin::{
+            NativeSourceEvidence, NativeSourceEvidenceKind, ProductProjectMembership,
+            ProductSourceRecord,
+        };
+        use backend_semantic::vocabulary::{LanguageProfile, TypeScriptSource};
+        let label = "pkg:cargo/v17-closed@1.0.0";
+        let package = backend_engine::PackageKey::from_value(label);
+        let project = package.to_bytes();
+        let target = ProductSourceRecord::Project {
+            label: label.to_owned(),
+            source_version: [1; 32],
+            files: ProductProjectMembership::Inline(Arc::<[[u8; 32]]>::from([])),
+            cargo_aliases: None,
+            source_selection: None,
+        };
+        let row = NativeSourceEvidence {
+            project,
+            profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+            path: "view.ts".to_owned(),
+            input_digest: [2; 32],
+            source_digest: [3; 32],
+            byte_length: 1,
+            kind: NativeSourceEvidenceKind::Image,
+            line_starts: None,
+            headers: None,
+        };
+        let key = row.key().expect("evidence key");
+        let mut intent = BuiltinIntent::new_with_version(
+            BuiltinIntent::EMPTY_NATIVE_TS_VERSION,
+            BuiltinIntentOperation::Index,
+            package,
+            label,
+            vec![BuiltinSourceChange {
+                key: project,
+                after: Some(target),
+            }],
+            vec![],
+            None,
+            None,
+            None,
+            vec![],
+            vec![],
+            vec![],
+        )
+        .expect("v17 retirement intent");
+        intent
+            .set_native_evidence_changes(
+                NativeEvidenceBasis {
+                    workspace_root: [4; 32],
+                    sequence: 1,
+                    closure: [5; 32],
+                    evidence_root: Some([6; 32]),
+                },
+                vec![NativeEvidenceChange {
+                    key,
+                    expected: Some(row),
+                    after: None,
+                }],
+            )
+            .expect("v17 retirement evidence");
+        assert!(intent.canonical_bytes().starts_with(b"BPIH\x11"));
+        let base = super::super::genesis().expect("genesis").snapshot();
+        let transaction = TransactionId::derive(0, base.root(), BuiltinModel.request_id(&intent), 0);
+        let error = match BuiltinModel.prepare(&base, &intent, transaction) {
+            Ok(_) => panic!("v17 preparation must remain fail-closed"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("not fully budgeted"),
+            "unexpected v17 refusal: {error}"
+        );
+    }
+
+    #[test]
     fn csharp_v16_envelope_is_atomic_and_owner_bound() {
         let label = "/tmp/csharp-v16";
         let package = backend_engine::PackageKey::from_value(label);

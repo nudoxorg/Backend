@@ -601,46 +601,35 @@ pub(super) fn validate_staged_membership_union(
 
 impl StagedIntent {
     /// Assemble only a narrow, exact V17 stage under the caller's ledger.
-    /// Returned bytes remain untrusted until bounded intent decoding and
+    /// The returned wire remains untrusted until bounded intent decoding and
     /// request/owner admission have completed.
     pub(super) fn retirement_bytes(
         &self,
         expected: Option<&WorkspaceSnapshot>,
         budget: &backend_version::retirement_budget::RetirementBudget,
         bookkeeping: usize,
-    ) -> Result<backend_version::retirement_budget::Metered<Vec<u8>>, BuiltinModelError> {
-        const MAX_BYTES: usize = 2 * 64 * 1024;
+    ) -> Result<super::native_ts_retirement_pointer::RetirementWire, BuiltinModelError> {
         if expected.is_some_and(|snapshot| basis(snapshot, self.request()) != self.basis) {
             return Err(error("staged intent fence changed", StoreError::WrongBase));
         }
-        let output = budget.reserve(MAX_BYTES.checked_add(bookkeeping).ok_or_else(|| error("staged retirement output size", StoreError::Bounds))?)
-            .map_err(|_| error("staged retirement output budget", StoreError::Bounds))?;
-        let mut bytes = Vec::with_capacity(MAX_BYTES);
-        let (artifact_budget, _) = budgets(2, MAX_BYTES as u64).map_err(|e| error("staged retirement budgets", e))?;
-        staged_intent::visit_empty_retirement_scope(
-            &self.store, self.manifest, self.membership.id(), self.basis, artifact_budget,
-            budget, None, bookkeeping, &|| self.cancelled.load(Ordering::Acquire), |_, payload| {
-                if bytes.len().checked_add(payload.len()).is_none_or(|n| n > MAX_BYTES) { return Err(StoreError::Bounds); }
-                bytes.extend_from_slice(payload);
-                Ok(())
-            },
+        // Use the same bounded producer as the selected retirement pointer so
+        // the retained capacity, request identity and cancellation checks
+        // cannot drift between staged and selected replay.
+        let wire = super::native_ts_retirement_pointer::assemble_retirement_wire(
+            &self.store,
+            UntrustedObjectId::from_bytes(*self.manifest.as_bytes()),
+            self.membership.id(),
+            self.basis,
+            None,
+            budget,
+            bookkeeping,
+            &|| self.cancelled.load(Ordering::Acquire),
         ).map_err(|e| error("hydrate bounded retirement bytes", e))?;
         cancelled(&self.cancelled).map_err(|e| error("staged retirement cancelled", e))?;
-        if !bytes.starts_with(b"BPIH\x11") { return Err(error("not an empty retirement intent", StoreError::Corrupt)); }
-        // The stage basis binds the request to these exact bytes. Stream the
-        // typed identity so checking it does not allocate a second encoding;
-        // canonical V17 decoding remains a separate admission step.
-        let _hash = budget.reserve(std::mem::size_of::<ObjectVersionHasher>())
-            .map_err(|_| error("staged retirement hash budget", StoreError::Bounds))?;
-        let schema = SchemaIdentity::new(BuiltinIntentSchema::DOMAIN, BuiltinIntentSchema::TYPE, BuiltinIntentSchema::VERSION);
-        let mut hasher = ObjectVersionHasher::new(schema, bytes.len())
-            .map_err(|_| error("staged retirement identity", StoreError::Bounds))?;
-        hasher.update(&bytes).map_err(|_| error("staged retirement identity", StoreError::Corrupt))?;
-        if hasher.finish().map_err(|_| error("staged retirement identity", StoreError::Corrupt))? != self.request() {
-            return Err(error("staged retirement request mismatch", StoreError::Corrupt));
+        if !wire.bytes().starts_with(b"BPIH\x11") {
+            return Err(error("not an empty retirement intent", StoreError::Corrupt));
         }
-        cancelled(&self.cancelled).map_err(|e| error("staged retirement cancelled", e))?;
-        Ok(output.meter(bytes))
+        Ok(wire)
     }
 
     pub(super) fn validate_control_union(

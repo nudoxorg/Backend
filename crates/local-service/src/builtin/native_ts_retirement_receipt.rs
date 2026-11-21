@@ -238,3 +238,101 @@ pub(super) fn replay_empty_native_ts_frontiers(
     if shutdown.is_some_and(|s| s.is_requested()) { return Err(BuiltinModelError("empty TypeScript replay cancelled".into())); }
     Ok(ReplayedEmptyNativeTsFrontiers { capture_keys, selected_before, selected_after, captures_before, captures_after })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use backend_engine::{FileStore, OwnerLease};
+    use backend_semantic::vocabulary::{LanguageProfile, TypeScriptSource};
+
+    fn statement(workspace: [u8; 32]) -> NativeTsRetirementReceiptStatement {
+        NativeTsRetirementReceiptStatement {
+            workspace,
+            project: [2; 32],
+            predecessor_root: [3; 32],
+            predecessor_closure: [4; 32],
+            predecessor_sequence: 2,
+            predecessor_evidence_root: None,
+            issuing_workspace_root: [13; 32],
+            issuing_generation: 3,
+            target_evidence_root: Some([6; 32]),
+            project_after_image: [7; 32],
+            source_version: [8; 32],
+            selected_before: [9; 32],
+            selected_after: [10; 32],
+            captures_before: [11; 32],
+            captures_after: [12; 32],
+            native_delta: [14; 32],
+            operation_key: None,
+            request_identity: [15; 32],
+            retired_profiles: vec![<[u8; 2]>::from(LanguageProfile::TypeScript(
+                TypeScriptSource::TypeScript,
+            ))],
+            transaction: [16; 32],
+        }
+    }
+
+    #[test]
+    fn receipt_owner_mac_rejects_wrong_key_and_transition() {
+        let temp = tempfile::tempdir().expect("private test root");
+        let workspace = temp.path().join("workspace");
+        let lease = OwnerLease::acquire(&workspace).expect("owner");
+        let admission = lease.directory_admission();
+        admission.admit("objects").expect("objects");
+        let store = FileStore::open(workspace.join("objects"), 1024 * 1024).expect("store");
+        let owner = OwnerReceiptContext::new([42; 32], workspace.clone());
+        owner.bind(&admission, &store).expect("bind");
+        let receipt = owner
+            .with_bound(|key, workspace| {
+                let statement = statement(workspace);
+                let seal = seal_native_owner_statement(key, &statement).expect("test seal");
+                Ok(NativeTsRetirementReceipt { statement, seal })
+            })
+            .expect("test receipt");
+        assert!(receipt.verify(&owner, receipt.statement()).is_ok());
+
+        let mut changed = receipt.statement.clone();
+        changed.target_evidence_root = Some([17; 32]);
+        assert!(receipt.verify(&owner, &changed).is_err());
+
+        let mut changed_seal = receipt.clone();
+        changed_seal.seal[0] ^= 1;
+        assert!(changed_seal.verify(&owner, receipt.statement()).is_err());
+
+        let wrong_owner = OwnerReceiptContext::new([43; 32], workspace);
+        wrong_owner
+            .bind(&admission, &store)
+            .expect("wrong-key test context");
+        assert!(receipt.verify(&wrong_owner, receipt.statement()).is_err());
+    }
+
+    #[test]
+    fn raw_receipt_codec_is_strict_and_does_not_admit_a_seal() {
+        let receipt = NativeTsRetirementReceipt {
+            statement: statement([1; 32]),
+            seal: [11; 32],
+        };
+        let bytes = serde_json::to_vec(&receipt).expect("serialize receipt");
+        assert_eq!(
+            NativeTsRetirementReceipt::decode(&bytes).expect("decode claim"),
+            receipt
+        );
+        assert!(receipt.object().is_ok());
+
+        let mut trailing = bytes;
+        trailing.push(b' ');
+        assert!(NativeTsRetirementReceipt::decode(&trailing).is_err());
+        assert!(NativeTsRetirementReceipt::decode(&vec![b'x'; MAX_RECEIPT_BYTES + 1]).is_err());
+
+        let missing_owner =
+            OwnerReceiptContext::new([42; 32], std::path::PathBuf::from("unbound"));
+        assert!(receipt.verify(&missing_owner, receipt.statement()).is_err());
+        let mut altered = receipt.statement.clone();
+        altered.native_delta[0] ^= 1;
+        assert!(receipt.verify(&missing_owner, &altered).is_err());
+
+        let mut zero_seal = receipt;
+        zero_seal.seal = [0; 32];
+        assert!(zero_seal.object().is_err());
+    }
+}
