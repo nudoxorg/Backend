@@ -8,9 +8,9 @@
       "json": {
         "answer": "outline",
         "budget": {
-          "bytesExcludingCursor": 18503,
+          "bytesExcludingCursor": 16099,
           "bytesPerToken": 4,
-          "estimatedTokensExcludingCursor": 4626
+          "estimatedTokensExcludingCursor": 4025
         },
         "declarations": 50,
         "detail": "summary",
@@ -2282,9 +2282,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytesExcludingCursor": 13193,
+          "bytesExcludingCursor": 11981,
           "bytesPerToken": 4,
-          "estimatedTokensExcludingCursor": 3299
+          "estimatedTokensExcludingCursor": 2996
         },
         "coverage": [
           {
@@ -2357,7 +2357,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a Content/TinyIoC.cs:864 \u203a TinyIoCContainer"
+              "trail": "project › Content/TinyIoC.cs:864 › TinyIoCContainer"
             },
             "kind": "class",
             "language": "csharp",
@@ -2411,7 +2411,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a Content/TinyIoC.cs:3143 \u203a TinyIoCContainer"
+              "trail": "project › Content/TinyIoC.cs:3143 › TinyIoCContainer"
             },
             "kind": "constructor",
             "language": "csharp",
@@ -2465,7 +2465,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a Content/TinyIoC.cs:3151 \u203a TinyIoCContainer"
+              "trail": "project › Content/TinyIoC.cs:3151 › TinyIoCContainer"
             },
             "kind": "constructor",
             "language": "csharp",
@@ -2519,7 +2519,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a Content/TinyIoC.cs:1125 \u203a GetChildContainer"
+              "trail": "project › Content/TinyIoC.cs:1125 › GetChildContainer"
             },
             "kind": "method",
             "language": "csharp",
@@ -2573,7 +2573,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a Content/TinyIoC.cs:924 \u203a RegisterOptions"
+              "trail": "project › Content/TinyIoC.cs:924 › RegisterOptions"
             },
             "kind": "constructor",
             "language": "csharp",
@@ -2627,7 +2627,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a Content/TinyIoC.cs:3075 \u203a _Current"
+              "trail": "project › Content/TinyIoC.cs:3075 › _Current"
             },
             "kind": "field",
             "language": "csharp",
@@ -2681,7 +2681,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a Content/TinyIoC.cs:3084 \u203a Current"
+              "trail": "project › Content/TinyIoC.cs:3084 › Current"
             },
             "kind": "field",
             "language": "csharp",
@@ -2736,7 +2736,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a Content/TinyIoC.cs:921 \u203a _Container"
+              "trail": "project › Content/TinyIoC.cs:921 › _Container"
             },
             "kind": "field",
             "language": "csharp",
@@ -2790,7 +2790,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a Content/TinyIoC.cs:3150 \u203a _Parent"
+              "trail": "project › Content/TinyIoC.cs:3150 › _Parent"
             },
             "kind": "field",
             "language": "csharp",
@@ -2842,7 +2842,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a child"
+              "trail": "project › child"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2894,7 +2894,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a child"
+              "trail": "project › child"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2946,7 +2946,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a child"
+              "trail": "project › child"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2998,7 +2998,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a container"
+              "trail": "project › container"
             },
             "kind": "variable",
             "language": "unknown",
@@ -3050,7 +3050,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a container"
+              "trail": "project › container"
             },
             "kind": "variable",
             "language": "unknown",
@@ -3102,7 +3102,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a container"
+              "trail": "project › container"
             },
             "kind": "variable",
             "language": "unknown",
@@ -3154,7 +3154,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a container"
+              "trail": "project › container"
             },
             "kind": "variable",
             "language": "unknown",
@@ -3206,7 +3206,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a container"
+              "trail": "project › container"
             },
             "kind": "variable",
             "language": "unknown",
@@ -3258,7 +3258,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a container"
+              "trail": "project › container"
             },
             "kind": "variable",
             "language": "unknown",
@@ -3310,7 +3310,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a container"
+              "trail": "project › container"
             },
             "kind": "variable",
             "language": "unknown",
@@ -3362,7 +3362,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a container"
+              "trail": "project › container"
             },
             "kind": "variable",
             "language": "unknown",
@@ -3414,7 +3414,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a container"
+              "trail": "project › container"
             },
             "kind": "variable",
             "language": "unknown",
@@ -3466,7 +3466,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a parent"
+              "trail": "project › parent"
             },
             "kind": "variable",
             "language": "unknown",
@@ -3518,7 +3518,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a TinyIoC.TinyIoCContainer"
+              "trail": "project › TinyIoC.TinyIoCContainer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -3570,7 +3570,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a parent"
+              "trail": "project › parent"
             },
             "kind": "variable",
             "language": "unknown",
@@ -3622,7 +3622,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a parent"
+              "trail": "project › parent"
             },
             "kind": "variable",
             "language": "unknown",
@@ -3641,9 +3641,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 2170,
+          "bytes": 2015,
           "bytesPerToken": 4,
-          "estimatedTokens": 543
+          "estimatedTokens": 504
         },
         "coverage": [
           {
@@ -3715,7 +3715,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a Content/TinyIoC.cs:552 \u203a TinyIoCResolutionException"
+              "trail": "project › Content/TinyIoC.cs:552 › TinyIoCResolutionException"
             },
             "kind": "class",
             "language": "csharp",
@@ -3769,7 +3769,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a Content/TinyIoC.cs:558 \u203a TinyIoCResolutionException"
+              "trail": "project › Content/TinyIoC.cs:558 › TinyIoCResolutionException"
             },
             "kind": "constructor",
             "language": "csharp",
@@ -3823,7 +3823,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a Content/TinyIoC.cs:563 \u203a TinyIoCResolutionException"
+              "trail": "project › Content/TinyIoC.cs:563 › TinyIoCResolutionException"
             },
             "kind": "constructor",
             "language": "csharp",
@@ -3853,8 +3853,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 848,
-                "normalizedFrameBytesExcludingCounters": 3389,
+                "normalizedEstimatedTokensExcludingCounters": 804,
+                "normalizedFrameBytesExcludingCounters": 3214,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -3863,7 +3863,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u25d0 partial\n\u2022 `TinyIoCContainer` \u00b7 class \u00b7 csharp\n  `/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:864::TinyIoCContainer`\n\u2022 `TinyIoCContainer` \u00b7 constructor \u00b7 csharp\n  `/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:3143::TinyIoCContainer`\n\u2022 `TinyIoCContainer` \u00b7 constructor \u00b7 csharp\n  `/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:3151::TinyIoCContainer`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic◐ partial\n• `TinyIoCContainer` · class · csharp\n  `/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:864::TinyIoCContainer`\n• `TinyIoCContainer` · constructor · csharp\n  `/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:3143::TinyIoCContainer`\n• `TinyIoCContainer` · constructor · csharp\n  `/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:3151::TinyIoCContainer`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
                 "type": "text"
               }
             ],
@@ -3871,13 +3871,13 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytesExcludingCursor": 2143,
+                "bytesExcludingCursor": 2015,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 536
+                "estimatedTokensExcludingCursor": 504
               },
               "continuation_call": {
                 "arguments": {
-                  "cursor": "mcp2-<live-validated>",
+                  "cursor": "mcp3-<live-validated>",
                   "limit": 3,
                   "query": "TinyIoCContainer"
                 },
@@ -3903,6 +3903,7 @@
               ],
               "detail": "summary",
               "more": true,
+              "nextCursor": "mcp3-<live-validated>",
               "query": "TinyIoCContainer",
               "readiness": "partial",
               "records": [
@@ -3953,7 +3954,7 @@
                       ]
                     },
                     "shape": "declaration",
-                    "trail": "project \u203a Content/TinyIoC.cs:864 \u203a TinyIoCContainer"
+                    "trail": "project › Content/TinyIoC.cs:864 › TinyIoCContainer"
                   },
                   "kind": "class",
                   "language": "csharp",
@@ -4007,7 +4008,7 @@
                       ]
                     },
                     "shape": "declaration",
-                    "trail": "project \u203a Content/TinyIoC.cs:3143 \u203a TinyIoCContainer"
+                    "trail": "project › Content/TinyIoC.cs:3143 › TinyIoCContainer"
                   },
                   "kind": "constructor",
                   "language": "csharp",
@@ -4061,7 +4062,7 @@
                       ]
                     },
                     "shape": "declaration",
-                    "trail": "project \u203a Content/TinyIoC.cs:3151 \u203a TinyIoCContainer"
+                    "trail": "project › Content/TinyIoC.cs:3151 › TinyIoCContainer"
                   },
                   "kind": "constructor",
                   "language": "csharp",
@@ -4087,9 +4088,9 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 3279,
+                "bytes": 3124,
                 "bytesPerToken": 4,
-                "estimatedTokens": 820,
+                "estimatedTokens": 781,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
                 "scope": "complete_jsonrpc_line",
@@ -4100,7 +4101,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u25d0 partial\n\u2022 `TinyIoCResolutionException` \u00b7 class \u00b7 csharp\n  `/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:552::TinyIoCResolutionException`\n\u2022 `TinyIoCResolutionException` \u00b7 constructor \u00b7 csharp\n  `/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:558::TinyIoCResolutionException`\n\u2022 `TinyIoCResolutionException` \u00b7 constructor \u00b7 csharp\n  `/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:563::TinyIoCResolutionException`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic◐ partial\n• `TinyIoCResolutionException` · class · csharp\n  `/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:552::TinyIoCResolutionException`\n• `TinyIoCResolutionException` · constructor · csharp\n  `/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:558::TinyIoCResolutionException`\n• `TinyIoCResolutionException` · constructor · csharp\n  `/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:563::TinyIoCResolutionException`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
                 "type": "text"
               }
             ],
@@ -4108,9 +4109,9 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytes": 2170,
+                "bytes": 2015,
                 "bytesPerToken": 4,
-                "estimatedTokens": 543
+                "estimatedTokens": 504
               },
               "coverage": [
                 {
@@ -4182,7 +4183,7 @@
                       ]
                     },
                     "shape": "declaration",
-                    "trail": "project \u203a Content/TinyIoC.cs:552 \u203a TinyIoCResolutionException"
+                    "trail": "project › Content/TinyIoC.cs:552 › TinyIoCResolutionException"
                   },
                   "kind": "class",
                   "language": "csharp",
@@ -4236,7 +4237,7 @@
                       ]
                     },
                     "shape": "declaration",
-                    "trail": "project \u203a Content/TinyIoC.cs:558 \u203a TinyIoCResolutionException"
+                    "trail": "project › Content/TinyIoC.cs:558 › TinyIoCResolutionException"
                   },
                   "kind": "constructor",
                   "language": "csharp",
@@ -4290,7 +4291,7 @@
                       ]
                     },
                     "shape": "declaration",
-                    "trail": "project \u203a Content/TinyIoC.cs:563 \u203a TinyIoCResolutionException"
+                    "trail": "project › Content/TinyIoC.cs:563 › TinyIoCResolutionException"
                   },
                   "kind": "constructor",
                   "language": "csharp",
@@ -4316,8 +4317,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 5540,
-                "normalizedFrameBytesExcludingCounters": 22160,
+                "normalizedEstimatedTokensExcludingCounters": 8395,
+                "normalizedFrameBytesExcludingCounters": 33578,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -4326,7 +4327,7 @@
             },
             "content": [
               {
-                "text": "# project\n`/tmp/nudox-surface/csharp-tinyioc/project`\n\n\u25c6 ReverseTypeExtender  `Content/TinyIoC.cs:3950 \u203a ReverseTypeExtender`\n  \u0192 IsGenericType  `Content/TinyIoC.cs:3979 \u203a IsGenericType`\n    \u25ab type  `type`\n    \u25ab bool  `bool`\n  \u0192 BaseType  `Content/TinyIoC.cs:3994 \u203a BaseType`\n    \u25ab type  `type`\n    \u25ab System.Type  `System.Type`\n  \u0192 IsPrimitive  `Content/TinyIoC.cs:3969 \u203a IsPrimitive`\n    \u25ab bool  `bool`\n    \u25ab type  `type`\n  \u0192 IsGenericTypeDefinition  `Content/TinyIoC.cs:3989 \u203a IsGenericTypeDefinition`\n    \u25ab type  `type`\n    \u25ab bool  `bool`\n  \u0192 IsGenericParameter  `Content/TinyIoC.cs:3984 \u203a IsGenericParameter`\n    \u25ab bool  `bool`\n    \u25ab type  `type`\n  \u0192 IsInterface  `Content/TinyIoC.cs:3964 \u203a IsInterface`\n    \u25ab type  `type`\n    \u25ab bool  `bool`\n  \u0192 IsClass  `Content/TinyIoC.cs:3954 \u203a IsClass`\n    \u25ab bool  `bool`\n    \u25ab type  `type`\n  \u0192 Assembly  `Content/TinyIoC.cs:3999 \u203a Assembly`\n    \u25ab type  `type`\n    \u25ab System.Reflection.Assembly  `System.Reflection.Assembly`\n  \u0192 IsAbstract  `Content/TinyIoC.cs:3959 \u203a IsAbstract`\n    \u25ab bool  `bool`\n    \u25ab type  `type`\n  \u0192 IsValueType  `Content/TinyIoC.cs:3974 \u203a IsValueType`\n    \u25ab type  `type`\n    \u25ab bool  `bool`\n\u25a6 System.Reflection  `Content/TinyIoC.cs:3945 \u203a System.Reflection`\n\u25a6 TinyIoC  `Content/TinyIoC.cs:68 \u203a TinyIoC`\n  \u25c6 NamedParameterOverloads  `Content/TinyIoC.cs:706 \u203a NamedParameterOverloads`\n    \u2726 NamedParameterOverloads  `Content/TinyIoC.cs:719 \u203a NamedParameterOverloads`\n      \u25ab data  `data`\n    \u2726 NamedParameterOverloads  `Content/TinyIoC.cs:715 \u203a NamedParameterOverloads`\n    \u0192 FromIDictionary  `Content/TinyIoC.cs:710 \u203a FromIDictionary`\n      \u25ab data  `data`\n      \u25ab TinyIoC.NamedParameterOverloads  `TinyIoC.NamedParameterOverloads`\n    \u00b7 Default  `Content/TinyIoC.cs:726 \u203a Default`\n    \u00b7 _Default  `Content/TinyIoC.cs:724 \u203a _Default`\n  \u229e UnregisteredResolutionActions  `Content/TinyIoC.cs:738 \u203a UnregisteredResolutionActions`\n    \u25e6 Fail  `Content/TinyIoC.cs:752 \u203a Fail`\n    \u25e6 AttemptResolve  `Content/TinyIoC.cs:747 \u203a AttemptResolve`\n    \u25e6 GenericsOnly  `Content/TinyIoC.cs:760 \u203a GenericsOnly`\n  \u25c6 TinyIoCConstructorResolutionException  `Content/TinyIoC.cs:643 \u203a TinyIoCConstructorResolutionException`\n    \u2726 TinyIoCConstructorResolutionException  `Content/TinyIoC.cs:664 \u203a TinyIoCConstructorResolutionException`\n      \u25ab message  `message`\n    \u2726 TinyIoCConstructorResolutionException  `Content/TinyIoC.cs:659 \u203a TinyIoCConstructorResolutionException`\n50 declaration(s) \u00b7 truncated (outline pagination only; analysis coverage is not certified)\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 50 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/csharp-tinyioc/project\",\"limit\":50,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
+                "text": "# project\n`/tmp/nudox-surface/csharp-tinyioc/project`\n\n◆ ReverseTypeExtender  `Content/TinyIoC.cs:3950 › ReverseTypeExtender`\n  ƒ IsGenericType  `Content/TinyIoC.cs:3979 › IsGenericType`\n    ▫ type  `type`\n    ▫ bool  `bool`\n  ƒ BaseType  `Content/TinyIoC.cs:3994 › BaseType`\n    ▫ type  `type`\n    ▫ System.Type  `System.Type`\n  ƒ IsPrimitive  `Content/TinyIoC.cs:3969 › IsPrimitive`\n    ▫ bool  `bool`\n    ▫ type  `type`\n  ƒ IsGenericTypeDefinition  `Content/TinyIoC.cs:3989 › IsGenericTypeDefinition`\n    ▫ type  `type`\n    ▫ bool  `bool`\n  ƒ IsGenericParameter  `Content/TinyIoC.cs:3984 › IsGenericParameter`\n    ▫ bool  `bool`\n    ▫ type  `type`\n  ƒ IsInterface  `Content/TinyIoC.cs:3964 › IsInterface`\n    ▫ type  `type`\n    ▫ bool  `bool`\n  ƒ IsClass  `Content/TinyIoC.cs:3954 › IsClass`\n    ▫ bool  `bool`\n    ▫ type  `type`\n  ƒ Assembly  `Content/TinyIoC.cs:3999 › Assembly`\n    ▫ type  `type`\n    ▫ System.Reflection.Assembly  `System.Reflection.Assembly`\n  ƒ IsAbstract  `Content/TinyIoC.cs:3959 › IsAbstract`\n    ▫ bool  `bool`\n    ▫ type  `type`\n  ƒ IsValueType  `Content/TinyIoC.cs:3974 › IsValueType`\n    ▫ type  `type`\n    ▫ bool  `bool`\n▦ System.Reflection  `Content/TinyIoC.cs:3945 › System.Reflection`\n▦ TinyIoC  `Content/TinyIoC.cs:68 › TinyIoC`\n  ◆ NamedParameterOverloads  `Content/TinyIoC.cs:706 › NamedParameterOverloads`\n    ✦ NamedParameterOverloads  `Content/TinyIoC.cs:719 › NamedParameterOverloads`\n      ▫ data  `data`\n    ✦ NamedParameterOverloads  `Content/TinyIoC.cs:715 › NamedParameterOverloads`\n    ƒ FromIDictionary  `Content/TinyIoC.cs:710 › FromIDictionary`\n      ▫ data  `data`\n      ▫ TinyIoC\n\n… readable preview shortened to fit this response; structuredContent contains the complete page and any nextCursor; when present, copy structuredContent.continuation_call unchanged.",
                 "type": "text"
               }
             ],
@@ -4334,14 +4335,14 @@
             "structuredContent": {
               "answer": "outline",
               "budget": {
-                "bytesExcludingCursor": 18502,
+                "bytesExcludingCursor": 31138,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 4626
+                "estimatedTokensExcludingCursor": 7785
               },
-              "declarations": 50,
+              "declarations": 100,
               "detail": "summary",
               "extent": "truncated",
-              "nextCursor": "mcp2-<live-validated>",
+              "nextCursor": "mcp3-<live-validated>",
               "package": {
                 "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project",
                 "key": "e209ed24",
@@ -4371,7 +4372,7 @@
                     "state": "partial"
                   }
                 ],
-                "limit": 50,
+                "limit": 100,
                 "log": "12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760",
                 "more": true,
                 "schema": 3,
@@ -6438,6 +6439,94 @@
                           }
                         },
                         {
+                          "children": [
+                            {
+                              "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::semantic::991a58891d6e9b585fbb03d22c642b34bb048a51eefc4a799b44e2b23dbcbbc7::message",
+                              "key": "629b4c15",
+                              "kind": "variable",
+                              "name": "message",
+                              "semantic_data": {
+                                "kind": "selected-symbol-id",
+                                "value": [
+                                  98,
+                                  155,
+                                  76,
+                                  21,
+                                  62,
+                                  212,
+                                  175,
+                                  7,
+                                  246,
+                                  214,
+                                  250,
+                                  60,
+                                  124,
+                                  99,
+                                  27,
+                                  97,
+                                  156,
+                                  72,
+                                  197,
+                                  192,
+                                  146,
+                                  9,
+                                  75,
+                                  36,
+                                  41,
+                                  255,
+                                  9,
+                                  231,
+                                  7,
+                                  193,
+                                  142,
+                                  36
+                                ]
+                              }
+                            },
+                            {
+                              "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::semantic::8d05603cf28cc5828e06411641720955dbbecc018f7e411fd30761c071963b45::innerException",
+                              "key": "afbd3b0b",
+                              "kind": "variable",
+                              "name": "innerException",
+                              "semantic_data": {
+                                "kind": "selected-symbol-id",
+                                "value": [
+                                  175,
+                                  189,
+                                  59,
+                                  11,
+                                  46,
+                                  219,
+                                  25,
+                                  226,
+                                  27,
+                                  150,
+                                  130,
+                                  79,
+                                  161,
+                                  15,
+                                  244,
+                                  180,
+                                  60,
+                                  83,
+                                  44,
+                                  8,
+                                  107,
+                                  197,
+                                  1,
+                                  138,
+                                  234,
+                                  92,
+                                  48,
+                                  92,
+                                  48,
+                                  232,
+                                  91,
+                                  159
+                                ]
+                              }
+                            }
+                          ],
                           "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:659::TinyIoCConstructorResolutionException",
                           "key": "2f6c0f66",
                           "kind": "constructor",
@@ -6477,6 +6566,268 @@
                               27,
                               228,
                               74
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:647::ERROR_TEXT",
+                          "key": "32e5fd1b",
+                          "kind": "constant",
+                          "name": "ERROR_TEXT",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              50,
+                              229,
+                              253,
+                              27,
+                              117,
+                              130,
+                              74,
+                              26,
+                              104,
+                              40,
+                              62,
+                              232,
+                              25,
+                              141,
+                              217,
+                              86,
+                              25,
+                              188,
+                              62,
+                              98,
+                              27,
+                              73,
+                              213,
+                              187,
+                              29,
+                              132,
+                              181,
+                              90,
+                              218,
+                              98,
+                              23,
+                              173
+                            ]
+                          }
+                        },
+                        {
+                          "children": [
+                            {
+                              "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::semantic::91b38063c89006465f543024c852c734fab517f37815b5c4975a1422f02c151f::type",
+                              "key": "0cce2596",
+                              "kind": "variable",
+                              "name": "type",
+                              "semantic_data": {
+                                "kind": "selected-symbol-id",
+                                "value": [
+                                  12,
+                                  206,
+                                  37,
+                                  150,
+                                  111,
+                                  133,
+                                  251,
+                                  255,
+                                  212,
+                                  194,
+                                  11,
+                                  92,
+                                  124,
+                                  182,
+                                  3,
+                                  194,
+                                  251,
+                                  128,
+                                  217,
+                                  103,
+                                  170,
+                                  93,
+                                  108,
+                                  212,
+                                  207,
+                                  247,
+                                  196,
+                                  131,
+                                  27,
+                                  223,
+                                  8,
+                                  138
+                                ]
+                              }
+                            }
+                          ],
+                          "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:649::TinyIoCConstructorResolutionException",
+                          "key": "5d9a91fe",
+                          "kind": "constructor",
+                          "name": "TinyIoCConstructorResolutionException",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              93,
+                              154,
+                              145,
+                              254,
+                              66,
+                              80,
+                              252,
+                              219,
+                              236,
+                              46,
+                              59,
+                              123,
+                              177,
+                              175,
+                              226,
+                              46,
+                              59,
+                              42,
+                              119,
+                              96,
+                              108,
+                              203,
+                              19,
+                              178,
+                              161,
+                              101,
+                              10,
+                              12,
+                              144,
+                              245,
+                              101,
+                              32
+                            ]
+                          }
+                        },
+                        {
+                          "children": [
+                            {
+                              "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::semantic::de0fc68d998a92f8dd3dcb6c9b3c32fcfab517f37815b5c4975a1422f02c151f::type",
+                              "key": "683a77de",
+                              "kind": "variable",
+                              "name": "type",
+                              "semantic_data": {
+                                "kind": "selected-symbol-id",
+                                "value": [
+                                  104,
+                                  58,
+                                  119,
+                                  222,
+                                  3,
+                                  15,
+                                  96,
+                                  76,
+                                  2,
+                                  175,
+                                  37,
+                                  9,
+                                  164,
+                                  146,
+                                  82,
+                                  12,
+                                  20,
+                                  135,
+                                  65,
+                                  142,
+                                  145,
+                                  104,
+                                  52,
+                                  203,
+                                  111,
+                                  10,
+                                  72,
+                                  32,
+                                  69,
+                                  226,
+                                  169,
+                                  79
+                                ]
+                              }
+                            },
+                            {
+                              "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::semantic::01d645097aa1a2042842125cb75c161cdbbecc018f7e411fd30761c071963b45::innerException",
+                              "key": "e1d3ba00",
+                              "kind": "variable",
+                              "name": "innerException",
+                              "semantic_data": {
+                                "kind": "selected-symbol-id",
+                                "value": [
+                                  225,
+                                  211,
+                                  186,
+                                  0,
+                                  221,
+                                  185,
+                                  116,
+                                  127,
+                                  184,
+                                  83,
+                                  188,
+                                  12,
+                                  1,
+                                  159,
+                                  193,
+                                  97,
+                                  105,
+                                  234,
+                                  131,
+                                  160,
+                                  251,
+                                  208,
+                                  51,
+                                  197,
+                                  164,
+                                  250,
+                                  80,
+                                  233,
+                                  7,
+                                  77,
+                                  133,
+                                  76
+                                ]
+                              }
+                            }
+                          ],
+                          "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:654::TinyIoCConstructorResolutionException",
+                          "key": "ff2c3289",
+                          "kind": "constructor",
+                          "name": "TinyIoCConstructorResolutionException",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              255,
+                              44,
+                              50,
+                              137,
+                              99,
+                              4,
+                              77,
+                              249,
+                              115,
+                              91,
+                              163,
+                              197,
+                              81,
+                              157,
+                              96,
+                              199,
+                              248,
+                              147,
+                              203,
+                              200,
+                              75,
+                              65,
+                              151,
+                              34,
+                              199,
+                              207,
+                              58,
+                              18,
+                              133,
+                              118,
+                              76,
+                              165
                             ]
                           }
                         }
@@ -6520,6 +6871,1834 @@
                           207,
                           231,
                           211
+                        ]
+                      }
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:153::Clear",
+                          "key": "01e54bad",
+                          "kind": "method",
+                          "name": "Clear",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              1,
+                              229,
+                              75,
+                              173,
+                              254,
+                              147,
+                              226,
+                              226,
+                              252,
+                              66,
+                              53,
+                              146,
+                              70,
+                              112,
+                              82,
+                              68,
+                              4,
+                              194,
+                              7,
+                              211,
+                              185,
+                              123,
+                              229,
+                              143,
+                              32,
+                              81,
+                              18,
+                              90,
+                              18,
+                              243,
+                              66,
+                              238
+                            ]
+                          }
+                        },
+                        {
+                          "children": [
+                            {
+                              "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::semantic::a0a6aaa36606754d92df25e7c7fbcdc429caa79976e10ed746b5ef1f5051e418::bool",
+                              "key": "6f05a1ac",
+                              "kind": "variable",
+                              "name": "bool",
+                              "semantic_data": {
+                                "kind": "selected-symbol-id",
+                                "value": [
+                                  111,
+                                  5,
+                                  161,
+                                  172,
+                                  8,
+                                  16,
+                                  49,
+                                  33,
+                                  163,
+                                  238,
+                                  193,
+                                  80,
+                                  78,
+                                  39,
+                                  6,
+                                  153,
+                                  179,
+                                  236,
+                                  119,
+                                  194,
+                                  144,
+                                  113,
+                                  94,
+                                  106,
+                                  164,
+                                  91,
+                                  182,
+                                  51,
+                                  99,
+                                  7,
+                                  67,
+                                  131
+                                ]
+                              }
+                            },
+                            {
+                              "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::semantic::72a728bc60136538ce051819f6e29a0fa0433a3982fc517e2224aef72ae8096a::key",
+                              "key": "7bf78a01",
+                              "kind": "variable",
+                              "name": "key",
+                              "semantic_data": {
+                                "kind": "selected-symbol-id",
+                                "value": [
+                                  123,
+                                  247,
+                                  138,
+                                  1,
+                                  200,
+                                  184,
+                                  171,
+                                  11,
+                                  137,
+                                  129,
+                                  138,
+                                  247,
+                                  220,
+                                  7,
+                                  119,
+                                  133,
+                                  231,
+                                  64,
+                                  66,
+                                  173,
+                                  55,
+                                  230,
+                                  145,
+                                  121,
+                                  102,
+                                  130,
+                                  245,
+                                  22,
+                                  1,
+                                  234,
+                                  26,
+                                  54
+                                ]
+                              }
+                            }
+                          ],
+                          "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:140::Remove",
+                          "key": "cfd56858",
+                          "kind": "method",
+                          "name": "Remove",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              207,
+                              213,
+                              104,
+                              88,
+                              139,
+                              128,
+                              224,
+                              122,
+                              133,
+                              181,
+                              214,
+                              233,
+                              184,
+                              67,
+                              158,
+                              153,
+                              254,
+                              182,
+                              203,
+                              45,
+                              42,
+                              80,
+                              123,
+                              99,
+                              204,
+                              146,
+                              111,
+                              49,
+                              8,
+                              166,
+                              120,
+                              10
+                            ]
+                          }
+                        },
+                        {
+                          "children": [
+                            {
+                              "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::semantic::a4cbc87ae014bee714fb7433829a0fbb29caa79976e10ed746b5ef1f5051e418::bool",
+                              "key": "206ef19f",
+                              "kind": "variable",
+                              "name": "bool",
+                              "semantic_data": {
+                                "kind": "selected-symbol-id",
+                                "value": [
+                                  32,
+                                  110,
+                                  241,
+                                  159,
+                                  234,
+                                  139,
+                                  58,
+                                  152,
+                                  1,
+                                  157,
+                                  225,
+                                  126,
+                                  97,
+                                  43,
+                                  236,
+                                  69,
+                                  27,
+                                  66,
+                                  64,
+                                  225,
+                                  24,
+                                  109,
+                                  96,
+                                  128,
+                                  35,
+                                  248,
+                                  38,
+                                  188,
+                                  116,
+                                  72,
+                                  222,
+                                  76
+                                ]
+                              }
+                            },
+                            {
+                              "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::semantic::fba9afe364105b361b09369f705ea7d014bba3de3d6c7643b4dceac26d07c4b0::value",
+                              "key": "690ca0fc",
+                              "kind": "variable",
+                              "name": "value",
+                              "semantic_data": {
+                                "kind": "selected-symbol-id",
+                                "value": [
+                                  105,
+                                  12,
+                                  160,
+                                  252,
+                                  178,
+                                  232,
+                                  229,
+                                  254,
+                                  96,
+                                  187,
+                                  58,
+                                  113,
+                                  2,
+                                  67,
+                                  71,
+                                  20,
+                                  9,
+                                  57,
+                                  108,
+                                  255,
+                                  105,
+                                  72,
+                                  188,
+                                  221,
+                                  115,
+                                  182,
+                                  152,
+                                  35,
+                                  51,
+                                  8,
+                                  9,
+                                  2
+                                ]
+                              }
+                            },
+                            {
+                              "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::semantic::04b64d2a37d674dcb52813ee086db369a0433a3982fc517e2224aef72ae8096a::key",
+                              "key": "7086dea7",
+                              "kind": "variable",
+                              "name": "key",
+                              "semantic_data": {
+                                "kind": "selected-symbol-id",
+                                "value": [
+                                  112,
+                                  134,
+                                  222,
+                                  167,
+                                  226,
+                                  136,
+                                  108,
+                                  86,
+                                  51,
+                                  97,
+                                  102,
+                                  251,
+                                  56,
+                                  209,
+                                  173,
+                                  146,
+                                  214,
+                                  60,
+                                  244,
+                                  244,
+                                  116,
+                                  241,
+                                  99,
+                                  171,
+                                  204,
+                                  40,
+                                  223,
+                                  152,
+                                  107,
+                                  178,
+                                  200,
+                                  161
+                                ]
+                              }
+                            }
+                          ],
+                          "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:127::TryGetValue",
+                          "key": "f2dfe2a9",
+                          "kind": "method",
+                          "name": "TryGetValue",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              242,
+                              223,
+                              226,
+                              169,
+                              88,
+                              240,
+                              141,
+                              240,
+                              96,
+                              132,
+                              37,
+                              213,
+                              124,
+                              188,
+                              128,
+                              48,
+                              149,
+                              245,
+                              111,
+                              100,
+                              93,
+                              93,
+                              59,
+                              4,
+                              136,
+                              179,
+                              119,
+                              181,
+                              31,
+                              201,
+                              5,
+                              167
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:184::Dispose",
+                          "key": "f9a4ae8c",
+                          "kind": "method",
+                          "name": "Dispose",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              249,
+                              164,
+                              174,
+                              140,
+                              130,
+                              229,
+                              28,
+                              106,
+                              122,
+                              230,
+                              163,
+                              217,
+                              85,
+                              196,
+                              76,
+                              128,
+                              172,
+                              2,
+                              184,
+                              91,
+                              28,
+                              209,
+                              20,
+                              136,
+                              244,
+                              183,
+                              235,
+                              2,
+                              77,
+                              95,
+                              89,
+                              161
+                            ]
+                          }
+                        },
+                        {
+                          "children": [
+                            {
+                              "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::semantic::477fb283b266c955d1bffeae7a005850a0433a3982fc517e2224aef72ae8096a::key",
+                              "key": "99c2c67a",
+                              "kind": "variable",
+                              "name": "key",
+                              "semantic_data": {
+                                "kind": "selected-symbol-id",
+                                "value": [
+                                  153,
+                                  194,
+                                  198,
+                                  122,
+                                  28,
+                                  79,
+                                  200,
+                                  48,
+                                  107,
+                                  184,
+                                  80,
+                                  249,
+                                  102,
+                                  150,
+                                  247,
+                                  215,
+                                  130,
+                                  157,
+                                  43,
+                                  60,
+                                  243,
+                                  81,
+                                  25,
+                                  83,
+                                  57,
+                                  193,
+                                  206,
+                                  158,
+                                  159,
+                                  107,
+                                  6,
+                                  96
+                                ]
+                              }
+                            }
+                          ],
+                          "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:101::this",
+                          "key": "17146801",
+                          "kind": "field",
+                          "name": "this",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              23,
+                              20,
+                              104,
+                              1,
+                              167,
+                              247,
+                              143,
+                              72,
+                              26,
+                              150,
+                              46,
+                              152,
+                              180,
+                              106,
+                              93,
+                              8,
+                              248,
+                              215,
+                              48,
+                              155,
+                              41,
+                              34,
+                              82,
+                              90,
+                              109,
+                              170,
+                              208,
+                              217,
+                              2,
+                              215,
+                              62,
+                              33
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:99::_Dictionary",
+                          "key": "2d8902c5",
+                          "kind": "field",
+                          "name": "_Dictionary",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              45,
+                              137,
+                              2,
+                              197,
+                              149,
+                              236,
+                              39,
+                              56,
+                              138,
+                              168,
+                              250,
+                              217,
+                              229,
+                              167,
+                              34,
+                              19,
+                              48,
+                              244,
+                              175,
+                              185,
+                              86,
+                              204,
+                              90,
+                              149,
+                              103,
+                              63,
+                              6,
+                              238,
+                              29,
+                              50,
+                              219,
+                              27
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:166::Keys",
+                          "key": "8b8ef0a3",
+                          "kind": "field",
+                          "name": "Keys",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              139,
+                              142,
+                              240,
+                              163,
+                              183,
+                              60,
+                              65,
+                              25,
+                              162,
+                              30,
+                              251,
+                              253,
+                              197,
+                              125,
+                              198,
+                              231,
+                              154,
+                              133,
+                              169,
+                              38,
+                              63,
+                              242,
+                              90,
+                              131,
+                              28,
+                              240,
+                              38,
+                              193,
+                              129,
+                              195,
+                              111,
+                              34
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:98::_padlock",
+                          "key": "b5fd250a",
+                          "kind": "field",
+                          "name": "_padlock",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              181,
+                              253,
+                              37,
+                              10,
+                              34,
+                              15,
+                              87,
+                              245,
+                              193,
+                              51,
+                              145,
+                              196,
+                              89,
+                              20,
+                              60,
+                              122,
+                              128,
+                              163,
+                              43,
+                              157,
+                              245,
+                              84,
+                              35,
+                              7,
+                              137,
+                              131,
+                              41,
+                              113,
+                              101,
+                              89,
+                              240,
+                              4
+                            ]
+                          }
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:94::SafeDictionary",
+                      "key": "3dfbc3b7",
+                      "kind": "class",
+                      "name": "SafeDictionary",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          61,
+                          251,
+                          195,
+                          183,
+                          230,
+                          254,
+                          100,
+                          87,
+                          147,
+                          139,
+                          190,
+                          166,
+                          154,
+                          70,
+                          38,
+                          205,
+                          74,
+                          215,
+                          17,
+                          68,
+                          191,
+                          225,
+                          56,
+                          145,
+                          76,
+                          19,
+                          101,
+                          61,
+                          253,
+                          148,
+                          119,
+                          37
+                        ]
+                      }
+                    },
+                    {
+                      "children": [
+                        {
+                          "children": [
+                            {
+                              "children": [
+                                {
+                                  "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::semantic::b7208372db3b147ccd434dbe70091f1a5cce042b1046850b68d2b3c3dbb6dc13::parameterTypes",
+                                  "key": "187dca3f",
+                                  "kind": "variable",
+                                  "name": "parameterTypes",
+                                  "semantic_data": {
+                                    "kind": "selected-symbol-id",
+                                    "value": [
+                                      24,
+                                      125,
+                                      202,
+                                      63,
+                                      173,
+                                      192,
+                                      216,
+                                      163,
+                                      108,
+                                      49,
+                                      177,
+                                      94,
+                                      174,
+                                      178,
+                                      162,
+                                      28,
+                                      155,
+                                      248,
+                                      76,
+                                      142,
+                                      38,
+                                      0,
+                                      126,
+                                      23,
+                                      52,
+                                      216,
+                                      245,
+                                      29,
+                                      212,
+                                      229,
+                                      97,
+                                      228
+                                    ]
+                                  }
+                                },
+                                {
+                                  "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::semantic::d180e8a241b85393bc0435f07a753ba1191f02ec6f0ab7710a98e7eb8634385d::sourceType",
+                                  "key": "336c1eee",
+                                  "kind": "variable",
+                                  "name": "sourceType",
+                                  "semantic_data": {
+                                    "kind": "selected-symbol-id",
+                                    "value": [
+                                      51,
+                                      108,
+                                      30,
+                                      238,
+                                      198,
+                                      113,
+                                      150,
+                                      218,
+                                      3,
+                                      41,
+                                      98,
+                                      215,
+                                      2,
+                                      93,
+                                      81,
+                                      150,
+                                      169,
+                                      34,
+                                      26,
+                                      249,
+                                      146,
+                                      86,
+                                      160,
+                                      171,
+                                      155,
+                                      210,
+                                      7,
+                                      116,
+                                      205,
+                                      218,
+                                      69,
+                                      3
+                                    ]
+                                  }
+                                },
+                                {
+                                  "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::semantic::bb10dcb0cc37a3e14b02871772ed709622fb0988c71711b4ef8c71b4013c61ec::genericTypes",
+                                  "key": "c3bfe5b0",
+                                  "kind": "variable",
+                                  "name": "genericTypes",
+                                  "semantic_data": {
+                                    "kind": "selected-symbol-id",
+                                    "value": [
+                                      195,
+                                      191,
+                                      229,
+                                      176,
+                                      111,
+                                      89,
+                                      82,
+                                      239,
+                                      178,
+                                      19,
+                                      47,
+                                      148,
+                                      211,
+                                      5,
+                                      36,
+                                      60,
+                                      93,
+                                      83,
+                                      102,
+                                      90,
+                                      208,
+                                      21,
+                                      122,
+                                      228,
+                                      236,
+                                      130,
+                                      63,
+                                      193,
+                                      92,
+                                      217,
+                                      209,
+                                      56
+                                    ]
+                                  }
+                                },
+                                {
+                                  "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::semantic::9b65b9d8d837270b872d419df8b987875a39e930bdf3a728f0254e10dde3fd4d::methodName",
+                                  "key": "c4ce9a1e",
+                                  "kind": "variable",
+                                  "name": "methodName",
+                                  "semantic_data": {
+                                    "kind": "selected-symbol-id",
+                                    "value": [
+                                      196,
+                                      206,
+                                      154,
+                                      30,
+                                      219,
+                                      49,
+                                      89,
+                                      225,
+                                      131,
+                                      232,
+                                      218,
+                                      217,
+                                      153,
+                                      167,
+                                      89,
+                                      213,
+                                      241,
+                                      1,
+                                      254,
+                                      62,
+                                      233,
+                                      91,
+                                      114,
+                                      33,
+                                      77,
+                                      180,
+                                      242,
+                                      77,
+                                      47,
+                                      149,
+                                      98,
+                                      63
+                                    ]
+                                  }
+                                }
+                              ],
+                              "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:462::GenericMethodCacheKey",
+                              "key": "109043c1",
+                              "kind": "constructor",
+                              "name": "GenericMethodCacheKey",
+                              "semantic_data": {
+                                "kind": "selected-symbol-id",
+                                "value": [
+                                  16,
+                                  144,
+                                  67,
+                                  193,
+                                  153,
+                                  58,
+                                  10,
+                                  60,
+                                  240,
+                                  165,
+                                  108,
+                                  86,
+                                  4,
+                                  252,
+                                  43,
+                                  223,
+                                  112,
+                                  21,
+                                  196,
+                                  66,
+                                  70,
+                                  28,
+                                  51,
+                                  164,
+                                  88,
+                                  5,
+                                  111,
+                                  185,
+                                  195,
+                                  250,
+                                  8,
+                                  83
+                                ]
+                              }
+                            },
+                            {
+                              "children": [
+                                {
+                                  "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::semantic::f1dd9d483e5fe4bbb8c46cdfbf8d9dc5b64beb792889b0bda7792787824a5326::int",
+                                  "key": "9fcdc044",
+                                  "kind": "variable",
+                                  "name": "int",
+                                  "semantic_data": {
+                                    "kind": "selected-symbol-id",
+                                    "value": [
+                                      159,
+                                      205,
+                                      192,
+                                      68,
+                                      250,
+                                      170,
+                                      89,
+                                      233,
+                                      42,
+                                      221,
+                                      79,
+                                      26,
+                                      55,
+                                      212,
+                                      53,
+                                      142,
+                                      69,
+                                      59,
+                                      5,
+                                      159,
+                                      93,
+                                      72,
+                                      130,
+                                      117,
+                                      50,
+                                      10,
+                                      119,
+                                      181,
+                                      179,
+                                      66,
+                                      122,
+                                      64
+                                    ]
+                                  }
+                                }
+                              ],
+                              "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:509::GenerateHashCode",
+                              "key": "4c7b100e",
+                              "kind": "method",
+                              "name": "GenerateHashCode",
+                              "semantic_data": {
+                                "kind": "selected-symbol-id",
+                                "value": [
+                                  76,
+                                  123,
+                                  16,
+                                  14,
+                                  177,
+                                  194,
+                                  120,
+                                  221,
+                                  119,
+                                  78,
+                                  72,
+                                  182,
+                                  253,
+                                  131,
+                                  167,
+                                  224,
+                                  191,
+                                  131,
+                                  111,
+                                  203,
+                                  79,
+                                  215,
+                                  234,
+                                  114,
+                                  172,
+                                  235,
+                                  64,
+                                  0,
+                                  213,
+                                  103,
+                                  147,
+                                  115
+                                ]
+                              }
+                            },
+                            {
+                              "children": [
+                                {
+                                  "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::semantic::a21e26647d2ca4a7024c90930e6033d1b64beb792889b0bda7792787824a5326::int",
+                                  "key": "d6b80dcc",
+                                  "kind": "variable",
+                                  "name": "int",
+                                  "semantic_data": {
+                                    "kind": "selected-symbol-id",
+                                    "value": [
+                                      214,
+                                      184,
+                                      13,
+                                      204,
+                                      42,
+                                      142,
+                                      34,
+                                      93,
+                                      179,
+                                      91,
+                                      22,
+                                      56,
+                                      23,
+                                      67,
+                                      107,
+                                      154,
+                                      237,
+                                      1,
+                                      229,
+                                      242,
+                                      224,
+                                      194,
+                                      241,
+                                      64,
+                                      1,
+                                      255,
+                                      204,
+                                      21,
+                                      6,
+                                      174,
+                                      146,
+                                      231
+                                    ]
+                                  }
+                                }
+                              ],
+                              "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:504::GetHashCode",
+                              "key": "931f0d7a",
+                              "kind": "method",
+                              "name": "GetHashCode",
+                              "semantic_data": {
+                                "kind": "selected-symbol-id",
+                                "value": [
+                                  147,
+                                  31,
+                                  13,
+                                  122,
+                                  227,
+                                  199,
+                                  70,
+                                  206,
+                                  101,
+                                  55,
+                                  30,
+                                  247,
+                                  148,
+                                  125,
+                                  123,
+                                  185,
+                                  182,
+                                  182,
+                                  78,
+                                  62,
+                                  218,
+                                  65,
+                                  141,
+                                  211,
+                                  88,
+                                  125,
+                                  232,
+                                  188,
+                                  29,
+                                  130,
+                                  43,
+                                  104
+                                ]
+                              }
+                            },
+                            {
+                              "children": [
+                                {
+                                  "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::semantic::5e151c43d3ffbf026a633f665eaa12e929caa79976e10ed746b5ef1f5051e418::bool",
+                                  "key": "1483cf1b",
+                                  "kind": "variable",
+                                  "name": "bool",
+                                  "semantic_data": {
+                                    "kind": "selected-symbol-id",
+                                    "value": [
+                                      20,
+                                      131,
+                                      207,
+                                      27,
+                                      191,
+                                      17,
+                                      186,
+                                      197,
+                                      203,
+                                      69,
+                                      93,
+                                      42,
+                                      25,
+                                      211,
+                                      44,
+                                      4,
+                                      7,
+                                      106,
+                                      23,
+                                      42,
+                                      52,
+                                      63,
+                                      244,
+                                      170,
+                                      151,
+                                      170,
+                                      45,
+                                      145,
+                                      25,
+                                      158,
+                                      205,
+                                      64
+                                    ]
+                                  }
+                                },
+                                {
+                                  "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::semantic::135fe77910e861021e3219e892143d6147cd9a056bdd5b873491a16e4e09fe80::obj",
+                                  "key": "bf3b5e97",
+                                  "kind": "variable",
+                                  "name": "obj",
+                                  "semantic_data": {
+                                    "kind": "selected-symbol-id",
+                                    "value": [
+                                      191,
+                                      59,
+                                      94,
+                                      151,
+                                      180,
+                                      174,
+                                      85,
+                                      238,
+                                      0,
+                                      90,
+                                      49,
+                                      112,
+                                      22,
+                                      222,
+                                      61,
+                                      61,
+                                      21,
+                                      233,
+                                      12,
+                                      196,
+                                      27,
+                                      26,
+                                      118,
+                                      108,
+                                      6,
+                                      66,
+                                      105,
+                                      236,
+                                      243,
+                                      66,
+                                      82,
+                                      142
+                                    ]
+                                  }
+                                }
+                              ],
+                              "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:471::Equals",
+                              "key": "dfa6cdf5",
+                              "kind": "method",
+                              "name": "Equals",
+                              "semantic_data": {
+                                "kind": "selected-symbol-id",
+                                "value": [
+                                  223,
+                                  166,
+                                  205,
+                                  245,
+                                  57,
+                                  166,
+                                  178,
+                                  180,
+                                  139,
+                                  126,
+                                  252,
+                                  20,
+                                  80,
+                                  213,
+                                  173,
+                                  250,
+                                  161,
+                                  88,
+                                  253,
+                                  167,
+                                  196,
+                                  139,
+                                  118,
+                                  68,
+                                  44,
+                                  162,
+                                  176,
+                                  126,
+                                  101,
+                                  241,
+                                  85,
+                                  43
+                                ]
+                              }
+                            },
+                            {
+                              "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:458::_parameterTypes",
+                              "key": "71ccc176",
+                              "kind": "field",
+                              "name": "_parameterTypes",
+                              "semantic_data": {
+                                "kind": "selected-symbol-id",
+                                "value": [
+                                  113,
+                                  204,
+                                  193,
+                                  118,
+                                  109,
+                                  150,
+                                  190,
+                                  58,
+                                  82,
+                                  30,
+                                  190,
+                                  131,
+                                  82,
+                                  87,
+                                  125,
+                                  104,
+                                  236,
+                                  69,
+                                  109,
+                                  225,
+                                  175,
+                                  222,
+                                  103,
+                                  138,
+                                  97,
+                                  169,
+                                  36,
+                                  220,
+                                  51,
+                                  39,
+                                  16,
+                                  22
+                                ]
+                              }
+                            },
+                            {
+                              "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:456::_genericTypes",
+                              "key": "ae8f82c5",
+                              "kind": "field",
+                              "name": "_genericTypes",
+                              "semantic_data": {
+                                "kind": "selected-symbol-id",
+                                "value": [
+                                  174,
+                                  143,
+                                  130,
+                                  197,
+                                  220,
+                                  196,
+                                  190,
+                                  234,
+                                  80,
+                                  251,
+                                  116,
+                                  218,
+                                  11,
+                                  134,
+                                  249,
+                                  144,
+                                  208,
+                                  31,
+                                  206,
+                                  35,
+                                  77,
+                                  188,
+                                  192,
+                                  71,
+                                  78,
+                                  229,
+                                  173,
+                                  189,
+                                  161,
+                                  15,
+                                  205,
+                                  23
+                                ]
+                              }
+                            },
+                            {
+                              "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:452::_sourceType",
+                              "key": "c0d84786",
+                              "kind": "field",
+                              "name": "_sourceType",
+                              "semantic_data": {
+                                "kind": "selected-symbol-id",
+                                "value": [
+                                  192,
+                                  216,
+                                  71,
+                                  134,
+                                  125,
+                                  175,
+                                  174,
+                                  249,
+                                  117,
+                                  203,
+                                  132,
+                                  176,
+                                  224,
+                                  241,
+                                  40,
+                                  250,
+                                  245,
+                                  120,
+                                  74,
+                                  216,
+                                  160,
+                                  208,
+                                  121,
+                                  67,
+                                  50,
+                                  74,
+                                  48,
+                                  224,
+                                  162,
+                                  240,
+                                  156,
+                                  35
+                                ]
+                              }
+                            },
+                            {
+                              "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:454::_methodName",
+                              "key": "d6287c7b",
+                              "kind": "field",
+                              "name": "_methodName",
+                              "semantic_data": {
+                                "kind": "selected-symbol-id",
+                                "value": [
+                                  214,
+                                  40,
+                                  124,
+                                  123,
+                                  230,
+                                  14,
+                                  158,
+                                  179,
+                                  122,
+                                  240,
+                                  105,
+                                  200,
+                                  140,
+                                  192,
+                                  249,
+                                  55,
+                                  19,
+                                  87,
+                                  176,
+                                  108,
+                                  201,
+                                  49,
+                                  24,
+                                  11,
+                                  38,
+                                  0,
+                                  194,
+                                  93,
+                                  12,
+                                  41,
+                                  83,
+                                  7
+                                ]
+                              }
+                            },
+                            {
+                              "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:460::_hashCode",
+                              "key": "e1f7b47f",
+                              "kind": "field",
+                              "name": "_hashCode",
+                              "semantic_data": {
+                                "kind": "selected-symbol-id",
+                                "value": [
+                                  225,
+                                  247,
+                                  180,
+                                  127,
+                                  12,
+                                  79,
+                                  91,
+                                  65,
+                                  156,
+                                  176,
+                                  85,
+                                  8,
+                                  223,
+                                  164,
+                                  159,
+                                  193,
+                                  167,
+                                  94,
+                                  239,
+                                  217,
+                                  239,
+                                  125,
+                                  71,
+                                  45,
+                                  77,
+                                  51,
+                                  126,
+                                  164,
+                                  180,
+                                  185,
+                                  193,
+                                  236
+                                ]
+                              }
+                            }
+                          ],
+                          "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:450::GenericMethodCacheKey",
+                          "key": "44088ec7",
+                          "kind": "class",
+                          "name": "GenericMethodCacheKey",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              68,
+                              8,
+                              142,
+                              199,
+                              134,
+                              151,
+                              24,
+                              70,
+                              240,
+                              77,
+                              97,
+                              200,
+                              235,
+                              176,
+                              186,
+                              43,
+                              192,
+                              38,
+                              172,
+                              191,
+                              85,
+                              175,
+                              104,
+                              230,
+                              155,
+                              239,
+                              239,
+                              16,
+                              157,
+                              6,
+                              191,
+                              19
+                            ]
+                          }
+                        },
+                        {
+                          "children": [
+                            {
+                              "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::semantic::2f3f260d5c608d64417f6f9f89d119bf5a39e930bdf3a728f0254e10dde3fd4d::methodName",
+                              "key": "13709d51",
+                              "kind": "variable",
+                              "name": "methodName",
+                              "semantic_data": {
+                                "kind": "selected-symbol-id",
+                                "value": [
+                                  19,
+                                  112,
+                                  157,
+                                  81,
+                                  108,
+                                  108,
+                                  219,
+                                  113,
+                                  20,
+                                  98,
+                                  62,
+                                  233,
+                                  15,
+                                  182,
+                                  123,
+                                  201,
+                                  239,
+                                  87,
+                                  26,
+                                  130,
+                                  53,
+                                  51,
+                                  144,
+                                  52,
+                                  229,
+                                  151,
+                                  150,
+                                  188,
+                                  142,
+                                  26,
+                                  167,
+                                  24
+                                ]
+                              }
+                            },
+                            {
+                              "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::semantic::d0f7dc18190da6bc7a98be3253c12d185cce042b1046850b68d2b3c3dbb6dc13::parameterTypes",
+                              "key": "28688d5b",
+                              "kind": "variable",
+                              "name": "parameterTypes",
+                              "semantic_data": {
+                                "kind": "selected-symbol-id",
+                                "value": [
+                                  40,
+                                  104,
+                                  141,
+                                  91,
+                                  8,
+                                  182,
+                                  218,
+                                  26,
+                                  225,
+                                  71,
+                                  248,
+                                  55,
+                                  80,
+                                  84,
+                                  239,
+                                  47,
+                                  57,
+                                  10,
+                                  80,
+                                  200,
+                                  245,
+                                  139,
+                                  158,
+                                  124,
+                                  206,
+                                  155,
+                                  133,
+                                  32,
+                                  83,
+                                  84,
+                                  134,
+                                  147
+                                ]
+                              }
+                            },
+                            {
+                              "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::semantic::571565179ecfd10cbe9420282afde2be191f02ec6f0ab7710a98e7eb8634385d::sourceType",
+                              "key": "608c72b5",
+                              "kind": "variable",
+                              "name": "sourceType",
+                              "semantic_data": {
+                                "kind": "selected-symbol-id",
+                                "value": [
+                                  96,
+                                  140,
+                                  114,
+                                  181,
+                                  50,
+                                  20,
+                                  158,
+                                  144,
+                                  111,
+                                  16,
+                                  124,
+                                  135,
+                                  230,
+                                  7,
+                                  172,
+                                  213,
+                                  215,
+                                  7,
+                                  22,
+                                  60,
+                                  103,
+                                  141,
+                                  188,
+                                  251,
+                                  144,
+                                  190,
+                                  179,
+                                  42,
+                                  44,
+                                  166,
+                                  117,
+                                  250
+                                ]
+                              }
+                            },
+                            {
+                              "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::semantic::fb50c058491a985e65681986435affbf698d7fde1f5dcb8ed6705259c593617d::System.Reflection.MethodInfo",
+                              "key": "ab2e3aa2",
+                              "kind": "variable",
+                              "name": "System.Reflection.MethodInfo",
+                              "semantic_data": {
+                                "kind": "selected-symbol-id",
+                                "value": [
+                                  171,
+                                  46,
+                                  58,
+                                  162,
+                                  152,
+                                  97,
+                                  169,
+                                  0,
+                                  49,
+                                  169,
+                                  124,
+                                  232,
+                                  58,
+                                  227,
+                                  55,
+                                  169,
+                                  146,
+                                  218,
+                                  93,
+                                  224,
+                                  161,
+                                  74,
+                                  138,
+                                  91,
+                                  60,
+                                  106,
+                                  165,
+                                  105,
+                                  178,
+                                  156,
+                                  111,
+                                  154
+                                ]
+                              }
+                            },
+                            {
+                              "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::semantic::cbbd6857a7428517144703821988901322fb0988c71711b4ef8c71b4013c61ec::genericTypes",
+                              "key": "b985151b",
+                              "kind": "variable",
+                              "name": "genericTypes",
+                              "semantic_data": {
+                                "kind": "selected-symbol-id",
+                                "value": [
+                                  185,
+                                  133,
+                                  21,
+                                  27,
+                                  67,
+                                  203,
+                                  69,
+                                  165,
+                                  228,
+                                  228,
+                                  189,
+                                  58,
+                                  24,
+                                  17,
+                                  38,
+                                  207,
+                                  103,
+                                  216,
+                                  249,
+                                  232,
+                                  84,
+                                  71,
+                                  185,
+                                  238,
+                                  195,
+                                  36,
+                                  218,
+                                  244,
+                                  17,
+                                  159,
+                                  31,
+                                  221
+                                ]
+                              }
+                            },
+                            {
+                              "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::semantic::db765dd06f0dc3f9965e31d45dd2a172853443ff3260213aa9b9c275856a369b::bindingFlags",
+                              "key": "da582d21",
+                              "kind": "variable",
+                              "name": "bindingFlags",
+                              "semantic_data": {
+                                "kind": "selected-symbol-id",
+                                "value": [
+                                  218,
+                                  88,
+                                  45,
+                                  33,
+                                  121,
+                                  144,
+                                  192,
+                                  137,
+                                  44,
+                                  170,
+                                  90,
+                                  140,
+                                  205,
+                                  35,
+                                  75,
+                                  233,
+                                  245,
+                                  135,
+                                  221,
+                                  115,
+                                  209,
+                                  138,
+                                  138,
+                                  194,
+                                  202,
+                                  209,
+                                  192,
+                                  165,
+                                  183,
+                                  134,
+                                  165,
+                                  93
+                                ]
+                              }
+                            }
+                          ],
+                          "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:419::GetMethod",
+                          "key": "a80849ca",
+                          "kind": "method",
+                          "name": "GetMethod",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              168,
+                              8,
+                              73,
+                              202,
+                              233,
+                              48,
+                              77,
+                              175,
+                              94,
+                              191,
+                              128,
+                              61,
+                              48,
+                              94,
+                              27,
+                              56,
+                              174,
+                              250,
+                              225,
+                              52,
+                              108,
+                              25,
+                              72,
+                              72,
+                              57,
+                              224,
+                              250,
+                              29,
+                              141,
+                              82,
+                              65,
+                              235
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:338::.cctor",
+                          "key": "a974a84c",
+                          "kind": "method",
+                          "name": ".cctor",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              169,
+                              116,
+                              168,
+                              76,
+                              251,
+                              250,
+                              75,
+                              27,
+                              31,
+                              242,
+                              59,
+                              242,
+                              130,
+                              16,
+                              178,
+                              13,
+                              52,
+                              15,
+                              192,
+                              102,
+                              143,
+                              19,
+                              159,
+                              173,
+                              141,
+                              136,
+                              160,
+                              175,
+                              255,
+                              30,
+                              46,
+                              91
+                            ]
+                          }
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/csharp-tinyioc/project::Content/TinyIoC.cs:332::TypeExtensions",
+                      "key": "41676020",
+                      "kind": "class",
+                      "name": "TypeExtensions",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          65,
+                          103,
+                          96,
+                          32,
+                          180,
+                          74,
+                          51,
+                          20,
+                          47,
+                          38,
+                          3,
+                          170,
+                          66,
+                          81,
+                          154,
+                          161,
+                          28,
+                          108,
+                          217,
+                          152,
+                          159,
+                          101,
+                          240,
+                          166,
+                          8,
+                          239,
+                          219,
+                          199,
+                          134,
+                          17,
+                          26,
+                          20
                         ]
                       }
                     }

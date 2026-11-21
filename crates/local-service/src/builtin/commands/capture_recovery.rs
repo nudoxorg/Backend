@@ -186,6 +186,12 @@ impl CommandAdapter {
                 owner_fence,
             });
         }
+        // Recovery is the owner's own source-less transaction. A workspace
+        // holding SQL receipts requires the owner's receipt authority for it,
+        // and the publication worker is only one holder of that authority.
+        // Keep the shared context for the whole drain: a restart must be able
+        // to close the same markers it left Pending.
+        let receipt_context = self.receipt_context.clone();
         while let Some(candidate) = orphaned.pop() {
             let operation = candidate
                 .record
@@ -257,6 +263,7 @@ impl CommandAdapter {
                     SemanticUnavailableReason::Rejected
                 },
                 None,
+                receipt_context.as_deref(),
             )?;
             if let Some(operation) = operation {
                 if let Some(JournalEntry::Retained(entry)) = self

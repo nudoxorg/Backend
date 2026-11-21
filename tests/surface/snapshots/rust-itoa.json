@@ -8,9 +8,9 @@
       "json": {
         "answer": "outline",
         "budget": {
-          "bytesExcludingCursor": 19186,
+          "bytesExcludingCursor": 16721,
           "bytesPerToken": 4,
-          "estimatedTokensExcludingCursor": 4797
+          "estimatedTokensExcludingCursor": 4181
         },
         "declarations": 50,
         "detail": "summary",
@@ -2275,9 +2275,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 7710,
+          "bytes": 7017,
           "bytesPerToken": 4,
-          "estimatedTokens": 1928
+          "estimatedTokens": 1755
         },
         "coverage": [
           {
@@ -2349,7 +2349,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/lib.rs:64 \u203a Buffer"
+              "trail": "project › src/lib.rs:64 › Buffer"
             },
             "kind": "struct",
             "language": "rust",
@@ -2404,7 +2404,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/lib.rs:124 \u203a Buffer"
+              "trail": "project › src/lib.rs:124 › Buffer"
             },
             "kind": "type",
             "language": "rust",
@@ -2456,7 +2456,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a Buffer"
+              "trail": "project › Buffer"
             },
             "kind": "type",
             "language": "unknown",
@@ -2508,7 +2508,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a Buffer"
+              "trail": "project › Buffer"
             },
             "kind": "type",
             "language": "unknown",
@@ -2560,7 +2560,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a Buffer"
+              "trail": "project › Buffer"
             },
             "kind": "type",
             "language": "unknown",
@@ -2612,7 +2612,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a Buffer"
+              "trail": "project › Buffer"
             },
             "kind": "type",
             "language": "unknown",
@@ -2666,7 +2666,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/lib.rs:113 \u203a Integer"
+              "trail": "project › src/lib.rs:113 › Integer"
             },
             "kind": "trait",
             "language": "rust",
@@ -2721,7 +2721,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/lib.rs:90 \u203a new"
+              "trail": "project › src/lib.rs:90 › new"
             },
             "kind": "method",
             "language": "rust",
@@ -2776,7 +2776,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/lib.rs:70 \u203a default"
+              "trail": "project › src/lib.rs:70 › default"
             },
             "kind": "method",
             "language": "rust",
@@ -2830,7 +2830,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/lib.rs:80 \u203a clone"
+              "trail": "project › src/lib.rs:80 › clone"
             },
             "kind": "method",
             "language": "rust",
@@ -2884,7 +2884,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/lib.rs:98 \u203a format"
+              "trail": "project › src/lib.rs:98 › format"
             },
             "kind": "method",
             "language": "rust",
@@ -2937,7 +2937,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a self"
+              "trail": "project › self"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2989,7 +2989,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a self"
+              "trail": "project › self"
             },
             "kind": "variable",
             "language": "unknown",
@@ -3042,7 +3042,7 @@
                 ]
               },
               "shape": "external",
-              "trail": "project \u203a itoa::Buffer"
+              "trail": "project › itoa::Buffer"
             },
             "language": "unknown",
             "score": 4294967282,
@@ -3060,9 +3060,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 2247,
+          "bytes": 2096,
           "bytesPerToken": 4,
-          "estimatedTokens": 562
+          "estimatedTokens": 524
         },
         "coverage": [
           {
@@ -3134,7 +3134,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/lib.rs:98 \u203a format"
+              "trail": "project › src/lib.rs:98 › format"
             },
             "kind": "method",
             "language": "rust",
@@ -3189,7 +3189,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/lib.rs:64 \u203a Buffer"
+              "trail": "project › src/lib.rs:64 › Buffer"
             },
             "kind": "struct",
             "language": "rust",
@@ -3244,7 +3244,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/lib.rs:116 \u203a MAX_STR_LEN"
+              "trail": "project › src/lib.rs:116 › MAX_STR_LEN"
             },
             "kind": "constant",
             "language": "rust",
@@ -3275,8 +3275,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 854,
-                "normalizedFrameBytesExcludingCounters": 3414,
+                "normalizedEstimatedTokensExcludingCounters": 807,
+                "normalizedFrameBytesExcludingCounters": 3226,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -3285,7 +3285,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u27133\n\u2022 `Buffer` \u00b7 struct \u00b7 rust\n  `/tmp/nudox-surface/rust-itoa/project::semantic::5a4861e6846c8dc4ecd21cc9a22f859bb8d83903903ea7b75093153e834af80a::Buffer`\n\u2022 `Buffer` \u00b7 type \u00b7 rust\n  `/tmp/nudox-surface/rust-itoa/project::semantic::ede12026000b5881d73bff9e6596f0610ad21c8dff473c802154c8d631c51dfb::Buffer`\n\u2022 `Buffer` \u00b7 type \u00b7 unknown\n  `/tmp/nudox-surface/rust-itoa/project::semantic::f45d8ae3c25f39d1d5182c879a5932b17c30514f5abeb40a9d6b31afbfd0ef2d::Buffer`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `Buffer` · struct · rust\n  `/tmp/nudox-surface/rust-itoa/project::semantic::5a4861e6846c8dc4ecd21cc9a22f859bb8d83903903ea7b75093153e834af80a::Buffer`\n• `Buffer` · type · rust\n  `/tmp/nudox-surface/rust-itoa/project::semantic::ede12026000b5881d73bff9e6596f0610ad21c8dff473c802154c8d631c51dfb::Buffer`\n• `Buffer` · type · unknown\n  `/tmp/nudox-surface/rust-itoa/project::semantic::f45d8ae3c25f39d1d5182c879a5932b17c30514f5abeb40a9d6b31afbfd0ef2d::Buffer`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
                 "type": "text"
               }
             ],
@@ -3293,13 +3293,13 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytesExcludingCursor": 2112,
+                "bytesExcludingCursor": 1971,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 528
+                "estimatedTokensExcludingCursor": 493
               },
               "continuation_call": {
                 "arguments": {
-                  "cursor": "mcp2-<live-validated>",
+                  "cursor": "mcp3-<live-validated>",
                   "limit": 3,
                   "query": "Buffer"
                 },
@@ -3325,6 +3325,7 @@
               ],
               "detail": "summary",
               "more": true,
+              "nextCursor": "mcp3-<live-validated>",
               "query": "Buffer",
               "readiness": "ready",
               "records": [
@@ -3375,7 +3376,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/lib.rs:64 \u203a Buffer"
+                    "trail": "project › src/lib.rs:64 › Buffer"
                   },
                   "kind": "struct",
                   "language": "rust",
@@ -3430,7 +3431,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/lib.rs:124 \u203a Buffer"
+                    "trail": "project › src/lib.rs:124 › Buffer"
                   },
                   "kind": "type",
                   "language": "rust",
@@ -3482,7 +3483,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a Buffer"
+                    "trail": "project › Buffer"
                   },
                   "kind": "type",
                   "language": "unknown",
@@ -3508,9 +3509,9 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 3367,
+                "bytes": 3216,
                 "bytesPerToken": 4,
-                "estimatedTokens": 842,
+                "estimatedTokens": 804,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
                 "scope": "complete_jsonrpc_line",
@@ -3521,7 +3522,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u27133\n\u2022 `format` \u00b7 method \u00b7 rust\n  `/tmp/nudox-surface/rust-itoa/project::semantic::001e7dad965b3327185501cb4ddccf352e8d498d3b2198c4b47b6186f3b2bdf9::format`\n\u2022 `Buffer` \u00b7 struct \u00b7 rust\n  `/tmp/nudox-surface/rust-itoa/project::semantic::5a4861e6846c8dc4ecd21cc9a22f859bb8d83903903ea7b75093153e834af80a::Buffer`\n\u2022 `MAX_STR_LEN` \u00b7 constant \u00b7 rust\n  `/tmp/nudox-surface/rust-itoa/project::semantic::5812676c99414605652e1024e6d6de0e616fd7814a334ca84647dd112f99612a::MAX_STR_LEN`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `format` · method · rust\n  `/tmp/nudox-surface/rust-itoa/project::semantic::001e7dad965b3327185501cb4ddccf352e8d498d3b2198c4b47b6186f3b2bdf9::format`\n• `Buffer` · struct · rust\n  `/tmp/nudox-surface/rust-itoa/project::semantic::5a4861e6846c8dc4ecd21cc9a22f859bb8d83903903ea7b75093153e834af80a::Buffer`\n• `MAX_STR_LEN` · constant · rust\n  `/tmp/nudox-surface/rust-itoa/project::semantic::5812676c99414605652e1024e6d6de0e616fd7814a334ca84647dd112f99612a::MAX_STR_LEN`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
                 "type": "text"
               }
             ],
@@ -3529,9 +3530,9 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytes": 2247,
+                "bytes": 2096,
                 "bytesPerToken": 4,
-                "estimatedTokens": 562
+                "estimatedTokens": 524
               },
               "coverage": [
                 {
@@ -3603,7 +3604,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/lib.rs:98 \u203a format"
+                    "trail": "project › src/lib.rs:98 › format"
                   },
                   "kind": "method",
                   "language": "rust",
@@ -3658,7 +3659,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/lib.rs:64 \u203a Buffer"
+                    "trail": "project › src/lib.rs:64 › Buffer"
                   },
                   "kind": "struct",
                   "language": "rust",
@@ -3713,7 +3714,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/lib.rs:116 \u203a MAX_STR_LEN"
+                    "trail": "project › src/lib.rs:116 › MAX_STR_LEN"
                   },
                   "kind": "constant",
                   "language": "rust",
@@ -3740,8 +3741,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 5488,
-                "normalizedFrameBytesExcludingCounters": 21949,
+                "normalizedEstimatedTokensExcludingCounters": 4871,
+                "normalizedFrameBytesExcludingCounters": 19484,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -3750,7 +3751,7 @@
             },
             "content": [
               {
-                "text": "# project\n`/tmp/nudox-surface/rust-itoa/project`\n\n\u25a3 Buffer  `src/lib.rs:64 \u203a Buffer`\n  \u00b7 bytes  `src/lib.rs:65 \u203a bytes`\n\u25c7 Integer  `src/lib.rs:113 \u203a Integer`\n  \u25aa MAX_STR_LEN  `src/lib.rs:116 \u203a MAX_STR_LEN`\n! benches  `benches/bench.rs:7 \u203a benches`\n! impl_Integer_size  `src/lib.rs:224 \u203a impl_Integer_size`\n\u25aa DEC_DIGITS_LUT  `src/lib.rs:129 \u203a DEC_DIGITS_LUT`\n! impl_Integer128  `src/lib.rs:251 \u203a impl_Integer128`\n! impl_Integer  `src/lib.rs:138 \u203a impl_Integer`\n\u0192 u128_mulhi  `src/udiv128.rs:7 \u203a u128_mulhi`\n  \u25ab x  `x`\n  \u25ab u128_mulhi  `u128_mulhi`\n  \u25ab y  `y`\n\u0192 udivmod_1e19  `src/udiv128.rs:34 \u203a udivmod_1e19`\n  \u25ab n  `n`\n  \u25ab udivmod_1e19  `udivmod_1e19`\n\u25a6 udiv128  `src/lib.rs:46 \u203a udiv128`\n\u25a6 private  `src/lib.rs:120 \u203a private`\n  \u25c7 Sealed  `src/lib.rs:122 \u203a Sealed`\n    \u03c4 Buffer  `src/lib.rs:124 \u203a Buffer`\n    \u0192 write  `src/lib.rs:125 \u203a write`\n      \u25ab buf  `buf`\n      \u25ab self  `self`\n      \u25ab write  `write`\n! test  `tests/test.rs:4 \u203a test`\n\u0192 test_i128_max  `test_i128_max`\n  \u25ab test_i128_max  `test_i128_max`\n\u03c4 isize  `isize`\n\u0192 bench_i16_0  `bench_i16_0`\n  \u25ab b  `b`\n  \u25ab bench_i16_0  `bench_i16_0`\n\u0192 bench_i16_min  `bench_i16_min`\n  \u25ab b  `b`\n  \u25ab bench_i16_min  `bench_i16_min`\n\u0192 test_u64_half  `test_u64_half`\n  \u25ab test_u64_half  `test_u64_half`\n\u03c4 i16  `i16`\n  \u03c4 i16  `i16`\n\u03c4 Buffer  `Buffer`\n  \u0192 clone  `src/lib.rs:80 \u203a clone`\n    \u25ab clone  `clone`\n    \u25ab self  `self`\n\u0192 bench_u64_0  `bench_u64_0`\n  \u25ab b  `b`\n  \u25ab bench_u64_0  `bench_u64_0`\n\u0192 bench_u64_half  `bench_u64_half`\n  \u25ab b  `b`\n  \u25ab bench_u64_half  `bench_u64_half`\n\u03c4 u128  `u128`\n\u03c4 Buffer  `Buffer`\n50 declaration(s) \u00b7 truncated (outline pagination only; analysis coverage is not certified)\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 50 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/rust-itoa/project\",\"limit\":50,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
+                "text": "# project\n`/tmp/nudox-surface/rust-itoa/project`\n\n▣ Buffer  `src/lib.rs:64 › Buffer`\n  · bytes  `src/lib.rs:65 › bytes`\n◇ Integer  `src/lib.rs:113 › Integer`\n  ▪ MAX_STR_LEN  `src/lib.rs:116 › MAX_STR_LEN`\n! benches  `benches/bench.rs:7 › benches`\n! impl_Integer_size  `src/lib.rs:224 › impl_Integer_size`\n▪ DEC_DIGITS_LUT  `src/lib.rs:129 › DEC_DIGITS_LUT`\n! impl_Integer128  `src/lib.rs:251 › impl_Integer128`\n! impl_Integer  `src/lib.rs:138 › impl_Integer`\nƒ u128_mulhi  `src/udiv128.rs:7 › u128_mulhi`\n  ▫ x  `x`\n  ▫ u128_mulhi  `u128_mulhi`\n  ▫ y  `y`\nƒ udivmod_1e19  `src/udiv128.rs:34 › udivmod_1e19`\n  ▫ n  `n`\n  ▫ udivmod_1e19  `udivmod_1e19`\n▦ udiv128  `src/lib.rs:46 › udiv128`\n▦ private  `src/lib.rs:120 › private`\n  ◇ Sealed  `src/lib.rs:122 › Sealed`\n    τ Buffer  `src/lib.rs:124 › Buffer`\n    ƒ write  `src/lib.rs:125 › write`\n      ▫ buf  `buf`\n      ▫ self  `self`\n      ▫ write  `write`\n! test  `tests/test.rs:4 › test`\nƒ test_i128_max  `test_i128_max`\n  ▫ test_i128_max  `test_i128_max`\nτ isize  `isize`\nƒ bench_i16_0  `bench_i16_0`\n  ▫ b  `b`\n  ▫ bench_i16_0  `bench_i16_0`\nƒ bench_i16_min  `bench_i16_min`\n  ▫ b  `b`\n  ▫ bench_i16_min  `bench_i16_min`\nƒ test_u64_half  `test_u64_half`\n  ▫ test_u64_half  `test_u64_half`\nτ i16  `i16`\n  τ i16  `i16`\nτ Buffer  `Buffer`\n  ƒ clone  `src/lib.rs:80 › clone`\n    ▫ clone  `clone`\n    ▫ self  `self`\nƒ bench_u64_0  `bench_u64_0`\n  ▫ b  `b`\n  ▫ bench_u64_0  `bench_u64_0`\nƒ bench_u64_half  `bench_u64_half`\n  ▫ b  `b`\n  ▫ bench_u64_half  `bench_u64_half`\nτ u128  `u128`\nτ Buffer  `Buffer`\n50 declaration(s) · truncated (outline pagination only; analysis coverage is not certified)\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 50 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/rust-itoa/project\",\"limit\":50,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
                 "type": "text"
               }
             ],
@@ -3758,14 +3759,14 @@
             "structuredContent": {
               "answer": "outline",
               "budget": {
-                "bytesExcludingCursor": 19185,
+                "bytesExcludingCursor": 16720,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 4797
+                "estimatedTokensExcludingCursor": 4180
               },
               "declarations": 50,
               "detail": "summary",
               "extent": "truncated",
-              "nextCursor": "mcp2-<live-validated>",
+              "nextCursor": "mcp3-<live-validated>",
               "package": {
                 "coordinate": "/tmp/nudox-surface/rust-itoa/project",
                 "key": "17f85615",
