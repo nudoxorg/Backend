@@ -409,6 +409,9 @@ let
           rss_limit_mb = 4096;
           refuse = [
             "-max_total_time"
+            "-fork="
+            "-jobs="
+            "-workers="
             "omitted-argv1"
             "corpus-path-other-than-/durable/fuzz/<name>/corpus"
           ];
@@ -774,6 +777,10 @@ let
                     ;;
                   -max_total_time*)
                     echo "refusing -max_total_time; the supervisor owns campaign lifetime. -timeout is the per-input hang cap." >&2
+                    exit 2
+                    ;;
+                  -fork=* | -jobs=* | -workers=*)
+                    echo "refusing $arg; it takes libFuzzer out of in-process execution, and the supervisor owns the process model." >&2
                     exit 2
                     ;;
                 esac
