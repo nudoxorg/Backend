@@ -205,14 +205,13 @@ fn installed_package_sources_refuse_symlinks_escapes_and_nonregular_files() {
     .unwrap();
     fs::write(external.join("README.md"), "must not escape").unwrap();
     symlink(external.join("README.md"), package.join("README.md")).unwrap();
-    rustix::fs::mknodat(
-        rustix::fs::CWD,
-        package.join("pipe.js"),
-        rustix::fs::FileType::Fifo,
-        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
-        0,
-    )
-    .unwrap();
+    // `mkfifo` exists on both supported Unix hosts; rustix only exports
+    // `mknodat` on Linux, so use the portable program instead.
+    let fifo = std::process::Command::new("mkfifo")
+        .arg(package.join("pipe.js"))
+        .status()
+        .expect("run mkfifo");
+    assert!(fifo.success(), "mkfifo refused: {fifo}");
     let selected = package_view(b"installed-package-confinement", &[root.as_path()]);
     let requested = PackageReference::parse("pkg:npm/vue@3.5.44").unwrap();
     let rows = super::super::installed_packages::find(&selected, &requested, false).unwrap();

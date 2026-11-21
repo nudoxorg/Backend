@@ -8,9 +8,9 @@
       "json": {
         "answer": "outline",
         "budget": {
-          "bytesExcludingCursor": 20543,
+          "bytesExcludingCursor": 18072,
           "bytesPerToken": 4,
-          "estimatedTokensExcludingCursor": 5136
+          "estimatedTokensExcludingCursor": 4518
         },
         "declarations": 50,
         "detail": "summary",
@@ -2283,9 +2283,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 8550,
+          "bytes": 7909,
           "bytesPerToken": 4,
-          "estimatedTokens": 2138
+          "estimatedTokens": 1978
         },
         "coverage": [
           {
@@ -2357,7 +2357,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a javax/annotation/Nullable.java:25 \u203a javax.annotation.Nullable"
+              "trail": "project › javax/annotation/Nullable.java:25 › javax.annotation.Nullable"
             },
             "kind": "interface",
             "language": "java",
@@ -2412,7 +2412,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a javax/annotation/ParametersAreNonnullByDefault.java:23 \u203a javax.annotation.ParametersAreNonnullByDefault"
+              "trail": "project › javax/annotation/ParametersAreNonnullByDefault.java:23 › javax.annotation.ParametersAreNonnullByDefault"
             },
             "kind": "interface",
             "language": "java",
@@ -2467,7 +2467,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a javax/annotation/Nonnull.java:18 \u203a javax.annotation.Nonnull"
+              "trail": "project › javax/annotation/Nonnull.java:18 › javax.annotation.Nonnull"
             },
             "kind": "interface",
             "language": "java",
@@ -2522,7 +2522,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a javax/annotation/ParametersAreNullableByDefault.java:25 \u203a javax.annotation.ParametersAreNullableByDefault"
+              "trail": "project › javax/annotation/ParametersAreNullableByDefault.java:25 › javax.annotation.ParametersAreNullableByDefault"
             },
             "kind": "interface",
             "language": "java",
@@ -2577,7 +2577,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a javax/annotation/Nonnull.java:24 \u203a javax.annotation.Nonnull.Checker"
+              "trail": "project › javax/annotation/Nonnull.java:24 › javax.annotation.Nonnull.Checker"
             },
             "kind": "class",
             "language": "java",
@@ -2631,7 +2631,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a javax/annotation/Nonnull.java:26 \u203a forConstantValue"
+              "trail": "project › javax/annotation/Nonnull.java:26 › forConstantValue"
             },
             "kind": "method",
             "language": "java",
@@ -2683,7 +2683,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a qualifierArgument"
+              "trail": "project › qualifierArgument"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2735,7 +2735,7 @@
                 ]
               },
               "shape": "external",
-              "trail": "project \u203a Nonnull"
+              "trail": "project › Nonnull"
             },
             "language": "unknown",
             "score": 4294967288,
@@ -2786,7 +2786,7 @@
                 ]
               },
               "shape": "external",
-              "trail": "project \u203a javax.annotation.Nonnull"
+              "trail": "project › javax.annotation.Nonnull"
             },
             "language": "unknown",
             "score": 4294967287,
@@ -2837,7 +2837,7 @@
                 ]
               },
               "shape": "external",
-              "trail": "project \u203a javax.annotation.Nonnull"
+              "trail": "project › javax.annotation.Nonnull"
             },
             "language": "unknown",
             "score": 4294967286,
@@ -2888,7 +2888,7 @@
                 ]
               },
               "shape": "external",
-              "trail": "project \u203a javax.annotation.Nonnull"
+              "trail": "project › javax.annotation.Nonnull"
             },
             "language": "unknown",
             "score": 4294967285,
@@ -2939,7 +2939,7 @@
                 ]
               },
               "shape": "external",
-              "trail": "project \u203a javax.annotation.Nonnull"
+              "trail": "project › javax.annotation.Nonnull"
             },
             "language": "unknown",
             "score": 4294967284,
@@ -2990,7 +2990,7 @@
                 ]
               },
               "shape": "external",
-              "trail": "project \u203a ParametersAreNonnullByDefault"
+              "trail": "project › ParametersAreNonnullByDefault"
             },
             "language": "unknown",
             "score": 4294967283,
@@ -3008,9 +3008,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 3961,
+          "bytes": 3712,
           "bytesPerToken": 4,
-          "estimatedTokens": 991
+          "estimatedTokens": 928
         },
         "coverage": [
           {
@@ -3082,7 +3082,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a javax/annotation/ParametersAreNullableByDefault.java:25 \u203a javax.annotation.ParametersAreNullableByDefault"
+              "trail": "project › javax/annotation/ParametersAreNullableByDefault.java:25 › javax.annotation.ParametersAreNullableByDefault"
             },
             "kind": "interface",
             "language": "java",
@@ -3137,7 +3137,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a javax/annotation/Nullable.java:25 \u203a javax.annotation.Nullable"
+              "trail": "project › javax/annotation/Nullable.java:25 › javax.annotation.Nullable"
             },
             "kind": "interface",
             "language": "java",
@@ -3192,7 +3192,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a javax/annotation/ParametersAreNonnullByDefault.java:23 \u203a javax.annotation.ParametersAreNonnullByDefault"
+              "trail": "project › javax/annotation/ParametersAreNonnullByDefault.java:23 › javax.annotation.ParametersAreNonnullByDefault"
             },
             "kind": "interface",
             "language": "java",
@@ -3245,7 +3245,7 @@
                 ]
               },
               "shape": "external",
-              "trail": "project \u203a javax.annotation.Nullable"
+              "trail": "project › javax.annotation.Nullable"
             },
             "language": "unknown",
             "score": 4294967292,
@@ -3296,7 +3296,7 @@
                 ]
               },
               "shape": "external",
-              "trail": "project \u203a ParametersAreNullableByDefault"
+              "trail": "project › ParametersAreNullableByDefault"
             },
             "language": "unknown",
             "score": 4294967291,
@@ -3325,8 +3325,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 1060,
-                "normalizedFrameBytesExcludingCounters": 4238,
+                "normalizedEstimatedTokensExcludingCounters": 1015,
+                "normalizedFrameBytesExcludingCounters": 4057,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -3335,7 +3335,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u27133\n\u2022 `javax.annotation.Nullable` \u00b7 interface \u00b7 java\n  `/tmp/nudox-surface/java-jsr305/project::semantic::cc5ae96a3794a82d0fe5b8ff27ef80de0c6d322d473968d1ec75c11e815de069::javax.annotation.Nullable`\n\u2022 `javax.annotation.ParametersAreNonnullByDefault` \u00b7 interface \u00b7 java\n  `/tmp/nudox-surface/java-jsr305/project::semantic::851c59abacad71ded636eaf397559f6260a4976686f770c9cd9ebc546b6ee4fd::javax.annotation.ParametersAreNonnullByDefault`\n\u2022 `javax.annotation.Nonnull` \u00b7 interface \u00b7 java\n  `/tmp/nudox-surface/java-jsr305/project::semantic::42ab1d9a59a7a663cdbceb98a9282e8eda8de0b6a9a6e696938d944586f9acb9::javax.annotation.Nonnull`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `javax.annotation.Nullable` · interface · java\n  `/tmp/nudox-surface/java-jsr305/project::semantic::cc5ae96a3794a82d0fe5b8ff27ef80de0c6d322d473968d1ec75c11e815de069::javax.annotation.Nullable`\n• `javax.annotation.ParametersAreNonnullByDefault` · interface · java\n  `/tmp/nudox-surface/java-jsr305/project::semantic::851c59abacad71ded636eaf397559f6260a4976686f770c9cd9ebc546b6ee4fd::javax.annotation.ParametersAreNonnullByDefault`\n• `javax.annotation.Nonnull` · interface · java\n  `/tmp/nudox-surface/java-jsr305/project::semantic::42ab1d9a59a7a663cdbceb98a9282e8eda8de0b6a9a6e696938d944586f9acb9::javax.annotation.Nonnull`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
                 "type": "text"
               }
             ],
@@ -3343,13 +3343,13 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytesExcludingCursor": 2766,
+                "bytesExcludingCursor": 2632,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 692
+                "estimatedTokensExcludingCursor": 658
               },
               "continuation_call": {
                 "arguments": {
-                  "cursor": "mcp2-<live-validated>",
+                  "cursor": "mcp3-<live-validated>",
                   "limit": 3,
                   "query": "Nonnull"
                 },
@@ -3375,6 +3375,7 @@
               ],
               "detail": "summary",
               "more": true,
+              "nextCursor": "mcp3-<live-validated>",
               "query": "Nonnull",
               "readiness": "ready",
               "records": [
@@ -3425,7 +3426,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a javax/annotation/Nullable.java:25 \u203a javax.annotation.Nullable"
+                    "trail": "project › javax/annotation/Nullable.java:25 › javax.annotation.Nullable"
                   },
                   "kind": "interface",
                   "language": "java",
@@ -3480,7 +3481,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a javax/annotation/ParametersAreNonnullByDefault.java:23 \u203a javax.annotation.ParametersAreNonnullByDefault"
+                    "trail": "project › javax/annotation/ParametersAreNonnullByDefault.java:23 › javax.annotation.ParametersAreNonnullByDefault"
                   },
                   "kind": "interface",
                   "language": "java",
@@ -3535,7 +3536,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a javax/annotation/Nonnull.java:18 \u203a javax.annotation.Nonnull"
+                    "trail": "project › javax/annotation/Nonnull.java:18 › javax.annotation.Nonnull"
                   },
                   "kind": "interface",
                   "language": "java",
@@ -3565,8 +3566,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 1116,
-                "normalizedFrameBytesExcludingCounters": 4464,
+                "normalizedEstimatedTokensExcludingCounters": 1071,
+                "normalizedFrameBytesExcludingCounters": 4281,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -3575,7 +3576,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u27133\n\u2022 `javax.annotation.ParametersAreNullableByDefault` \u00b7 interface \u00b7 java\n  `/tmp/nudox-surface/java-jsr305/project::semantic::b69074973d0f9dc4481c17cf3d8ad32c3fe9f2ce3b1f837bd5f4e4d4177d4b7d::javax.annotation.ParametersAreNullableByDefault`\n\u2022 `javax.annotation.Nullable` \u00b7 interface \u00b7 java\n  `/tmp/nudox-surface/java-jsr305/project::semantic::cc5ae96a3794a82d0fe5b8ff27ef80de0c6d322d473968d1ec75c11e815de069::javax.annotation.Nullable`\n\u2022 `javax.annotation.ParametersAreNonnullByDefault` \u00b7 interface \u00b7 java\n  `/tmp/nudox-surface/java-jsr305/project::semantic::851c59abacad71ded636eaf397559f6260a4976686f770c9cd9ebc546b6ee4fd::javax.annotation.ParametersAreNonnullByDefault`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `javax.annotation.ParametersAreNullableByDefault` · interface · java\n  `/tmp/nudox-surface/java-jsr305/project::semantic::b69074973d0f9dc4481c17cf3d8ad32c3fe9f2ce3b1f837bd5f4e4d4177d4b7d::javax.annotation.ParametersAreNullableByDefault`\n• `javax.annotation.Nullable` · interface · java\n  `/tmp/nudox-surface/java-jsr305/project::semantic::cc5ae96a3794a82d0fe5b8ff27ef80de0c6d322d473968d1ec75c11e815de069::javax.annotation.Nullable`\n• `javax.annotation.ParametersAreNonnullByDefault` · interface · java\n  `/tmp/nudox-surface/java-jsr305/project::semantic::851c59abacad71ded636eaf397559f6260a4976686f770c9cd9ebc546b6ee4fd::javax.annotation.ParametersAreNonnullByDefault`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
                 "type": "text"
               }
             ],
@@ -3583,13 +3584,13 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytesExcludingCursor": 2946,
+                "bytesExcludingCursor": 2810,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 737
+                "estimatedTokensExcludingCursor": 703
               },
               "continuation_call": {
                 "arguments": {
-                  "cursor": "mcp2-<live-validated>",
+                  "cursor": "mcp3-<live-validated>",
                   "limit": 3,
                   "query": "Nullable"
                 },
@@ -3615,6 +3616,7 @@
               ],
               "detail": "summary",
               "more": true,
+              "nextCursor": "mcp3-<live-validated>",
               "query": "Nullable",
               "readiness": "ready",
               "records": [
@@ -3665,7 +3667,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a javax/annotation/ParametersAreNullableByDefault.java:25 \u203a javax.annotation.ParametersAreNullableByDefault"
+                    "trail": "project › javax/annotation/ParametersAreNullableByDefault.java:25 › javax.annotation.ParametersAreNullableByDefault"
                   },
                   "kind": "interface",
                   "language": "java",
@@ -3720,7 +3722,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a javax/annotation/Nullable.java:25 \u203a javax.annotation.Nullable"
+                    "trail": "project › javax/annotation/Nullable.java:25 › javax.annotation.Nullable"
                   },
                   "kind": "interface",
                   "language": "java",
@@ -3775,7 +3777,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a javax/annotation/ParametersAreNonnullByDefault.java:23 \u203a javax.annotation.ParametersAreNonnullByDefault"
+                    "trail": "project › javax/annotation/ParametersAreNonnullByDefault.java:23 › javax.annotation.ParametersAreNonnullByDefault"
                   },
                   "kind": "interface",
                   "language": "java",
@@ -3802,8 +3804,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 6351,
-                "normalizedFrameBytesExcludingCounters": 25403,
+                "normalizedEstimatedTokensExcludingCounters": 5733,
+                "normalizedFrameBytesExcludingCounters": 22932,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -3812,7 +3814,7 @@
             },
             "content": [
               {
-                "text": "# project\n`/tmp/nudox-surface/java-jsr305/project`\n\n\u25c7 javax.annotation.CheckForNull  `javax/annotation/CheckForNull.java:15 \u203a javax.annotation.CheckForNull`\n\u25c7 javax.annotation.CheckForSigned  `javax/annotation/CheckForSigned.java:17 \u203a javax.annotation.CheckForSigned`\n\u25c7 javax.annotation.CheckReturnValue  `javax/annotation/CheckReturnValue.java:15 \u203a javax.annotation.CheckReturnValue`\n  \u0192 when  `javax/annotation/CheckReturnValue.java:20 \u203a when`\n    \u25ab javax.annotation.meta.When  `javax.annotation.meta.When`\n\u25c7 javax.annotation.Detainted  `javax/annotation/Detainted.java:10 \u203a javax.annotation.Detainted`\n\u25c7 javax.annotation.MatchesPattern  `javax/annotation/MatchesPattern.java:17 \u203a javax.annotation.MatchesPattern`\n  \u25c6 javax.annotation.MatchesPattern.Checker  `javax/annotation/MatchesPattern.java:26 \u203a javax.annotation.MatchesPattern.Checker`\n    \u0192 forConstantValue  `javax/annotation/MatchesPattern.java:27 \u203a forConstantValue`\n      \u25ab annotation  `annotation`\n      \u25ab value  `value`\n      \u25ab javax.annotation.meta.When  `javax.annotation.meta.When`\n    \u0192 <init>  `<init>`\n  \u0192 flags  `javax/annotation/MatchesPattern.java:24 \u203a flags`\n    \u25ab int  `int`\n  \u0192 value  `javax/annotation/MatchesPattern.java:21 \u203a value`\n    \u25ab java.lang.String  `java.lang.String`\n\u25c7 javax.annotation.Nonnegative  `javax/annotation/Nonnegative.java:16 \u203a javax.annotation.Nonnegative`\n  \u25c6 javax.annotation.Nonnegative.Checker  `javax/annotation/Nonnegative.java:22 \u203a javax.annotation.Nonnegative.Checker`\n    \u0192 forConstantValue  `javax/annotation/Nonnegative.java:24 \u203a forConstantValue`\n      \u25ab annotation  `annotation`\n      \u25ab javax.annotation.meta.When  `javax.annotation.meta.When`\n      \u25ab v  `v`\n    \u0192 <init>  `<init>`\n  \u0192 when  `javax/annotation/Nonnegative.java:20 \u203a when`\n    \u25ab javax.annotation.meta.When  `javax.annotation.meta.When`\n\u25c7 javax.annotation.Nonnull  `javax/annotation/Nonnull.java:18 \u203a javax.annotation.Nonnull`\n  \u25c6 javax.annotation.Nonnull.Checker  `javax/annotation/Nonnull.java:24 \u203a javax.annotation.Nonnull.Checker`\n    \u0192 forConstantValue  `javax/annotation/Nonnull.java:26 \u203a forConstantValue`\n      \u25ab javax.annotation.meta.When  `javax.annotation.meta.When`\n      \u25ab value  `value`\n      \u25ab qualifierArgument  `qualifierArgument`\n    \u0192 <init>  `<init>`\n  \u0192 when  `javax/annotation/Nonnull.java:22 \u203a when`\n    \u25ab javax.annotation.meta.When  `javax.annotation.meta.When`\n\u25c7 javax.annotation.Nullable  `javax/annotation/Nullable.java:25 \u203a javax.annotation.Nullable`\n\u25c7 javax.annotation.OverridingMethodsMustInvokeSuper  `javax/annotation/OverridingMethodsMustInvokeSuper.java:16 \u203a javax.annotation.OverridingMethodsMustInvokeSuper`\n\u25c7 javax.annotation.ParametersAreNonnullByDefault  `javax/annotation/ParametersAreNonnullByDefault.java:23 \u203a javax.annotation.ParametersAreNonnullByDefault`\n\u25c7 javax.annotation.ParametersAreNullableByDefault  `javax/annotation/ParametersAreNullableByDefault.java:25 \u203a javax.annotation.ParametersAreNullableByDefault`\n\u25c7 javax.annotation.PropertyKey  `javax/annotation/PropertyKey.java:10 \u203a javax.annotation.PropertyKey`\n  \u0192 when  `javax/annotation/PropertyKey.java:14 \u203a when`\n    \u25ab javax.annotation.meta.When  `javax.annotation.meta.When`\n\u25c7 javax.annotation.RegEx  `javax/annotation/RegEx.java:19 \u203a javax.annotation.RegEx`\n  \u25c6 javax.annotation.RegEx.Checker  `javax/annotation/RegEx.java:26 \u203a javax.annotation.RegEx.Checker`\n    \u0192 forConstantValue  `javax/annotation/RegEx.java:28 \u203a forConstantValue`\n      \u25ab value  `value`\n      \u25ab annotation  `annotation`\n      \u25ab javax.annotation.meta.When  `javax.annotation.meta.When`\n    \u0192 <init>  `<init>`\n  \u0192 when  `javax/annotation/RegEx.java:24 \u203a when`\n50 declaration(s) \u00b7 truncated (outline pagination only; analysis coverage is not certified)\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 50 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/java-jsr305/project\",\"limit\":50,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
+                "text": "# project\n`/tmp/nudox-surface/java-jsr305/project`\n\n◇ javax.annotation.CheckForNull  `javax/annotation/CheckForNull.java:15 › javax.annotation.CheckForNull`\n◇ javax.annotation.CheckForSigned  `javax/annotation/CheckForSigned.java:17 › javax.annotation.CheckForSigned`\n◇ javax.annotation.CheckReturnValue  `javax/annotation/CheckReturnValue.java:15 › javax.annotation.CheckReturnValue`\n  ƒ when  `javax/annotation/CheckReturnValue.java:20 › when`\n    ▫ javax.annotation.meta.When  `javax.annotation.meta.When`\n◇ javax.annotation.Detainted  `javax/annotation/Detainted.java:10 › javax.annotation.Detainted`\n◇ javax.annotation.MatchesPattern  `javax/annotation/MatchesPattern.java:17 › javax.annotation.MatchesPattern`\n  ◆ javax.annotation.MatchesPattern.Checker  `javax/annotation/MatchesPattern.java:26 › javax.annotation.MatchesPattern.Checker`\n    ƒ forConstantValue  `javax/annotation/MatchesPattern.java:27 › forConstantValue`\n      ▫ annotation  `annotation`\n      ▫ value  `value`\n      ▫ javax.annotation.meta.When  `javax.annotation.meta.When`\n    ƒ <init>  `<init>`\n  ƒ flags  `javax/annotation/MatchesPattern.java:24 › flags`\n    ▫ int  `int`\n  ƒ value  `javax/annotation/MatchesPattern.java:21 › value`\n    ▫ java.lang.String  `java.lang.String`\n◇ javax.annotation.Nonnegative  `javax/annotation/Nonnegative.java:16 › javax.annotation.Nonnegative`\n  ◆ javax.annotation.Nonnegative.Checker  `javax/annotation/Nonnegative.java:22 › javax.annotation.Nonnegative.Checker`\n    ƒ forConstantValue  `javax/annotation/Nonnegative.java:24 › forConstantValue`\n      ▫ annotation  `annotation`\n      ▫ javax.annotation.meta.When  `javax.annotation.meta.When`\n      ▫ v  `v`\n    ƒ <init>  `<init>`\n  ƒ when  `javax/annotation/Nonnegative.java:20 › when`\n    ▫ javax.annotation.meta.When  `javax.annotation.meta.When`\n◇ javax.annotation.Nonnull  `javax/annotation/Nonnull.java:18 › javax.annotation.Nonnull`\n  ◆ javax.annotation.Nonnull.Checker  `javax/annotation/Nonnull.java:24 › javax.annotation.Nonnull.Checker`\n    ƒ forConstantValue  `javax/annotation/Nonnull.java:26 › forConstantValue`\n      ▫ javax.annotation.meta.When  `javax.annotation.meta.When`\n      ▫ value  `value`\n      ▫ qualifierArgument  `qualifierArgument`\n    ƒ <init>  `<init>`\n  ƒ when  `javax/annotation/Nonnull.java:22 › when`\n    ▫ javax.annotation.meta.When  `javax.annotation.meta.When`\n◇ javax.annotation.Nullable  `javax/annotation/Nullable.java:25 › javax.annotation.Nullable`\n◇ javax.annotation.OverridingMethodsMustInvokeSuper  `javax/annotation/OverridingMethodsMustInvokeSuper.java:16 › javax.annotation.OverridingMethodsMustInvokeSuper`\n◇ javax.annotation.ParametersAreNonnullByDefault  `javax/annotation/ParametersAreNonnullByDefault.java:23 › javax.annotation.ParametersAreNonnullByDefault`\n◇ javax.annotation.ParametersAreNullableByDefault  `javax/annotation/ParametersAreNullableByDefault.java:25 › javax.annotation.ParametersAreNullableByDefault`\n◇ javax.annotation.PropertyKey  `javax/annotation/PropertyKey.java:10 › javax.annotation.PropertyKey`\n  ƒ when  `javax/annotation/PropertyKey.java:14 › when`\n    ▫ javax.annotation.meta.When  `javax.annotation.meta.When`\n◇ javax.annotation.RegEx  `javax/annotation/RegEx.java:19 › javax.annotation.RegEx`\n  ◆ javax.annotation.RegEx.Checker  `javax/annotation/RegEx.java:26 › javax.annotation.RegEx.Checker`\n    ƒ forConstantValue  `javax/annotation/RegEx.java:28 › forConstantValue`\n      ▫ value  `value`\n      ▫ annotation  `annotation`\n      ▫ javax.annotation.meta.When  `javax.annotation.meta.When`\n    ƒ <init>  `<init>`\n  ƒ when  `javax/annotation/RegEx.java:24 › when`\n50 declaration(s) · truncated (outline pagination only; analysis coverage is not certified)\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 50 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/java-jsr305/project\",\"limit\":50,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
                 "type": "text"
               }
             ],
@@ -3820,14 +3822,14 @@
             "structuredContent": {
               "answer": "outline",
               "budget": {
-                "bytesExcludingCursor": 20542,
+                "bytesExcludingCursor": 18071,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 5136
+                "estimatedTokensExcludingCursor": 4518
               },
               "declarations": 50,
               "detail": "summary",
               "extent": "truncated",
-              "nextCursor": "mcp2-<live-validated>",
+              "nextCursor": "mcp3-<live-validated>",
               "package": {
                 "coordinate": "/tmp/nudox-surface/java-jsr305/project",
                 "key": "309d6b17",

@@ -8,9 +8,9 @@
       "json": {
         "answer": "outline",
         "budget": {
-          "bytesExcludingCursor": 10118,
+          "bytesExcludingCursor": 8890,
           "bytesPerToken": 4,
-          "estimatedTokensExcludingCursor": 2530
+          "estimatedTokensExcludingCursor": 2223
         },
         "declarations": 25,
         "detail": "summary",
@@ -1184,9 +1184,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 2297,
+          "bytes": 2146,
           "bytesPerToken": 4,
-          "estimatedTokens": 575
+          "estimatedTokens": 537
         },
         "coverage": [
           {
@@ -1258,7 +1258,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/tomli/_parser.py:71 \u203a TOMLDecodeError"
+              "trail": "project › src/tomli/_parser.py:71 › TOMLDecodeError"
             },
             "kind": "class",
             "language": "python",
@@ -1313,7 +1313,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/tomli/__init__.py:8 \u203a TOMLDecodeError"
+              "trail": "project › src/tomli/__init__.py:8 › TOMLDecodeError"
             },
             "kind": "import",
             "language": "python",
@@ -1367,7 +1367,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/tomli/_parser.py:66 \u203a DEPRECATED_DEFAULT"
+              "trail": "project › src/tomli/_parser.py:66 › DEPRECATED_DEFAULT"
             },
             "kind": "class",
             "language": "python",
@@ -1387,9 +1387,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 1525,
+          "bytes": 1425,
           "bytesPerToken": 4,
-          "estimatedTokens": 382
+          "estimatedTokens": 357
         },
         "coverage": [
           {
@@ -1461,7 +1461,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/tomli/_parser.py:142 \u203a loads"
+              "trail": "project › src/tomli/_parser.py:142 › loads"
             },
             "kind": "function",
             "language": "python",
@@ -1516,7 +1516,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/tomli/__init__.py:8 \u203a loads"
+              "trail": "project › src/tomli/__init__.py:8 › loads"
             },
             "kind": "import",
             "language": "python",
@@ -1552,9 +1552,9 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 2483,
+                "bytes": 2383,
                 "bytesPerToken": 4,
-                "estimatedTokens": 621,
+                "estimatedTokens": 596,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
                 "scope": "complete_jsonrpc_line",
@@ -1565,7 +1565,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27132 names\u27132 graph\u27132 semantic\u27132\n\u2022 `loads` \u00b7 function \u00b7 python\n  `/tmp/nudox-surface/python-tomli/project::semantic::11983b4dccdbfd56e2bab883824bf288682274f6bf11c45c9838b5ed6f978847::loads`\n\u2022 `loads` \u00b7 import \u00b7 python\n  `/tmp/nudox-surface/python-tomli/project::semantic::247b8f6b0150467afce94eaa5a3dc5d048f7d7b9f20fad9dc7726bdb7db07758::loads`\n2 row(s) on this page; showing 2 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
+                "text": "~lanes exact✓2 names✓2 graph✓2 semantic✓2\n• `loads` · function · python\n  `/tmp/nudox-surface/python-tomli/project::semantic::11983b4dccdbfd56e2bab883824bf288682274f6bf11c45c9838b5ed6f978847::loads`\n• `loads` · import · python\n  `/tmp/nudox-surface/python-tomli/project::semantic::247b8f6b0150467afce94eaa5a3dc5d048f7d7b9f20fad9dc7726bdb7db07758::loads`\n2 row(s) on this page; showing 2 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
                 "type": "text"
               }
             ],
@@ -1573,9 +1573,9 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytes": 1525,
+                "bytes": 1425,
                 "bytesPerToken": 4,
-                "estimatedTokens": 382
+                "estimatedTokens": 357
               },
               "coverage": [
                 {
@@ -1647,7 +1647,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/tomli/_parser.py:142 \u203a loads"
+                    "trail": "project › src/tomli/_parser.py:142 › loads"
                   },
                   "kind": "function",
                   "language": "python",
@@ -1702,7 +1702,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/tomli/__init__.py:8 \u203a loads"
+                    "trail": "project › src/tomli/__init__.py:8 › loads"
                   },
                   "kind": "import",
                   "language": "python",
@@ -1728,9 +1728,9 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 3478,
+                "bytes": 3327,
                 "bytesPerToken": 4,
-                "estimatedTokens": 870,
+                "estimatedTokens": 832,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
                 "scope": "complete_jsonrpc_line",
@@ -1741,7 +1741,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u27133\n\u2022 `TOMLDecodeError` \u00b7 class \u00b7 python\n  `/tmp/nudox-surface/python-tomli/project::semantic::a033c98bf85316b8cd8ba4ec61bca6b824325b485de25f4cecb8038142c79361::TOMLDecodeError`\n\u2022 `TOMLDecodeError` \u00b7 import \u00b7 python\n  `/tmp/nudox-surface/python-tomli/project::semantic::c2028d2c0bd2f26520a415f9d8f8557872cbfd4e6e9c611ce0cdd5be214c353a::TOMLDecodeError`\n\u2022 `DEPRECATED_DEFAULT` \u00b7 class \u00b7 python\n  `/tmp/nudox-surface/python-tomli/project::semantic::2d0c4774a70370129b8fd2561311f5e42571fc8465c6c6146493976043682687::DEPRECATED_DEFAULT`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `TOMLDecodeError` · class · python\n  `/tmp/nudox-surface/python-tomli/project::semantic::a033c98bf85316b8cd8ba4ec61bca6b824325b485de25f4cecb8038142c79361::TOMLDecodeError`\n• `TOMLDecodeError` · import · python\n  `/tmp/nudox-surface/python-tomli/project::semantic::c2028d2c0bd2f26520a415f9d8f8557872cbfd4e6e9c611ce0cdd5be214c353a::TOMLDecodeError`\n• `DEPRECATED_DEFAULT` · class · python\n  `/tmp/nudox-surface/python-tomli/project::semantic::2d0c4774a70370129b8fd2561311f5e42571fc8465c6c6146493976043682687::DEPRECATED_DEFAULT`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
                 "type": "text"
               }
             ],
@@ -1749,9 +1749,9 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytes": 2297,
+                "bytes": 2146,
                 "bytesPerToken": 4,
-                "estimatedTokens": 575
+                "estimatedTokens": 537
               },
               "coverage": [
                 {
@@ -1823,7 +1823,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/tomli/_parser.py:71 \u203a TOMLDecodeError"
+                    "trail": "project › src/tomli/_parser.py:71 › TOMLDecodeError"
                   },
                   "kind": "class",
                   "language": "python",
@@ -1878,7 +1878,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/tomli/__init__.py:8 \u203a TOMLDecodeError"
+                    "trail": "project › src/tomli/__init__.py:8 › TOMLDecodeError"
                   },
                   "kind": "import",
                   "language": "python",
@@ -1932,7 +1932,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/tomli/_parser.py:66 \u203a DEPRECATED_DEFAULT"
+                    "trail": "project › src/tomli/_parser.py:66 › DEPRECATED_DEFAULT"
                   },
                   "kind": "class",
                   "language": "python",
@@ -1959,8 +1959,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 5655,
-                "normalizedFrameBytesExcludingCounters": 22618,
+                "normalizedEstimatedTokensExcludingCounters": 5036,
+                "normalizedFrameBytesExcludingCounters": 20144,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -1969,7 +1969,7 @@
             },
             "content": [
               {
-                "text": "# project\n`/tmp/nudox-surface/python-tomli/project`\n\n\u25c6 Flags  `src/tomli/_parser.py:213 \u203a Flags`\n  \u0192 __init__  `src/tomli/_parser.py:222 \u203a __init__`\n    \u25ab __init__  `__init__`\n  \u0192 is_  `src/tomli/_parser.py:253 \u203a is_`\n    \u25ab key  `key`\n    \u25ab flag  `flag`\n    \u25ab is_  `is_`\n  \u0192 set  `src/tomli/_parser.py:242 \u203a set`\n    \u25ab key  `key`\n    \u25ab recursive  `recursive`\n    \u25ab flag  `flag`\n    \u25ab set  `set`\n  \u0192 unset_all  `src/tomli/_parser.py:234 \u203a unset_all`\n    \u25ab key  `key`\n    \u25ab unset_all  `unset_all`\n  \u0192 add_pending  `src/tomli/_parser.py:226 \u203a add_pending`\n    \u25ab add_pending  `add_pending`\n    \u25ab flag  `flag`\n    \u25ab key  `key`\n  \u0192 finalize_pending  `src/tomli/_parser.py:229 \u203a finalize_pending`\n    \u25ab finalize_pending  `finalize_pending`\n  \u00b7 FROZEN  `src/tomli/_parser.py:217 \u203a FROZEN`\n  \u00b7 EXPLICIT_NEST  `src/tomli/_parser.py:220 \u203a EXPLICIT_NEST`\n\u25c6 NestedDict  `src/tomli/_parser.py:271 \u203a NestedDict`\n  \u0192 append_nest_to_list  `src/tomli/_parser.py:293 \u203a append_nest_to_list`\n    \u25ab append_nest_to_list  `append_nest_to_list`\n    \u25ab key  `key`\n  \u0192 __init__  `src/tomli/_parser.py:272 \u203a __init__`\n    \u25ab __init__  `__init__`\n  \u0192 get_or_create_nest  `src/tomli/_parser.py:276 \u203a get_or_create_nest`\n    \u25ab access_lists  `access_lists`\n    \u25ab get_or_create_nest  `get_or_create_nest`\n    \u25ab key  `key`\n\u25c6 Output  `src/tomli/_parser.py:305 \u203a Output`\n  \u00b7 flags  `src/tomli/_parser.py:307 \u203a flags`\n  \u00b7 data  `src/tomli/_parser.py:306 \u203a data`\n\u25c6 TOMLDecodeError  `src/tomli/_parser.py:71 \u203a TOMLDecodeError`\n  \u0192 __init__  `src/tomli/_parser.py:82 \u203a __init__`\n    \u25ab doc  `doc`\n    \u25ab pos  `pos`\n    \u25ab args  `args`\n    \u25ab msg  `msg`\n\u25c6 DEPRECATED_DEFAULT  `src/tomli/_parser.py:66 \u203a DEPRECATED_DEFAULT`\n\u25aa BASIC_STR_ESCAPE_REPLACEMENTS  `src/tomli/_parser.py:53 \u203a BASIC_STR_ESCAPE_REPLACEMENTS`\n\u0192 skip_chars  `src/tomli/_parser.py:310 \u203a skip_chars`\n  \u25ab chars  `chars`\n  \u25ab src  `src`\n  \u25ab skip_chars  `skip_chars`\n  \u25ab pos  `pos`\n\u25aa BARE_KEY_CHARS  `src/tomli/_parser.py:49 \u203a BARE_KEY_CHARS`\n50 declaration(s) \u00b7 truncated (outline pagination only; analysis coverage is not certified)\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 50 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/python-tomli/project\",\"limit\":50,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
+                "text": "# project\n`/tmp/nudox-surface/python-tomli/project`\n\n◆ Flags  `src/tomli/_parser.py:213 › Flags`\n  ƒ __init__  `src/tomli/_parser.py:222 › __init__`\n    ▫ __init__  `__init__`\n  ƒ is_  `src/tomli/_parser.py:253 › is_`\n    ▫ key  `key`\n    ▫ flag  `flag`\n    ▫ is_  `is_`\n  ƒ set  `src/tomli/_parser.py:242 › set`\n    ▫ key  `key`\n    ▫ recursive  `recursive`\n    ▫ flag  `flag`\n    ▫ set  `set`\n  ƒ unset_all  `src/tomli/_parser.py:234 › unset_all`\n    ▫ key  `key`\n    ▫ unset_all  `unset_all`\n  ƒ add_pending  `src/tomli/_parser.py:226 › add_pending`\n    ▫ add_pending  `add_pending`\n    ▫ flag  `flag`\n    ▫ key  `key`\n  ƒ finalize_pending  `src/tomli/_parser.py:229 › finalize_pending`\n    ▫ finalize_pending  `finalize_pending`\n  · FROZEN  `src/tomli/_parser.py:217 › FROZEN`\n  · EXPLICIT_NEST  `src/tomli/_parser.py:220 › EXPLICIT_NEST`\n◆ NestedDict  `src/tomli/_parser.py:271 › NestedDict`\n  ƒ append_nest_to_list  `src/tomli/_parser.py:293 › append_nest_to_list`\n    ▫ append_nest_to_list  `append_nest_to_list`\n    ▫ key  `key`\n  ƒ __init__  `src/tomli/_parser.py:272 › __init__`\n    ▫ __init__  `__init__`\n  ƒ get_or_create_nest  `src/tomli/_parser.py:276 › get_or_create_nest`\n    ▫ access_lists  `access_lists`\n    ▫ get_or_create_nest  `get_or_create_nest`\n    ▫ key  `key`\n◆ Output  `src/tomli/_parser.py:305 › Output`\n  · flags  `src/tomli/_parser.py:307 › flags`\n  · data  `src/tomli/_parser.py:306 › data`\n◆ TOMLDecodeError  `src/tomli/_parser.py:71 › TOMLDecodeError`\n  ƒ __init__  `src/tomli/_parser.py:82 › __init__`\n    ▫ doc  `doc`\n    ▫ pos  `pos`\n    ▫ args  `args`\n    ▫ msg  `msg`\n◆ DEPRECATED_DEFAULT  `src/tomli/_parser.py:66 › DEPRECATED_DEFAULT`\n▪ BASIC_STR_ESCAPE_REPLACEMENTS  `src/tomli/_parser.py:53 › BASIC_STR_ESCAPE_REPLACEMENTS`\nƒ skip_chars  `src/tomli/_parser.py:310 › skip_chars`\n  ▫ chars  `chars`\n  ▫ src  `src`\n  ▫ skip_chars  `skip_chars`\n  ▫ pos  `pos`\n▪ BARE_KEY_CHARS  `src/tomli/_parser.py:49 › BARE_KEY_CHARS`\n50 declaration(s) · truncated (outline pagination only; analysis coverage is not certified)\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 50 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/python-tomli/project\",\"limit\":50,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
                 "type": "text"
               }
             ],
@@ -1977,14 +1977,14 @@
             "structuredContent": {
               "answer": "outline",
               "budget": {
-                "bytesExcludingCursor": 19422,
+                "bytesExcludingCursor": 16948,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 4856
+                "estimatedTokensExcludingCursor": 4237
               },
               "declarations": 50,
               "detail": "summary",
               "extent": "truncated",
-              "nextCursor": "mcp2-<live-validated>",
+              "nextCursor": "mcp3-<live-validated>",
               "package": {
                 "coordinate": "/tmp/nudox-surface/python-tomli/project",
                 "key": "a16b9c4f",

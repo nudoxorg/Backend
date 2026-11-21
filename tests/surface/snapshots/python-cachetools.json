@@ -8,9 +8,9 @@
       "json": {
         "answer": "outline",
         "budget": {
-          "bytesExcludingCursor": 19540,
+          "bytesExcludingCursor": 17104,
           "bytesPerToken": 4,
-          "estimatedTokensExcludingCursor": 4885
+          "estimatedTokensExcludingCursor": 4276
         },
         "declarations": 50,
         "detail": "summary",
@@ -2279,9 +2279,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 5314,
+          "bytes": 4867,
           "bytesPerToken": 4,
-          "estimatedTokens": 1329
+          "estimatedTokens": 1217
         },
         "coverage": [
           {
@@ -2796,9 +2796,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytesExcludingCursor": 15389,
+          "bytesExcludingCursor": 14162,
           "bytesPerToken": 4,
-          "estimatedTokensExcludingCursor": 3848
+          "estimatedTokensExcludingCursor": 3541
         },
         "coverage": [
           {
@@ -4199,8 +4199,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 906,
-                "normalizedFrameBytesExcludingCounters": 3621,
+                "normalizedEstimatedTokensExcludingCounters": 860,
+                "normalizedFrameBytesExcludingCounters": 3440,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -4209,7 +4209,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `TTLCache` · class · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::7e1ade17c4f14c5892156e2f2aa9109326869723e486c181eebaa9ea0d6b2ba0::TTLCache`\n• `TTLCache` · class · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::de5f7b46ce6c2b764903cfaf1344d0e426869723e486c181eebaa9ea0d6b2ba0::TTLCache`\n• `TTLCache` · import · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::a47bba1a083058c0110fe20eb26cf6cbe9639771e664f9b98a8753543b8e57c1::TTLCache`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `TTLCache` · class · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::7e1ade17c4f14c5892156e2f2aa9109326869723e486c181eebaa9ea0d6b2ba0::TTLCache`\n• `TTLCache` · class · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::de5f7b46ce6c2b764903cfaf1344d0e426869723e486c181eebaa9ea0d6b2ba0::TTLCache`\n• `TTLCache` · import · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::a47bba1a083058c0110fe20eb26cf6cbe9639771e664f9b98a8753543b8e57c1::TTLCache`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
                 "type": "text"
               }
             ],
@@ -4217,13 +4217,13 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytesExcludingCursor": 2278,
+                "bytesExcludingCursor": 2144,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 570
+                "estimatedTokensExcludingCursor": 536
               },
               "continuation_call": {
                 "arguments": {
-                  "cursor": "mcp2-<live-validated>",
+                  "cursor": "mcp3-<live-validated>",
                   "limit": 3,
                   "query": "TTLCache"
                 },
@@ -4249,6 +4249,7 @@
               ],
               "detail": "summary",
               "more": true,
+              "nextCursor": "mcp3-<live-validated>",
               "query": "TTLCache",
               "readiness": "ready",
               "records": [
@@ -4437,8 +4438,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 903,
-                "normalizedFrameBytesExcludingCounters": 3611,
+                "normalizedEstimatedTokensExcludingCounters": 861,
+                "normalizedFrameBytesExcludingCounters": 3443,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -4447,7 +4448,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `cached` · function · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::939090f05c447a170fe20697390ad411a43f65d89aa4b2e966cca56be0415dc9::cached`\n• `cached` · function · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::e1ae0f68e58b7ed6547d3b7dd958d088b7f118795cb101d9d0dd2dde89cdc3aa::cached`\n• `cached` · function · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::e1ae0f68e58b7ed6547d3b7dd958d08888035d1ca8ce27cbd6272c7514e1063d::cached`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `cached` · function · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::939090f05c447a170fe20697390ad411a43f65d89aa4b2e966cca56be0415dc9::cached`\n• `cached` · function · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::e1ae0f68e58b7ed6547d3b7dd958d088b7f118795cb101d9d0dd2dde89cdc3aa::cached`\n• `cached` · function · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::e1ae0f68e58b7ed6547d3b7dd958d08888035d1ca8ce27cbd6272c7514e1063d::cached`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
                 "type": "text"
               }
             ],
@@ -4455,13 +4456,13 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytesExcludingCursor": 2272,
+                "bytesExcludingCursor": 2151,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 568
+                "estimatedTokensExcludingCursor": 538
               },
               "continuation_call": {
                 "arguments": {
-                  "cursor": "mcp2-<live-validated>",
+                  "cursor": "mcp3-<live-validated>",
                   "limit": 3,
                   "query": "cached"
                 },
@@ -4487,6 +4488,7 @@
               ],
               "detail": "summary",
               "more": true,
+              "nextCursor": "mcp3-<live-validated>",
               "query": "cached",
               "readiness": "ready",
               "records": [
@@ -4672,8 +4674,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 5739,
-                "normalizedFrameBytesExcludingCounters": 22953,
+                "normalizedEstimatedTokensExcludingCounters": 5130,
+                "normalizedFrameBytesExcludingCounters": 20517,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -4690,14 +4692,14 @@
             "structuredContent": {
               "answer": "outline",
               "budget": {
-                "bytesExcludingCursor": 19539,
+                "bytesExcludingCursor": 17103,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 4885
+                "estimatedTokensExcludingCursor": 4276
               },
               "declarations": 50,
               "detail": "summary",
               "extent": "truncated",
-              "nextCursor": "mcp2-<live-validated>",
+              "nextCursor": "mcp3-<live-validated>",
               "package": {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project",
                 "key": "8f179f7b",

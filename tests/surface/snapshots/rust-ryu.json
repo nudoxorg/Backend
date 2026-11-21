@@ -8,9 +8,9 @@
       "json": {
         "answer": "outline",
         "budget": {
-          "bytesExcludingCursor": 19336,
+          "bytesExcludingCursor": 16882,
           "bytesPerToken": 4,
-          "estimatedTokensExcludingCursor": 4834
+          "estimatedTokensExcludingCursor": 4221
         },
         "declarations": 50,
         "detail": "summary",
@@ -2271,9 +2271,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 12911,
+          "bytes": 11787,
           "bytesPerToken": 4,
-          "estimatedTokens": 3228
+          "estimatedTokens": 2947
         },
         "coverage": [
           {
@@ -3540,9 +3540,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 3523,
+          "bytes": 3283,
           "bytesPerToken": 4,
-          "estimatedTokens": 881
+          "estimatedTokens": 821
         },
         "coverage": [
           {
@@ -3865,8 +3865,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 851,
-                "normalizedFrameBytesExcludingCounters": 3402,
+                "normalizedEstimatedTokensExcludingCounters": 805,
+                "normalizedFrameBytesExcludingCounters": 3219,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -3875,7 +3875,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `Buffer` · struct · rust\n  `/tmp/nudox-surface/rust-ryu/project::semantic::58fc48c89d5c64a0e2fc2826d710e33db8d83903903ea7b75093153e834af80a::Buffer`\n• `Buffer` · import · rust\n  `/tmp/nudox-surface/rust-ryu/project::semantic::e0e344758907336ed2dea5104be2dd90f1dd1076461a9cef856d8d31e06b9acf::Buffer`\n• `Buffer` · type · unknown\n  `/tmp/nudox-surface/rust-ryu/project::semantic::be15c67f6f514874a6f55d8e10822541d1a654c336d61cdcc168fb33c98cd6d4::Buffer`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `Buffer` · struct · rust\n  `/tmp/nudox-surface/rust-ryu/project::semantic::58fc48c89d5c64a0e2fc2826d710e33db8d83903903ea7b75093153e834af80a::Buffer`\n• `Buffer` · import · rust\n  `/tmp/nudox-surface/rust-ryu/project::semantic::e0e344758907336ed2dea5104be2dd90f1dd1076461a9cef856d8d31e06b9acf::Buffer`\n• `Buffer` · type · unknown\n  `/tmp/nudox-surface/rust-ryu/project::semantic::be15c67f6f514874a6f55d8e10822541d1a654c336d61cdcc168fb33c98cd6d4::Buffer`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
                 "type": "text"
               }
             ],
@@ -3883,13 +3883,13 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytesExcludingCursor": 2101,
+                "bytesExcludingCursor": 1965,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 526
+                "estimatedTokensExcludingCursor": 492
               },
               "continuation_call": {
                 "arguments": {
-                  "cursor": "mcp2-<live-validated>",
+                  "cursor": "mcp3-<live-validated>",
                   "limit": 3,
                   "query": "Buffer"
                 },
@@ -3915,6 +3915,7 @@
               ],
               "detail": "summary",
               "more": true,
+              "nextCursor": "mcp3-<live-validated>",
               "query": "Buffer",
               "readiness": "ready",
               "records": [
@@ -4101,8 +4102,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 925,
-                "normalizedFrameBytesExcludingCounters": 3698,
+                "normalizedEstimatedTokensExcludingCounters": 880,
+                "normalizedFrameBytesExcludingCounters": 3517,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -4111,7 +4112,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `format_finite` · method · rust\n  `/tmp/nudox-surface/rust-ryu/project::semantic::899c0a147d2780605289812a4beef1945982b88ae15c9495fd641fbefb58f0d8::format_finite`\n• `Buffer` · struct · rust\n  `/tmp/nudox-surface/rust-ryu/project::semantic::58fc48c89d5c64a0e2fc2826d710e33db8d83903903ea7b75093153e834af80a::Buffer`\n• `format` · method · rust\n  `/tmp/nudox-surface/rust-ryu/project::semantic::0076fc62636a912fee70e797c1582d677ab501ef971cff9c7d5b3c1f1b6ef5e6::format`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `format_finite` · method · rust\n  `/tmp/nudox-surface/rust-ryu/project::semantic::899c0a147d2780605289812a4beef1945982b88ae15c9495fd641fbefb58f0d8::format_finite`\n• `Buffer` · struct · rust\n  `/tmp/nudox-surface/rust-ryu/project::semantic::58fc48c89d5c64a0e2fc2826d710e33db8d83903903ea7b75093153e834af80a::Buffer`\n• `format` · method · rust\n  `/tmp/nudox-surface/rust-ryu/project::semantic::0076fc62636a912fee70e797c1582d677ab501ef971cff9c7d5b3c1f1b6ef5e6::format`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
                 "type": "text"
               }
             ],
@@ -4119,13 +4120,13 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytesExcludingCursor": 2384,
+                "bytesExcludingCursor": 2250,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 596
+                "estimatedTokensExcludingCursor": 563
               },
               "continuation_call": {
                 "arguments": {
-                  "cursor": "mcp2-<live-validated>",
+                  "cursor": "mcp3-<live-validated>",
                   "limit": 3,
                   "query": "format_finite"
                 },
@@ -4151,6 +4152,7 @@
               ],
               "detail": "summary",
               "more": true,
+              "nextCursor": "mcp3-<live-validated>",
               "query": "format_finite",
               "readiness": "ready",
               "records": [
@@ -4338,8 +4340,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 5642,
-                "normalizedFrameBytesExcludingCounters": 22566,
+                "normalizedEstimatedTokensExcludingCounters": 5028,
+                "normalizedFrameBytesExcludingCounters": 20112,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -4356,14 +4358,14 @@
             "structuredContent": {
               "answer": "outline",
               "budget": {
-                "bytesExcludingCursor": 19335,
+                "bytesExcludingCursor": 16881,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 4834
+                "estimatedTokensExcludingCursor": 4221
               },
               "declarations": 50,
               "detail": "summary",
               "extent": "truncated",
-              "nextCursor": "mcp2-<live-validated>",
+              "nextCursor": "mcp3-<live-validated>",
               "package": {
                 "coordinate": "/tmp/nudox-surface/rust-ryu/project",
                 "key": "03059795",

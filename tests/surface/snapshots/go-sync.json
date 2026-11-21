@@ -8,9 +8,9 @@
       "json": {
         "answer": "outline",
         "budget": {
-          "bytesExcludingCursor": 9817,
+          "bytesExcludingCursor": 8581,
           "bytesPerToken": 4,
-          "estimatedTokensExcludingCursor": 2455
+          "estimatedTokensExcludingCursor": 2146
         },
         "declarations": 25,
         "detail": "summary",
@@ -1186,9 +1186,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 1495,
+          "bytes": 1394,
           "bytesPerToken": 4,
-          "estimatedTokens": 374
+          "estimatedTokens": 349
         },
         "coverage": [
           {
@@ -1260,7 +1260,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a singleflight/singleflight.go:121 \u203a DoChan"
+              "trail": "project › singleflight/singleflight.go:121 › DoChan"
             },
             "kind": "method",
             "language": "go",
@@ -1313,7 +1313,7 @@
                 ]
               },
               "shape": "external",
-              "trail": "project \u203a DoChan"
+              "trail": "project › DoChan"
             },
             "language": "unknown",
             "score": 4294967294,
@@ -1331,9 +1331,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 11581,
+          "bytes": 10591,
           "bytesPerToken": 4,
-          "estimatedTokens": 2896
+          "estimatedTokens": 2648
         },
         "coverage": [
           {
@@ -1405,7 +1405,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a semaphore/semaphore.go:28 \u203a Weighted"
+              "trail": "project › semaphore/semaphore.go:28 › Weighted"
             },
             "kind": "struct",
             "language": "go",
@@ -1460,7 +1460,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a semaphore/semaphore_bench_test.go:17 \u203a weighted"
+              "trail": "project › semaphore/semaphore_bench_test.go:17 › weighted"
             },
             "kind": "interface",
             "language": "go",
@@ -1515,7 +1515,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a semaphore/semaphore_bench_test.go:25 \u203a semChan"
+              "trail": "project › semaphore/semaphore_bench_test.go:25 › semChan"
             },
             "kind": "type",
             "language": "go",
@@ -1570,7 +1570,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a semaphore/semaphore.go:21 \u203a NewWeighted"
+              "trail": "project › semaphore/semaphore.go:21 › NewWeighted"
             },
             "kind": "function",
             "language": "go",
@@ -1625,7 +1625,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a semaphore/semaphore_test.go:29 \u203a TestWeighted"
+              "trail": "project › semaphore/semaphore_test.go:29 › TestWeighted"
             },
             "kind": "function",
             "language": "go",
@@ -1679,7 +1679,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a semaphore/semaphore_test.go:21 \u203a HammerWeighted"
+              "trail": "project › semaphore/semaphore_test.go:21 › HammerWeighted"
             },
             "kind": "function",
             "language": "go",
@@ -1733,7 +1733,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a semaphore/semaphore_test.go:47 \u203a TestWeightedPanic"
+              "trail": "project › semaphore/semaphore_test.go:47 › TestWeightedPanic"
             },
             "kind": "function",
             "language": "go",
@@ -1787,7 +1787,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a semaphore/semaphore_test.go:83 \u203a TestWeightedAcquire"
+              "trail": "project › semaphore/semaphore_test.go:83 › TestWeightedAcquire"
             },
             "kind": "function",
             "language": "go",
@@ -1841,7 +1841,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a semaphore/semaphore_test.go:59 \u203a TestWeightedTryAcquire"
+              "trail": "project › semaphore/semaphore_test.go:59 › TestWeightedTryAcquire"
             },
             "kind": "function",
             "language": "go",
@@ -1895,7 +1895,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a semaphore/semaphore_test.go:204 \u203a TestWeightedAcquireCanceled"
+              "trail": "project › semaphore/semaphore_test.go:204 › TestWeightedAcquireCanceled"
             },
             "kind": "function",
             "language": "go",
@@ -1949,7 +1949,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a semaphore/semaphore_test.go:113 \u203a TestWeightedDoesntBlockIfTooBig"
+              "trail": "project › semaphore/semaphore_test.go:113 › TestWeightedDoesntBlockIfTooBig"
             },
             "kind": "function",
             "language": "go",
@@ -2003,7 +2003,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project \u203a semaphore/semaphore_bench_test.go:116 \u203a w"
+              "trail": "project › semaphore/semaphore_bench_test.go:116 › w"
             },
             "kind": "field",
             "language": "go",
@@ -2055,7 +2055,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a sem"
+              "trail": "project › sem"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2107,7 +2107,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a sem"
+              "trail": "project › sem"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2159,7 +2159,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a _1"
+              "trail": "project › _1"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2211,7 +2211,7 @@
                 ]
               },
               "shape": "external",
-              "trail": "project \u203a Weighted"
+              "trail": "project › Weighted"
             },
             "language": "unknown",
             "score": 4294967280,
@@ -2262,7 +2262,7 @@
                 ]
               },
               "shape": "external",
-              "trail": "project \u203a weighted"
+              "trail": "project › weighted"
             },
             "language": "unknown",
             "score": 4294967279,
@@ -2313,7 +2313,7 @@
                 ]
               },
               "shape": "external",
-              "trail": "project \u203a NewWeighted"
+              "trail": "project › NewWeighted"
             },
             "language": "unknown",
             "score": 4294967278,
@@ -2364,7 +2364,7 @@
                 ]
               },
               "shape": "external",
-              "trail": "project \u203a NewWeighted"
+              "trail": "project › NewWeighted"
             },
             "language": "unknown",
             "score": 4294967277,
@@ -2415,7 +2415,7 @@
                 ]
               },
               "shape": "external",
-              "trail": "project \u203a NewWeighted"
+              "trail": "project › NewWeighted"
             },
             "language": "unknown",
             "score": 4294967276,
@@ -2444,8 +2444,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 929,
-                "normalizedFrameBytesExcludingCounters": 3716,
+                "normalizedEstimatedTokensExcludingCounters": 884,
+                "normalizedFrameBytesExcludingCounters": 3533,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -2454,7 +2454,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u27133\n\u2022 `Weighted` \u00b7 struct \u00b7 go\n  `/tmp/nudox-surface/go-sync/project::semantic::b1d7bc5f9b8b756022e87383555f7ffd8d33ed09374fcd8c2f0f5376e7123696::Weighted`\n\u2022 `weighted` \u00b7 interface \u00b7 go\n  `/tmp/nudox-surface/go-sync/project::semantic::504a810c1840af606094b2b243b2acb20f56616ac060db886c2bd366b9c3b687::weighted`\n\u2022 `semChan` \u00b7 type \u00b7 go\n  `/tmp/nudox-surface/go-sync/project::semantic::33c9904708bf54746733b911f4749dfef119e8e57616c1c1c3b02c96280ba3ba::semChan`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `Weighted` · struct · go\n  `/tmp/nudox-surface/go-sync/project::semantic::b1d7bc5f9b8b756022e87383555f7ffd8d33ed09374fcd8c2f0f5376e7123696::Weighted`\n• `weighted` · interface · go\n  `/tmp/nudox-surface/go-sync/project::semantic::504a810c1840af606094b2b243b2acb20f56616ac060db886c2bd366b9c3b687::weighted`\n• `semChan` · type · go\n  `/tmp/nudox-surface/go-sync/project::semantic::33c9904708bf54746733b911f4749dfef119e8e57616c1c1c3b02c96280ba3ba::semChan`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
                 "type": "text"
               }
             ],
@@ -2462,13 +2462,13 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytesExcludingCursor": 2414,
+                "bytesExcludingCursor": 2278,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 604
+                "estimatedTokensExcludingCursor": 570
               },
               "continuation_call": {
                 "arguments": {
-                  "cursor": "mcp2-<live-validated>",
+                  "cursor": "mcp3-<live-validated>",
                   "limit": 3,
                   "query": "Weighted"
                 },
@@ -2494,6 +2494,7 @@
               ],
               "detail": "summary",
               "more": true,
+              "nextCursor": "mcp3-<live-validated>",
               "query": "Weighted",
               "readiness": "ready",
               "records": [
@@ -2544,7 +2545,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a semaphore/semaphore.go:28 \u203a Weighted"
+                    "trail": "project › semaphore/semaphore.go:28 › Weighted"
                   },
                   "kind": "struct",
                   "language": "go",
@@ -2599,7 +2600,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a semaphore/semaphore_bench_test.go:17 \u203a weighted"
+                    "trail": "project › semaphore/semaphore_bench_test.go:17 › weighted"
                   },
                   "kind": "interface",
                   "language": "go",
@@ -2654,7 +2655,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a semaphore/semaphore_bench_test.go:25 \u203a semChan"
+                    "trail": "project › semaphore/semaphore_bench_test.go:25 › semChan"
                   },
                   "kind": "type",
                   "language": "go",
@@ -2681,9 +2682,9 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 2450,
+                "bytes": 2349,
                 "bytesPerToken": 4,
-                "estimatedTokens": 613,
+                "estimatedTokens": 588,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
                 "scope": "complete_jsonrpc_line",
@@ -2694,7 +2695,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27132 names\u27132 graph\u27132 semantic\u27132\n\u2022 `DoChan` \u00b7 method \u00b7 go\n  `/tmp/nudox-surface/go-sync/project::semantic::f06f7f2653e80119fe3ab9dd1bbb85cdd7ca14e172b9653fda04c33c17911d28::DoChan`\n\u2022 `DoChan` \u00b7 external reference\n  `/tmp/nudox-surface/go-sync/project::external::symbol:fdecbbf6192e97af89f12ffd47760fb4d13c8d56adc027ae471a7b578cb184aa::DoChan`\n2 row(s) on this page; showing 2 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
+                "text": "~lanes exact✓2 names✓2 graph✓2 semantic✓2\n• `DoChan` · method · go\n  `/tmp/nudox-surface/go-sync/project::semantic::f06f7f2653e80119fe3ab9dd1bbb85cdd7ca14e172b9653fda04c33c17911d28::DoChan`\n• `DoChan` · external reference\n  `/tmp/nudox-surface/go-sync/project::external::symbol:fdecbbf6192e97af89f12ffd47760fb4d13c8d56adc027ae471a7b578cb184aa::DoChan`\n2 row(s) on this page; showing 2 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
                 "type": "text"
               }
             ],
@@ -2702,9 +2703,9 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytes": 1495,
+                "bytes": 1394,
                 "bytesPerToken": 4,
-                "estimatedTokens": 374
+                "estimatedTokens": 349
               },
               "coverage": [
                 {
@@ -2776,7 +2777,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a singleflight/singleflight.go:121 \u203a DoChan"
+                    "trail": "project › singleflight/singleflight.go:121 › DoChan"
                   },
                   "kind": "method",
                   "language": "go",
@@ -2829,7 +2830,7 @@
                       ]
                     },
                     "shape": "external",
-                    "trail": "project \u203a DoChan"
+                    "trail": "project › DoChan"
                   },
                   "language": "unknown",
                   "score": 4294967294,
@@ -2854,8 +2855,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 5438,
-                "normalizedFrameBytesExcludingCounters": 21751,
+                "normalizedEstimatedTokensExcludingCounters": 4821,
+                "normalizedFrameBytesExcludingCounters": 19283,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -2864,7 +2865,7 @@
             },
             "content": [
               {
-                "text": "# project\n`/tmp/nudox-surface/go-sync/project`\n\n\u25a3 token  `errgroup/errgroup.go:18 \u203a token`\n\u25a3 Group  `errgroup/errgroup.go:25 \u203a Group`\n  \u0192 done  `errgroup/errgroup.go:36 \u203a done`\n  \u0192 TryGo  `errgroup/errgroup.go:93 \u203a TryGo`\n    \u25ab f  `f`\n    \u25ab _1  `_1`\n  \u0192 SetLimit  `errgroup/errgroup.go:127 \u203a SetLimit`\n    \u25ab n  `n`\n  \u0192 Wait  `errgroup/errgroup.go:55 \u203a Wait`\n    \u25ab _  `_`\n  \u0192 Go  `errgroup/errgroup.go:69 \u203a Go`\n    \u25ab f  `f`\n  \u00b7 cancel  `errgroup/errgroup.go:26 \u203a cancel`\n  \u00b7 wg  `errgroup/errgroup.go:28 \u203a wg`\n  \u00b7 errOnce  `errgroup/errgroup.go:32 \u203a errOnce`\n  \u00b7 sem  `errgroup/errgroup.go:30 \u203a sem`\n  \u00b7 err  `errgroup/errgroup.go:33 \u203a err`\n\u25a3 result  `errgroup/errgroup_example_md5all_test.go:33 \u203a result`\n  \u00b7 sum  `errgroup/errgroup_example_md5all_test.go:35 \u203a sum`\n  \u00b7 path  `errgroup/errgroup_example_md5all_test.go:34 \u203a path`\n\u25a3 Weighted  `semaphore/semaphore.go:28 \u203a Weighted`\n  \u0192 Release  `semaphore/semaphore.go:122 \u203a Release`\n    \u25ab n  `n`\n  \u0192 TryAcquire  `semaphore/semaphore.go:111 \u203a TryAcquire`\n    \u25ab _1  `_1`\n    \u25ab n  `n`\n  \u0192 Acquire  `semaphore/semaphore.go:38 \u203a Acquire`\n    \u25ab ctx  `ctx`\n    \u25ab n  `n`\n    \u25ab _2  `_2`\n  \u0192 notifyWaiters  `semaphore/semaphore.go:133 \u203a notifyWaiters`\n  \u00b7 waiters  `semaphore/semaphore.go:32 \u203a waiters`\n  \u00b7 size  `semaphore/semaphore.go:29 \u203a size`\n  \u00b7 mu  `semaphore/semaphore.go:31 \u203a mu`\n  \u00b7 cur  `semaphore/semaphore.go:30 \u203a cur`\n\u25a3 waiter  `semaphore/semaphore.go:14 \u203a waiter`\n  \u00b7 n  `semaphore/semaphore.go:15 \u203a n`\n  \u00b7 ready  `semaphore/semaphore.go:16 \u203a ready`\n\u25c7 weighted  `semaphore/semaphore_bench_test.go:17 \u203a weighted`\n  \u0192 Release  `semaphore/semaphore_bench_test.go:20 \u203a Release`\n  \u0192 TryAcquire  `semaphore/semaphore_bench_test.go:19 \u203a TryAcquire`\n  \u0192 Acquire  `semaphore/semaphore_bench_test.go:18 \u203a Acquire`\n  \u0192 TryAcquire  `TryAcquire`\n    \u25ab _  `_`\n    \u25ab _1  `_1`\n  \u0192 Release  `Release`\n    \u25ab _  `_`\n  \u0192 Acquire  `Acquire`\n    \u25ab _  `_`\n    \u25ab _2  `_2`\n50 declaration(s) \u00b7 truncated (outline pagination only; analysis coverage is not certified)\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 50 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/go-sync/project\",\"limit\":50,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
+                "text": "# project\n`/tmp/nudox-surface/go-sync/project`\n\n▣ token  `errgroup/errgroup.go:18 › token`\n▣ Group  `errgroup/errgroup.go:25 › Group`\n  ƒ done  `errgroup/errgroup.go:36 › done`\n  ƒ TryGo  `errgroup/errgroup.go:93 › TryGo`\n    ▫ f  `f`\n    ▫ _1  `_1`\n  ƒ SetLimit  `errgroup/errgroup.go:127 › SetLimit`\n    ▫ n  `n`\n  ƒ Wait  `errgroup/errgroup.go:55 › Wait`\n    ▫ _  `_`\n  ƒ Go  `errgroup/errgroup.go:69 › Go`\n    ▫ f  `f`\n  · cancel  `errgroup/errgroup.go:26 › cancel`\n  · wg  `errgroup/errgroup.go:28 › wg`\n  · errOnce  `errgroup/errgroup.go:32 › errOnce`\n  · sem  `errgroup/errgroup.go:30 › sem`\n  · err  `errgroup/errgroup.go:33 › err`\n▣ result  `errgroup/errgroup_example_md5all_test.go:33 › result`\n  · sum  `errgroup/errgroup_example_md5all_test.go:35 › sum`\n  · path  `errgroup/errgroup_example_md5all_test.go:34 › path`\n▣ Weighted  `semaphore/semaphore.go:28 › Weighted`\n  ƒ Release  `semaphore/semaphore.go:122 › Release`\n    ▫ n  `n`\n  ƒ TryAcquire  `semaphore/semaphore.go:111 › TryAcquire`\n    ▫ _1  `_1`\n    ▫ n  `n`\n  ƒ Acquire  `semaphore/semaphore.go:38 › Acquire`\n    ▫ ctx  `ctx`\n    ▫ n  `n`\n    ▫ _2  `_2`\n  ƒ notifyWaiters  `semaphore/semaphore.go:133 › notifyWaiters`\n  · waiters  `semaphore/semaphore.go:32 › waiters`\n  · size  `semaphore/semaphore.go:29 › size`\n  · mu  `semaphore/semaphore.go:31 › mu`\n  · cur  `semaphore/semaphore.go:30 › cur`\n▣ waiter  `semaphore/semaphore.go:14 › waiter`\n  · n  `semaphore/semaphore.go:15 › n`\n  · ready  `semaphore/semaphore.go:16 › ready`\n◇ weighted  `semaphore/semaphore_bench_test.go:17 › weighted`\n  ƒ Release  `semaphore/semaphore_bench_test.go:20 › Release`\n  ƒ TryAcquire  `semaphore/semaphore_bench_test.go:19 › TryAcquire`\n  ƒ Acquire  `semaphore/semaphore_bench_test.go:18 › Acquire`\n  ƒ TryAcquire  `TryAcquire`\n    ▫ _  `_`\n    ▫ _1  `_1`\n  ƒ Release  `Release`\n    ▫ _  `_`\n  ƒ Acquire  `Acquire`\n    ▫ _  `_`\n    ▫ _2  `_2`\n50 declaration(s) · truncated (outline pagination only; analysis coverage is not certified)\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 50 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/go-sync/project\",\"limit\":50,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
                 "type": "text"
               }
             ],
@@ -2872,14 +2873,14 @@
             "structuredContent": {
               "answer": "outline",
               "budget": {
-                "bytesExcludingCursor": 18613,
+                "bytesExcludingCursor": 16145,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 4654
+                "estimatedTokensExcludingCursor": 4037
               },
               "declarations": 50,
               "detail": "summary",
               "extent": "truncated",
-              "nextCursor": "mcp2-<live-validated>",
+              "nextCursor": "mcp3-<live-validated>",
               "package": {
                 "coordinate": "/tmp/nudox-surface/go-sync/project",
                 "key": "a19b4f5c",
