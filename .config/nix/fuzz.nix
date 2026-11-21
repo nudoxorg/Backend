@@ -1,7 +1,8 @@
 # Backend's adapter for the shared continuous-fuzz package shape.
 # packages.${system}.continuous-fuzz passthru is bins, corpora, engines, metadata.
 # Auth copies that shape and plugs its own engine. This file's engine is libFuzzer.
-# fuzz-<id> packages are optional aliases. These are not flake checks.
+# fuzz-<id> packages are optional aliases. These are not flake checks;
+# checks.${system}.fuzz-engine-resolution only resolves the engine's Cargo graph.
 {
   pkgs,
   workspaceRoot,
@@ -584,70 +585,15 @@ let
           "--bin"
           "fuzz-target"
         ];
+        # The workspace manifest and lock stay as committed, `[patch]` tables
+        # included, like gui-runtime's. Cargo.lock records patched crates
+        # (pyrefly_config, tsz-*, ra_ap_*) as path packages, so a manifest
+        # without those tables leaves them unlocked against vendored sources
+        # and resolution fails before anything compiles.
         cargoLock = {
           lockFile = workspaceRoot + "/Cargo.lock";
           outputHashes = gpuiOutputHashes;
         };
-        nativeBuildInputs = [
-          pkgs.python3
-        ];
-        # Release profile aborts on panic, which defeats bolero shrinking.
-        # The patch is local to this derivation. The workspace profile stays abort.
-        postPatch = ''
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path("Cargo.toml")
-          text = path.read_text()
-          start = text.find("members = [")
-          end = text.find("]", start)
-          if start < 0 or end < 0:
-              raise SystemExit("workspace members block not found")
-          # The full member globs pull apps that path-patch gpui. Those vendor
-          # trees are not in the flake source. Keep the fuzz crate closure.
-          members = [
-              "crates/advisory",
-              "crates/compile",
-              "crates/discovery",
-              "crates/engine",
-              "crates/execution",
-              "crates/flow",
-              "crates/library",
-              "crates/platform",
-              "crates/replication",
-              "crates/runtime",
-              "crates/semantic",
-              "crates/store",
-              "crates/version",
-              "extensions/qdrant",
-              "extensions/tantivy",
-              "extensions/trustfall",
-              "frontends/clang",
-              "frontends/csharp",
-              "frontends/go",
-              "frontends/java",
-              "frontends/python",
-              "frontends/rust",
-              "frontends/typescript",
-              "tests/fuzz",
-          ]
-          block = "members = [\n" + "".join(f'    "{name}",\n' for name in members) + "]"
-          text = text[:start] + block + text[end + 1 :]
-          patch = text.find("\n[patch.crates-io]\n")
-          if patch < 0:
-              raise SystemExit("patch.crates-io section not found")
-          text = text[:patch] + "\n"
-          text = text.replace('panic = "abort"', 'panic = "unwind"', 1)
-          text = text.replace('strip = "symbols"', 'strip = "none"', 1)
-          path.write_text(text)
-          patched = path.read_text()
-          if "tests/fuzz" not in patched:
-              raise SystemExit("fuzz member was not written")
-          if "[patch.crates-io]" in patched:
-              raise SystemExit("gpui patch section was not removed")
-          if 'panic = "unwind"' not in patched or 'strip = "none"' not in patched:
-              raise SystemExit("release profile was not patched")
-          PY
-        '';
         # RUSTC_WRAPPER below replaces the nix rustc wrapper, which is what
         # normally injects -rpath. The installed binary NEEDs libstdc++ with
         # an empty RUNPATH. `linkedEngine` repairs that without a second
@@ -663,6 +609,11 @@ let
           patchShebangs tests/fuzz/libfuzzer-rustc
           export RUSTC_WRAPPER=$PWD/tests/fuzz/libfuzzer-rustc
           export RUSTFLAGS="''${RUSTFLAGS:+$RUSTFLAGS }${libfuzzerRustflags}"
+          # The release profile aborts on panic, which defeats bolero
+          # shrinking. Cargo's environment overrides the manifest's profile
+          # for this derivation only; the workspace profile stays abort.
+          export CARGO_PROFILE_RELEASE_PANIC=unwind
+          export CARGO_PROFILE_RELEASE_STRIP=none
         '';
         doCheck = false;
         dontStrip = true;
@@ -676,6 +627,26 @@ let
           runHook postInstall
         '';
       };
+  # The engine's own source, manifest, vendor dir and environment, stopped
+  # after Cargo resolves the graph: nothing compiles. No lane builds
+  # `continuous-fuzz`, so `checks.<system>.fuzz-engine-resolution` is what
+  # catches a manifest or vendoring change that breaks the engine. Canonical
+  # cb92bd655 failed this way, and only a downstream gate noticed.
+  engineResolution =
+    if engineBinary == null then
+      null
+    else
+      engineBinary.overrideAttrs (_: {
+        pname = "backend-fuzz-engine-resolution";
+        buildPhase = ''
+          runHook preBuild
+          cargo metadata --locked --offline --format-version 1 > /dev/null
+          runHook postBuild
+        '';
+        installPhase = ''
+          touch "$out"
+        '';
+      });
   # The cargo derivation's RUNPATH is empty (see the comment on RUSTFLAGS).
   # Copy the cached binary and point it at the same gcc lib the toolchain
   # linked. Bins exec this path. The unpatched libexec is not a runner.
@@ -861,5 +832,6 @@ in
     else
       {
         inherit bundle aliases;
+        resolution = engineResolution;
       };
 }
