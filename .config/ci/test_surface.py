@@ -1069,6 +1069,22 @@ class PartialSearchReadinessTests(unittest.TestCase):
         self.assertEqual(emit.call_args_list[0].args[2], 0)
         self.assertEqual(emit.call_args_list[-1].args[2], 2)
 
+    def test_snapshot_search_settles_without_an_authored_symbol_override(self):
+        for transport, field in (("cli", "json"), ("mcp", "structuredContent")):
+            with self.subTest(transport=transport):
+                preparing = self.frames(transport=transport)
+                ready = self.ready(transport=transport)
+                self.assertTrue(surface.snapshot_search_needs_settling(preparing[field]))
+                self.assertFalse(surface.snapshot_search_needs_settling(ready[field]))
+                self.assertFalse(surface.snapshot_search_needs_settling(
+                    self.frames(transport=transport, readiness="unavailable")[field]))
+                settled, frames = surface.resolve_partial_authored_search(
+                    preparing, lambda _remaining: ready, 1.0,
+                    transport=transport, query="Token", expected={}, language="python",
+                    request=["search", "Token"], now=lambda: 0.0, sleep=lambda _delay: None)
+                self.assertIs(settled, ready)
+                self.assertEqual(frames, [preparing, ready])
+
     def test_permanent_partial_expires_original_deadline(self):
         now = [0.0]
         attempts = []
